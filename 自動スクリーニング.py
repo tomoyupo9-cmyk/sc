@@ -159,6 +159,49 @@ def fint(x, default=None):
 
 def today_str():
     return datetime.now().strftime("%Y-%m-%d")
+    
+# ================== 表示整形ヘルパ ==================
+def _format_flag_html(flag: str, start_date: str | None) -> str:
+    """
+    '候補' などのフラグを、崩れないHTMLに整形して返す。
+    start_date は 'YYYY-MM-DD' などを想定（None可）
+    """
+    if flag is None:
+        flag = ""
+    flag = str(flag).strip()
+
+    if flag == "候補":
+        date_html = f"<br><span style='font-size:10px;color:gray'>{start_date}〜</span>" if (start_date and str(start_date).strip()) else ""
+        return f"<div style='line-height:1.1'>候補{date_html}</div>"
+    # 空やその他は空表示
+    return ""
+
+def _safe_jsonable(val):
+    """
+    JSONに安全に落とし込むための変換（bytes, NaN, Timestamp 等を処理）
+    """
+    import math
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime, date
+
+    if val is None:
+        return None
+    if isinstance(val, (bytes, bytearray)):
+        try:
+            return val.decode("utf-8", errors="ignore")
+        except Exception:
+            return str(val)
+    # pandas/NumPyの欠損
+    if (isinstance(val, float) and (math.isnan(val))) or (hasattr(pd, "isna") and pd.isna(val)):
+        return None
+    if isinstance(val, (np.floating, np.integer)):
+        return val.item()
+    # 日付・日時
+    if isinstance(val, (pd.Timestamp, datetime, date)):
+        return str(val)[:19]
+    return val
+
 
 # ===== 祝日判定 =====
 def _load_extra_closed(path: str):
@@ -1785,12 +1828,12 @@ def phase_validate_prev_business_day(conn: sqlite3.Connection):
 
 # ===== HTML（オフライン/5タブ/各表にリンク列/Migikataフィルタ追加） =====
 
-# ========== Template exporter（色付きUI + 推奨/比率 + 各種モーダル + しきい値ヘルプ）：完全置換 ==========
+# ========== Template exporter（CDNなし・JSON直埋め・フォールバック強化・完全置換） ==========
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-import os, math, pandas as pd
-import urllib.parse as _url
+from markupsafe import Markup, escape
+import os, math, pandas as pd, json
 
-# しきい値（ヘルプ表示用）
+# しきい値（ヘルプ表示用：未使用でも残す）
 HH_N        = globals().get('HH_N', 60)
 PIVOT_EPS   = globals().get('PIVOT_EPS', 0.002)
 VOL_BOOST   = globals().get('VOL_BOOST', 1.5)
@@ -1801,7 +1844,7 @@ REB_WIN     = globals().get('REB_WIN', 10)
 RECLAIM_WIN = globals().get('RECLAIM_WIN', 10)
 SCORE_TH    = globals().get('SCORE_TH', 70)
 
-# ---------------- utils ----------------
+# ---------- 安全整形 ----------
 def _to_float(v):
     if v is None: return None
     try:
@@ -1813,24 +1856,63 @@ def _to_float(v):
         return None
 
 def _fmt_cell(v):
+    """HTML混在・数値を安全に整形して返す。<span>/<br>/<div> を含む場合は safe 出力。"""
     try:
-        if v is None or (isinstance(v,float) and math.isnan(v)): return ""
-        if isinstance(v,int): return f"{v:,}"
+        if v is None or (isinstance(v,float) and math.isnan(v)): 
+            return ""
+        s = str(v)
+        if ("<span" in s) or ("<br" in s) or ("<div" in s):
+            return Markup(s)
+        if isinstance(v,int): 
+            return f"{v:,}"
         if isinstance(v,float):
-            if abs(v-round(v))<1e-9: return f"{int(round(v)):,}"
+            if abs(v-round(v))<1e-9: 
+                return f"{int(round(v)):,}"
             return f"{v:.2f}"
         fv = _to_float(v)
-        if fv is not None: return _fmt_cell(fv)
-        return str(v)
+        if fv is not None: 
+            return _fmt_cell(fv)
+        return escape(s)
     except Exception:
-        return str(v) if v is not None else ""
+        return escape(str(v)) if v is not None else ""
 
+def _safe_jsonable(val):
+    """bytes/NaN/Timestamp等を安全にJSON化"""
+    import math, numpy as np
+    import pandas as pd
+    from datetime import datetime, date
+    if val is None:
+        return None
+    if isinstance(val, (bytes, bytearray)):
+        try: return val.decode("utf-8", errors="ignore")
+        except Exception: return str(val)
+    if (isinstance(val, float) and math.isnan(val)) or (hasattr(pd, "isna") and pd.isna(val)):
+        return None
+    if isinstance(val, (np.floating, np.integer)):
+        return val.item()
+    if isinstance(val, (pd.Timestamp, datetime, date)):
+        return str(val)[:19]
+    return val
+
+# ---------- タグ生成 ----------
 def _noshor_from_agency(val) -> str:
     if val is None: return "1"
     s = str(val).strip()
     return "1" if s=="" or s in ("なし","-","0","NaN","nan","None") else "0"
 
-# 「判定理由」用のざっくりタグ
+def _op_ratio_flag(d):
+    """営利対時価(=営業利益 / 時価総額) >= 10% を疑似判定（DB列に依存しないA案）"""
+    e = _to_float(d.get("営業利益"))
+    z = _to_float(d.get("時価総額億円"))
+    if e is None or z is None or z == 0: 
+        return "0"
+    # 営業利益は億円相当を想定。保守的に 10% を閾値とする
+    try:
+        ratio = (e / z) * 100.0
+        return "1" if ratio >= 10.0 else "0"
+    except Exception:
+        return "0"
+
 def _bucket_turn(v):
     if v is None: return "売買:<不明>"
     v=float(v);  return "売買:<5" if v<5 else ("売買:5-10" if v<10 else ("売買:10-50" if v<50 else ("売買:50-100" if v<100 else "売買:100+")))
@@ -1868,23 +1950,79 @@ def _build_reason(d):
     if (d.get("底打ちフラグ") or "") == "候補": tags.append("底打ち")
     if (d.get("右肩上がりフラグ") or "") == "候補": tags.append("右肩")
     if (d.get("右肩早期フラグ") or "") == "候補": tags.append("早期")
-    if d.get("営利対時価_flag","0") == "1": tags.append("割安")
+    if _op_ratio_flag(d) == "1": tags.append("割安")
     if d.get("空売り機関なし_flag","0") == "1": tags.append("機関:なし")
     return " / ".join(tags)
 
+# === 推奨／比率・営利対時価の自動算出（DB非依存）========================
+
+def _derive_recommendation(d):
+    """
+    候補フラグ + 流動性(RVOL/売買代金) + 合成S + 上昇率レンジで推奨を自動決定。
+    返り値: (推奨アクション, 推奨比率)  ※比率は数値（%ではない）
+    """
+    turn = _to_float(d.get("売買代金(億)"))
+    rvol = _to_float(d.get("RVOL代金"))
+    rate = _to_float(d.get("前日終値比率"))
+    comp = _to_float(d.get("合成スコア"))
+
+    # しきい値（必要に応じて調整）
+    TURN_MIN     = 5.0      # 売買代金(億) ≥ 5
+    RVOL_MIN     = 2.0      # RVOL代金 ≥ 2
+    COMP_BASE    = 70.0     # 小口の目安
+    COMP_STRONG  = 80.0     # 有力の目安
+    RATE_SOFT    = (-2.0, 3.0)  # 小口：-2%〜+3%
+    RATE_STRONG  = ( 0.0, 2.0)  # 有力： 0%〜+2%
+
+    is_setup = any((d.get(k) or "").strip() == "候補"
+                   for k in ("右肩早期フラグ", "右肩上がりフラグ", "初動フラグ"))
+    liquid   = (turn is not None and turn >= TURN_MIN) and (rvol is not None and rvol >= RVOL_MIN)
+    good     = (comp is not None and comp >= COMP_BASE)
+    strong   = (comp is not None and comp >= COMP_STRONG)
+
+    def _in(v, lohi): 
+        return (v is not None) and (lohi[0] <= v <= lohi[1])
+
+    # 強い条件 → エントリー有力（1.0%）
+    if is_setup and liquid and strong and _in(rate, RATE_STRONG):
+        return "エントリー有力", 1.0
+
+    # 緩い条件 → 小口提案（0.5%）
+    if is_setup and liquid and good and _in(rate, RATE_SOFT):
+        return "小口提案", 0.5
+
+    return "", None
+
+
+def _derive_opratio_flag(d, threshold_pct: float = 10.0) -> str:
+    """
+    営業利益 / 時価総額(億円) * 100 >= threshold_pct なら "1"、それ以外は "0"
+    ※どちらか欠損/0 のときも "0"
+    """
+    op   = _to_float(d.get("営業利益"))
+    mcap = _to_float(d.get("時価総額億円"))
+    if op is None or mcap in (None, 0):
+        return "0"
+    ratio_pct = (op / mcap) * 100.0
+    return "1" if ratio_pct >= threshold_pct else "0"
+# =======================================================================
+
+
+# ---------- 行整形（欠損安全 & 外部列に依存しない） ----------
 def _prepare_rows(df: pd.DataFrame):
     rows = []
     for _, r in df.iterrows():
         d = {k: (None if (isinstance(r.get(k), float) and math.isnan(r.get(k))) else r.get(k)) for k in df.columns}
-        d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
-        if "コード" in d: d["コード"] = str(d.get("コード") or "")
+
+        # コード/銘柄
+        if "コード" in d: d["コード"] = str(d.get("コード") or "").zfill(4)
         if "銘柄名" in d: d["銘柄名"] = str(d.get("銘柄名") or "")
 
+        # Yahoo / X
         code4 = (d.get("コード") or "").zfill(4)
         d["yahoo_url"] = f"https://finance.yahoo.co.jp/quote/{code4}.T" if code4 else ""
-        q = _url.quote(d.get("銘柄名") or "")
-        d["x_url"]  = f"https://x.com/search?q={q}" if q else ""
-        d["Yahoo"] = "Yahoo"; d["X"]="X検索"
+        from urllib.parse import quote as _q
+        d["x_url"]  = f"https://x.com/search?q={_q(d.get('銘柄名') or '')}" if d.get("銘柄名") else ""
 
         # 売買代金(億) 補完
         if d.get("売買代金(億)") is None:
@@ -1898,22 +2036,43 @@ def _prepare_rows(df: pd.DataFrame):
         if d.get("RVOL代金") is None and (fturn is not None) and (favg20 and favg20!=0):
             d["RVOL代金"] = fturn / favg20
 
-        # 前日比（円）/比率 補完
+        # 前日比 補完
         now_=_to_float(d.get("現在値")); prev_=_to_float(d.get("前日終値"))
         if d.get("前日比（円）") is None and (now_ is not None and prev_ is not None):
             d["前日比（円）"] = now_ - prev_
         if d.get("前日終値比率") is None and (now_ is not None and prev_ not in (None,0)):
             d["前日終値比率"] = (now_/prev_ - 1.0) * 100.0
 
-        # 判定
+        # 付加フラグ
+        d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
+        d["営利対時価_flag"]     = _op_ratio_flag(d)  # ← チェックボックス用（割安）
+
+        # 判定/理由
         pct = _to_float(d.get("前日終値比率"))
         d["判定"] = "当たり！" if (pct is not None and pct > 0) else ""
         d["判定理由"] = _build_reason(d)
+        
+                # --- 推奨/比率（DB列が無い or 空なら自動付与） ---
+        if not (d.get("推奨アクション") or "").strip():
+            rec, ratio = _derive_recommendation(d)
+            if rec:
+                d["推奨アクション"] = rec
+            if ratio is not None:
+                d["推奨比率"] = ratio
+
+        # --- 営利対時価_flag（DB列が無い/空なら導出） ---
+        if not (d.get("営利対時価_flag") or "").strip():
+            d["営利対時価_flag"] = _derive_opratio_flag(d)
+
+        # 念のため：空売り機関なし_flag を維持
+        d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
+
 
         rows.append(d)
     return rows
 
-# =================== HTML ===================
+
+# =================== HTMLテンプレ ===================
 DASH_TEMPLATE_STR = r"""<!doctype html>
 <html lang="ja">
 <head>
@@ -1922,18 +2081,19 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 <style>
   :root{
     --ink:#1f2937; --muted:#6b7280; --bg:#f9fafb; --line:#e5e7eb;
-    --blue:#0d3b66; --green:#15803d; --orange:#b45309; --gray:#64748b; --yellow:#a16207;
+    --blue:#0d3b66; --green:#15803d; --orange:#b45309; --yellow:#a16207;
     --hit:#ffe6ef; --rowhover:#f6faff;
   }
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans JP',sans-serif;margin:16px;color:var(--ink);background:#fff}
   nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
   nav a{padding:6px 10px;border-radius:8px;text-decoration:none;background:#e1e8f0;color:#1f2d3d;font-weight:600}
   nav a.active{background:var(--blue);color:#fff}
-  .toolbar{display:flex;gap:.8rem;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
-  .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #ccd;border-radius:8px;min-width:120px;background:#fff}
+  .toolbar{display:flex;gap:14px;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
+  .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #ccd;border-radius:8px;background:#fff}
+  .toolbar input[type="number"]{width:80px}
   .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
   .tbl{border-collapse:collapse;width:100%;background:#fff;border-radius:10px;overflow:hidden}
-  .tbl th,.tbl td{border-bottom:1px solid var(--line);padding:8px 10px}
+  .tbl th,.tbl td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
   .tbl thead th{position:sticky;top:0;background:#f3f6fb;z-index:1}
   .tbl tbody tr:nth-child(even){background:#fcfdff}
   .tbl tbody tr:hover{background:var(--rowhover)}
@@ -1942,35 +2102,18 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .num{text-align:right}
   .muted{color:var(--muted)} .hidden{display:none} .count{margin-left:6px;color:var(--muted)}
   .pager{display:flex;gap:8px;align-items:center}
-
-  /* バッジ */
+  tr.hit>td{background:var(--hit)}
   .badge{display:inline-flex;gap:6px;align-items:center;padding:2px 8px;border-radius:999px;font-size:12px;line-height:1;font-weight:700}
   .b-green{background:#e7f6ed;color:var(--green);border:1px solid #cceedd}
-  .b-orange{background:#fff4e6;color:var(--orange);border:1px solid #ffe2c2}
-  .b-yellow{background:#fff9db;color:var(--yellow);border:1px solid #ffe9a8}
-  .b-gray{background:#eef2f7;color:#475569;border:1px solid #dbe4ef}
-
-  .rec-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;line-height:1;font-weight:700}
-  .rec-strong{background:#e7f6ed;color:var(--green);border:1px solid #cceedd}
-  .rec-small{background:#fff4e6;color:var(--orange);border:1px solid #ffe2c2}
-  .rec-watch{background:#eef2f7;color:#475569;border:1px solid #dbe4ef}
-
-  /* 当たり行の薄緑 */
-  tr.hit > td{background:var(--hit)}
-
-  /* ?ボタン */
-  .help-icon{display:inline-block;vertical-align:middle;margin-left:6px;width:18px;height:18px;line-height:18px;text-align:center;border-radius:50%;background:#e1e8f0;color:#1f2d3d;font-weight:700;font-size:12px}
-  .help-icon:hover{background:#d7e2ef}
-
-  /* モーダル */
+  .b-orange{background:#fff4e6;color:#b45309;border:1px solid #ffe2c2}
+  .b-yellow{background:#fff9db;color:#a16207;border:1px solid #ffe9a8}
+  /* modal */
   .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:9999}
-  .modal{max-width:900px;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 30px rgba(0,0,0,.25);max-height:90vh;overflow:auto}
-  .modal h3{margin:0 0 10px}
+  .modal{max-width:980px;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 30px rgba(0,0,0,.25);max-height:90vh;overflow:auto}
   .modal .close{float:right;cursor:pointer;font-size:18px;padding:2px 8px;border-radius:6px}
   .modal .close:hover{background:#f2f2f2}
-  .chart{width:900px;height:300px;margin:12px 0}
+  .chart{width:940px;height:320px;margin:14px 0;border:1px solid #eee}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
   <nav>
@@ -1985,29 +2128,29 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     <label><input type="checkbox" id="f_both"> 両立のみ</label>
     <label><input type="checkbox" id="f_rightup"> 右肩上がりのみ</label>
     <label><input type="checkbox" id="f_early"> 早期のみ</label>
-    <label><input type="checkbox" id="f_earlytype"> 早期種別あり</label>
+    <label><input type="checkbox" id="f_etype"> 早期種別あり</label>
     <label><input type="checkbox" id="f_recstrong"> エントリー有力のみ</label>
     <label><input type="checkbox" id="f_smallpos"> 小口提案のみ</label>
     <label><input type="checkbox" id="f_noshor"> 空売り機関なしのみ</label>
     <label><input type="checkbox" id="f_opratio"> 割安（営利対時価10%以上）のみ</label>
     <label><input type="checkbox" id="f_hit"> 当たりのみ</label>
 
-    <!-- しきい値 + ?（専用モーダル） -->
-    <label>上昇率≥ <input type="number" id="th_rate" placeholder="3" step="0.1" style="width:72px">
-      <span id="help-th-rate" class="help-icon" title="説明">?</span></label>
-    <label>売買代金≥ <input type="number" id="th_turn" placeholder="5" step="0.1" style="width:72px">
-      <span id="help-th-turn" class="help-icon" title="説明">?</span></label>
-    <label>RVOL代金≥ <input type="number" id="th_rvol" placeholder="2" step="0.1" style="width:72px">
-      <span id="help-th-rvol" class="help-icon" title="説明">?</span></label>
+    <!-- しきい値：初期は必ず空欄（placeholderのみ） -->
+    <label>上昇率≥ <input type="number" id="th_rate" placeholder="3" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label>売買代金≥ <input type="number" id="th_turn" placeholder="5" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label>RVOL代金≥ <input type="number" id="th_rvol" placeholder="2" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label><input type="checkbox" id="f_defaultset"> 規定</label>
 
-    <input type="text" id="q" placeholder="全文検索" style="min-width:240px">
-    <button class="btn" id="csv">CSV</button>
-    <button class="btn" id="btn-stats" title="表示中データで傾向グラフ">傾向グラフ</button>
-    <button class="btn" id="btn-ts" title="日別の当たり率推移">推移グラフ</button>
+    <input type="text" id="q" placeholder="全文検索（コード/銘柄/判定理由など）" style="min-width:240px">
+    <button class="btn" id="btn-stats">傾向グラフ</button>
+    <button class="btn" id="btn-ts">推移グラフ</button>
 
     <span class="pager">
       <label>表示件数
-        <select id="perpage"><option value="200">200</option><option value="500" selected>500</option><option value="1000">1000</option><option value="2000">2000</option></select>
+        <select id="perpage">
+          <option value="200">200</option><option value="500" selected>500</option>
+          <option value="1000">1000</option><option value="2000">2000</option>
+        </select>
       </label>
       <button class="btn" id="prev">前へ</button>
       <button class="btn" id="next">次へ</button>
@@ -2016,7 +2159,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     <span class="count">件数: <b id="count">-</b></span>
   </div>
 
-  <!-- 候補一覧 -->
   <section id="tab-candidate" class="tab">
     <table id="tbl-candidate" class="tbl">
       <thead>
@@ -2030,23 +2172,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <th class="num sortable" data-col="前日比（円）" data-type="num">前日比（円）<span class="arrow"></span></th>
           <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
           <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
-
-          <th class="num sortable" data-col="売買代金(億)" data-type="num">
-            売買代金(億)<span id="help-turn" class="help-icon" title="説明">?</span><span class="arrow"></span>
-          </th>
-          <th class="num sortable" data-col="RVOL代金" data-type="num">
-            RVOL代金<span id="help-rvol" class="help-icon" title="説明">?</span><span class="arrow"></span>
-          </th>
-          <th class="num sortable" data-col="時価総額億円" data-type="num">
-            時価総額(億)<span id="help-mcap" class="help-icon" title="説明">?</span><span class="arrow"></span>
-          </th>
-          <th class="num sortable" data-col="合成スコア" data-type="num">
-            合成S<span id="help-comp" class="help-icon" title="説明">?</span><span class="arrow"></span>
-          </th>
-          <th class="num sortable" data-col="ATR14%" data-type="num">
-            ATR14%<span id="help-atr" class="help-icon" title="説明">?</span><span class="arrow"></span>
-          </th>
-
+          <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
           <th class="sortable" data-col="初動フラグ" data-type="flag">初動<span class="arrow"></span></th>
           <th class="sortable" data-col="底打ちフラグ" data-type="flag">底打ち<span class="arrow"></span></th>
           <th class="sortable" data-col="右肩上がりフラグ" data-type="flag">右肩<span class="arrow"></span></th>
@@ -2060,91 +2186,14 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <th class="sortable" data-col="シグナル更新日" data-type="date">更新<span class="arrow"></span></th>
         </tr>
       </thead>
-      <tbody>
-        {% for r in cand %}
-        <tr
-          class="{{ 'hit' if (r.get('判定')=='当たり！') else '' }}"
-          data-shodou="{{ r.get('初動フラグ') or '' }}"
-          data-tei="{{ r.get('底打ちフラグ') or '' }}"
-          data-rightup="{{ r.get('右肩上がりフラグ') or '' }}"
-          data-early="{{ r.get('右肩早期フラグ') or '' }}"
-          data-etype="{{ r.get('右肩早期種別') or '' }}"
-          data-earlyscore="{{ r.get('右肩早期スコア') or '' }}"
-          data-noshor="{{ r['空売り機関なし_flag'] }}"
-          data-opratio="{{ r.get('営利対時価_flag','0') }}"
-          data-hit="{{ '1' if (r.get('判定')=='当たり！') else '' }}"
-        >
-          <td>{{ r['コード'] }}</td>
-          <td>{{ r['銘柄名'] }}</td>
-          <td><a href="{{ r['yahoo_url'] }}" target="_blank" rel="noopener">Yahoo</a></td>
-          <td><a href="{{ r['x_url'] }}" target="_blank" rel="noopener">X検索</a></td>
-          <td class="num">{{ r['現在値']|fmt_cell }}</td>
-          <td class="num">{{ r['前日終値']|fmt_cell }}</td>
-          <td class="num">{{ r['前日比（円）']|fmt_cell }}</td>
-          <td class="num">{{ r['前日終値比率']|fmt_cell }}</td>
-          <td class="num">{{ r['出来高']|fmt_cell }}</td>
-          <td class="num">{{ r['売買代金(億)']|fmt_cell }}</td>
-          <td class="num">{{ r['RVOL代金']|fmt_cell }}</td>
-          <td class="num">{{ r['時価総額億円']|fmt_cell }}</td>
-          <td class="num">{{ r['合成スコア']|fmt_cell }}</td>
-          <td class="num">{{ r['ATR14%']|fmt_cell }}</td>
-          <td>{{ r['初動フラグ'] or '' }}</td>
-          <td>{{ r['底打ちフラグ'] or '' }}</td>
-          <td>{{ r['右肩上がりフラグ'] or '' }}</td>
-          <td>{{ r['右肩早期フラグ'] or '' }}</td>
-          <td class="num">{{ r['右肩早期スコア']|fmt_cell }}</td>
-          <td>
-            {% set et = (r['右肩早期種別'] or '').strip() %}
-            {% if et == 'ブレイク' %}<span class="badge b-green">● ブレイク</span>
-            {% elif et == '20MAリバ' %}<span class="badge b-green">● 20MAリバ</span>
-            {% elif et == 'ポケット' %}<span class="badge b-orange">● ポケット</span>
-            {% elif et == '200MAリクレイム' %}<span class="badge b-yellow">● 200MAリクレイム</span>
-            {% else %}{{ et }}{% endif %}
-          </td>
-          <td>{{ r['判定'] or '' }}</td>
-          <td>{{ r['判定理由'] or '' }}</td>
-          <td class="rec-act"></td>
-          <td class="num rec-size"></td>
-          <td>{{ r['シグナル更新日'] or '' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
+      <tbody></tbody>
     </table>
   </section>
 
-  <!-- 全カラム -->
   <section id="tab-all" class="tab hidden">
     <table id="tbl-allcols" class="tbl">
-      <thead>
-        <tr>
-          {% for col in allcols %}
-            {% set t = ('num' if col in numcols else ('flag' if 'フラグ' in col else ('date' if ('日付' in col or '更新日' in col or col == '日時') else 'text'))) %}
-            <th class="sortable {{ 'num' if col in numcols else '' }}" data-col="{{ col }}" data-type="{{ t }}">{{ col }}<span class="arrow"></span></th>
-          {% endfor %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in allrows %}
-        <tr
-          data-shodou="{{ r.get('初動フラグ','') or '' }}"
-          data-tei="{{ r.get('底打ちフラグ','') or '' }}"
-          data-rightup="{{ r.get('右肩上がりフラグ','') or '' }}"
-          data-early="{{ r.get('右肩早期フラグ','') or '' }}"
-          data-noshor="{{ r.get('空売り機関なし_flag','0') }}"
-          data-opratio="{{ r.get('営利対時価_flag','0') }}"
-        >
-          {% for col in allcols %}
-            {% if col == 'Yahoo' %}
-              <td><a href="{{ r['yahoo_url'] }}" target="_blank" rel="noopener">Yahoo</a></td>
-            {% elif col == 'X' %}
-              <td><a href="{{ r['x_url'] }}" target="_blank" rel="noopener">X検索</a></td>
-            {% else %}
-              <td class="{{ 'num' if col in numcols else '' }}">{{ (r.get(col) if r.get(col) is not none else '')|fmt_cell }}</td>
-            {% endif %}
-          {% endfor %}
-        </tr>
-        {% endfor %}
-      </tbody>
+      <thead><tr id="all-head"></tr></thead>
+      <tbody id="all-body"></tbody>
     </table>
   </section>
 
@@ -2156,344 +2205,270 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <th class="sortable" data-col="日時" data-type="date">日時<span class="arrow"></span></th>
           <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
           <th class="sortable" data-col="種別" data-type="text">種別<span class="arrow"></span></th>
-          <th class="sortable" data-col="詳細" data-type="text">詳細<span class="arrow"></span></th>
+          <th class="sortable" data-col="詳細" data-type="text">詳細<span class="arrow"></"></span></th>
         </tr>
       </thead>
-      <tbody>
-        {% for r in logs %}
-        <tr>
-          <td>{{ r['日時'] }}</td>
-          <td>{{ r['コード'] }}</td>
-          <td>{{ r['種別'] }}</td>
-          <td>{{ r['詳細'] }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
+      <tbody id="log-body"></tbody>
     </table>
   </section>
   {% endif %}
 
-  <!-- 指標ヘルプ（売買代金/RVOL/合成S/ATR14%/時価総額） -->
-  <div id="modal-metrics" class="modal-back" role="dialog" aria-modal="true" aria-labelledby="metrics-title">
-    <div class="modal">
-      <span class="close" id="modal-metrics-close">×</span>
-      <h3 id="metrics-title">指標の見方</h3>
-      <ul>
-        <li><b>売買代金(億)</b>：当日 <code>現在値×出来高÷1e8</code>（DBにあれば優先）。<br>
-            <i>目安</i>：<b>5億+</b>＝最低ライン、<b>10億+</b>＝十分。</li>
-        <li><b>RVOL代金</b>：<code>売買代金 ÷ 売買代金20日平均</code>。出来高の活況度。<br>
-            <i>目安</i>：<b>2倍</b>＝活発、<b>3倍</b>＝強い。</li>
-        <li><b>合成S</b>：<code>rank(前日終値比率)*0.4 + rank(RVOL代金)*0.4 + rank(売買代金)*0.2</code>（0〜100）。</li>
-        <li><b>ATR14%</b>：<code>ATR14 ÷ 終値 × 100</code>。1日の「揺れ幅（リスク）」の比率。</li>
-        <li><b>時価総額(億)</b>：流動性レンジ確認用。</li>
-      </ul>
-      <p class="muted" style="margin-top:8px">推奨：<b>売買代金≥5億</b> & <b>RVOL代金≥2</b> で“動いている銘柄”に絞り、<b>合成S降順</b>で強弱を見る → <b>ATR14%</b>で保有リスクが許容内かチェック。</p>
-    </div>
-  </div>
-
-  <!-- しきい値ヘルプ（上昇率 / 売買代金 / RVOL） -->
-  <div id="modal-th-rate" class="modal-back"><div class="modal"><span class="close" data-close="modal-th-rate">×</span>
-    <h3>上昇率≥ の使い方</h3>
-    <p>前日終値比率（％）がこの値以上の銘柄に絞ります。<br>
-    例：<b>3</b>→当日+3%以上。強いトレンドのみに集中したい時に。</p>
-    <ul><li>1〜2%：ゆるやかな上昇を広く拾う</li><li><b>3〜5%</b>：勢い重視（推奨）</li><li>5%+：かなり強い。急伸の絞り込み</li></ul>
-  </div></div>
-
-  <div id="modal-th-turn" class="modal-back"><div class="modal"><span class="close" data-close="modal-th-turn">×</span>
-    <h3>売買代金≥ の使い方</h3>
-    <p>当日の流動性フィルタ。<code>現在値×出来高÷1e8</code>（億円）。</p>
-    <ul><li><b>5億+</b>：最低ライン</li><li>10億+：十分な流動性（推奨）</li><li>30億+：大型・約定が軽い</li></ul>
-  </div></div>
-
-  <div id="modal-th-rvol" class="modal-back"><div class="modal"><span class="close" data-close="modal-th-rvol">×</span>
-    <h3>RVOL代金≥ の使い方</h3>
-    <p>売買代金の20日平均に対する倍率。出来高の“今日の活況ぶり”。</p>
-    <ul><li>1.5〜2：活発化の兆し</li><li><b>2〜3</b>：活発（推奨）</li><li>3+：強いテーマ・材料の可能性</li></ul>
-  </div></div>
-
-  <!-- 傾向（棒） -->
-  <div id="modal-stats" class="modal-back"><div class="modal">
-    <span class="close" id="modal-stats-close">×</span>
-    <h3>傾向グラフ（現在の表示データで集計）</h3>
-    <canvas id="stats1" class="chart"></canvas>
-    <canvas id="stats2" class="chart"></canvas>
-  </div></div>
-
-  <!-- 推移（折れ線：ダミー構成） -->
-  <div id="modal-ts" class="modal-back"><div class="modal">
-    <span class="close" id="modal-ts-close">×</span>
-    <h3>日別 当たり率・件数 推移</h3>
-    <canvas id="ts-rate" class="chart"></canvas>
-    <canvas id="ts-count" class="chart"></canvas>
-  </div></div>
-
-  <footer class="muted">生成: {{ generated_at }}</footer>
+  <!-- 直埋めデータ(JSON) -->
+  <script id="__DATA__" type="application/json">{{ data_json|safe }}</script>
 
   <script>
-  // ===== 状態 =====
-  let ACTIVE_TABLE = 'tbl-candidate';
-  const SORT = {'tbl-candidate': {col:null,asc:true}, 'tbl-allcols': {col:null,asc:true}, 'tbl-log': {col:null,asc:true}};
-  const PAGE = {'tbl-candidate': 1, 'tbl-allcols': 1};
-  const PER_PAGE = {'tbl-candidate': 500, 'tbl-allcols': 500};
+  (function(){
+    // ===== JSON 読み出し（__DATA__） =====
+    const RAW = (()=>{ try{ return JSON.parse(document.getElementById("__DATA__").textContent||"{}"); }catch(_){ return {}; } })();
+    const DATA_CAND = Array.isArray(RAW.cand)? RAW.cand: [];
+    const DATA_ALL  = Array.isArray(RAW.all) ? RAW.all : [];
+    const DATA_LOG  = Array.isArray(RAW.logs)? RAW.logs: [];
 
-  function parseNumber(text){ if(text==null) return NaN; let s=String(text).trim().replace(/,/g,'').replace(/％|%/g,''); if(s==='') return NaN; const v=Number(s); return isNaN(v)?NaN:v; }
-  function parseDate(text){ if(!text) return NaN; const s=String(text).trim().replace(/\./g,'/').replace(/-/g,'/'); const t=new Date(s).getTime(); return isNaN(t)?NaN:t; }
-  function parseFlag(text){ const s=(text||'').trim(); if(s==='候補'||s==='当たり！') return 1; const l=s.toLowerCase(); return (l==='1'||l==='true'||l==='t'||l==='yes'||l==='y'||s==='○')?1:0; }
+    // ===== util =====
+    const $  = (s,r=document)=>r.querySelector(s);
+    const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
+    const num = (v)=>{ const s=String(v??"").replace(/[,\s円％%]/g,""); const n=parseFloat(s); return Number.isFinite(n)?n:NaN; };
+    const cmp = (a,b)=>{ if(a==null&&b==null) return 0; if(a==null) return -1; if(b==null) return 1;
+      const na=+a, nb=+b, da=new Date(a), db=new Date(b);
+      if(!Number.isNaN(na)&&!Number.isNaN(nb)) return na-nb;
+      if(!Number.isNaN(da)&&!Number.isNaN(db)) return da-db;
+      return String(a).localeCompare(String(b),"ja"); };
+    const hasKouho = (v)=> String(v||"").includes("候補");
 
-  // 推奨ロジック
-  function recommend(type, score){
-    let act='監視', pct=0, cls='rec-watch';
-    if(!type){ return {act,pct,cls}; }
-    if(type==='ブレイク' || type==='20MAリバ'){
-      if(score>=80){ act='エントリー有力'; pct=100; cls='rec-strong'; }
-      else if(score>=70){ act='テストIN小口'; pct=50; cls='rec-small'; }
-    }else if(type==='ポケット'){
-      if(score>=75){ act='先回り小口'; pct=50; cls='rec-small'; }
-    }else if(type==='200MAリクレイム'){
-      if(score>=70){ act='分割で少量'; pct=30; cls='rec-small'; }
+    // ===== state =====
+    const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), sortKey:null, sortDir:1, q:"", data: DATA_CAND.slice() };
+    window.state = state; // 外部からも呼べるよう公開
+
+    // ===== 規定セット／強制クリア =====
+    const DEFAULTS = { rate:3, turn:5, rvol:2 };
+    function applyDefaults(on){
+      const ia=$("#th_rate"), it=$("#th_turn"), ir=$("#th_rvol");
+      if(!ia||!it||!ir) return;
+      if(on){ ia.value=DEFAULTS.rate; it.value=DEFAULTS.turn; ir.value=DEFAULTS.rvol; }
+      else{ ia.value=""; it.value=""; ir.value=""; ia.removeAttribute("value"); it.removeAttribute("value"); ir.removeAttribute("value"); }
+      state.page=1; render();
     }
-    return {act,pct,cls};
-  }
+    function forceClearThresholds(){ const cb=$("#f_defaultset"); if(cb) cb.checked=false; applyDefaults(false); }
 
-  function paintRecommendations(){
-    const tbl=document.getElementById('tbl-candidate'); if(!tbl) return;
-    const ths=Array.from(tbl.querySelectorAll('thead th'));
-    const idxType=ths.findIndex(th=> th.dataset.col==='右肩早期種別');
-    const idxScore=ths.findIndex(th=> th.dataset.col==='右肩早期スコア');
-    const idxAct=ths.findIndex(th=> th.dataset.col==='推奨アクション');
-    const idxSize=ths.findIndex(th=> th.dataset.col==='推奨比率');
-    tbl.querySelectorAll('tbody tr').forEach(tr=>{
-      const type = tr.dataset.etype?.trim()||tr.children[idxType].textContent.trim();
-      let score = Number(tr.dataset.earlyscore||NaN);
-      if(isNaN(score)){ score = parseNumber(tr.children[idxScore]?.textContent||''); }
-      const r = recommend(type, score||0);
-      const tdAct = tr.children[idxAct], tdPct=tr.children[idxSize];
-      if(tdAct){ tdAct.innerHTML = r.act ? `<span class="rec-badge ${r.cls}">${r.act}</span>`:''; tr.dataset.recact=r.act||''; }
-      if(tdPct){ tdPct.textContent = r.pct? String(r.pct):''; tr.dataset.recsize = r.pct? String(r.pct):'0'; }
-    });
-  }
+    // ===== フィルタ =====
+    function thRate(){ const v=num($("#th_rate")?.value); return Number.isNaN(v)?null:v; }
+    function thTurn(){ const v=num($("#th_turn")?.value); return Number.isNaN(v)?null:v; }
+    function thRvol(){ const v=num($("#th_rvol")?.value); return Number.isNaN(v)?null:v; }
+    function applyFilter(rows){
+      const q = ($("#q")?.value||"").trim();
+      return rows.filter(r=>{
+        const sh=hasKouho(r["初動フラグ"]), te=hasKouho(r["底打ちフラグ"]), ru=hasKouho(r["右肩上がりフラグ"]), ea=hasKouho(r["右肩早期フラグ"]);
+        const etp=(String(r["右肩早期種別"]||"").trim().length>0);
+        const ns=String(r["空売り機関なし_flag"]||"0")==="1";
+        const op=String(r["営利対時価_flag"]||"0")==="1";
+        const ht=String(r["判定"]||"")==="当たり！";
 
-  function apply(tableId){
-    const root=document.getElementById(tableId); if(!root) return;
+        if($("#f_shodou")?.checked && !sh) return false;
+        if($("#f_tei")?.checked    && !te) return false;
+        if($("#f_both")?.checked   && !(sh && ru)) return false;
+        if($("#f_rightup")?.checked&& !ru) return false;
+        if($("#f_early")?.checked  && !ea) return false;
+        if($("#f_etype")?.checked  && !etp) return false;
+        if($("#f_noshor")?.checked && !ns) return false;
+        if($("#f_opratio")?.checked&& !op) return false;
+        if($("#f_hit")?.checked    && !ht) return false;
 
-    // しきい値
-    const f={
-      shodou:   document.getElementById('f_shodou')?.checked,
-      tei:      document.getElementById('f_tei')?.checked,
-      both:     document.getElementById('f_both')?.checked,
-      rightup:  document.getElementById('f_rightup')?.checked,
-      early:    document.getElementById('f_early')?.checked,
-      earlytype:document.getElementById('f_earlytype')?.checked,
-      recstrong:document.getElementById('f_recstrong')?.checked,
-      smallpos: document.getElementById('f_smallpos')?.checked,
-      noshor:   document.getElementById('f_noshor')?.checked,
-      opratio:  document.getElementById('f_opratio')?.checked,
-      hit:      document.getElementById('f_hit')?.checked,
-      q:        (document.getElementById('q')?.value||'').trim().toLowerCase(),
-      th_rate:  parseFloat(document.getElementById('th_rate')?.value),
-      th_turn:  parseFloat(document.getElementById('th_turn')?.value),
-      th_rvol:  parseFloat(document.getElementById('th_rvol')?.value),
-    };
+        const rate=num(r["前日終値比率"]), turn=num(r["売買代金(億)"]), rvol=num(r["RVOL代金"]);
+        const tr=thRate(), tt=thTurn(), tv=thRvol();
+        if(tr!=null && !(rate>=tr)) return false;
+        if(tt!=null && !(turn>=tt)) return false;
+        if(tv!=null && !(rvol>=tv)) return false;
 
-    const rows = Array.from(root.querySelectorAll('tbody tr'));
-    const ths = Array.from(root.querySelectorAll('thead th'));
-    const idxRate = ths.findIndex(th=> th.dataset.col==='前日終値比率');
-    const idxTurn = ths.findIndex(th=> th.dataset.col==='売買代金(億)');
-    const idxRvol = ths.findIndex(th=> th.dataset.col==='RVOL代金');
-
-    let filtered = rows.filter(tr=>{
-      const okShodou   = !f.shodou    || tr.dataset.shodou  === '候補';
-      const okTei      = !f.tei       || tr.dataset.tei     === '候補';
-      const okBoth     = !f.both      || (tr.dataset.shodou==='候補' && tr.dataset.tei==='候補');
-      const okRight    = !f.rightup   || tr.dataset.rightup === '候補';
-      const okEarly    = !f.early     || tr.dataset.early   === '候補';
-      const okEtype    = !f.earlytype || (tr.dataset.etype && tr.dataset.etype.trim() !== '');
-      const okRecStrong= !f.recstrong || tr.dataset.recact  === 'エントリー有力';
-      const okSmallPos = !f.smallpos  || (Number(tr.dataset.recsize||0) > 0 && Number(tr.dataset.recsize||0) <= 50);
-      const okNoshor   = !f.noshor    || tr.dataset.noshor  === '1';
-      const okOpRatio  = !f.opratio   || tr.dataset.opratio === '1';
-      const okHit      = !f.hit       || tr.dataset.hit     === '1';
-
-      let okRate = true, okTurn = true, okRvol = true;
-      if(!isNaN(f.th_rate) && idxRate>=0){
-        const v = parseNumber(tr.children[idxRate]?.textContent || '');
-        okRate = !isNaN(v) ? (v >= f.th_rate) : false;
-      }
-      if(!isNaN(f.th_turn) && idxTurn>=0){
-        const v = parseNumber(tr.children[idxTurn]?.textContent || '');
-        okTurn = !isNaN(v) ? (v >= f.th_turn) : false;
-      }
-      if(!isNaN(f.th_rvol) && idxRvol>=0){
-        const v = parseNumber(tr.children[idxRvol]?.textContent || '');
-        okRvol = !isNaN(v) ? (v >= f.th_rvol) : false;
-      }
-
-      let okQ = true; if(f.q){ okQ = tr.textContent.toLowerCase().includes(f.q); }
-
-      return okShodou && okTei && okBoth && okRight && okEarly && okEtype &&
-             okRecStrong && okSmallPos && okNoshor && okOpRatio && okHit &&
-             okRate && okTurn && okRvol && okQ;
-    });
-
-    // ソート
-    const st = SORT[tableId];
-    if(st.col){
-      const colIdx = ths.findIndex(th=> th.dataset.col === st.col);
-      if(colIdx >= 0){
-        const type = ths[colIdx].dataset.type || 'text';
-        const getKey = (tr)=>{
-          const txt = (tr.children[colIdx]?.textContent||'').trim();
-          if(type==='num'){ const n = parseNumber(txt); return isNaN(n) ? -Infinity : n; }
-          if(type==='date'){ const t = parseDate(txt); return isNaN(t) ? -Infinity : t; }
-          if(type==='flag'){ return parseFlag(txt); }
-          return txt;
-        };
-        filtered.sort((a,b)=>{
-          const ka=getKey(a), kb=getKey(b);
-          const cmp = (typeof ka==='number' && typeof kb==='number') ? (ka-kb)
-                     : String(ka).localeCompare(String(kb),'ja',{numeric:true,sensitivity:'base'});
-          return st.asc ? cmp : -cmp;
-        });
-      }
-    }
-
-    // ページング
-    const tbody = root.querySelector('tbody');
-    const per = (PER_PAGE[tableId] || 500);
-    let page = (PAGE[tableId] || 1);
-    const total = filtered.length;
-    const maxPage = Math.max(1, Math.ceil(total / per));
-    if(page > maxPage) page = maxPage;
-    PAGE[tableId] = page;
-
-    rows.forEach(tr=> tr.style.display='none');
-    const frag = document.createDocumentFragment();
-    if(tableId === 'tbl-candidate' || tableId === 'tbl-allcols'){
-      const start=(page-1)*per, end=Math.min(start+per,total);
-      for(let i=start;i<end;i++){ const tr=filtered[i]; tr.style.display=''; frag.appendChild(tr); }
-      tbody.appendChild(frag);
-      const pi=document.getElementById('pageinfo'); if(pi) pi.textContent = (total===0)?'0 / 0':`${page} / ${maxPage}`;
-    }else{
-      filtered.forEach(tr=>{ tr.style.display=''; frag.appendChild(tr); }); tbody.appendChild(frag);
-    }
-
-    // 件数・矢印
-    document.getElementById('count').textContent = String(total).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    root.querySelectorAll('thead th.sortable .arrow').forEach(el=> el.textContent='');
-    if(st.col){ const target=root.querySelector(`thead th.sortable[data-col="${st.col}"] .arrow`); if(target) target.textContent = st.asc ? '▲' : '▼'; }
-  }
-
-  function enableSorting(tableId){
-    const root=document.getElementById(tableId); if(!root) return;
-    root.querySelectorAll('thead th.sortable').forEach(th=>{
-      th.addEventListener('click', ()=>{
-        const col=th.dataset.col; if(!col) return;
-        if(SORT[tableId].col===col){ SORT[tableId].asc=!SORT[tableId].asc; } else { SORT[tableId].col=col; SORT[tableId].asc=true; }
-        if(PAGE[tableId]!=null) PAGE[tableId]=1; apply(tableId);
+        if(q){
+          const keys=["コード","銘柄名","判定理由","右肩早期種別","初動フラグ","底打ちフラグ","右肩上がりフラグ","右肩早期フラグ","推奨アクション"];
+          if(!keys.some(k=>String(r[k]??"").includes(q))) return false;
+        }
+        return true;
       });
+    }
+
+    // ===== ソート =====
+    function sortRows(rows){ return state.sortKey? rows.slice().sort((a,b)=>state.sortDir*cmp(a[state.sortKey],b[state.sortKey])) : rows; }
+
+    // ===== 描画 =====
+    function renderCand(){
+      const body=$("#tbl-candidate tbody"); if(!body) return;
+      const rows=sortRows(applyFilter(state.data));
+      const total=rows.length, per=state.per, maxPage=Math.max(1,Math.ceil(total/per));
+      state.page=Math.min(state.page,maxPage);
+      const s=(state.page-1)*per, e=Math.min(s+per,total);
+
+      let html="";
+      for(let i=s;i<e;i++){
+        const r=rows[i]||{}; const hit=String(r["判定"]||"")==="当たり！";
+        const et=(r["右肩早期種別"]||"").trim(); let etBadge=et;
+        if(et==="ブレイク") etBadge='<span class="badge b-green">● ブレイク</span>';
+        else if(et==="20MAリバ") etBadge='<span class="badge b-green">● 20MAリバ</span>';
+        else if(et==="ポケット") etBadge='<span class="badge b-orange">● ポケット</span>';
+        else if(et==="200MAリクレイム") etBadge='<span class="badge b-yellow">● 200MAリクレイム</span>';
+
+        html+=`<tr${hit?" class='hit'":""}>
+          <td>${r["コード"]??""}</td>
+          <td>${r["銘柄名"]??""}</td>
+          <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
+          <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
+          <td class="num">${r["現在値"]??""}</td>
+          <td class="num">${r["前日終値"]??""}</td>
+          <td class="num">${r["前日比（円）"]??""}</td>
+          <td class="num">${r["前日終値比率"]??""}</td>
+          <td class="num">${r["出来高"]??""}</td>
+          <td class="num">${r["売買代金(億)"]??""}</td>
+          <td>${r["初動フラグ"]||""}</td>
+          <td>${r["底打ちフラグ"]||""}</td>
+          <td>${r["右肩上がりフラグ"]||""}</td>
+          <td>${r["右肩早期フラグ"]||""}</td>
+          <td class="num">${r["右肩早期スコア"]??""}</td>
+          <td>${etBadge}${r["右肩早期種別_mini"]||""}</td>
+          <td>${r["判定"]||""}</td>
+          <td>${r["判定理由"]||""}</td>
+          <td>${r["推奨アクション"]||""}</td>
+          <td class="num">${r["推奨比率"]??""}</td>
+          <td>${r["シグナル更新日"]||""}</td>
+        </tr>`;
+      }
+      body.innerHTML=html;
+      $("#count").textContent=String(total);
+      $("#pageinfo").textContent=`${state.page} / ${Math.max(1,Math.ceil(total/per))}`;
+
+      $$("#tbl-candidate thead th.sortable").forEach(th=>{
+        th.querySelector(".arrow").textContent=(th.dataset.col===state.sortKey?(state.sortDir>0?"▲":"▼"):"");
+      });
+      $$("#tbl-candidate tbody tr").forEach(tr=>{
+        tr.addEventListener("click",(e)=>{ if(e.target.closest("a")) return; openRowModal(tr); });
+      });
+    }
+    function renderAll(){
+      const head=$("#all-head"), body=$("#all-body"); if(!head||!body) return;
+      head.innerHTML=body.innerHTML="";
+      const rows=DATA_ALL; if(!rows.length) return;
+      const cols=Object.keys(rows[0]);
+      head.innerHTML=cols.map(c=>{
+        const typ=(c.includes("フラグ")?"flag":(c.includes("日")||c.includes("更新")||c==="日時"?"date":(["現在値","出来高","売買代金(億)","時価総額億円","右肩早期スコア","推奨比率"].includes(c)?"num":"text")));
+        return `<th class="sortable ${typ==='num'?'num':''}" data-col="${c}" data-type="${typ}">${c}<span class="arrow"></span></th>`;
+      }).join("");
+      body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${cols.map(c=>`<td class="${['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率'].includes(c)?'num':''}">${r[c]??""}</td>`).join("")}</tr>`).join("");
+    }
+    function render(){ if(state.tab==="cand") renderCand(); else if(state.tab==="all") renderAll(); }
+    window.render=render;
+
+    // ===== モーダル =====
+    function ensureModal(){
+      let back=$("#__row_back__"); if(back) return back;
+      back=document.createElement("div"); back.id="__row_back__"; back.className="modal-back";
+      back.innerHTML=`<div class="modal"><span class="close">×</span><div id="__row_body__"></div></div>`;
+      document.body.appendChild(back);
+      back.addEventListener("click",(e)=>{ if(e.target===back||e.target.classList.contains("close")) back.style.display="none"; });
+      return back;
+    }
+    function openRowModal(tr){
+      const back=ensureModal(), body=$("#__row_body__");
+      const headers=Array.from($("#tbl-candidate thead").querySelectorAll("th"));
+      const tds=Array.from(tr.children);
+      let html='<div style="display:grid;grid-template-columns:160px 1fr;gap:8px 12px;">';
+      tds.forEach((td,i)=>{ const h=headers[i]?.dataset?.col||headers[i]?.innerText||""; html+=`<div style="color:#6b7280">${h}</div><div>${(td.innerHTML||"").trim()}</div>`; });
+      html+='</div>'; body.innerHTML=html; back.style.display="flex";
+    }
+
+    // ===== グラフ（素朴なcanvas） =====
+    function ensureChartModal(){
+      let back=$("#__chart_back__"); if(back) return back;
+      back=document.createElement("div"); back.id="__chart_back__"; back.className="modal-back";
+      back.innerHTML=`<div class="modal"><span class="close">×</span><div id="__chart_body__"></div></div>`;
+      document.body.appendChild(back);
+      back.addEventListener("click",(e)=>{ if(e.target===back||e.target.classList.contains("close")) back.style.display="none"; });
+      return back;
+    }
+    function drawAxes(ctx,W,H,pad){ ctx.strokeStyle="#ccc"; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(W-pad,H-pad); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(pad,pad); ctx.stroke(); }
+    function drawBar(canvas,labels,values,title){
+      const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
+      ctx.clearRect(0,0,W,H); ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24); drawAxes(ctx,W,H,pad);
+      if(!values.length) return; const max=Math.max(1,Math.max(...values)); const bw=(W-pad*2)/values.length*0.7;
+      labels.forEach((lb,i)=>{ const x=pad+(i+0.15)*(W-pad*2)/labels.length; const h=(H-pad*2)*(values[i]/max);
+        ctx.fillStyle="#4a90e2"; ctx.fillRect(x,H-pad-h,bw,h);
+        ctx.fillStyle="#333"; ctx.font="12px system-ui"; ctx.fillText(lb,x,H-pad+14); ctx.fillText(String(values[i]),x,H-pad-h-4); });
+    }
+    function drawLine(canvas,labels,values,title){
+      const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
+      ctx.clearRect(0,0,W,H); ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24); drawAxes(ctx,W,H,pad);
+      if(!values.length) return; const max=Math.max(1,Math.max(...values)), min=Math.min(0,Math.min(...values)); const step=(W-pad*2)/Math.max(1,values.length-1);
+      ctx.strokeStyle="#4a90e2"; ctx.lineWidth=2; ctx.beginPath();
+      values.forEach((v,i)=>{ const x=pad+i*step; const y=H-pad-(H-pad*2)*((v-min)/(max-min||1)); if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }); ctx.stroke();
+      ctx.fillStyle="#333"; ctx.font="12px system-ui"; labels.forEach((lb,i)=>{ const x=pad+i*step; ctx.fillText(lb,x-10,H-pad+14); });
+    }
+    function openStatsChart(){
+      const back=ensureChartModal(), body=$("#__chart_body__");
+      const rows=applyFilter(state.data);
+      const rvolBuckets=["<1","1-2","2-3","3-5","5+"], rvolCnt=[0,0,0,0,0];
+      const turnBuckets=["<5","5-10","10-50","50-100","100+"], turnCnt=[0,0,0,0,0];
+      rows.forEach(r=>{ const rvol=num(r["RVOL代金"]); if(!Number.isNaN(rvol)){ if(rvol<1)rvolCnt[0]++; else if(rvol<2)rvolCnt[1]++; else if(rvol<3)rvolCnt[2]++; else if(rvol<5)rvolCnt[3]++; else rvolCnt[4]++; }
+                        const turn=num(r["売買代金(億)"]); if(!Number.isNaN(turn)){ if(turn<5)turnCnt[0]++; else if(turn<10)turnCnt[1]++; else if(turn<50)turnCnt[2]++; else if(turn<100)turnCnt[3]++; else turnCnt[4]++; } });
+      body.innerHTML=`<h3>傾向グラフ（表示中データ）</h3><canvas id="cv1" class="chart" width="940" height="320"></canvas><canvas id="cv2" class="chart" width="940" height="320"></canvas>`;
+      drawBar($("#cv1"),rvolBuckets,rvolCnt,"RVOL代金の分布"); drawBar($("#cv2"),turnBuckets,turnCnt,"売買代金(億)の分布"); back.style.display="flex";
+    }
+    function openTrendChart(){
+      const back=ensureChartModal(), body=$("#__chart_body__");
+      const rows=applyFilter(state.data); const byDay=new Map();
+      rows.forEach(r=>{ const d=String(r["シグナル更新日"]||"").slice(0,10); if(!d) return; const hit=(String(r["判定"]||"")==="当たり！")?1:0; const o=byDay.get(d)||{tot:0,hit:0}; o.tot++; o.hit+=hit; byDay.set(d,o); });
+      const days=Array.from(byDay.keys()).sort(); const rate=days.map(d=>{ const o=byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
+      body.innerHTML=`<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" class="chart" width="940" height="320"></canvas>`;
+      drawLine($("#cv3"),days,rate,"当たり率（%）"); back.style.display="flex";
+    }
+
+    // ===== イベント =====
+    $$("#tbl-candidate thead th.sortable").forEach(th=>{
+      th.style.cursor="pointer";
+      th.addEventListener("click",()=>{ const key=th.dataset.col; if(state.sortKey===key) state.sortDir*=-1; else{ state.sortKey=key; state.sortDir=1; } state.page=1; render(); });
     });
-  }
+    $("#perpage")?.addEventListener("change",(e)=>{ const v=parseInt(e.target.value,10); state.per=Number.isFinite(v)?v:500; state.page=1; render(); });
+    $("#prev")?.addEventListener("click",()=>{ if(state.page>1){state.page--; render();} });
+    $("#next")?.addEventListener("click",()=>{ state.page++; render(); });
+    $("#q")?.addEventListener("input",(e)=>{ state.q=e.target.value||""; state.page=1; render(); });
+    ["th_rate","th_turn","th_rvol","f_shodou","f_tei","f_both","f_rightup","f_early","f_etype","f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit"]
+      .forEach(id=>{ $("#"+id)?.addEventListener("input", ()=>{ state.page=1; render(); });
+                     $("#"+id)?.addEventListener("change",()=>{ state.page=1; render(); }); });
+    $("#btn-stats")?.addEventListener("click",openStatsChart);
+    $("#btn-ts")?.addEventListener("click",openTrendChart);
+    $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
-  function wireToolbar(tableId){
-    // チェック
-    ['f_shodou','f_tei','f_both','f_rightup','f_early','f_earlytype','f_recstrong','f_smallpos','f_noshor','f_opratio','f_hit']
-    .forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('change', ()=>{ PAGE[ACTIVE_TABLE]=1; apply(tableId); }); });
-    // しきい値
-    ['th_rate','th_turn','th_rvol'].forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('input', ()=>{ PAGE[ACTIVE_TABLE]=1; apply(tableId); }); });
-    // 検索
-    const q=document.getElementById('q'); if(q) q.addEventListener('input', ()=>{ PAGE[ACTIVE_TABLE]=1; apply(tableId); });
-    // CSV
-    document.getElementById('csv')?.addEventListener('click', ()=> exportVisibleCSV(tableId));
-    // 件数/ページ
-    const sel=document.getElementById('perpage'); if(sel) sel.addEventListener('change', ()=>{ const per=parseInt(sel.value,10)||500; PER_PAGE['tbl-candidate']=per; PER_PAGE['tbl-allcols']=per; PAGE[ACTIVE_TABLE]=1; apply(ACTIVE_TABLE); });
-    document.getElementById('prev')?.addEventListener('click', ()=>{ if(ACTIVE_TABLE==='tbl-log') return; PAGE[ACTIVE_TABLE]=Math.max(1,(PAGE[ACTIVE_TABLE]||1)-1); apply(ACTIVE_TABLE); });
-    document.getElementById('next')?.addEventListener('click', ()=>{ if(ACTIVE_TABLE==='tbl-log') return; PAGE[ACTIVE_TABLE]=(PAGE[ACTIVE_TABLE]||1)+1; apply(ACTIVE_TABLE); });
+    // ===== タブ =====
+    function switchTab(to){
+      state.tab=to; $$(".tab").forEach(x=>x.classList.add("hidden"));
+      if(to==="cand"){ $("#tab-candidate").classList.remove("hidden"); state.data=DATA_CAND.slice(); }
+      if(to==="all"){  $("#tab-all").classList.remove("hidden"); }
+      if(to==="log"){  $("#tab-log").classList.remove("hidden"); if(!$("#log-body").dataset.inited){ $("#log-body").innerHTML=DATA_LOG.map(r=>`<tr><td>${r["日時"]||""}</td><td>${r["コード"]||""}</td><td>${r["種別"]||""}</td><td>${r["詳細"]||""}</td></tr>`).join(""); $("#log-body").dataset.inited="1"; } }
+      state.page=1; render();
+      $$("#lnk-cand,#lnk-all,#lnk-log").forEach(a=>a?.classList.remove("active"));
+      if(to==="cand") $("#lnk-cand")?.classList.add("active");
+      if(to==="all")  $("#lnk-all") ?.classList.add("active");
+      if(to==="log")  $("#lnk-log") ?.classList.add("active");
+    }
+    $("#lnk-cand")?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("cand"); });
+    $("#lnk-all") ?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("all");  });
+    $("#lnk-log") ?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("log");  });
 
-    // モーダル：指標
-    const openMetrics=()=>{ document.getElementById('modal-metrics').style.display='flex'; };
-    ['help-turn','help-rvol','help-mcap','help-comp','help-atr'].forEach(id=> document.getElementById(id)?.addEventListener('click', e=>{e.stopPropagation(); openMetrics();}));
-    document.getElementById('modal-metrics-close')?.addEventListener('click', ()=>{ document.getElementById('modal-metrics').style.display='none'; });
-    document.getElementById('modal-metrics')?.addEventListener('click', (e)=>{ if(e.target.id==='modal-metrics') e.currentTarget.style.display='none'; });
-
-    // モーダル：しきい値
-    function open(id){ document.getElementById(id).style.display='flex'; }
-    document.getElementById('help-th-rate')?.addEventListener('click', ()=>open('modal-th-rate'));
-    document.getElementById('help-th-turn')?.addEventListener('click', ()=>open('modal-th-turn'));
-    document.getElementById('help-th-rvol')?.addEventListener('click', ()=>open('modal-th-rvol'));
-    document.querySelectorAll('.modal .close[data-close]').forEach(x=> x.addEventListener('click', e=>{ document.getElementById(e.currentTarget.dataset.close).style.display='none'; }));
-    ['modal-th-rate','modal-th-turn','modal-th-rvol'].forEach(id=> document.getElementById(id)?.addEventListener('click', (e)=>{ if(e.target.id===id) e.currentTarget.style.display='none'; }));
-
-    // 傾向/推移
-    document.getElementById('btn-stats')?.addEventListener('click', openStatsModal);
-    document.getElementById('modal-stats-close')?.addEventListener('click', ()=>{ document.getElementById('modal-stats').style.display='none'; });
-    document.getElementById('modal-stats')?.addEventListener('click', (e)=>{ if(e.target.id==='modal-stats') e.currentTarget.style.display='none'; });
-
-    document.getElementById('btn-ts')?.addEventListener('click', openTsModal);
-    document.getElementById('modal-ts-close')?.addEventListener('click', ()=>{ document.getElementById('modal-ts').style.display='none'; });
-    document.getElementById('modal-ts')?.addEventListener('click', (e)=>{ if(e.target.id==='modal-ts') e.currentTarget.style.display='none'; });
-  }
-
-  function exportVisibleCSV(tableId){
-    const tbl=document.getElementById(tableId); if(!tbl) return;
-    let csv=''; const headers=Array.from(tbl.querySelectorAll('thead th')).map(th=>th.textContent.replace(/▲|▼/g,'').trim()); csv+=headers.join(',')+'\n';
-    tbl.querySelectorAll('tbody tr').forEach(tr=>{
-      if(tr.style.display==='none') return;
-      const row=Array.from(tr.children).map(td=>{ let t=td.textContent.replaceAll('\n',' ').trim(); if(t.includes(',')||t.includes('"')) t='"'+t.replaceAll('"','""')+'"'; return t; });
-      csv += row.join(',')+'\n';
-    });
-    const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}); const url=URL.createObjectURL(blob);
-    const a=document.createElement('a'); a.href=url; a.download=tableId+'.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-  }
-
-  function switchTab(tab){
-    document.querySelectorAll('.tab').forEach(el=>el.classList.add('hidden'));
-    document.getElementById(tab).classList.remove('hidden');
-    ACTIVE_TABLE = (tab==='tab-candidate') ? 'tbl-candidate' : (tab==='tab-all' ? 'tbl-allcols' : 'tbl-log');
-    const hasPager=(tab==='tab-candidate'||tab==='tab-all'); document.querySelector('.pager')?.classList.toggle('hidden', !hasPager);
-    apply(ACTIVE_TABLE);
-    if (ACTIVE_TABLE==='tbl-candidate') paintRecommendations();
-  }
-
-  // 傾向（簡易）
-  let statsCharts=[];
-  function openStatsModal(){
-    const tbl=document.getElementById('tbl-candidate'); const ths=Array.from(tbl.querySelectorAll('thead th'));
-    const idxTurn=ths.findIndex(th=> th.dataset.col==='売買代金(億)'); const idxR=ths.findIndex(th=> th.dataset.col==='RVOL代金');
-    const take=(idx)=>Array.from(tbl.querySelectorAll('tbody tr')).filter(tr=> tr.style.display!=='none').map(tr=> parseNumber(tr.children[idx]?.textContent||'')).filter(v=>!isNaN(v));
-    const d1=take(idxTurn), d2=take(idxR); const labels=d1.map((_,i)=>i+1);
-    const cfg=(ctx,label,data)=> new Chart(ctx,{type:'bar',data:{labels,datasets:[{label,data}]},options:{plugins:{legend:{display:false}}}});
-    statsCharts.forEach(c=>c.destroy()); statsCharts=[];
-    statsCharts.push(cfg(document.getElementById('stats1'),'売買代金(億)',d1));
-    statsCharts.push(cfg(document.getElementById('stats2'),'RVOL代金',d2));
-    document.getElementById('modal-stats').style.display='flex';
-  }
-
-  // 推移（ダミー：空データで表示だけ用意）
-  let tsCharts={};
-  function openTsModal(){
-    if(tsCharts['r']) tsCharts['r'].destroy();
-    if(tsCharts['c']) tsCharts['c'].destroy();
-    const labels=[], rate=[], count=[];
-    tsCharts['r']=new Chart(document.getElementById('ts-rate'),{type:'line',data:{labels,datasets:[{label:'当たり率(%)',data:rate,tension:0.2}]},options:{plugins:{legend:{display:false}},scales:{y:{suggestedMin:0,suggestedMax:100}}}});
-    tsCharts['c']=new Chart(document.getElementById('ts-count'),{type:'line',data:{labels,datasets:[{label:'件数',data:count,tension:0.2}]},options:{plugins:{legend:{display:false}},scales:{y:{suggestedMin:0}}}});
-    document.getElementById('modal-ts').style.display='flex';
-  }
-
-  document.addEventListener('DOMContentLoaded', ()=>{
-    SORT['tbl-candidate'] = {col:'合成スコア', asc:false};
-    wireToolbar(ACTIVE_TABLE);
-    enableSorting('tbl-candidate'); enableSorting('tbl-allcols'); if(document.getElementById('tbl-log')) enableSorting('tbl-log');
-    apply('tbl-candidate'); paintRecommendations();
-    document.getElementById('lnk-cand').addEventListener('click', (e)=>{ e.preventDefault(); switchTab('tab-candidate'); });
-    document.getElementById('lnk-all').addEventListener('click',  (e)=>{ e.preventDefault(); switchTab('tab-all'); });
-    const llog=document.getElementById('lnk-log'); if(llog) llog.addEventListener('click', (e)=>{ e.preventDefault(); switchTab('tab-log'); });
-  });
+    // ===== 初期化（空欄強制 → cand表示） =====
+    switchTab("cand");
+    forceClearThresholds();                // 初回は必ず空欄
+    setTimeout(forceClearThresholds,150);  // BFCache/オートフィル対策で二度打ち
+    window.addEventListener("pageshow",(ev)=>{ if(ev.persisted) forceClearThresholds(); });
+  })();
   </script>
 </body>
-</html>
-"""
+</html>"""
 
+
+
+
+# =================== HTMLテンプレートの保存 ===================
 def _ensure_template_file(template_dir: str, overwrite=True):
+    import os
     os.makedirs(template_dir, exist_ok=True)
     path = os.path.join(template_dir, "dashboard.html")
     if overwrite or not os.path.exists(path):
@@ -2501,17 +2476,19 @@ def _ensure_template_file(template_dir: str, overwrite=True):
             f.write(DASH_TEMPLATE_STR)
     return path
 
+
+# =================== ダッシュボード書き出し（完全版） ===================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
                                         include_log: bool=False, log_limit: int=2000):
-    """ダッシュボード（候補/全カラム/任意でsignals_log）を書き出す：完全置換版
-    - 候補一覧: 列は増やさず、「初動/底打ち/右肩/早期/早期種別」のセル内に開始日や前回種別を
-               <span style="font-size:10px;color:gray">…</span> で小さく追加表示
-    - 全カラム : 6つの開始日/前回種別カラムを“そのまま列として”表示
     """
-    # =========================
-    # 1) データ取得
-    # =========================
-    # 候補一覧（セル内に開始日等を埋め込むため、開始日系もSELECT）
+    ・候補/全カラム/（任意）signals_log を 1ファイルHTMLで出力
+    ・表描画はフロント側JS。ここでは “JSONを __DATA__ に直埋め” する
+    ・DBに存在しない列（推奨アクション等）は参照しないので、DB差異でも落ちない
+    """
+    import os, json, pandas as pd
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    # ---------- 1) DBから候補用の必要最小列だけ取得（存在しない列は触らない） ----------
     df_cand = pd.read_sql_query("""
       SELECT
         コード, 銘柄名,
@@ -2525,26 +2502,30 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
           CASE WHEN 現在値 IS NOT NULL AND 出来高 IS NOT NULL
                THEN (現在値 * 出来高) / 100000000.0 END
         ) AS "売買代金(億)",
-        売買代金20日平均億, RVOL代金, 合成スコア,
+        売買代金20日平均億,
+        RVOL代金,
+        合成スコア,
         ATR14_PCT AS "ATR14%",
         初動フラグ, 初動開始日,
         底打ちフラグ, 底打ち開始日,
         右肩上がりフラグ, 右肩開始日,
         右肩早期フラグ, 右肩早期開始日,
         右肩早期種別, 右肩早期種別開始日, 右肩早期前回種別,
-        空売り機関, シグナル更新日,
+        右肩早期スコア,
+        空売り機関,
+        シグナル更新日,
         営業利益
       FROM screener
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
 
-    # 全カラム（ありのまま）
+    # 全カラムタブは素直に全件（DB差異を吸収したいので * でOK）
     df_all = pd.read_sql_query("""
       SELECT * FROM screener
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
 
-    # signals_log（必要なときだけ）
+    # ログ（任意）
     if include_log:
         try:
             df_log = pd.read_sql_query(
@@ -2556,96 +2537,82 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     else:
         df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
 
-    # =========================
-    # 2) 候補一覧：セル内に小文字グレーの補足を埋め込む（列は増やさない）
-    # =========================
+    # ---------- 2) 候補一覧のセル内補足（“列を増やさず” フラグに日付など小さく追記） ----------
     def _mini(text):
         if not text:
             return ""
         return f"<br><span style='font-size:10px;color:gray'>{text}</span>"
 
     def _flag_with_since(flag, since):
-        """flagが'候補'かつ開始日がある場合だけ「〜」を添えて小さく追記"""
-        flag = flag or ""
+        flag = (flag or "").strip()
         if flag == "候補" and since:
             return f"{flag}{_mini(f'{since}〜')}"
         return flag
 
-    def _early_kind_with_since(kind, since_kind, prev_kind):
-        """右肩早期種別セル：開始日と前回種別を小さく追記"""
-        base = kind or ""
+    def _early_kind_mini(since_kind, prev_kind):
         extras = []
         if since_kind:
             extras.append(f"{since_kind}〜")
         if prev_kind:
             extras.append(f"prev: {prev_kind}")
-        if extras:
-            base += _mini(" / ".join(extras))
-        return base
+        return _mini(" / ".join(extras)) if extras else ""
 
-    # 既存の候補一覧列名は維持しつつ、セルの中身を書き換える
-    # ※ 列追加はしない（横長にしない）
     if not df_cand.empty:
         df_cand["初動フラグ"]       = df_cand.apply(lambda r: _flag_with_since(r.get("初動フラグ"), r.get("初動開始日")), axis=1)
         df_cand["底打ちフラグ"]     = df_cand.apply(lambda r: _flag_with_since(r.get("底打ちフラグ"), r.get("底打ち開始日")), axis=1)
         df_cand["右肩上がりフラグ"] = df_cand.apply(lambda r: _flag_with_since(r.get("右肩上がりフラグ"), r.get("右肩開始日")), axis=1)
         df_cand["右肩早期フラグ"]   = df_cand.apply(lambda r: _flag_with_since(r.get("右肩早期フラグ"), r.get("右肩早期開始日")), axis=1)
-        df_cand["右肩早期種別"]     = df_cand.apply(
-            lambda r: _early_kind_with_since(r.get("右肩早期種別"), r.get("右肩早期種別開始日"), r.get("右肩早期前回種別")),
+        # 早期種別セルの下段補足（本体の種別文字列はそのまま）
+        df_cand["右肩早期種別_mini"] = df_cand.apply(
+            lambda r: _early_kind_mini(r.get("右肩早期種別開始日"), r.get("右肩早期前回種別"))
+                      if (r.get("右肩早期種別") or "").strip() else "",
             axis=1
         )
-        # 候補一覧に“列として”開始日を出さないため、補助列はここで落とす
-        drop_cols = ["初動開始日","底打ち開始日","右肩開始日","右肩早期開始日","右肩早期種別開始日","右肩早期前回種別"]
-        for c in drop_cols:
+        # 補助列は候補テーブルには出さない
+        for c in ["初動開始日","底打ち開始日","右肩開始日","右肩早期開始日","右肩早期種別開始日","右肩早期前回種別"]:
             if c in df_cand.columns:
                 df_cand.drop(columns=[c], inplace=True)
 
-    # =========================
-    # 3) _prepare_rows に渡す
-    # =========================
-    cand_rows = _prepare_rows(df_cand)
-    all_rows  = _prepare_rows(df_all)
+    # ---------- 3) Python辞書化（NaN/np型/日付などは _safe_jsonable で丸める） ----------
+    def _records_safe(df: pd.DataFrame):
+        out = []
+        for rec in df.to_dict("records"):
+            out.append({k: _safe_jsonable(v) for k, v in rec.items()})
+        return out
+
+    # URL列などの補完は _prepare_rows に任せる（判定・理由・Yahoo/X等の生成も含む）
+    cand_rows = _prepare_rows(df_cand) if not df_cand.empty else []
+    n_strong = sum(1 for r in cand_rows if r.get("推奨アクション") == "エントリー有力")
+    n_small  = sum(1 for r in cand_rows if r.get("推奨アクション") == "小口提案")
+    print(f"[recommend] 有力:{n_strong} / 小口:{n_small}")
+
+    all_rows  = _prepare_rows(df_all)  if not df_all.empty  else []
     log_rows  = df_log.to_dict("records") if include_log else []
 
-    # =========================
-    # 4) 全カラムのヘッダに Yahoo / X を「銘柄名」の直後に挿入（既存仕様維持）
-    # =========================
-    allcols = df_all.columns.tolist()
-    if "銘柄名" in allcols:
-        idx = allcols.index("銘柄名")
-        allcols = allcols[:idx+1] + ["Yahoo", "X"] + allcols[idx+1:]
-    else:
-        allcols = ["Yahoo", "X"] + allcols
+    # そのままだと numpy スカラーが混じるので再度 safe 化
+    cand_rows = _records_safe(pd.DataFrame(cand_rows)) if cand_rows else []
+    all_rows  = _records_safe(pd.DataFrame(all_rows))  if all_rows  else []
+    log_rows  = _records_safe(pd.DataFrame(log_rows))  if log_rows  else []
 
-    # 数値列（右寄せヒント）
-    numcols = {c for c, dt in df_all.dtypes.items() if pd.api.types.is_numeric_dtype(dt)}
+    # ---------- 4) JSON を __DATA__ に直埋め ----------
+    data_obj = {"cand": cand_rows, "all": all_rows, "logs": log_rows}
+    data_json = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"))
 
-    # =========================
-    # 5) テンプレート描画
-    # =========================
+    # ---------- 5) テンプレート描画 ----------
     _ensure_template_file(template_dir, overwrite=True)
     env = Environment(loader=FileSystemLoader(template_dir, encoding="utf-8"),
                       autoescape=select_autoescape(["html"]))
-    env.filters["fmt_cell"] = _fmt_cell  # 既存の表示フィルタ（HTML小文字グレーもここでsafe扱い想定）
+    # Jinjaのフィルタは今回は未使用だが、他テンプレ互換のため残す
+    env.filters["fmt_cell"] = _fmt_cell
 
     tpl = env.get_template("dashboard.html")
     html = tpl.render(
-        cand=cand_rows,          # 候補一覧（セル内で開始日等を小さく表示）
-        allrows=all_rows,        # 全カラム（6カラムはそのまま列として含む）
-        allcols=allcols,
-        numcols=numcols,
-        logs=log_rows,
         include_log=include_log,
-        generated_at=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-        HH_N=HH_N, PIVOT_EPS=PIVOT_EPS, VOL_BOOST=VOL_BOOST,
-        EXT_20_MAX=EXT_20_MAX, EXT_50_MAX=EXT_50_MAX,
-        POCKET_WIN=POCKET_WIN, REB_WIN=REB_WIN, RECLAIM_WIN=RECLAIM_WIN,
-        SCORE_TH=SCORE_TH
+        data_json=data_json,                         # ← ここが重要：JSが読むJSON
+        generated_at=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     )
 
-    # =========================
-    # 6) 書き出し
-    # =========================
+    # ---------- 6) 書き出し ----------
     os.makedirs(os.path.dirname(html_path), exist_ok=True)
     with open(html_path, "w", encoding="utf-8", newline="") as f:
         f.write(html)
