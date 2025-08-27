@@ -2113,6 +2113,23 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .modal .close{float:right;cursor:pointer;font-size:18px;padding:2px 8px;border-radius:6px}
   .modal .close:hover{background:#f2f2f2}
   .chart{width:940px;height:320px;margin:14px 0;border:1px solid #eee}
+  .qhelp{display:inline-flex;align-items:center;justify-content:center;
+         width:18px;height:18px;border-radius:50%;border:1px solid #cbd5e1;
+         font-size:12px;margin-left:6px;cursor:pointer;background:#fff;color:#475569}
+  .qhelp:hover{background:#f1f5f9}
+  .help-grid{display:grid;grid-template-columns:160px 1fr;gap:8px 12px}
+  .help-title{font-weight:700;margin-bottom:8px}
+  /* 推奨バッジ */
+  .rec-badge{
+    display:inline-flex; align-items:center; gap:6px;
+    padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700;
+    line-height:1; white-space:nowrap;
+  }
+  .rec-strong{ background:#e7f6ed; color:#166534; border:1px solid #cceedd; }  /* エントリー有力 */
+  .rec-small { background:#fff4e6; color:#9a3412; border:1px solid #ffe2c2; }  /* 小口提案     */
+  .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }  /* その他/保留   */
+  .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor;}
+
 </style>
 </head>
 <body>
@@ -2292,56 +2309,78 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
     // ===== 描画 =====
     function renderCand(){
-      const body=$("#tbl-candidate tbody"); if(!body) return;
-      const rows=sortRows(applyFilter(state.data));
-      const total=rows.length, per=state.per, maxPage=Math.max(1,Math.ceil(total/per));
-      state.page=Math.min(state.page,maxPage);
-      const s=(state.page-1)*per, e=Math.min(s+per,total);
+      const body = $("#tbl-candidate tbody"); if(!body) return;
+      const rows = sortRows(applyFilter(state.data));
+      const total = rows.length, per = state.per, maxPage = Math.max(1, Math.ceil(total/per));
+      state.page = Math.min(state.page, maxPage);
+      const s = (state.page-1)*per, e = Math.min(s+per, total);
 
-      let html="";
-      for(let i=s;i<e;i++){
-        const r=rows[i]||{}; const hit=String(r["判定"]||"")==="当たり！";
-        const et=(r["右肩早期種別"]||"").trim(); let etBadge=et;
-        if(et==="ブレイク") etBadge='<span class="badge b-green">● ブレイク</span>';
-        else if(et==="20MAリバ") etBadge='<span class="badge b-green">● 20MAリバ</span>';
-        else if(et==="ポケット") etBadge='<span class="badge b-orange">● ポケット</span>';
-        else if(et==="200MAリクレイム") etBadge='<span class="badge b-yellow">● 200MAリクレイム</span>';
+      let html = "";
+      for (let i = s; i < e; i++) {
+        const r = rows[i] || {};
+        const hit = String(r["判定"] || "") === "当たり！";
 
-        html+=`<tr${hit?" class='hit'":""}>
-          <td>${r["コード"]??""}</td>
-          <td>${r["銘柄名"]??""}</td>
-          <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
-          <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
-          <td class="num">${r["現在値"]??""}</td>
-          <td class="num">${r["前日終値"]??""}</td>
-          <td class="num">${r["前日比（円）"]??""}</td>
-          <td class="num">${r["前日終値比率"]??""}</td>
-          <td class="num">${r["出来高"]??""}</td>
-          <td class="num">${r["売買代金(億)"]??""}</td>
-          <td>${r["初動フラグ"]||""}</td>
-          <td>${r["底打ちフラグ"]||""}</td>
-          <td>${r["右肩上がりフラグ"]||""}</td>
-          <td>${r["右肩早期フラグ"]||""}</td>
-          <td class="num">${r["右肩早期スコア"]??""}</td>
-          <td>${etBadge}${r["右肩早期種別_mini"]||""}</td>
-          <td>${r["判定"]||""}</td>
-          <td>${r["判定理由"]||""}</td>
-          <td>${r["推奨アクション"]||""}</td>
-          <td class="num">${r["推奨比率"]??""}</td>
-          <td>${r["シグナル更新日"]||""}</td>
+        // 早期種別バッジ
+        const et = (r["右肩早期種別"] || "").trim();
+        let etBadge = et;
+        if (et === "ブレイク") etBadge = '<span class="badge b-green">● ブレイク</span>';
+        else if (et === "20MAリバ") etBadge = '<span class="badge b-green">● 20MAリバ</span>';
+        else if (et === "ポケット") etBadge = '<span class="badge b-orange">● ポケット</span>';
+        else if (et === "200MAリクレイム") etBadge = '<span class="badge b-yellow">● 200MAリクレイム</span>';
+
+        // 推奨バッジ（★追加）
+        const rec = (r["推奨アクション"] || "").trim();
+        let recBadge = "";
+        if (rec === "エントリー有力") {
+          recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+        } else if (rec === "小口提案") {
+          recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+        } else if (rec) {
+          recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+        }
+
+        html += `<tr${hit ? " class='hit'" : ""}>
+          <td>${r["コード"] ?? ""}</td>
+          <td>${r["銘柄名"] ?? ""}</td>
+          <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
+          <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
+          <td class="num">${r["現在値"] ?? ""}</td>
+          <td class="num">${r["前日終値"] ?? ""}</td>
+          <td class="num">${r["前日比（円）"] ?? ""}</td>
+          <td class="num">${r["前日終値比率"] ?? ""}</td>
+          <td class="num">${r["出来高"] ?? ""}</td>
+          <td class="num">${r["売買代金(億)"] ?? ""}</td>
+          <td>${r["初動フラグ"] || ""}</td>
+          <td>${r["底打ちフラグ"] || ""}</td>
+          <td>${r["右肩上がりフラグ"] || ""}</td>
+          <td>${r["右肩早期フラグ"] || ""}</td>
+          <td class="num">${r["右肩早期スコア"] ?? ""}</td>
+          <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
+          <td>${r["判定"] || ""}</td>
+          <td>${r["判定理由"] || ""}</td>
+          <td>${recBadge}</td>            <!-- ★ここをバッジに変更 -->
+          <td class="num">${r["推奨比率"] ?? ""}</td>
+          <td>${r["シグナル更新日"] || ""}</td>
         </tr>`;
       }
-      body.innerHTML=html;
-      $("#count").textContent=String(total);
-      $("#pageinfo").textContent=`${state.page} / ${Math.max(1,Math.ceil(total/per))}`;
+
+      body.innerHTML = html;
+      $("#count").textContent = String(total);
+      $("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/per))}`;
 
       $$("#tbl-candidate thead th.sortable").forEach(th=>{
-        th.querySelector(".arrow").textContent=(th.dataset.col===state.sortKey?(state.sortDir>0?"▲":"▼"):"");
+        th.querySelector(".arrow").textContent =
+          (th.dataset.col === state.sortKey ? (state.sortDir > 0 ? "▲" : "▼") : "");
       });
       $$("#tbl-candidate tbody tr").forEach(tr=>{
-        tr.addEventListener("click",(e)=>{ if(e.target.closest("a")) return; openRowModal(tr); });
+        tr.addEventListener("click",(e)=>{ if (e.target.closest("a")) return; openRowModal(tr); });
       });
+      // ヘルプボタンを候補一覧に差し込み
+      attachHeaderHelps("#tbl-candidate");
+      attachToolbarHelps();
+
     }
+
     function renderAll(){
       const head=$("#all-head"), body=$("#all-body"); if(!head||!body) return;
       head.innerHTML=body.innerHTML="";
@@ -2352,9 +2391,80 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         return `<th class="sortable ${typ==='num'?'num':''}" data-col="${c}" data-type="${typ}">${c}<span class="arrow"></span></th>`;
       }).join("");
       body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${cols.map(c=>`<td class="${['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率'].includes(c)?'num':''}">${r[c]??""}</td>`).join("")}</tr>`).join("");
+      // 全カラムテーブルに?を付与
+      attachHeaderHelps("#tbl-all");
     }
     function render(){ if(state.tab==="cand") renderCand(); else if(state.tab==="all") renderAll(); }
     window.render=render;
+    // ===== ヘルプ（?モーダル） =====
+    const HELP_TEXT = {
+      "上昇率≥": "候補一覧の当日騰落率フィルタです。例: 3 = +3%以上のみ表示。",
+      "売買代金≥": "現在値×出来高を億円換算した概算。流動性確保のための下限を指定。",
+      "RVOL代金≥": "売買代金の相対出来高（当日/20日平均）。2以上で出来高増を重視。",
+      "規定": "既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
+      "右肩早期種別": "右肩早期の判定タイプ。直近の『右肩早期種別あり』にチェックで絞り込み可。",
+      "前日終値": "DBの前日終値を表示（欠損時のみ代替）。※内部クエリでAS指定済み。",
+      "前日比（円）": "前日終値との差額（円）。",
+      "右肩早期スコア": "あなたの即席ルールに基づく早期仕掛けスコア（高いほど買い優先の目安）。",
+      "売買代金(億)": "現在値×出来高を1e8で割った概算。DBに列が無い場合は前述式で補完。"
+    };
+
+    function ensureHelpModal(){
+      let back = document.getElementById("__help_back__");
+      if(back) return back;
+      back = document.createElement("div");
+      back.id="__help_back__"; back.className="modal-back";
+      back.innerHTML = `<div class="modal"><span class="close">×</span>
+        <div id="__help_body__"></div></div>`;
+      document.body.appendChild(back);
+      back.addEventListener("click",(e)=>{
+        if(e.target===back || e.target.classList.contains("close")) back.style.display="none";
+      });
+      return back;
+    }
+    function openHelpModal(title, html){
+      const back=ensureHelpModal(), body=document.getElementById("__help_body__");
+      body.innerHTML = `<div class="help-title">${title}</div>${html}`;
+      back.style.display="flex";
+    }
+
+    // ツールバーの?ボタンを動的に付与
+    function attachToolbarHelps(){
+      const m = [
+        ["上昇率≥",  document.getElementById("th_rate")],
+        ["売買代金≥", document.getElementById("th_turn")],
+        ["RVOL代金≥", document.getElementById("th_rvol")],
+        ["規定",      document.getElementById("f_defaultset")]
+      ];
+      m.forEach(([key, el])=>{
+        if(!el) return;
+        const exist = el.parentElement.querySelector(".qhelp");
+        if(exist) return;
+        const b=document.createElement("span"); b.className="qhelp"; b.textContent="?";
+        b.title="ヘルプ";
+        b.addEventListener("click", ()=> openHelpModal(key, `<div>${HELP_TEXT[key]||"説明準備中"}</div>`));
+        el.parentElement.appendChild(b);
+      });
+    }
+
+    // テーブルヘッダに?ボタン付与（候補一覧/全カラム）
+    function attachHeaderHelps(tableSelector){
+      const ths = document.querySelectorAll(`${tableSelector} thead th`);
+      ths.forEach(th=>{
+        const col = th.dataset.col || th.textContent.trim();
+        const key = col; // 同名キーで引く
+        if(!HELP_TEXT[key]) return;
+        if(th.querySelector(".qhelp")) return;
+        const s=document.createElement("span"); s.className="qhelp"; s.textContent="?";
+        s.title="ヘルプ";
+        s.addEventListener("click",(e)=>{
+          e.stopPropagation();
+          openHelpModal(col, `<div>${HELP_TEXT[key]}</div>`);
+        });
+        th.appendChild(s);
+      });
+    }
+
 
     // ===== モーダル =====
     function ensureModal(){
