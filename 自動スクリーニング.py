@@ -2073,6 +2073,8 @@ def _prepare_rows(df: pd.DataFrame):
 
 
 # =================== HTMLテンプレ ===================
+
+
 DASH_TEMPLATE_STR = r"""<!doctype html>
 <html lang="ja">
 <head>
@@ -2096,17 +2098,12 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   /* ▼ テーブルまわり（角丸クリップはラッパで管理） */
   .tbl-wrap{
     border-radius:10px;
-    overflow:visible;                 /* ← stickyを殺さないためテーブル本体ではなくラッパでclip */
+    overflow:visible;
     background:#fff;
     box-shadow:0 0 0 1px var(--line) inset;
   }
-  .tbl{
-    border-collapse:collapse;
-    width:100%;
-    background:#fff;
-  }
+  .tbl{ border-collapse:collapse; width:100%; background:#fff; }
   .tbl th,.tbl td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
-  /* .tbl thead th{position:sticky;top:0;background:#f3f6fb;z-index:1} ← 全体固定はやめる */
   .tbl tbody tr:nth-child(even){background:#fcfdff}
   .tbl tbody tr:hover{background:var(--rowhover)}
   .tbl th.sortable{cursor:pointer;user-select:none}
@@ -2120,43 +2117,78 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .b-orange{background:#fff4e6;color:#b45309;border:1px solid #ffe2c2}
   .b-yellow{background:#fff9db;color:#a16207;border:1px solid #ffe9a8}
 
-  /* modal */
-  .modal-back{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:none;align-items:center;justify-content:center;z-index:9999}
-  .modal{max-width:980px;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 30px rgba(0,0,0,.25);max-height:90vh;overflow:auto}
-  .modal .close{float:right;cursor:pointer;font-size:18px;padding:2px 8px;border-radius:6px}
-  .modal .close:hover{background:#f2f2f2}
-  .chart{width:940px;height:320px;margin:14px 0;border:1px solid #eee}
-  .qhelp{display:inline-flex;align-items:center;justify-content:center;
-         width:18px;height:18px;border-radius:50%;border:1px solid #cbd5e1;
-         font-size:12px;margin-left:6px;cursor:pointer;background:#fff;color:#475569}
-  .qhelp:hover{background:#f1f5f9}
-  .help-grid{display:grid;grid-template-columns:160px 1fr;gap:8px 12px}
-  .help-title{font-weight:700;margin-bottom:8px}
-
   /* 推奨バッジ */
   .rec-badge{
     display:inline-flex; align-items:center; gap:6px;
     padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700;
     line-height:1; white-space:nowrap;
   }
-  .rec-strong{ background:#e7f6ed; color:#166534; border:1px solid #cceedd; }  /* エントリー有力 */
-  .rec-small { background:#fff4e6; color:#9a3412; border:1px solid #ffe2c2; }  /* 小口提案     */
-  .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }  /* その他/保留   */
+  .rec-strong{ background:#e7f6ed; color:#166534; border:1px solid #cceedd; }
+  .rec-small { background:#fff4e6; color:#9a3412; border:1px solid #ffe2c2; }
+  .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
   .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor;}
 
   /* ▼ 候補一覧テーブルだけヘッダー固定（Safari対応） */
   #tbl-candidate thead th{
     position: sticky;
-    position: -webkit-sticky; /* Safari */
+    position: -webkit-sticky;
     top: 0;
-    background:#f3f6fb;       /* 透け防止 */
-    z-index: 5;               /* 行より前面に */
+    background:#f3f6fb;
+    z-index: 5;
     border-bottom:2px solid #ccc;
   }
+  /* ▼ 全カラムテーブルも候補一覧と同じヘッダー固定 */
+  #tbl-allcols thead th{
+    position: sticky;
+    position: -webkit-sticky; /* Safari */
+    top: 0;
+    background:#f3f6fb;
+    z-index: 5;
+    border-bottom:2px solid #ccc;
+  }
+
+  /* ===== ヘルプ（小窓＋暗幕） ===== */
+  .help-backdrop{
+    position: fixed; inset: 0;
+    background: rgba(17,24,39,.45);
+    z-index: 9998;
+    display: none;               /* ← 初期は非表示 */
+  }
+  .help-pop{
+    position: absolute;
+    z-index: 9999;
+    max-width: 360px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.18);
+    padding: 12px 14px 14px;
+    font-size: 13px;
+    line-height: 1.55;
+    display: none;               /* ← 初期は非表示 */
+  }
+  .help-pop .help-head{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; margin-bottom:6px; font-weight:700;
+  }
+  .help-pop .help-close{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:22px; height:22px; border-radius:6px; cursor:pointer;
+    user-select:none; font-weight:700;
+  }
+  .help-pop .help-close:hover{ background:#f3f4f6; }
+
+  /* ？アイコン（テーブル/ツールバー共通） */
+  .qhelp{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:18px; height:18px; margin-left:6px;
+    border-radius:50%; border:1px solid #cbd5e1;
+    font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;
+  }
+  .qhelp:hover{ background:#e0e7ff; }
 </style>
-
-
 </head>
+
 <body>
   <nav>
     <a href="#" id="lnk-cand" class="active">候補一覧</a>
@@ -2177,7 +2209,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     <label><input type="checkbox" id="f_opratio"> 割安（営利対時価10%以上）のみ</label>
     <label><input type="checkbox" id="f_hit"> 当たりのみ</label>
 
-    <!-- しきい値：初期は必ず空欄（placeholderのみ） -->
     <label>上昇率≥ <input type="number" id="th_rate" placeholder="3" step="0.1" inputmode="decimal" autocomplete="off"></label>
     <label>売買代金≥ <input type="number" id="th_turn" placeholder="5" step="0.1" inputmode="decimal" autocomplete="off"></label>
     <label>RVOL代金≥ <input type="number" id="th_rvol" placeholder="2" step="0.1" inputmode="decimal" autocomplete="off"></label>
@@ -2200,198 +2231,95 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     </span>
     <span class="count">件数: <b id="count">-</b></span>
   </div>
-<script>
 
-/* ======= openHelpModal のグローバル定義（無ければ作る／あっても上書き可） ======= */
-(function(){
-  // 既にグローバルにあれば何もしない
-  if (typeof window.openHelpModal === "function") return;
+  <!-- ヘルプ文言（キーはヘッダーと完全一致） -->
+  <script>
+    window.HELP_TEXT = {
+      "規定": "既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
+      "コード": "東証の銘柄コード（4桁、ETF等は例外あり）。",
+      "銘柄": "銘柄名。",
+      "現在値": "最新の株価（終値/スナップショット）。",
+      "前日終値": "その銘柄の前日の終値。基準価格となる。",
+      "前日比(円)": "当日の株価が前日終値から何円動いたか。",
+      "前日終値比率（％）": "【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
+      "出来高": "売買された株数。売買代金やRVOLと併用が望ましい。",
+      "売買代金(億)": "【流動性】最重要。デイトレ狙いなら最低 5–10 億以上が目安。",
+      "初動": "【シグナル】資金流入の初動。短期資金の動きの兆候。",
+      "底打ち": "【シグナル】安値圏からの反転兆候。リバ狙いの候補。",
+      "右肩": "【シグナル】右肩上がりスコアに基づくトレンド持続性の判定。",
+      "早期": "【シグナル】右肩の“早期”局面。詳細は『早期種別』参照。",
+      "早期S": "【勢い+シグナル】RVOL/代金/値動きの合成スコア。80+ 強い、90+ 主役級。",
+      "早期種別": "当日最有力のエントリー種別（ブレイク/ポケット/20MAリバ/200MAリクレイム等）。",
+      "判定": "最終判定（候補/監視/非該当など）。",
+      "判定理由": "アルゴが候補にした根拠の要約。",
+      "推奨": "自動分類の推奨ラベル（有力/小口/監視など）。",
+      "推奨比率%": "推奨の強さ（%）。",
+      "更新": "シグナル最終更新日。",
 
-  // 最低限のモーダルDOMを用意（既存の .modal-back / .modal を再利用）
-  function getOrCreate(selector, html){
-    let el = document.querySelector(selector);
-    if (!el){
-      el = document.createElement("div");
-      el.innerHTML = html.trim();
-      el = el.firstElementChild;
-      document.body.appendChild(el);
-    }
-    return el;
-  }
+      /* 行内の値ヘルプ */
+      "ブレイク": "過去高値更新＋出来高伴う上抜け。",
+      "ポケット": "10MA上で直近の下げ日最大出来高を上回るなどの“押し目買い”有利域。",
+      "20MAリバ": "20MAを下から上へ再突入。出来高は20日平均以上が望ましい。",
+      "200MAリクレイム": "200MAを回復し上で維持。50MA上向き/100MA横ばい以上が理想。",
 
-  // 背景とコンテナ
-  const back = getOrCreate(".modal-back",
-    '<div class="modal-back" style="display:none"></div>');
-  const box  = getOrCreate(".modal",
-    '<div class="modal" role="dialog" aria-modal="true" style="display:none"></div>');
-
-  // 閉じる関数（Escでも閉じる）
-  function closeHelpModal(){
-    box.style.display = "none";
-    back.style.display = "none";
-  }
-  back.addEventListener("click", closeHelpModal);
-  document.addEventListener("keydown", e=>{
-    if (e.key === "Escape") closeHelpModal();
-  });
-
-  // 公開API
-  window.openHelpModal = function(title, html){
-    // シンプルなヘッダ＋×ボタンを毎回描画
-    box.innerHTML = `
-      <div class="close" style="float:right;cursor:pointer;padding:2px 8px;border-radius:6px">×</div>
-      <div class="help-title" style="font-weight:700;margin:0 0 8px">${title || "ヘルプ"}</div>
-      <div class="help-body">${html || "<div>このヘルプは準備中です。</div>"}</div>
-    `;
-    box.querySelector(".close").addEventListener("click", closeHelpModal);
-
-    back.style.display = "flex";   // .modal-back{display:flex}想定
-    box.style.display  = "block";
-  };
-
-  // 互換：別名で呼ばれても拾う
-  window.showHelpModal = window.showHelpModal || window.openHelpModal;
-})();
-/* =================== ヘルプ一括パッチ（貼るだけ） =================== */
-
-/* 1) 列名 → ヘルプキーの対応（必要に応じて増やせます） */
-const DATACOL_TO_HELPKEY = {
-  "初動フラグ":"初動",
-  "底打ちフラグ":"底打ち",
-  "右肩上がりフラグ":"右肩",
-  "右肩早期フラグ":"早期",
-  "右肩早期スコア":"早期S",
-  "右肩早期種別":"早期種別",
-  "判定":"判定",
-  "推奨アクション":"推奨",
-  "推奨比率":"推奨比率",
-  "前日円差":"前日円差",          // ← 「前日円差」に統一
-  "前日終値比率":"前日終値比率（％）" // どちらの表記でも拾えるように
-};
-
-/* 2) 既定の「まとめ」文（中身が未定義でも必ず開く） */
-window.HELP_TEXT = window.HELP_TEXT || {};
-const DEFAULT_SUMMARY_HTML = `
-  <div class="help-title">まとめ（優先度順）</div>
-  <div>
-    スクリーニング結果の総合判定の要約です。主要フラグ（初動/底打ち/右肩/早期/早期種別）や
-    スコア、推奨アクションの見方を優先度順に整理しています。各項目の詳細は各ヘッダの「？」をご覧ください。
-  </div>
-`;
-// 正しいキー名だけを使う（誤字キーは作らない）
-HELP_TEXT["まとめ（優先度順）"] = HELP_TEXT["まとめ（優先度順）"] || HELP_TEXT["まとめ"] || DEFAULT_SUMMARY_HTML;
-HELP_TEXT["まとめ"] = HELP_TEXT["まとめ"] || HELP_TEXT["まとめ（優先度順）"];
-
-/* 3) ヘルプキー解決（ヘッダの data-help / data-col / テキストの順で拾う） */
-function helpKeyFromTh(th){
-  const raw = (th?.dataset?.help || th?.dataset?.col || th?.textContent || "").trim();
-  return DATACOL_TO_HELPKEY[raw] || raw;
-}
-
-/* 4) ヘッダに「？」を1回だけ付与＆クリックで openHelpModal を開く */
-function ensureQhelpOnHeader(table){
-  const thead = table?.querySelector("thead");
-  if (!thead) return;
-  thead.querySelectorAll("th").forEach(th=>{
-    if (th.querySelector(".qhelp, .help-icon")) return;   // 既に付いていればスキップ
-    const btn = document.createElement("span");
-    btn.className = "qhelp";
-    btn.textContent = "?";
-    btn.title = th.textContent.trim();
-    btn.style.marginLeft = "6px";
-    btn.style.display = "inline-flex";
-    btn.style.alignItems = "center";
-    btn.style.justifyContent = "center";
-    btn.style.width = "18px";
-    btn.style.height = "18px";
-    btn.style.borderRadius = "50%";
-    btn.style.border = "1px solid #cbd5e1";
-    btn.style.fontSize = "12px";
-    btn.style.cursor = "pointer";
-    btn.addEventListener("click",(e)=>{
-      e.stopPropagation();
-      const key  = helpKeyFromTh(th);
-      const html = (window.HELP_TEXT && window.HELP_TEXT[key]) ||
-                   `<div class="help-title">${th.textContent.trim()}</div><div>このヘルプは準備中です。</div>`;
-      openHelpModal(th.textContent.trim(), html);
-    });
-    th.appendChild(btn);
-  });
-}
-
-/* 5) 旧コード互換：呼び出し名のゆらぎを吸収 */
-window.enhanceCellsWithSignalHelp = window.enhanceCellsWithSignalHelp || ensureQhelpOnHeader;
-window.attachHelpAuto            = window.attachHelpAuto            || ensureQhelpOnHeader;
-window.attachHelpAsuto           = window.attachHelpAsuto           || ensureQhelpOnHeader; // 誤記版も拾う
-
-/* 6) 起動時に候補一覧へ適用（必要なら他テーブルもここで） */
-document.addEventListener("DOMContentLoaded", ()=>{
-  const t = document.getElementById("tbl-candidate");
-  if (t) ensureQhelpOnHeader(t);
-
-  // ツールバーに「？まとめ」ボタン（重複防止付き）
-  const bar = document.getElementById("toolbar");
-  if (bar && !bar.querySelector(".qhelp-summary")){
-    const b = document.createElement("button");
-    b.className = "qhelp-summary";
-    b.type = "button";
-    b.textContent = "？まとめ";
-    b.style.cssText = "margin-left:8px;padding:2px 6px;font-size:12px;border:1px solid #ccd;background:#f7f7ff;border-radius:6px;cursor:pointer";
-    b.addEventListener("click",(e)=>{
-      e.stopPropagation();
-      const html = HELP_TEXT["まとめ（優先度順）"] || HELP_TEXT["まとめ"] || DEFAULT_SUMMARY_HTML;
-      openHelpModal("まとめ（優先度順）", `<div>${html}</div>`);
-    });
-    bar.appendChild(b);
-  }
-});
-/* =================== /ヘルプ一括パッチ =================== */
-</script>
-
-
-
-
-
+      /* まとめ */
+      "まとめ（優先度順）": "・売買代金 × RVOL（まず流動性）\n・前日比％ と 合成S（勢い）\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%（許容リスク）\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」を優先。"
+    };
+    // data-col → HELP_TEXT マップ（ヘッダーの data-col 用）
+    window.DATACOL_TO_HELPKEY = {
+      "コード":"コード","銘柄名":"銘柄","現在値":"現在値",
+      "前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
+      "出来高":"出来高","売買代金(億)":"売買代金(億)",
+      "初動フラグ":"初動","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期",
+      "右肩早期スコア":"早期S","右肩早期種別":"早期種別",
+      "判定":"判定","判定理由":"判定理由",
+      "推奨アクション":"推奨","推奨比率":"推奨比率%",
+      "シグナル更新日":"更新"
+    };
+  </script>
 
   <section id="tab-candidate" class="tab">
-  <div class="tbl-wrap">
-    <table id="tbl-candidate" class="tbl">
-      <thead>
-        <tr>
-          <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
-          <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
-          <th>Yahoo</th>
-          <th>X</th>
-          <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
-          <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
-          <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
-          <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
-          <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
-          <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
-          <th class="sortable" data-col="初動フラグ" data-type="flag">初動<span class="arrow"></span></th>
-          <th class="sortable" data-col="底打ちフラグ" data-type="flag">底打ち<span class="arrow"></span></th>
-          <th class="sortable" data-col="右肩上がりフラグ" data-type="flag">右肩<span class="arrow"></span></th>
-          <th class="sortable" data-col="右肩早期フラグ" data-type="flag">早期<span class="arrow"></span></th>
-          <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
-          <th class="sortable" data-col="右肩早期種別" data-type="text">早期種別<span class="arrow"></span></th>
-          <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
-          <th class="sortable" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
-          <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
-          <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
-          <th class="sortable" data-col="シグナル更新日" data-type="date">更新<span class="arrow"></span></th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
+    <div class="tbl-wrap">
+      <table id="tbl-candidate" class="tbl">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
+            <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th>Yahoo</th>
+            <th>X</th>
+            <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th class="sortable" data-col="初動フラグ" data-type="flag">初動<span class="arrow"></span></th>
+            <th class="sortable" data-col="底打ちフラグ" data-type="flag">底打ち<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩上がりフラグ" data-type="flag">右肩<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期フラグ" data-type="flag">早期<span class="arrow"></span></th>
+            <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="text">早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+            <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
+            <th class="sortable" data-col="シグナル更新日" data-type="date">更新<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <section id="tab-all" class="tab hidden">
-    <table id="tbl-allcols" class="tbl">
-      <thead><tr id="all-head"></tr></thead>
-      <tbody id="all-body"></tbody>
-    </table>
+    <div class="tbl-wrap">
+      <table id="tbl-allcols" class="tbl">
+        <thead><tr id="all-head"></tr></thead>
+        <tbody id="all-body"></tbody>
+      </table>
+    </div>
   </section>
+
 
   {% if include_log %}
   <section id="tab-log" class="tab hidden">
@@ -2401,7 +2329,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
           <th class="sortable" data-col="日時" data-type="date">日時<span class="arrow"></span></th>
           <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
           <th class="sortable" data-col="種別" data-type="text">種別<span class="arrow"></span></th>
-          <th class="sortable" data-col="詳細" data-type="text">詳細<span class="arrow"></"></span></th>
+          <th class="sortable" data-col="詳細" data-type="text">詳細<span class="arrow"></span></th>
         </tr>
       </thead>
       <tbody id="log-body"></tbody>
@@ -2412,15 +2340,18 @@ document.addEventListener("DOMContentLoaded", ()=>{
   <!-- 直埋めデータ(JSON) -->
   <script id="__DATA__" type="application/json">{{ data_json|safe }}</script>
 
+  <!-- ===== ここからクライアントJS（整頓済み） ===== -->
   <script>
   (function(){
-    // ===== JSON 読み出し（__DATA__） =====
+    "use strict";
+
+    /* ---------- データ読込 ---------- */
     const RAW = (()=>{ try{ return JSON.parse(document.getElementById("__DATA__").textContent||"{}"); }catch(_){ return {}; } })();
     const DATA_CAND = Array.isArray(RAW.cand)? RAW.cand: [];
     const DATA_ALL  = Array.isArray(RAW.all) ? RAW.all : [];
     const DATA_LOG  = Array.isArray(RAW.logs)? RAW.logs: [];
 
-    // ===== util =====
+    /* ---------- util ---------- */
     const $  = (s,r=document)=>r.querySelector(s);
     const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
     const num = (v)=>{ const s=String(v??"").replace(/[,\s円％%]/g,""); const n=parseFloat(s); return Number.isFinite(n)?n:NaN; };
@@ -2431,11 +2362,11 @@ document.addEventListener("DOMContentLoaded", ()=>{
       return String(a).localeCompare(String(b),"ja"); };
     const hasKouho = (v)=> String(v||"").includes("候補");
 
-    // ===== state =====
+    /* ---------- state ---------- */
     const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), sortKey:null, sortDir:1, q:"", data: DATA_CAND.slice() };
-    window.state = state; // 外部からも呼べるよう公開
+    window.state = state;
 
-    // ===== 規定セット／強制クリア =====
+    /* ---------- 既定セット ---------- */
     const DEFAULTS = { rate:3, turn:5, rvol:2 };
     function applyDefaults(on){
       const ia=$("#th_rate"), it=$("#th_turn"), ir=$("#th_rvol");
@@ -2446,7 +2377,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
     }
     function forceClearThresholds(){ const cb=$("#f_defaultset"); if(cb) cb.checked=false; applyDefaults(false); }
 
-    // ===== フィルタ =====
+    /* ---------- フィルタ ---------- */
     function thRate(){ const v=num($("#th_rate")?.value); return Number.isNaN(v)?null:v; }
     function thTurn(){ const v=num($("#th_turn")?.value); return Number.isNaN(v)?null:v; }
     function thRvol(){ const v=num($("#th_rvol")?.value); return Number.isNaN(v)?null:v; }
@@ -2483,10 +2414,112 @@ document.addEventListener("DOMContentLoaded", ()=>{
       });
     }
 
-    // ===== ソート =====
+    /* ---------- ソート ---------- */
     function sortRows(rows){ return state.sortKey? rows.slice().sort((a,b)=>state.sortDir*cmp(a[state.sortKey],b[state.sortKey])) : rows; }
 
-    // ===== 描画 =====
+    /* ---------- ヘルプ（小窓） ---------- */
+    const HELP_MAP = window.HELP_TEXT || {};
+    const ALIAS = window.DATACOL_TO_HELPKEY || {};
+
+    let _helpBackdrop=null, _helpPop=null, _helpAnchor=null;
+    function ensureHelpDom(){
+      if(!_helpBackdrop){
+        _helpBackdrop=document.createElement("div");
+        _helpBackdrop.className="help-backdrop";
+        document.body.appendChild(_helpBackdrop);
+        _helpBackdrop.addEventListener("click", closeHelp, {passive:true});
+      }
+      if(!_helpPop){
+        _helpPop=document.createElement("div");
+        _helpPop.className="help-pop";
+        document.body.appendChild(_helpPop);
+      }
+    }
+    function norm(s){ return String(s||"").replace(/[ \t\u3000]/g,"").replace(/\r?\n/g,"").trim(); }
+    function thToKey(th){
+      const dc=th?.dataset?.col, raw=(th?.textContent||"").trim();
+      return (dc && ALIAS[dc]) || ALIAS[raw] || raw;
+    }
+    function openHelpAt(anchor){
+      ensureHelpDom();
+      _helpAnchor = anchor;
+      const th = anchor.closest("th");
+      const key = (anchor.dataset.help || thToKey(th) || "").trim();
+      const title = key || (th?.textContent?.trim() || "ヘルプ");
+      const html = HELP_MAP[key] || "説明準備中";
+
+      _helpPop.innerHTML = `
+        <div class="help-head">
+          <div>${escapeHtml(title)}</div>
+          <div class="help-close" aria-label="close">×</div>
+        </div>
+        <div class="help-body">${html}</div>
+      `;
+      _helpPop.querySelector(".help-close")?.addEventListener("click", closeHelp);
+
+      _helpBackdrop.style.display="block";
+      _helpPop.style.display="block";
+      placeNearAnchor(anchor);
+
+      window.addEventListener("scroll", onHelpMove, {passive:true});
+      window.addEventListener("resize", onHelpMove);
+      document.addEventListener("keydown", onHelpKeydown);
+    }
+    function closeHelp(){
+      if(_helpPop) _helpPop.style.display="none";
+      if(_helpBackdrop) _helpBackdrop.style.display="none";
+      _helpAnchor=null;
+      window.removeEventListener("scroll", onHelpMove);
+      window.removeEventListener("resize", onHelpMove);
+      document.removeEventListener("keydown", onHelpKeydown);
+    }
+    function onHelpKeydown(e){ if(e.key==="Escape") closeHelp(); }
+    function onHelpMove(){ if(_helpAnchor) placeNearAnchor(_helpAnchor); }
+    function placeNearAnchor(anchor){
+      const r = anchor.getBoundingClientRect();
+      const sx = window.scrollX || document.documentElement.scrollLeft;
+      const sy = window.scrollY || document.documentElement.scrollTop;
+      const vw = document.documentElement.clientWidth;
+      const vh = document.documentElement.clientHeight;
+      const gap = 10;
+      const pw = _helpPop.offsetWidth, ph = _helpPop.offsetHeight;
+      const spaceBottom = vh - r.bottom;
+      const top = (spaceBottom > ph + gap) ? (r.bottom + gap + sy) : (r.top - ph - gap + sy);
+      let left = r.left + r.width/2 - pw/2 + sx;
+      left = Math.max(8 + sx, Math.min(left, sx + vw - pw - 8));
+      _helpPop.style.top = `${top}px`; _helpPop.style.left = `${left}px`;
+    }
+    function attachHeaderHelps(tableSelector){
+      document.querySelectorAll(`${tableSelector} thead th`).forEach(th=>{
+        if(th.querySelector(".qhelp")) return;
+        const col = th.dataset.col || th.textContent.trim();
+        const key = ALIAS[col] || col;
+        if(!HELP_MAP[key]) return;
+        const s=document.createElement("span"); s.className="qhelp"; s.textContent="?"; s.title="ヘルプ";
+        s.addEventListener("click",(e)=>{ e.stopPropagation(); openHelpAt(s); });
+        s.dataset.help = key;  // 明示キー
+        th.appendChild(s);
+      });
+    }
+    function attachToolbarHelps(){
+      const map = [
+        ["上昇率≥",  document.getElementById("th_rate")],
+        ["売買代金≥", document.getElementById("th_turn")],
+        ["RVOL代金≥", document.getElementById("th_rvol")],
+        ["規定",      document.getElementById("f_defaultset")]
+      ];
+      map.forEach(([key, el])=>{
+        if(!el) return;
+        if(el.parentElement.querySelector(".qhelp")) return;
+        const s=document.createElement("span"); s.className="qhelp"; s.textContent="?"; s.title="ヘルプ";
+        s.addEventListener("click", ()=> openHelpAt(s));
+        s.dataset.help = key;
+        el.parentElement.appendChild(s);
+      });
+    }
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
+
+    /* ---------- 描画 ---------- */
     function renderCand(){
       const body = $("#tbl-candidate tbody"); if(!body) return;
       const rows = sortRows(applyFilter(state.data));
@@ -2507,16 +2540,12 @@ document.addEventListener("DOMContentLoaded", ()=>{
         else if (et === "ポケット") etBadge = '<span class="badge b-orange">● ポケット</span>';
         else if (et === "200MAリクレイム") etBadge = '<span class="badge b-yellow">● 200MAリクレイム</span>';
 
-        // 推奨バッジ（★追加）
+        // 推奨バッジ
         const rec = (r["推奨アクション"] || "").trim();
         let recBadge = "";
-        if (rec === "エントリー有力") {
-          recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
-        } else if (rec === "小口提案") {
-          recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
-        } else if (rec) {
-          recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
-        }
+        if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+        else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small"  title="小口提案"><span class="rec-dot"></span>小口</span>';
+        else if (rec)                       recBadge = `<span class="rec-badge rec-watch"  title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
 
         html += `<tr${hit ? " class='hit'" : ""}>
           <td>${r["コード"] ?? ""}</td>
@@ -2537,7 +2566,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
           <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
           <td>${r["判定"] || ""}</td>
           <td>${r["判定理由"] || ""}</td>
-          <td>${recBadge}</td>            <!-- ★ここをバッジに変更 -->
+          <td>${recBadge}</td>
           <td class="num">${r["推奨比率"] ?? ""}</td>
           <td>${r["シグナル更新日"] || ""}</td>
         </tr>`;
@@ -2554,10 +2583,10 @@ document.addEventListener("DOMContentLoaded", ()=>{
       $$("#tbl-candidate tbody tr").forEach(tr=>{
         tr.addEventListener("click",(e)=>{ if (e.target.closest("a")) return; openRowModal(tr); });
       });
-      // ヘルプボタンを候補一覧に差し込み
+
+      // ヘルプ
       attachHeaderHelps("#tbl-candidate");
       attachToolbarHelps();
-
     }
 
     function renderAll(){
@@ -2570,179 +2599,22 @@ document.addEventListener("DOMContentLoaded", ()=>{
         return `<th class="sortable ${typ==='num'?'num':''}" data-col="${c}" data-type="${typ}">${c}<span class="arrow"></span></th>`;
       }).join("");
       body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${cols.map(c=>`<td class="${['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率'].includes(c)?'num':''}">${r[c]??""}</td>`).join("")}</tr>`).join("");
-      // 全カラムテーブルに?を付与
-      attachHeaderHelps("#tbl-all");
+      attachHeaderHelps("#tbl-allcols");
     }
+
     function render(){ if(state.tab==="cand") renderCand(); else if(state.tab==="all") renderAll(); }
     window.render=render;
-    // ===== ヘルプ（?モーダル） =====
-    // ==== 列ヘルプ（ヘッダ名＝キー） ====
-    const HELP_TEXT = {
-      // フィルタまわり（任意）
-      "規定": "既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
 
-      // テーブル列（ヘッダと完全一致）
-      "前日終値": "その銘柄の前日の終値。基準価格となる。",
-      "前日円差": "当日の株価が前日終値から何円動いたか。",
-      "前日終値比率（％）": "【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
-      "出来高": "売買された株数。単独では不十分で、売買代金やRVOLと併用が望ましい。",
-      "売買代金(億)": "【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。20–50 億あると機関や短期筋も参加し、値動きが素直になりやすい。",
-      "初動": "【シグナル】資金流入が始まったタイミング。短期資金の動きをとらえる指標。",
-      "底打ち": "【シグナル】過去の安値圏から反転の兆候。反発狙いの候補。",
-      "右肩": "【シグナル】右肩上がりスコア（0–100）。回帰傾き・R^2・20>50>100維持率・週足上昇比率・SMA50上回り比率・安値切り上げ比率で加点、最大DDは減点。目安: スコア>=SCORE_THで候補。",
-      "早期": "【シグナル】右肩早期スコア（0–100）。“右肩早期種別”に応じて近接度・出来高倍率・移動平均の傾き等を合成。",
-      "早期S": "【勢い+シグナル】合成S = RVOL × 売買代金 × 値動きの総合スコア。80以上: 強い群、90以上: その日の主役級。",
-      "早期種別": "【シグナル】本日の最有力シグナルの種類。\n・ブレイク: 過去HH_N日高値を +PIVOT_EPS% 以上で更新、20MA>50MA、出来高は20日平均のVOL_BOOST倍以上、かつ 20/50MAからの乖離は +EXT_20_MAX% / +EXT_50_MAX% 以内。\n・ポケット: 直近POCKET_WIN日の“下げ日最大出来高”を当日出来高が上回り、10MA上かつ過去高値近傍。\n・20MAリバ: 直近REB_WIN日内に20MAの下→上へ再突入、終値は20MAかつ50MA以上、出来高は20日平均以上。\n・200MAリクレイム: 直近RECLAIM_WIN日内に200MAを下から上へクロス、3日連続で200MA上を維持、SMA50上向き/100MA横ばい以上。",
-      "判定": "最終的なシグナル判定（候補 / 監視 / 非該当 など）。",
-      "判定理由": "アルゴリズムが銘柄を候補にした根拠の要約。",
-      "推奨": "【シグナル】自動で「強い／小口／監視」を分類する補助指標。",
-      "推奨比率%": "推奨の強さを数値化。100%に近いほど強い推奨。",
-      "更新": "シグナルが最後に更新された日付。",
-
-      // 行内の値ヘルプ
-      "ブレイク": "【シグナル】過去HH_N日高値 + PIVOT_EPS% 上抜き。出来高は20日平均×VOL_BOOST以上、20>50条件、20/50MA乖離は +EXT_20_MAX% / +EXT_50_MAX% 以内。",
-      "ポケット": "【シグナル】10MA上で、直近POCKET_WIN日間の“下げ日最大出来高”を当日出来高が上回る。高値（HH_HH_N）から -3%〜+2% が理想。",
-      "20MAリバ": "【シグナル】20MAの下から上へ再突入（REB_WIN営業日内）。終値は20MAと50MAの双方を上回り、出来高は20日平均以上。",
-      "200MAリクレイム": "【シグナル】200MAを下→上へクロス（RECLAIM_WIN営業日内）後、3日連続で200MA上を維持。SMA50は上向き、SMA100は横ばい以上。",
-
-      "ATR14%": "【リスク】1日平均変動率。4–6％: おだやか / 6–10％: 中リスク（短期向け） / 10％以上: 荒い（当たれば大きいがブレも強い）",
-
-      // まとめボタン用
-      "まとめ（優先度順）":
-        "・売買代金 × RVOL（まず流動性・盛り上がり度でスクリーニング）\n・前日比％ と 合成S（早期S）（勢いの強さで絞り込み）\n・フラグ類（右肩・早期・初動・底打ち）（エントリーパターン確認）\n・ATR14%（自分のリスク許容に合うか確認）\n\n👉 実務的には「売買代金 ≥ 10億、RVOL ≥ 2、合成S ≥ 80」かつ「右肩 or 早期」の銘柄が最も“勝ちやすい土俵”。"
-    };
-    
-    
-    // --- 正規化：改行/全角スペース/装飾記号を除去 ---
-    function norm(s){
-      return (s||"")
-        .replace(/[ \t\u3000]/g,"").replace(/\r?\n/g,"")
-        .replace(/[▲▼▶▷↑↓■□◆◇※＊*（）()]/g,"")
-        .replace(/％/g,"%").trim();
-    }
-
-    // --- HELP_TEXT の逆引き辞書（正規化） ---
-    const HELP_KEY_BY_NORM = (()=> {
-      const m = {};
-      Object.keys(HELP_TEXT).forEach(k => m[norm(k)] = k);
-      return m;
-    })();
-
-    // --- data-col → HELP_TEXTキー のブリッジ（今回の列だけ） ---
-    const DATACOL_TO_HELPKEY = {
-      "初動フラグ": "初動",
-      "底打ちフラグ": "底打ち",
-      "右肩上がりフラグ": "右肩",
-      "右肩早期フラグ": "早期",
-      "右肩早期スコア": "早期S",
-      "右肩早期種別": "早期種別"
-    };
-
-    // --- 見出しに「？」を付ける（置き換え版） ---
-    function enhanceHeadersWithHelp(root=document){
-      root.querySelectorAll("table thead th").forEach(th=>{
-        if (th.querySelector(".help-icon, .qhelp")) return;
-
-        // 1) data-col 優先で判定
-        const dc = th.getAttribute("data-col");
-        let key = dc && DATACOL_TO_HELPKEY[dc] ? DATACOL_TO_HELPKEY[dc] : null;
-
-        // 2) ダメなら表示文字（正規化）で突合
-        if (!key){
-          const k2 = HELP_KEY_BY_NORM[norm(th.textContent||"")];
-          if (k2) key = k2;
-        }
-        if (!key || !HELP_TEXT[key]) return;
-
-        // 3) 付与
-        const btn = document.createElement("button");
-        btn.className = "help-icon";
-        btn.textContent = "？";
-        btn.title = "ヘルプ";
-        btn.style.cssText = "margin-left:6px;border:1px solid #ccd;background:#f7f7ff;padding:0 6px;border-radius:10px;cursor:pointer;font-size:12px;";
-        btn.addEventListener("click", (e)=>{e.stopPropagation();openHelpModal(key, HELP_TEXT[key]);});
-        th.appendChild(btn);
-      });
-    }
-
-    // --- 動的差し替え・並び替えにも追従 ---
-    function attachHelpsAuto(){
-      enhanceHeadersWithHelp(document);
-      enhanceCellsWithSignalHelp(document);
-      const obs = new MutationObserver(()=>{ enhanceHeadersWithHelp(document); enhanceCellsWithSignalHelp(document); });
-      obs.observe(document.body, {childList:true, subtree:true});
-    }
-    window.addEventListener("DOMContentLoaded", attachHelpsAuto);
-
-
-
-
-
-
-    function ensureHelpModal(){
-      let back = document.getElementById("__help_back__");
-      if(back) return back;
-      back = document.createElement("div");
-      back.id="__help_back__"; back.className="modal-back";
-      back.innerHTML = `<div class="modal"><span class="close">×</span>
-        <div id="__help_body__"></div></div>`;
-      document.body.appendChild(back);
-      back.addEventListener("click",(e)=>{
-        if(e.target===back || e.target.classList.contains("close")) back.style.display="none";
-      });
-      return back;
-    }
-    function openHelpModal(title, html){
-      const back=ensureHelpModal(), body=document.getElementById("__help_body__");
-      body.innerHTML = `<div class="help-title">${title}</div>${html}`;
-      back.style.display="flex";
-    }
-
-    // ツールバーの?ボタンを動的に付与
-    function attachToolbarHelps(){
-      const m = [
-        ["上昇率≥",  document.getElementById("th_rate")],
-        ["売買代金≥", document.getElementById("th_turn")],
-        ["RVOL代金≥", document.getElementById("th_rvol")],
-        ["規定",      document.getElementById("f_defaultset")]
-      ];
-      m.forEach(([key, el])=>{
-        if(!el) return;
-        const exist = el.parentElement.querySelector(".qhelp");
-        if(exist) return;
-        const b=document.createElement("span"); b.className="qhelp"; b.textContent="?";
-        b.title="ヘルプ";
-        b.addEventListener("click", ()=> openHelpModal(key, `<div>${HELP_TEXT[key]||"説明準備中"}</div>`));
-        el.parentElement.appendChild(b);
-      });
-    }
-
-    // テーブルヘッダに?ボタン付与（候補一覧/全カラム）
-    function attachHeaderHelps(tableSelector){
-      const ths = document.querySelectorAll(`${tableSelector} thead th`);
-      ths.forEach(th=>{
-        const col = th.dataset.col || th.textContent.trim();
-        const key = col; // 同名キーで引く
-        if(!HELP_TEXT[key]) return;
-        if(th.querySelector(".qhelp")) return;
-        const s=document.createElement("span"); s.className="qhelp"; s.textContent="?";
-        s.title="ヘルプ";
-        s.addEventListener("click",(e)=>{
-          e.stopPropagation();
-          openHelpModal(col, `<div>${HELP_TEXT[key]}</div>`);
-        });
-        th.appendChild(s);
-      });
-    }
-
-
-    // ===== モーダル =====
+    /* ---------- 行モーダル ---------- */
     function ensureModal(){
       let back=$("#__row_back__"); if(back) return back;
-      back=document.createElement("div"); back.id="__row_back__"; back.className="modal-back";
-      back.innerHTML=`<div class="modal"><span class="close">×</span><div id="__row_body__"></div></div>`;
-      document.body.appendChild(back);
-      back.addEventListener("click",(e)=>{ if(e.target===back||e.target.classList.contains("close")) back.style.display="none"; });
+      back=document.createElement("div"); back.id="__row_back__"; back.className="help-backdrop";
+      const box=document.createElement("div");
+      box.className="help-pop";
+      box.innerHTML=`<div class="help-head"><div>詳細</div><div class="help-close">×</div></div><div id="__row_body__"></div>`;
+      document.body.appendChild(back); document.body.appendChild(box);
+      back.addEventListener("click",()=>{ box.style.display="none"; back.style.display="none"; });
+      box.querySelector(".help-close").addEventListener("click",()=>{ box.style.display="none"; back.style.display="none"; });
       return back;
     }
     function openRowModal(tr){
@@ -2751,16 +2623,23 @@ document.addEventListener("DOMContentLoaded", ()=>{
       const tds=Array.from(tr.children);
       let html='<div style="display:grid;grid-template-columns:160px 1fr;gap:8px 12px;">';
       tds.forEach((td,i)=>{ const h=headers[i]?.dataset?.col||headers[i]?.innerText||""; html+=`<div style="color:#6b7280">${h}</div><div>${(td.innerHTML||"").trim()}</div>`; });
-      html+='</div>'; body.innerHTML=html; back.style.display="flex";
+      html+='</div>'; body.innerHTML=html;
+      back.style.display="block";
+      const box=document.querySelector(".help-pop"); box.style.display="block"; // 直近のhelp-popを流用
+      const vw=document.documentElement.clientWidth, sx=window.scrollX||0, sy=window.scrollY||0;
+      box.style.top = `${sy+80}px`; box.style.left=`${sx+Math.max(20,(vw-940)/2)}px`;
     }
 
-    // ===== グラフ（素朴なcanvas） =====
+    /* ---------- 簡易グラフ ---------- */
     function ensureChartModal(){
       let back=$("#__chart_back__"); if(back) return back;
-      back=document.createElement("div"); back.id="__chart_back__"; back.className="modal-back";
-      back.innerHTML=`<div class="modal"><span class="close">×</span><div id="__chart_body__"></div></div>`;
-      document.body.appendChild(back);
-      back.addEventListener("click",(e)=>{ if(e.target===back||e.target.classList.contains("close")) back.style.display="none"; });
+      back=document.createElement("div"); back.id="__chart_back__"; back.className="help-backdrop";
+      const box=document.createElement("div");
+      box.className="help-pop";
+      box.innerHTML=`<div class="help-head"><div>グラフ</div><div class="help-close">×</div></div><div id="__chart_body__"></div>`;
+      document.body.appendChild(back); document.body.appendChild(box);
+      back.addEventListener("click",()=>{ box.style.display="none"; back.style.display="none"; });
+      box.querySelector(".help-close").addEventListener("click",()=>{ box.style.display="none"; back.style.display="none"; });
       return back;
     }
     function drawAxes(ctx,W,H,pad){ ctx.strokeStyle="#ccc"; ctx.lineWidth=1;
@@ -2789,19 +2668,22 @@ document.addEventListener("DOMContentLoaded", ()=>{
       const turnBuckets=["<5","5-10","10-50","50-100","100+"], turnCnt=[0,0,0,0,0];
       rows.forEach(r=>{ const rvol=num(r["RVOL代金"]); if(!Number.isNaN(rvol)){ if(rvol<1)rvolCnt[0]++; else if(rvol<2)rvolCnt[1]++; else if(rvol<3)rvolCnt[2]++; else if(rvol<5)rvolCnt[3]++; else rvolCnt[4]++; }
                         const turn=num(r["売買代金(億)"]); if(!Number.isNaN(turn)){ if(turn<5)turnCnt[0]++; else if(turn<10)turnCnt[1]++; else if(turn<50)turnCnt[2]++; else if(turn<100)turnCnt[3]++; else turnCnt[4]++; } });
-      body.innerHTML=`<h3>傾向グラフ（表示中データ）</h3><canvas id="cv1" class="chart" width="940" height="320"></canvas><canvas id="cv2" class="chart" width="940" height="320"></canvas>`;
-      drawBar($("#cv1"),rvolBuckets,rvolCnt,"RVOL代金の分布"); drawBar($("#cv2"),turnBuckets,turnCnt,"売買代金(億)の分布"); back.style.display="flex";
+      body.innerHTML=`<h3>傾向グラフ（表示中データ）</h3><canvas id="cv1" width="940" height="320"></canvas><canvas id="cv2" width="940" height="320" style="margin-top:16px;"></canvas>`;
+      const c1=body.querySelector("#cv1"), c2=body.querySelector("#cv2");
+      drawBar(c1,rvolBuckets,rvolCnt,"RVOL代金の分布"); drawBar(c2,turnBuckets,turnCnt,"売買代金(億)の分布");
+      back.style.display="block"; const box=back.nextElementSibling; box.style.display="block"; const sy=window.scrollY||0; box.style.top=`${sy+80}px`; box.style.left=`${Math.max(20,(document.documentElement.clientWidth-940)/2)}px`;
     }
     function openTrendChart(){
       const back=ensureChartModal(), body=$("#__chart_body__");
       const rows=applyFilter(state.data); const byDay=new Map();
       rows.forEach(r=>{ const d=String(r["シグナル更新日"]||"").slice(0,10); if(!d) return; const hit=(String(r["判定"]||"")==="当たり！")?1:0; const o=byDay.get(d)||{tot:0,hit:0}; o.tot++; o.hit+=hit; byDay.set(d,o); });
       const days=Array.from(byDay.keys()).sort(); const rate=days.map(d=>{ const o=byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
-      body.innerHTML=`<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" class="chart" width="940" height="320"></canvas>`;
-      drawLine($("#cv3"),days,rate,"当たり率（%）"); back.style.display="flex";
+      body.innerHTML=`<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" width="940" height="320"></canvas>`;
+      drawLine(body.querySelector("#cv3"),days,rate,"当たり率（%）");
+      back.style.display="block"; const box=back.nextElementSibling; box.style.display="block"; const sy=window.scrollY||0; box.style.top=`${sy+80}px`; box.style.left=`${Math.max(20,(document.documentElement.clientWidth-940)/2)}px`;
     }
 
-    // ===== イベント =====
+    /* ---------- イベント ---------- */
     $$("#tbl-candidate thead th.sortable").forEach(th=>{
       th.style.cursor="pointer";
       th.addEventListener("click",()=>{ const key=th.dataset.col; if(state.sortKey===key) state.sortDir*=-1; else{ state.sortKey=key; state.sortDir=1; } state.page=1; render(); });
@@ -2817,7 +2699,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
     $("#btn-ts")?.addEventListener("click",openTrendChart);
     $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
-    // ===== タブ =====
+    /* ---------- タブ ---------- */
     function switchTab(to){
       state.tab=to; $$(".tab").forEach(x=>x.classList.add("hidden"));
       if(to==="cand"){ $("#tab-candidate").classList.remove("hidden"); state.data=DATA_CAND.slice(); }
@@ -2833,16 +2715,24 @@ document.addEventListener("DOMContentLoaded", ()=>{
     $("#lnk-all") ?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("all");  });
     $("#lnk-log") ?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("log");  });
 
-    // ===== 初期化（空欄強制 → cand表示） =====
+    /* ---------- 初期化 ---------- */
     switchTab("cand");
-    forceClearThresholds();                // 初回は必ず空欄
-    setTimeout(forceClearThresholds,150);  // BFCache/オートフィル対策で二度打ち
+    forceClearThresholds();
+    setTimeout(forceClearThresholds,150);
     window.addEventListener("pageshow",(ev)=>{ if(ev.persisted) forceClearThresholds(); });
+
+    // 初回：ヘッダー/ツールバーに ? を付与
+    attachHeaderHelps("#tbl-candidate");
+    attachToolbarHelps();
+
+    // 表DOM変化に追従（再描画で ? が消えるのを防ぐ）
+    const mo = new MutationObserver(()=>{ attachHeaderHelps("#tbl-candidate"); attachToolbarHelps(); });
+    mo.observe(document.body, {childList:true, subtree:true});
+
   })();
   </script>
 </body>
 </html>"""
-
 
 
 
