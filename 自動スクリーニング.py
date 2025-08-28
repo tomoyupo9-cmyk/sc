@@ -2192,6 +2192,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 <body>
   <nav>
     <a href="#" id="lnk-cand" class="active">候補一覧</a>
+    <a href="#" id="lnk-tmr">明日用</a>
     <a href="#" id="lnk-all">全カラム</a>
     {% if include_log %}<a href="#" id="lnk-log">signals_log</a>{% endif %}
   </nav>
@@ -2311,6 +2312,32 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     </div>
   </section>
 
+  <section id="tab-tmr" class="tab hidden">
+    <div class="tbl-wrap">
+      <div id="tmr-label" style="margin:8px 0 4px;font-weight:800;font-size:16px;color:#0d3b66;"></div>
+      <table id="tbl-tmr" class="tbl">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
+            <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th>Yahoo</th>
+            <th>X</th>
+            <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="text">早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+
+
   <section id="tab-all" class="tab hidden">
     <div class="tbl-wrap">
       <table id="tbl-allcols" class="tbl">
@@ -2361,6 +2388,48 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       if(!Number.isNaN(da)&&!Number.isNaN(db)) return da-db;
       return String(a).localeCompare(String(b),"ja"); };
     const hasKouho = (v)=> String(v||"").includes("候補");
+    // === 汎用DOMソート（全カラム / 明日用） ===
+    function _parseNum(s){
+      const t = String(s).replace(/[,\s円％%]/g,'');
+      const n = parseFloat(t);
+      return Number.isFinite(n) ? n : NaN;
+    }
+    function _sortKeyByType(text, typ){
+      if(typ === 'num'){ const n=_parseNum(text); return Number.isNaN(n) ? -Infinity : n; }
+      if(typ === 'date'){ const t=Date.parse(text); return Number.isNaN(t) ? -Infinity : t; }
+      if(typ === 'flag'){ return /候補/.test(text) ? 1 : 0; }
+      return text; // text
+    }
+    function wireDomSort(tableSelector){
+      const table = document.querySelector(tableSelector); if(!table) return;
+      const ths = Array.from(table.querySelectorAll('thead th.sortable'));
+      ths.forEach((th, idx)=>{
+        if(th.__wiredSort) return;
+        th.__wiredSort = true;
+        th.addEventListener('click', ()=>{
+          // 方向トグル
+          const prev = th.dataset.dir;
+          ths.forEach(h=>{ h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
+          const dir = (prev === 'asc') ? 'desc' : 'asc';
+          th.dataset.dir = dir;
+
+          // 並べ替え
+          const typ = th.dataset.type || 'text';
+          const rows = Array.from(table.querySelectorAll('tbody tr'));
+          rows.sort((r1,r2)=>{
+            const a = _sortKeyByType((r1.children[idx]?.textContent||'').trim(), typ);
+            const b = _sortKeyByType((r2.children[idx]?.textContent||'').trim(), typ);
+            if(a < b) return dir==='asc' ? -1 : 1;
+            if(a > b) return dir==='asc' ?  1 : -1;
+            return 0;
+          });
+          const tb = table.querySelector('tbody');
+          rows.forEach(r=>tb.appendChild(r));
+          const arrow = th.querySelector('.arrow'); if(arrow) arrow.textContent = (dir==='asc'?'▲':'▼');
+        });
+      });
+    }
+
 
     /* ---------- state ---------- */
     const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), sortKey:null, sortDir:1, q:"", data: DATA_CAND.slice() };
@@ -2600,6 +2669,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       }).join("");
       body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${cols.map(c=>`<td class="${['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率'].includes(c)?'num':''}">${r[c]??""}</td>`).join("")}</tr>`).join("");
       attachHeaderHelps("#tbl-allcols");
+      wireDomSort("#tbl-allcols");
     }
 
     function render(){ if(state.tab==="cand") renderCand(); else if(state.tab==="all") renderAll(); }
@@ -2706,7 +2776,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       if(to==="all"){  $("#tab-all").classList.remove("hidden"); }
       if(to==="log"){  $("#tab-log").classList.remove("hidden"); if(!$("#log-body").dataset.inited){ $("#log-body").innerHTML=DATA_LOG.map(r=>`<tr><td>${r["日時"]||""}</td><td>${r["コード"]||""}</td><td>${r["種別"]||""}</td><td>${r["詳細"]||""}</td></tr>`).join(""); $("#log-body").dataset.inited="1"; } }
       state.page=1; render();
-      $$("#lnk-cand,#lnk-all,#lnk-log").forEach(a=>a?.classList.remove("active"));
+      document.querySelectorAll("nav a").forEach(a=>a.classList.remove("active"));
       if(to==="cand") $("#lnk-cand")?.classList.add("active");
       if(to==="all")  $("#lnk-all") ?.classList.add("active");
       if(to==="log")  $("#lnk-log") ?.classList.add("active");
@@ -2714,6 +2784,115 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     $("#lnk-cand")?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("cand"); });
     $("#lnk-all") ?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("all");  });
     $("#lnk-log") ?.addEventListener("click",(e)=>{ e.preventDefault(); switchTab("log");  });
+    
+    
+    // 直近日（EOD実行日）を求める
+    function latestUpdateDate(rows){
+      const ds = rows.map(r=>String(r["シグナル更新日"]||"").slice(0,10)).filter(Boolean);
+      return ds.sort().pop() || null;
+    }
+
+    // 「明日用」抽出（直近日に更新 & 初動/右肩/早期のいずれかが候補）
+    function toTomorrowRows(src){
+      if(!src.length) return [];
+      const d0 = latestUpdateDate(src);
+      if(!d0) return [];
+      return src.filter(r=>{
+        const d = String(r["シグナル更新日"]||"").slice(0,10);
+        if(d !== d0) return false;
+        const sh = String(r["初動フラグ"]||"").includes("候補");
+        const ru = String(r["右肩上がりフラグ"]||"").includes("候補");
+        const ea = String(r["右肩早期フラグ"]||"").includes("候補");
+        return sh || ru || ea;
+      });
+    }
+
+    function renderTomorrow(){
+      const body = document.querySelector("#tbl-tmr tbody");
+      if(!body) return;
+
+      // ① 見出し（📅 YYYY-MM-DD 向け）
+      const md = (RAW.meta || {});
+      const baseStr = md.base_day || latestUpdateDate(DATA_CAND) || null;
+      let targetStr = md.next_business_day || null;
+
+      // フォールバック（Python側で祝日計算できない場合）：土日のみスキップ
+      if(!targetStr && baseStr){
+        const dt = new Date(baseStr);
+        dt.setDate(dt.getDate() + 1);
+        while([0,6].includes(dt.getDay())) dt.setDate(dt.getDate() + 1);
+        targetStr = dt.toISOString().slice(0,10);
+      }
+      const lbl = document.getElementById("tmr-label");
+      if(lbl) lbl.textContent = targetStr ? `📅 ${targetStr} 向け` : "📅 明日用（日付未取得）";
+
+      // ② データ並び：推奨 > 早期S > 売買代金(億)
+      const rows = toTomorrowRows(DATA_CAND).sort((a,b)=>{
+        const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
+        const r  = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
+        if(r!==0) return r;
+        const s  = (+b["右肩早期スコア"]||0) - (+a["右肩早期スコア"]||0);
+        if(s!==0) return s;
+        return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
+      });
+
+      body.innerHTML = rows.map(r=>{
+        const et = (r["右肩早期種別"]||"").trim();
+        const etBadge =
+          et==="ブレイク" ? '<span class="badge b-green">● ブレイク</span>' :
+          et==="20MAリバ" ? '<span class="badge b-green">● 20MAリバ</span>' :
+          et==="ポケット" ? '<span class="badge b-orange">● ポケット</span>' :
+          et==="200MAリクレイム" ? '<span class="badge b-yellow">● 200MAリクレイム</span>' : et;
+
+        const rec = (r["推奨アクション"]||"").trim();
+        const recBadge =
+          rec==="エントリー有力" ? '<span class="rec-badge rec-strong"><span class="rec-dot"></span>有力</span>' :
+          rec==="小口提案"       ? '<span class="rec-badge rec-small"><span class="rec-dot"></span>小口</span>' :
+          (rec ? `<span class="rec-badge rec-watch"><span class="rec-dot"></span>${rec}</span>` : "");
+
+        return `<tr>
+          <td>${r["コード"]??""}</td>
+          <td>${r["銘柄名"]??""}</td>
+          <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
+          <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
+          <td class="num">${r["現在値"]??""}</td>
+          <td class="num">${r["前日終値比率"]??""}</td>
+          <td class="num">${r["売買代金(億)"]??""}</td>
+          <td class="num">${r["右肩早期スコア"]??""}</td>
+          <td>${etBadge}${r["右肩早期種別_mini"]||""}</td>
+          <td>${r["判定"]||""}</td>
+          <td>${recBadge}</td>
+        </tr>`;
+      }).join("");
+
+      // 行クリックでモーダル（既存の openRowModal がある前提）
+      document.querySelectorAll("#tbl-tmr tbody tr").forEach(tr=>{
+        tr.addEventListener("click",(e)=>{ if (e.target.closest("a")) return; openRowModal(tr); });
+      });
+
+      // ヘッダーに ? 付与（関数がある場合だけ）
+      if (typeof attachHeaderHelps === "function") attachHeaderHelps("#tbl-tmr");
+      wireDomSort("#tbl-tmr");
+    }
+
+    // タブ切替に「tmr」を追加
+    const _oldSwitchTab = switchTab;
+    switchTab = function(to){
+      _oldSwitchTab(to);
+      if(to==="tmr"){
+        document.querySelectorAll(".tab").forEach(x=>x.classList.add("hidden"));
+        document.getElementById("tab-tmr")?.classList.remove("hidden");
+        renderTomorrow();
+        document.querySelectorAll("nav a").forEach(a=>a.classList.remove("active"));
+        document.getElementById("lnk-tmr")?.classList.add("active");
+      }
+    };
+    // クリックハンドラ
+    document.getElementById("lnk-tmr")?.addEventListener("click",(e)=>{
+      e.preventDefault(); switchTab("tmr");
+    });
+
+
 
     /* ---------- 初期化 ---------- */
     switchTab("cand");
@@ -2733,6 +2912,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   </script>
 </body>
 </html>"""
+
 
 
 
@@ -2864,9 +3044,86 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     all_rows  = _records_safe(pd.DataFrame(all_rows))  if all_rows  else []
     log_rows  = _records_safe(pd.DataFrame(log_rows))  if log_rows  else []
 
+
+    # --- meta: DBの最新シグナル更新日から翌営業日を作る（祝日/土日補正） ---
+    from datetime import datetime  # 既に import 済みなら不要
+
+    def _to_date10(s):
+        s = str(s or '')[:10]
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    # cand_rows は直前で _records_safe 済みの list[dict]
+    _base = None
+    if cand_rows:
+        try:
+            dates = [_to_date10(r.get("シグナル更新日")) for r in cand_rows]
+            dates = [d for d in dates if d]
+            _base = max(dates) if dates else None
+        except Exception:
+            _base = None
+
+    meta = {"base_day": None, "next_business_day": None}
+    if _base:
+        meta["base_day"] = _base.strftime("%Y-%m-%d")
+        # 既存の祝日/休場ロジックを利用
+        _next = next_business_day_jp(_base)
+        meta["next_business_day"] = _next.strftime("%Y-%m-%d")
+
+
     # ---------- 4) JSON を __DATA__ に直埋め ----------
-    data_obj = {"cand": cand_rows, "all": all_rows, "logs": log_rows}
+    # --- 祝日/土日補正：翌営業日を JSON(meta) に埋め込む ---
+    from datetime import date, datetime, timedelta
+
+    try:
+        import jpholiday
+        def _is_holiday(d: date) -> bool:
+            return (d.weekday() >= 5) or jpholiday.is_holiday(d)
+    except Exception:
+        # jpholiday が無い環境では土日のみ補正
+        def _is_holiday(d: date) -> bool:
+            return d.weekday() >= 5
+
+    def _to_date(s) -> date | None:
+        if not s:
+            return None
+        s = str(s)[:10]  # "YYYY-MM-DD ..." 形式にも対応
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    def _latest_update_day(rows) -> date | None:
+        try:
+            if hasattr(rows, "iterrows"):  # pandas.DataFrame
+                dates = [_to_date(r.get("シグナル更新日")) for _, r in rows.iterrows()]
+            else:                           # list[dict]
+                dates = [_to_date(r.get("シグナル更新日")) for r in rows]
+            dates = [d for d in dates if d]
+            return max(dates) if dates else None
+        except Exception:
+            return None
+
+    def _next_business_day(d: date) -> date:
+        d = d + timedelta(days=1)
+        while _is_holiday(d):
+            d += timedelta(days=1)
+        return d
+
+    _base = _latest_update_day(cand_rows)  # ← cand_rows は既存の候補リスト/DF
+    meta = {"base_day": None, "next_business_day": None}
+    if _base:
+        _next = _next_business_day(_base)
+        meta["base_day"] = _base.strftime("%Y-%m-%d")
+        meta["next_business_day"] = _next.strftime("%Y-%m-%d")
+
+    # ---------- 4) JSON を __DATA__ に直埋め ----------
+    data_obj = {"cand": cand_rows, "all": all_rows, "logs": log_rows, "meta": meta}  # ← 追加
     data_json = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"))
+
+
 
     # ---------- 5) テンプレート描画 ----------
     _ensure_template_file(template_dir, overwrite=True)
