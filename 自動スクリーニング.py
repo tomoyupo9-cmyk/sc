@@ -2457,7 +2457,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         const etp=(String(r["右肩早期種別"]||"").trim().length>0);
         const ns=String(r["空売り機関なし_flag"]||"0")==="1";
         const op=String(r["営利対時価_flag"]||"0")==="1";
-        const ht=String(r["判定"]||"")==="当たり！";
+        const ht = /^当たり！/.test(formatJudgeLabel(r));
 
         if($("#f_shodou")?.checked && !sh) return false;
         if($("#f_tei")?.checked    && !te) return false;
@@ -2588,9 +2588,122 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     }
     function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
 
-    /* ---------- 描画 ---------- */
+
+    // ===== 描画 =====
+
+    // 2桁フォーマッタ（共通）
+    function _fmt2num(x){
+      if (x === null || x === undefined) return "";
+      const n = parseFloat(String(x).replace(/[,％%]/g,""));
+      return Number.isFinite(n) ? n.toFixed(2) : String(x ?? "");
+    }
+
+    // 指定テーブル内で「前日終値比率」「売買代金(億)」の列を2桁書式にそろえる
+    function _formatTwoDecimals(tableSelector){
+      const tbl = document.querySelector(tableSelector);
+      if (!tbl) return;
+
+      const norm = (s)=> String(s||"")
+          .replace(/\s+/g,"")
+          .replace(/[（）]/g, v=> (v==="（"?"(" : ")"))
+          .trim();
+
+      const ths = Array.from(tbl.querySelectorAll("thead th"));
+      const targets = [];
+      ths.forEach((th, idx)=>{
+        const t = norm(th.textContent);
+        // 列名ゆらぎ対応：「前日終値比率」「前日終値比率（％）」など
+        if (t.includes("前日終値比率")) targets.push(idx);
+        // 売買代金(億) は () 全角半角ゆらぎを吸収
+        if (t === "売買代金(億)" || t === "売買代金億") targets.push(idx);
+      });
+
+      if (!targets.length) return;
+
+      const rows = tbl.querySelectorAll("tbody tr");
+      rows.forEach(tr=>{
+        targets.forEach(ci=>{
+          const td = tr.children[ci];
+          if (!td) return;
+          const raw = td.textContent.trim();
+          if (!raw) return;
+          td.textContent = _fmt2num(raw);
+          td.classList.add("num");
+        });
+      });
+    }
+
+
+    /* === 連続カウント（銘柄別：当たり/外れ）＆ 判定セル表示 === */
+    /* 使い方：
+       - 初期ロード時に RAW.cand + RAW.hist から銘柄別の連続を構築
+       - 明日用を描画する時は rebuildCodeStreak(rows) を先に呼んで rows も含めて再構築
+    */
+    // 連続カウント用インデックス
+    let __CODE_STREAK_IDX = new Map();
+
+    // key: `${code}|${date}` -> "当たり！(n)" / "外れ！(n)"
+    function rebuildCodeStreak(extraRows){
+      const collect = [];
+
+      // 直埋め JSON（__DATA__）から拾う
+      const RAW = (function(){
+        try{ return JSON.parse(document.getElementById("__DATA__").textContent||"{}"); }
+        catch(_){ return {}; }
+      })();
+
+      if (Array.isArray(RAW.cand)) collect.push(...RAW.cand);   // ← ドットを消してスプレッド
+      if (Array.isArray(RAW.hist)) collect.push(...RAW.hist);   // ← 履歴も取り込む
+      if (Array.isArray(extraRows)) collect.push(...extraRows); // ← 明日用を渡す場合
+
+      // code -> [{date,isHit}]
+      const byCode = new Map();
+      collect.forEach(r=>{
+        const code = String(r["コード"] ?? "").trim();
+        const date = String(r["シグナル更新日"] ?? r["日付"] ?? "").slice(0,10);
+        if (!code || !date) return;
+        const isHit = /^当たり/.test(String(r["判定"] ?? ""));
+        const arr = byCode.get(code) || [];
+        const i = arr.findIndex(x=>x.date===date);
+        const item = {date, isHit};
+        if (i>=0) arr[i]=item; else arr.push(item);
+        byCode.set(code, arr);
+      });
+
+      const idx = new Map();
+      byCode.forEach((arr, code)=>{
+        arr.sort((a,b)=> a.date.localeCompare(b.date)); // 古→新
+        let up=0, down=0;
+        arr.forEach(({date,isHit})=>{
+          if (isHit){ up += 1;  down = 0; idx.set(`${code}|${date}`, `当たり！(${up})`); }
+          else      { down += 1; up   = 0; idx.set(`${code}|${date}`, `外れ！(${down})`); }
+        });
+      });
+      __CODE_STREAK_IDX = idx;
+    }
+    window.rebuildCodeStreak = rebuildCodeStreak;
+
+    // 各行の表示（銘柄別の連続ラベル）。履歴が無い銘柄は (1) フォールバック
+    function formatJudgeLabel(r){
+      const code = String(r?.["コード"] || "").trim();
+      const date = String(r?.["シグナル更新日"] || "").slice(0,10);
+      const key  = `${code}|${date}`;
+      const hit  = /^当たり/.test(String(r?.["判定"]||""));
+      const v = __CODE_STREAK_IDX.get(key);
+      return v ? v : (hit ? "当たり！(1)" : "外れ！(1)");
+    }
+
+    // 初期構築（cand + hist を元に作る）
+    rebuildCodeStreak();
+
+
+
+
+    // ===== 候補一覧 =====
     function renderCand(){
-      const body = $("#tbl-candidate tbody"); if(!body) return;
+      const body = document.querySelector("#tbl-candidate tbody");
+      if(!body) return;
+
       const rows = sortRows(applyFilter(state.data));
       const total = rows.length, per = state.per, maxPage = Math.max(1, Math.ceil(total/per));
       state.page = Math.min(state.page, maxPage);
@@ -2599,7 +2712,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       let html = "";
       for (let i = s; i < e; i++) {
         const r = rows[i] || {};
-        const hit = String(r["判定"] || "") === "当たり！";
 
         // 早期種別バッジ
         const et = (r["右肩早期種別"] || "").trim();
@@ -2612,11 +2724,18 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         // 推奨バッジ
         const rec = (r["推奨アクション"] || "").trim();
         let recBadge = "";
-        if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
-        else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small"  title="小口提案"><span class="rec-dot"></span>小口</span>';
-        else if (rec)                       recBadge = `<span class="rec-badge rec-watch"  title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+        if (rec === "エントリー有力") {
+          recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+        } else if (rec === "小口提案") {
+          recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+        } else if (rec) {
+          recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+        }
 
-        html += `<tr${hit ? " class='hit'" : ""}>
+        // 行ハイライトは当たりのみ（外れは白のまま）
+        const isHitRow = /^当たり！/.test(formatJudgeLabel(r));
+
+        html += `<tr${isHitRow ? " class='hit'" : ""}>
           <td>${r["コード"] ?? ""}</td>
           <td>${r["銘柄名"] ?? ""}</td>
           <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
@@ -2633,7 +2752,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <td>${r["右肩早期フラグ"] || ""}</td>
           <td class="num">${r["右肩早期スコア"] ?? ""}</td>
           <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
-          <td>${r["判定"] || ""}</td>
+          <td>${formatJudgeLabel(r)}</td>
           <td>${r["判定理由"] || ""}</td>
           <td>${recBadge}</td>
           <td class="num">${r["推奨比率"] ?? ""}</td>
@@ -2642,38 +2761,113 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       }
 
       body.innerHTML = html;
-      $("#count").textContent = String(total);
-      $("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/per))}`;
+      document.querySelector("#count").textContent = String(total);
+      document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
 
-      $$("#tbl-candidate thead th.sortable").forEach(th=>{
+      // ソート矢印
+      document.querySelectorAll("#tbl-candidate thead th.sortable").forEach(th=>{
         th.querySelector(".arrow").textContent =
           (th.dataset.col === state.sortKey ? (state.sortDir > 0 ? "▲" : "▼") : "");
       });
-      $$("#tbl-candidate tbody tr").forEach(tr=>{
+
+      // 行クリックでモーダル
+      document.querySelectorAll("#tbl-candidate tbody tr").forEach(tr=>{
         tr.addEventListener("click",(e)=>{ if (e.target.closest("a")) return; openRowModal(tr); });
       });
 
-      // ヘルプ
+      // ヘッダー?ボタン/ツールバー?ボタン
       attachHeaderHelps("#tbl-candidate");
       attachToolbarHelps();
+
+      // ←ここで2桁に整える
+      _formatTwoDecimals("#tbl-candidate");
     }
 
+    // ===== 明日用 =====
+    function renderTomorrow(rows){
+      // 明日用表示前に、rows を含めて連続ラベルを再構築
+      rebuildCodeStreak(rows);
+
+      const body = document.querySelector("#tbl-tmr tbody");
+      if (!body) return;
+      let html = "";
+
+      rows.forEach(r=>{
+        const rec = (r["推奨アクション"] || "").trim();
+        let recBadge = "";
+        if (rec === "エントリー有力") {
+          recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+        } else if (rec === "小口提案") {
+          recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+        } else if (rec) {
+          recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+        }
+
+        const isHitRow = /^当たり！/.test(formatJudgeLabel(r));
+
+        html += `<tr${isHitRow ? " class='hit'" : ""}>
+          <td>${r["コード"] ?? ""}</td>
+          <td>${r["銘柄名"] ?? ""}</td>
+          <td class="num">${r["現在値"] ?? ""}</td>
+          <td class="num">${r["前日終値比率"] ?? ""}</td>
+          <td class="num">${r["売買代金(億)"] ?? ""}</td>
+          <td>${recBadge}</td>
+          <td class="num">${r["右肩早期スコア"] ?? ""}</td>
+          <td>${formatJudgeLabel(r)}</td>
+          <td>${r["シグナル更新日"] || ""}</td>
+        </tr>`;
+      });
+
+      body.innerHTML = html;
+
+      if (typeof attachHeaderHelps === "function") attachHeaderHelps("#tbl-tmr");
+      if (typeof wireDomSort === "function") wireDomSort("#tbl-tmr");
+
+      // ←ここで2桁に整える
+      _formatTwoDecimals("#tbl-tmr");
+    }
+
+    // ===== 全カラム =====
     function renderAll(){
-      const head=$("#all-head"), body=$("#all-body"); if(!head||!body) return;
+      const head = document.querySelector("#all-head"), body = document.querySelector("#all-body");
+      if(!head||!body) return;
       head.innerHTML=body.innerHTML="";
-      const rows=DATA_ALL; if(!rows.length) return;
+      const rows=DATA_ALL;
+      if(!rows.length) return;
+
       const cols=Object.keys(rows[0]);
       head.innerHTML=cols.map(c=>{
-        const typ=(c.includes("フラグ")?"flag":(c.includes("日")||c.includes("更新")||c==="日時"?"date":(["現在値","出来高","売買代金(億)","時価総額億円","右肩早期スコア","推奨比率"].includes(c)?"num":"text")));
+        const typ=(c.includes("フラグ")?"flag":(c.includes("日")||c.includes("更新")||c==="日時"?"date":(["現在値","出来高","売買代金(億)","時価総額億円","右肩早期スコア","推奨比率","前日終値比率","前日終値比率（％）"].includes(c)?"num":"text")));
         return `<th class="sortable ${typ==='num'?'num':''}" data-col="${c}" data-type="${typ}">${c}<span class="arrow"></span></th>`;
       }).join("");
-      body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${cols.map(c=>`<td class="${['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率'].includes(c)?'num':''}">${r[c]??""}</td>`).join("")}</tr>`).join("");
-      attachHeaderHelps("#tbl-allcols");
-      wireDomSort("#tbl-allcols");
+
+      body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${
+        cols.map(c=>{
+          let v = (c === "判定") ? formatJudgeLabel(r) : (r[c] ?? "");
+          const isNum = ['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率','前日終値比率','前日終値比率（％）'].includes(c);
+          return `<td class="${isNum?'num':''}">${v}</td>`;
+        }).join("")
+      }</tr>`).join("");
+
+      attachHeaderHelps("#tbl-all");
+      if (typeof wireDomSort === "function") wireDomSort("#tbl-allcols");
+
+      // ←ここで2桁に整える
+      _formatTwoDecimals("#tbl-allcols");
     }
 
-    function render(){ if(state.tab==="cand") renderCand(); else if(state.tab==="all") renderAll(); }
-    window.render=render;
+    // レンダラ切替
+    function render(){
+      if(state.tab==="cand") renderCand();
+      else if(state.tab==="all") renderAll();
+      else if(state.tab==="tmr") {
+        // 明日用データはどこかで用意済みの配列を使う想定（例: window.DATA_TMR）
+        const rows = (window.DATA_TMR && Array.isArray(window.DATA_TMR)) ? window.DATA_TMR : [];
+        renderTomorrow(rows);
+      }
+    }
+
+
 
     /* ---------- 行モーダル ---------- */
     function ensureModal(){
@@ -2860,7 +3054,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <td class="num">${r["売買代金(億)"]??""}</td>
           <td class="num">${r["右肩早期スコア"]??""}</td>
           <td>${etBadge}${r["右肩早期種別_mini"]||""}</td>
-          <td>${r["判定"]||""}</td>
+          <td>${formatJudgeLabel(r)}</td>
           <td>${recBadge}</td>
         </tr>`;
       }).join("");
@@ -3120,7 +3314,72 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         meta["next_business_day"] = _next.strftime("%Y-%m-%d")
 
     # ---------- 4) JSON を __DATA__ に直埋め ----------
-    data_obj = {"cand": cand_rows, "all": all_rows, "logs": log_rows, "meta": meta}  # ← 追加
+    
+    # 直近30営業日の「コード・日付・判定」を hist として付与（無ければ空でOK）
+    # signals_bg から直近の銘柄別・日次判定を取る版
+    def _build_hist_rows():
+        import pandas as pd
+
+        # cand の銘柄と最終日を基準に期間を決める
+        codes = sorted({ r.get("コード") for r in cand_rows if r.get("コード") })
+        if not codes:
+            return []
+
+        try:
+            last_day = max(pd.to_datetime([r.get("シグナル更新日") for r in cand_rows
+                                           if r.get("シグナル更新日")])).normalize()
+        except Exception:
+            last_day = pd.Timestamp.today().normalize()
+        start_day = last_day - pd.tseries.offsets.BDay(60)  # 直近60営業日ぶん
+
+        # --- ここから修正：IN (:codes) を qmarks に展開して渡す ---
+        # ※ codes が多すぎると SQLite の変数上限（既定 999）に触れるので安全側で分割
+        def _fetch_chunk(chunk):
+            qmarks = ",".join("?" * len(chunk))
+            sql = f"""
+                SELECT
+                  コード,
+                  DATE(日時) AS シグナル更新日,
+                  判定,
+                  フォロー高値pct,
+                  最大逆行pct,
+                  リターン終値pct
+                FROM signals_log
+                WHERE DATE(日時) BETWEEN ? AND ?
+                  AND コード IN ({qmarks})
+            """
+            params = [str(start_day.date()), str(last_day.date()), *chunk]
+            return pd.read_sql_query(sql, conn, params=params)
+
+        dfs = []
+        MAX_VARS = 900  # 余裕を見て 900
+        for i in range(0, len(codes), MAX_VARS):
+            dfs.append(_fetch_chunk(codes[i:i+MAX_VARS]))
+        df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(columns=["コード","シグナル更新日","判定"])
+
+        if df.empty:
+            return []
+
+        # 判定 正規化
+        def _norm_hit(row):
+            s = str(row.get("判定") or "").strip()
+            if "当たり" in s: return "当たり！"
+            if "外れ" in s:   return "外れ！"
+            try:
+                return "当たり！" if float(row.get("フォロー高値pct") or 0) > 0 else "外れ！"
+            except Exception:
+                return "外れ！"
+
+        df["判定"] = df.apply(_norm_hit, axis=1)
+        df["シグナル更新日"] = pd.to_datetime(df["シグナル更新日"]).dt.strftime("%Y-%m-%d")
+
+        hist = df[["コード", "シグナル更新日", "判定"]].dropna().drop_duplicates()
+        return hist.sort_values(["コード", "シグナル更新日"]).to_dict("records")
+
+    hist_rows = _build_hist_rows()
+
+    
+    data_obj = {"cand": cand_rows, "all": all_rows, "logs": log_rows, "hist": hist_rows, "meta": meta}
     data_json = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -4021,12 +4280,12 @@ def main():
     print("=== 開始 ===")
 
     # (0) 付帯処理：空売り機関リストの更新
-    try:
-        _timed("run_karauri_script", run_karauri_script)
-    except Exception as e:
-        print("[karauri][WARN]", e)
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    #try:
+    #    _timed("run_karauri_script", run_karauri_script)
+    #except Exception as e:
+    #    print("[karauri][WARN]", e)
+    #
+    #os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # (1) DB open & スキーマ保証
     conn = open_conn(DB_PATH)
