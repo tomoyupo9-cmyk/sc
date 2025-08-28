@@ -2038,8 +2038,8 @@ def _prepare_rows(df: pd.DataFrame):
 
         # 前日比 補完
         now_=_to_float(d.get("現在値")); prev_=_to_float(d.get("前日終値"))
-        if d.get("前日比（円）") is None and (now_ is not None and prev_ is not None):
-            d["前日比（円）"] = now_ - prev_
+        if d.get("前日円差") is None and (now_ is not None and prev_ is not None):
+            d["前日円差"] = now_ - prev_
         if d.get("前日終値比率") is None and (now_ is not None and prev_ not in (None,0)):
             d["前日終値比率"] = (now_/prev_ - 1.0) * 100.0
 
@@ -2092,9 +2092,21 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #ccd;border-radius:8px;background:#fff}
   .toolbar input[type="number"]{width:80px}
   .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
-  .tbl{border-collapse:collapse;width:100%;background:#fff;border-radius:10px;overflow:hidden}
+
+  /* ▼ テーブルまわり（角丸クリップはラッパで管理） */
+  .tbl-wrap{
+    border-radius:10px;
+    overflow:visible;                 /* ← stickyを殺さないためテーブル本体ではなくラッパでclip */
+    background:#fff;
+    box-shadow:0 0 0 1px var(--line) inset;
+  }
+  .tbl{
+    border-collapse:collapse;
+    width:100%;
+    background:#fff;
+  }
   .tbl th,.tbl td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
-  .tbl thead th{position:sticky;top:0;background:#f3f6fb;z-index:1}
+  /* .tbl thead th{position:sticky;top:0;background:#f3f6fb;z-index:1} ← 全体固定はやめる */
   .tbl tbody tr:nth-child(even){background:#fcfdff}
   .tbl tbody tr:hover{background:var(--rowhover)}
   .tbl th.sortable{cursor:pointer;user-select:none}
@@ -2107,8 +2119,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .b-green{background:#e7f6ed;color:var(--green);border:1px solid #cceedd}
   .b-orange{background:#fff4e6;color:#b45309;border:1px solid #ffe2c2}
   .b-yellow{background:#fff9db;color:#a16207;border:1px solid #ffe9a8}
+
   /* modal */
-  .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:9999}
+  .modal-back{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:none;align-items:center;justify-content:center;z-index:9999}
   .modal{max-width:980px;background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 30px rgba(0,0,0,.25);max-height:90vh;overflow:auto}
   .modal .close{float:right;cursor:pointer;font-size:18px;padding:2px 8px;border-radius:6px}
   .modal .close:hover{background:#f2f2f2}
@@ -2119,6 +2132,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .qhelp:hover{background:#f1f5f9}
   .help-grid{display:grid;grid-template-columns:160px 1fr;gap:8px 12px}
   .help-title{font-weight:700;margin-bottom:8px}
+
   /* 推奨バッジ */
   .rec-badge{
     display:inline-flex; align-items:center; gap:6px;
@@ -2130,7 +2144,18 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }  /* その他/保留   */
   .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor;}
 
+  /* ▼ 候補一覧テーブルだけヘッダー固定（Safari対応） */
+  #tbl-candidate thead th{
+    position: sticky;
+    position: -webkit-sticky; /* Safari */
+    top: 0;
+    background:#f3f6fb;       /* 透け防止 */
+    z-index: 5;               /* 行より前面に */
+    border-bottom:2px solid #ccc;
+  }
 </style>
+
+
 </head>
 <body>
   <nav>
@@ -2175,34 +2200,161 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     </span>
     <span class="count">件数: <b id="count">-</b></span>
   </div>
-  <script>
-  document.addEventListener("DOMContentLoaded", ()=>{
-    const bar = document.getElementById("toolbar");
-    if(!bar || bar.querySelector(".qhelp-summary")) return;
+<script>
 
-    const b = document.createElement("button");
-    b.className="qhelp qhelp-summary"; 
-    b.title="まとめ";
-    b.textContent="?まとめ";
-    b.style.marginLeft = "8px";
-    b.style.padding = "2px 6px";
-    b.style.fontSize = "12px";
-    b.style.border = "1px solid #ccd";
-    b.style.background = "#f7f7ff";
-    b.style.borderRadius = "6px";
-    b.style.cursor = "pointer";
+/* ======= openHelpModal のグローバル定義（無ければ作る／あっても上書き可） ======= */
+(function(){
+  // 既にグローバルにあれば何もしない
+  if (typeof window.openHelpModal === "function") return;
 
-    b.addEventListener("click", ()=> 
-      openHelpModal("まとめ（優先度順）", `<div>${HELP_TEXT["まとめ（優先度順）"]||""}</div>`)
-    );
+  // 最低限のモーダルDOMを用意（既存の .modal-back / .modal を再利用）
+  function getOrCreate(selector, html){
+    let el = document.querySelector(selector);
+    if (!el){
+      el = document.createElement("div");
+      el.innerHTML = html.trim();
+      el = el.firstElementChild;
+      document.body.appendChild(el);
+    }
+    return el;
+  }
 
-    bar.appendChild(b);
+  // 背景とコンテナ
+  const back = getOrCreate(".modal-back",
+    '<div class="modal-back" style="display:none"></div>');
+  const box  = getOrCreate(".modal",
+    '<div class="modal" role="dialog" aria-modal="true" style="display:none"></div>');
+
+  // 閉じる関数（Escでも閉じる）
+  function closeHelpModal(){
+    box.style.display = "none";
+    back.style.display = "none";
+  }
+  back.addEventListener("click", closeHelpModal);
+  document.addEventListener("keydown", e=>{
+    if (e.key === "Escape") closeHelpModal();
   });
-  </script>
+
+  // 公開API
+  window.openHelpModal = function(title, html){
+    // シンプルなヘッダ＋×ボタンを毎回描画
+    box.innerHTML = `
+      <div class="close" style="float:right;cursor:pointer;padding:2px 8px;border-radius:6px">×</div>
+      <div class="help-title" style="font-weight:700;margin:0 0 8px">${title || "ヘルプ"}</div>
+      <div class="help-body">${html || "<div>このヘルプは準備中です。</div>"}</div>
+    `;
+    box.querySelector(".close").addEventListener("click", closeHelpModal);
+
+    back.style.display = "flex";   // .modal-back{display:flex}想定
+    box.style.display  = "block";
+  };
+
+  // 互換：別名で呼ばれても拾う
+  window.showHelpModal = window.showHelpModal || window.openHelpModal;
+})();
+/* =================== ヘルプ一括パッチ（貼るだけ） =================== */
+
+/* 1) 列名 → ヘルプキーの対応（必要に応じて増やせます） */
+const DATACOL_TO_HELPKEY = {
+  "初動フラグ":"初動",
+  "底打ちフラグ":"底打ち",
+  "右肩上がりフラグ":"右肩",
+  "右肩早期フラグ":"早期",
+  "右肩早期スコア":"早期S",
+  "右肩早期種別":"早期種別",
+  "判定":"判定",
+  "推奨アクション":"推奨",
+  "推奨比率":"推奨比率",
+  "前日円差":"前日円差",          // ← 「前日円差」に統一
+  "前日終値比率":"前日終値比率（％）" // どちらの表記でも拾えるように
+};
+
+/* 2) 既定の「まとめ」文（中身が未定義でも必ず開く） */
+window.HELP_TEXT = window.HELP_TEXT || {};
+const DEFAULT_SUMMARY_HTML = `
+  <div class="help-title">まとめ（優先度順）</div>
+  <div>
+    スクリーニング結果の総合判定の要約です。主要フラグ（初動/底打ち/右肩/早期/早期種別）や
+    スコア、推奨アクションの見方を優先度順に整理しています。各項目の詳細は各ヘッダの「？」をご覧ください。
+  </div>
+`;
+// 正しいキー名だけを使う（誤字キーは作らない）
+HELP_TEXT["まとめ（優先度順）"] = HELP_TEXT["まとめ（優先度順）"] || HELP_TEXT["まとめ"] || DEFAULT_SUMMARY_HTML;
+HELP_TEXT["まとめ"] = HELP_TEXT["まとめ"] || HELP_TEXT["まとめ（優先度順）"];
+
+/* 3) ヘルプキー解決（ヘッダの data-help / data-col / テキストの順で拾う） */
+function helpKeyFromTh(th){
+  const raw = (th?.dataset?.help || th?.dataset?.col || th?.textContent || "").trim();
+  return DATACOL_TO_HELPKEY[raw] || raw;
+}
+
+/* 4) ヘッダに「？」を1回だけ付与＆クリックで openHelpModal を開く */
+function ensureQhelpOnHeader(table){
+  const thead = table?.querySelector("thead");
+  if (!thead) return;
+  thead.querySelectorAll("th").forEach(th=>{
+    if (th.querySelector(".qhelp, .help-icon")) return;   // 既に付いていればスキップ
+    const btn = document.createElement("span");
+    btn.className = "qhelp";
+    btn.textContent = "?";
+    btn.title = th.textContent.trim();
+    btn.style.marginLeft = "6px";
+    btn.style.display = "inline-flex";
+    btn.style.alignItems = "center";
+    btn.style.justifyContent = "center";
+    btn.style.width = "18px";
+    btn.style.height = "18px";
+    btn.style.borderRadius = "50%";
+    btn.style.border = "1px solid #cbd5e1";
+    btn.style.fontSize = "12px";
+    btn.style.cursor = "pointer";
+    btn.addEventListener("click",(e)=>{
+      e.stopPropagation();
+      const key  = helpKeyFromTh(th);
+      const html = (window.HELP_TEXT && window.HELP_TEXT[key]) ||
+                   `<div class="help-title">${th.textContent.trim()}</div><div>このヘルプは準備中です。</div>`;
+      openHelpModal(th.textContent.trim(), html);
+    });
+    th.appendChild(btn);
+  });
+}
+
+/* 5) 旧コード互換：呼び出し名のゆらぎを吸収 */
+window.enhanceCellsWithSignalHelp = window.enhanceCellsWithSignalHelp || ensureQhelpOnHeader;
+window.attachHelpAuto            = window.attachHelpAuto            || ensureQhelpOnHeader;
+window.attachHelpAsuto           = window.attachHelpAsuto           || ensureQhelpOnHeader; // 誤記版も拾う
+
+/* 6) 起動時に候補一覧へ適用（必要なら他テーブルもここで） */
+document.addEventListener("DOMContentLoaded", ()=>{
+  const t = document.getElementById("tbl-candidate");
+  if (t) ensureQhelpOnHeader(t);
+
+  // ツールバーに「？まとめ」ボタン（重複防止付き）
+  const bar = document.getElementById("toolbar");
+  if (bar && !bar.querySelector(".qhelp-summary")){
+    const b = document.createElement("button");
+    b.className = "qhelp-summary";
+    b.type = "button";
+    b.textContent = "？まとめ";
+    b.style.cssText = "margin-left:8px;padding:2px 6px;font-size:12px;border:1px solid #ccd;background:#f7f7ff;border-radius:6px;cursor:pointer";
+    b.addEventListener("click",(e)=>{
+      e.stopPropagation();
+      const html = HELP_TEXT["まとめ（優先度順）"] || HELP_TEXT["まとめ"] || DEFAULT_SUMMARY_HTML;
+      openHelpModal("まとめ（優先度順）", `<div>${html}</div>`);
+    });
+    bar.appendChild(b);
+  }
+});
+/* =================== /ヘルプ一括パッチ =================== */
+</script>
+
+
+
 
 
 
   <section id="tab-candidate" class="tab">
+  <div class="tbl-wrap">
     <table id="tbl-candidate" class="tbl">
       <thead>
         <tr>
@@ -2212,7 +2364,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <th>X</th>
           <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
           <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
-          <th class="num sortable" data-col="前日比（円）" data-type="num">前日比（円）<span class="arrow"></span></th>
+          <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
           <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
           <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
           <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
@@ -2231,6 +2383,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       </thead>
       <tbody></tbody>
     </table>
+  </div>
   </section>
 
   <section id="tab-all" class="tab hidden">
@@ -2372,7 +2525,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
           <td class="num">${r["現在値"] ?? ""}</td>
           <td class="num">${r["前日終値"] ?? ""}</td>
-          <td class="num">${r["前日比（円）"] ?? ""}</td>
+          <td class="num">${r["前日円差"] ?? ""}</td>
           <td class="num">${r["前日終値比率"] ?? ""}</td>
           <td class="num">${r["出来高"] ?? ""}</td>
           <td class="num">${r["売買代金(億)"] ?? ""}</td>
@@ -2430,7 +2583,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
       // テーブル列（ヘッダと完全一致）
       "前日終値": "その銘柄の前日の終値。基準価格となる。",
-      "前日比（円）": "当日の株価が前日終値から何円動いたか。",
+      "前日円差": "当日の株価が前日終値から何円動いたか。",
       "前日終値比率（％）": "【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
       "出来高": "売買された株数。単独では不十分で、売買代金やRVOLと併用が望ましい。",
       "売買代金(億)": "【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。20–50 億あると機関や短期筋も参加し、値動きが素直になりやすい。",
@@ -2488,7 +2641,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     // --- 見出しに「？」を付ける（置き換え版） ---
     function enhanceHeadersWithHelp(root=document){
       root.querySelectorAll("table thead th").forEach(th=>{
-        if (th.querySelector(".help-icon,.qhelp")) return; // 既に?がある列はスキップ
+        if (th.querySelector(".help-icon, .qhelp")) return;
 
         // 1) data-col 優先で判定
         const dc = th.getAttribute("data-col");
@@ -2507,7 +2660,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         btn.textContent = "？";
         btn.title = "ヘルプ";
         btn.style.cssText = "margin-left:6px;border:1px solid #ccd;background:#f7f7ff;padding:0 6px;border-radius:10px;cursor:pointer;font-size:12px;";
-        btn.addEventListener("click", (e)=>{ e.stopPropagation(); openHelp(key, HELP_TEXT[key]); });
+        btn.addEventListener("click", (e)=>{e.stopPropagation();openHelpModal(key, HELP_TEXT[key]);});
         th.appendChild(btn);
       });
     }
@@ -2721,7 +2874,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         コード, 銘柄名,
         現在値,
         "前日終値" AS 前日終値,
-        "前日比（円）" AS "前日比（円）",
+        "前日円差" AS "前日円差",
         前日終値比率,
         出来高, 時価総額億円,
         COALESCE(
@@ -2983,11 +3136,15 @@ def ensure_prevclose_columns(conn):
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(screener)")
     cols = {r[1] for r in cur.fetchall()}
+
+    # 必須列だけ保証
     if "前日終値" not in cols:
         cur.execute('ALTER TABLE screener ADD COLUMN "前日終値" REAL')
-    if "前日比（円）" not in cols:
-        cur.execute('ALTER TABLE screener ADD COLUMN "前日比（円）" REAL')
+    if "前日円差" not in cols:
+        cur.execute('ALTER TABLE screener ADD COLUMN "前日円差" REAL')
+
     conn.commit(); cur.close()
+
 
 def _to_raw(v):
     if isinstance(v, dict):
@@ -2997,7 +3154,7 @@ def _to_raw(v):
 def update_prevclose_from_quotes(conn, codes, batch_size=200, max_workers=8):
     """
     quotes.regularMarketPrice（現在値）と quotes.regularMarketChangePercent（前日終値比率％）
-    から 前日終値 を逆算し、DB: 前日終値 / 前日比（円） / 前日終値比率(％:小数2桁) を更新する。
+    から 前日終値 を逆算し、DB: 前日終値 / 前日円差 / 前日終値比率(％:小数2桁) を更新する。
     - ％が無い場合は regularMarketChange（円）→ now - change で計算
     - それも無い場合のみ previousClose を保険で使用
     """
@@ -3067,7 +3224,7 @@ def update_prevclose_from_quotes(conn, codes, batch_size=200, max_workers=8):
 
         if updates:
             cur.executemany(
-                'UPDATE screener SET "前日終値"=?, "前日比（円）"=?, 前日終値比率=? WHERE コード=?',
+                'UPDATE screener SET "前日終値"=?, "前日円差"=?, 前日終値比率=? WHERE コード=?',
                 updates
             )
             conn.commit()
