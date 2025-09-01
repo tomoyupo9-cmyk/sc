@@ -2098,7 +2098,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   /* ▼ テーブルまわり（角丸クリップはラッパで管理） */
   .tbl-wrap{
     border-radius:10px;
-    overflow:visible;
+    overflow-x:auto;
     background:#fff;
     box-shadow:0 0 0 1px var(--line) inset;
   }
@@ -2186,6 +2186,31 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;
   }
   .qhelp:hover{ background:#e0e7ff; }
+  
+  /* === 行は必ず1行表示 + 横スクロール === */
+  #tbl-candidate td, #tbl-candidate th,
+  #tbl-allcols  td, #tbl-allcols  th{
+    white-space: nowrap !important;
+    word-break:  keep-all !important;
+  }
+
+  .mini{ font-size:10px; color:var(--muted); } /* _mini() 用の小さめ追記 */
+  /* 行を必ず1行に：セル内の <br> を無効化 */
+  #tbl-candidate td br, #tbl-candidate th br,
+  #tbl-allcols  td br, #tbl-allcols  th br{
+    display: none !important;
+  }
+
+  /* 既出の 1行固定ルールも維持 */
+  #tbl-candidate td, #tbl-candidate th,
+  #tbl-allcols  td, #tbl-allcols  th{
+    white-space: nowrap !important;
+    word-break:  keep-all !important;
+  }
+
+  /* 横スクロールできるように */
+  .tbl-wrap{ overflow-x:auto; }
+
 </style>
 </head>
 
@@ -2231,6 +2256,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       <span id="pageinfo" class="muted">- / -</span>
     </span>
     <span class="count">件数: <b id="count">-</b></span>
+    <button id="btn_summary" type="button">まとめ</button>
   </div>
 
   <!-- ヘルプ文言（キーはヘッダーと完全一致） -->
@@ -2468,6 +2494,10 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         if($("#f_noshor")?.checked && !ns) return false;
         if($("#f_opratio")?.checked&& !op) return false;
         if($("#f_hit")?.checked    && !ht) return false;
+        const _rec = (String(r["推奨アクション"]||"")).trim();
+        if($("#f_recstrong")?.checked && _rec !== "エントリー有力") return false;
+        if($("#f_smallpos")?.checked  && _rec !== "小口提案")       return false;
+
 
         const rate=num(r["前日終値比率"]), turn=num(r["売買代金(億)"]), rvol=num(r["RVOL代金"]);
         const tr=thRate(), tt=thTurn(), tv=thRvol();
@@ -2575,17 +2605,37 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         ["上昇率≥",  document.getElementById("th_rate")],
         ["売買代金≥", document.getElementById("th_turn")],
         ["RVOL代金≥", document.getElementById("th_rvol")],
-        ["規定",      document.getElementById("f_defaultset")]
+        ["規定",      document.getElementById("f_defaultset")],
+        ["まとめ（優先度順）", document.getElementById("btn_summary")]
       ];
       map.forEach(([key, el])=>{
-        if(!el) return;
-        if(el.parentElement.querySelector(".qhelp")) return;
-        const s=document.createElement("span"); s.className="qhelp"; s.textContent="?"; s.title="ヘルプ";
-        s.addEventListener("click", ()=> openHelpAt(s));
+        if (!el) return;
+
+        // ラベルがあればラベルに、無ければ該当要素を基準にする
+        const anchor = el.closest?.('label') || el;
+
+        // “その近傍”に同じキーの ? が既にあるならスキップ（toolbar 全体は見ない）
+        const nearRoot = anchor.tagName === 'LABEL' ? anchor : anchor.parentElement || anchor;
+        if (nearRoot.querySelector(`.qhelp[data-help="${key}"]`)) return;
+
+        // 生成
+        const s = document.createElement('span');
+        s.className = 'qhelp';
+        s.textContent = '?';
+        s.title = 'ヘルプ';
         s.dataset.help = key;
-        el.parentElement.appendChild(s);
+        s.addEventListener('click', (e)=>{ e.stopPropagation?.(); openHelpAt(s); });
+
+        // BUTTON の内側に入れると見づらいので外に出す
+        if (anchor.tagName === 'BUTTON') {
+          anchor.insertAdjacentElement('afterend', s);
+        } else {
+          anchor.appendChild(s);
+        }
       });
     }
+
+
     function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
 
 
@@ -3103,6 +3153,13 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     mo.observe(document.body, {childList:true, subtree:true});
 
   })();
+
+  document.addEventListener('DOMContentLoaded', ()=>{
+    document.querySelectorAll('#tbl-candidate td br, #tbl-allcols td br')
+      .forEach(br => br.replaceWith(' '));  // 既存HTMLの <br> をスペースに置換
+  });
+
+
   </script>
 </body>
 </html>"""
@@ -3168,6 +3225,21 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
       SELECT * FROM screener
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
+    
+    # === 小数点第2位で数値型のまま統一（候補一覧 / 明日用 / 全カラム）===
+    def _round2_inplace(df):
+        if df is None or df.empty:
+            return
+        # 列名のゆらぎ対策：「前日終値比率」「前日終値比率（％）」の両方を面倒見ます
+        for col in ("前日終値比率", "前日終値比率（％）"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+        # 売買代金はこの関数では "売買代金(億)" で作っている
+        if "売買代金(億)" in df.columns:
+            df["売買代金(億)"] = pd.to_numeric(df["売買代金(億)"], errors="coerce").round(2)
+
+    _round2_inplace(df_cand)
+    _round2_inplace(df_all)
 
     # ログ（任意）
     if include_log:
@@ -3185,7 +3257,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     def _mini(text):
         if not text:
             return ""
-        return f"<br><span style='font-size:10px;color:gray'>{text}</span>"
+        # 改行(<br>)はやめて同一行に小さく追記
+        return f"&nbsp;<span class='mini'>{text}</span>"
 
     def _flag_with_since(flag, since):
         flag = (flag or "").strip()
@@ -3385,7 +3458,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
 
     # ---------- 5) テンプレート描画 ----------
-    _ensure_template_file(template_dir, overwrite=True)
+    _ensure_template_file(template_dir, overwrite=False)
     env = Environment(loader=FileSystemLoader(template_dir, encoding="utf-8"),
                       autoescape=select_autoescape(["html"]))
     # Jinjaのフィルタは今回は未使用だが、他テンプレ互換のため残す
