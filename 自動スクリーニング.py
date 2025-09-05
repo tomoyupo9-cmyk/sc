@@ -1956,42 +1956,115 @@ def _build_reason(d):
 
 # === 推奨／比率・営利対時価の自動算出（DB非依存）========================
 
-def _derive_recommendation(d):
+# === helper（無ければ追記） ===
+def _clamp(x, lo, hi):
+    try:
+        x = float(x)
+    except Exception:
+        return lo
+    return max(lo, min(hi, x))
+
+def _to_float_safe(d, key, default=None):
+    try:
+        v = d.get(key, None)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return default
+        return float(str(v).replace('%',''))
+    except Exception:
+        return default
+
+# === 推奨ロジック（置換） ===
+def _derive_recommendation(d: dict):
     """
-    候補フラグ + 流動性(RVOL/売買代金) + 合成S + 上昇率レンジで推奨を自動決定。
-    返り値: (推奨アクション, 推奨比率)  ※比率は数値（%ではない）
+    連続比率（0〜1）を作り、UI/運用は離散バンド（1.0/0.75/0.5/0.25/—）で安定化。
+    ・比率は comp（合成スコア）を中核に、流動性と上昇率で補正
+    ・境界付近はヒステリシス（±0.02）でフリップ抑制
+    返り値: (label:str or "", ratio_band:float or None, ratio_raw:float or None)
     """
-    turn = _to_float(d.get("売買代金(億)"))
-    rvol = _to_float(d.get("RVOL代金"))
-    rate = _to_float(d.get("前日終値比率"))
-    comp = _to_float(d.get("合成スコア"))
+    # 参照値の取得
+    comp = _to_float_safe(d, "合成スコア", None)           # 0〜100想定
+    rvol = _to_float_safe(d, "RVOL_売買代金", None)        # ≥2が目安
+    turn = _to_float_safe(d, "売買代金(億)", None)         # ≥5が目安
+    rate = _to_float_safe(d, "前日終値比率（％）", None)    # 上昇率（％）
 
-    # しきい値（必要に応じて調整）
-    TURN_MIN     = 5.0      # 売買代金(億) ≥ 5
-    RVOL_MIN     = 2.0      # RVOL代金 ≥ 2
-    COMP_BASE    = 70.0     # 小口の目安
-    COMP_STRONG  = 80.0     # 有力の目安
-    RATE_SOFT    = (-2.0, 3.0)  # 小口：-2%〜+3%
-    RATE_STRONG  = ( 0.0, 2.0)  # 有力： 0%〜+2%
+    # 候補フラグ（どれか一つでも「候補」）
+    flags = [
+        str(d.get("右肩早期フラグ", "") or "").strip(),
+        str(d.get("右肩上がりフラグ", "") or "").strip(),
+        str(d.get("初動フラグ", "") or "").strip(),
+    ]
+    is_setup = any(f == "候補" for f in flags)
 
-    is_setup = any((d.get(k) or "").strip() == "候補"
-                   for k in ("右肩早期フラグ", "右肩上がりフラグ", "初動フラグ"))
-    liquid   = (turn is not None and turn >= TURN_MIN) and (rvol is not None and rvol >= RVOL_MIN)
-    good     = (comp is not None and comp >= COMP_BASE)
-    strong   = (comp is not None and comp >= COMP_STRONG)
+    # 連続化：合成S=65→0.0, 100→1.0（下駄・上限付き）
+    if comp is None:
+        return ("", None, None)
+    ratio = _clamp((comp - 65.0) / 35.0, 0.0, 1.0)
 
-    def _in(v, lohi): 
-        return (v is not None) and (lohi[0] <= v <= lohi[1])
+    # 流動性補正（満たない場合は減点方式）
+    if rvol is not None and rvol < 2.0:
+        ratio *= 0.7
+    if turn is not None and turn < 5.0:
+        ratio *= 0.8
 
-    # 強い条件 → エントリー有力（1.0%）
-    if is_setup and liquid and strong and _in(rate, RATE_STRONG):
-        return "エントリー有力", 1.0
+    # 上昇率レンジ補正（小口レンジ外は減点、有力レンジは微加点）
+    if rate is not None:
+        if 0.0 <= rate <= 2.0:
+            ratio = min(1.0, ratio * 1.10)   # 有力レンジ微ブースト
+        elif -2.0 <= rate <= 3.0:
+            pass                              # 小口レンジ＝補正なし
+        else:
+            ratio *= 0.6                      # レンジ外は減点
 
-    # 緩い条件 → 小口提案（0.5%）
-    if is_setup and liquid and good and _in(rate, RATE_SOFT):
-        return "小口提案", 0.5
+    # 候補でない場合は弱め扱い（完全にゼロにせず、わずかに残す選択も可能）
+    if not is_setup:
+        ratio *= 0.5
 
-    return "", None
+    ratio = _clamp(ratio, 0.0, 1.0)
+    ratio_raw = ratio  # 生値を保持
+
+    # ===== バンド分け（UI/運用向け）＋ヒステリシス =====
+    # 直近の raw が dict にあれば取得（ダッシュボード側で前回値を入れてくれていれば粘りが効く）
+    prev_raw = _to_float_safe(d, "推奨比率_raw", None)
+
+    # バンド（下限しきい値, ラベル, 表示倍率）
+    BANDS = [
+        (0.88, "エントリー有力", 1.00),
+        (0.63, "中強度",        0.75),
+        (0.38, "小口提案",      0.50),
+        (0.13, "微小口",        0.25),
+    ]
+    EPS = 0.02  # ヒステリシス幅
+
+    def _band_index(val):
+        for i, (thr, _, _) in enumerate(BANDS):
+            if val >= thr:
+                return i
+        return None
+
+    cand_idx = _band_index(ratio)
+    prev_idx = _band_index(prev_raw) if prev_raw is not None else None
+
+    # ヒステリシス：境界±EPSで前回バンドを維持
+    if prev_idx is not None and cand_idx is not None:
+        # 上方向遷移のときは “thr + EPS” まで到達しない限り据え置き
+        if cand_idx < prev_idx:
+            thr_up = BANDS[cand_idx][0]
+            if ratio < (thr_up + EPS):
+                cand_idx = prev_idx
+        # 下方向遷移のときは “prev_thr - EPS” を割るまで据え置き
+        elif cand_idx > prev_idx:
+            prev_thr = BANDS[prev_idx][0]
+            if ratio >= (prev_thr - EPS):
+                cand_idx = prev_idx
+
+    # バンド決定
+    if cand_idx is None:
+        # しきい値未満は「空欄」
+        return ("", None, ratio_raw)
+    label, ratio_band = BANDS[cand_idx][1], BANDS[cand_idx][2]
+
+    return (label, ratio_band, ratio_raw)
+
 
 
 def _derive_opratio_flag(d, threshold_pct: float = 10.0) -> str:
@@ -2043,6 +2116,21 @@ def _prepare_rows(df: pd.DataFrame):
         if d.get("前日終値比率") is None and (now_ is not None and prev_ not in (None,0)):
             d["前日終値比率"] = (now_/prev_ - 1.0) * 100.0
 
+        # 現在値 raw
+        cv = _to_float(d.get("現在値"))
+        d["現在値_raw"] = cv if cv is not None else ""
+
+        # 前日終値比率 raw（「前日終値比率（％）」という列名の揺れにも対応）
+        pct_val = d.get("前日終値比率")
+        if pct_val is None:
+            pct_val = d.get("前日終値比率（％）")
+        pctf = _to_float(pct_val)
+        d["前日終値比率_raw"] = pctf if pctf is not None else ""
+
+        # 表示は％文字列に統一（rawは数値のまま残す）
+        if pctf is not None:
+            d["前日終値比率"] = f"{round(float(pctf), 2)}%"
+
         # 付加フラグ
         d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
         d["営利対時価_flag"]     = _op_ratio_flag(d)  # ← チェックボックス用（割安）
@@ -2052,13 +2140,23 @@ def _prepare_rows(df: pd.DataFrame):
         d["判定"] = "当たり！" if (pct is not None and pct > 0) else ""
         d["判定理由"] = _build_reason(d)
         
-                # --- 推奨/比率（DB列が無い or 空なら自動付与） ---
-        if not (d.get("推奨アクション") or "").strip():
-            rec, ratio = _derive_recommendation(d)
-            if rec:
-                d["推奨アクション"] = rec
-            if ratio is not None:
-                d["推奨比率"] = ratio
+        # --- 推奨アクション／推奨比率（連続＆バンド） ---
+        rec, ratio_band, ratio_raw = _derive_recommendation(d)
+
+        # 表示列：％は見た目、raw は後続のヒステリシス維持に使える
+        if rec:
+            d["推奨アクション"] = rec
+        else:
+            d["推奨アクション"] = d.get("推奨アクション", "") or ""
+
+        d["推奨比率_raw"] = ratio_raw if ratio_raw is not None else d.get("推奨比率_raw", "")
+
+        # UI表示はバンド値を％に（None は空白）
+        if ratio_band is None:
+            d["推奨比率"] = ""
+        else:
+            d["推奨比率"] = f"{int(round(float(ratio_band)*100))}%"
+
 
         # --- 営利対時価_flag（DB列が無い/空なら導出） ---
         if not (d.get("営利対時価_flag") or "").strip():
@@ -2086,7 +2184,12 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     --blue:#0d3b66; --green:#15803d; --orange:#b45309; --yellow:#a16207;
     --hit:#ffe6ef; --rowhover:#f6faff;
   }
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans JP',sans-serif;margin:16px;color:var(--ink);background:#fff}
+
+  /* 全体 */
+  body{
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans JP',sans-serif;
+    margin:16px; color:var(--ink); background:#fff;
+  }
   nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
   nav a{padding:6px 10px;border-radius:8px;text-decoration:none;background:#e1e8f0;color:#1f2d3d;font-weight:600}
   nav a.active{background:var(--blue);color:#fff}
@@ -2095,23 +2198,36 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .toolbar input[type="number"]{width:80px}
   .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
 
-  /* ▼ テーブルまわり（角丸クリップはラッパで管理） */
+  /* ▼ テーブルラッパ（角丸＋横スクロール） */
   .tbl-wrap{
     border-radius:10px;
     overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
     background:#fff;
     box-shadow:0 0 0 1px var(--line) inset;
   }
+
+  /* ▼ テーブル共通（コンパクト化） */
   .tbl{ border-collapse:collapse; width:100%; background:#fff; }
-  .tbl th,.tbl td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
+  .tbl th,.tbl td{
+    border-bottom:1px solid var(--line);
+    /* 余白とフォントを小さく */
+    padding:4px 6px;
+    font-size:0.85em;
+    vertical-align:top;
+  }
   .tbl tbody tr:nth-child(even){background:#fcfdff}
   .tbl tbody tr:hover{background:var(--rowhover)}
   .tbl th.sortable{cursor:pointer;user-select:none}
   .tbl th.sortable .arrow{margin-left:6px;font-size:11px;color:#666}
   .num{text-align:right}
-  .muted{color:var(--muted)} .hidden{display:none} .count{margin-left:6px;color:var(--muted)}
+  .muted{color:var(--muted)}
+  .hidden{display:none}
+  .count{margin-left:6px;color:var(--muted)}
   .pager{display:flex;gap:8px;align-items:center}
   tr.hit>td{background:var(--hit)}
+
+  /* バッジ */
   .badge{display:inline-flex;gap:6px;align-items:center;padding:2px 8px;border-radius:999px;font-size:12px;line-height:1;font-weight:700}
   .b-green{background:#e7f6ed;color:var(--green);border:1px solid #cceedd}
   .b-orange{background:#fff4e6;color:#b45309;border:1px solid #ffe2c2}
@@ -2128,44 +2244,35 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
   .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor;}
 
-  /* ▼ 候補一覧テーブルだけヘッダー固定（Safari対応） */
-  #tbl-candidate thead th{
-    position: sticky;
-    position: -webkit-sticky;
-    top: 0;
+  /* ▼ ヘッダー固定（候補一覧 / 全カラム） */
+  #tbl-candidate thead th,
+  #tbl-allcols  thead th{
+    position:sticky;
+    position:-webkit-sticky;
+    top:0;
     background:#f3f6fb;
-    z-index: 5;
-    border-bottom:2px solid #ccc;
-  }
-  /* ▼ 全カラムテーブルも候補一覧と同じヘッダー固定 */
-  #tbl-allcols thead th{
-    position: sticky;
-    position: -webkit-sticky; /* Safari */
-    top: 0;
-    background:#f3f6fb;
-    z-index: 5;
+    z-index:5;
     border-bottom:2px solid #ccc;
   }
 
   /* ===== ヘルプ（小窓＋暗幕） ===== */
   .help-backdrop{
-    position: fixed; inset: 0;
-    background: rgba(17,24,39,.45);
-    z-index: 9998;
-    display: none;               /* ← 初期は非表示 */
+    position:fixed; inset:0;
+    background:rgba(17,24,39,.45);
+    z-index:9998;
+    display:none;
   }
   .help-pop{
-    position: absolute;
-    z-index: 9999;
-    max-width: 360px;
-    background: #fff;
-    border: 1px solid #e5e7eb;
-    border-radius: 12px;
-    box-shadow: 0 12px 32px rgba(0,0,0,.18);
-    padding: 12px 14px 14px;
-    font-size: 13px;
-    line-height: 1.55;
-    display: none;               /* ← 初期は非表示 */
+    position:absolute;
+    z-index:9999;
+    max-width:360px;
+    background:#fff;
+    border:1px solid #e5e7eb;
+    border-radius:12px;
+    box-shadow:0 12px 32px rgba(0,0,0,.18);
+    padding:12px 14px 14px;
+    font-size:13px; line-height:1.55;
+    display:none;
   }
   .help-pop .help-head{
     display:flex; align-items:center; justify-content:space-between;
@@ -2186,32 +2293,35 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;
   }
   .qhelp:hover{ background:#e0e7ff; }
-  
-  /* === 行は必ず1行表示 + 横スクロール === */
+
+  /* === 行は既定で1行表示（見切れ対策に横スクロール） === */
   #tbl-candidate td, #tbl-candidate th,
   #tbl-allcols  td, #tbl-allcols  th{
-    white-space: nowrap !important;
-    word-break:  keep-all !important;
+    white-space:nowrap !important;
+    word-break:keep-all !important;
   }
 
-  .mini{ font-size:10px; color:var(--muted); } /* _mini() 用の小さめ追記 */
-  /* 行を必ず1行に：セル内の <br> を無効化 */
+  /* セル内の <br> を無効化して1行維持 */
   #tbl-candidate td br, #tbl-candidate th br,
   #tbl-allcols  td br, #tbl-allcols  th br{
-    display: none !important;
+    display:none !important;
   }
 
-  /* 既出の 1行固定ルールも維持 */
-  #tbl-candidate td, #tbl-candidate th,
-  #tbl-allcols  td, #tbl-allcols  th{
-    white-space: nowrap !important;
-    word-break:  keep-all !important;
+  /* 横スクロール（再掲：確実に有効化） */
+  .tbl-wrap{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+
+  /* ▼ 判定理由だけ極小＋折り返し可（列にもセルにも付与可能） */
+  th.reason-col, td.reason-col{
+    font-size:0.4em;       /* 非常に小さく（ご指定通り） */
+    line-height:1.1;
+    white-space:normal !important;  /* 折り返し許可 */
+    word-break:break-word !important;
   }
 
-  /* 横スクロールできるように */
-  .tbl-wrap{ overflow-x:auto; }
-
+  /* 補助クラス */
+  .mini{ font-size:10px; color:var(--muted); }
 </style>
+
 </head>
 
 <body>
@@ -2255,8 +2365,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       <button class="btn" id="next">次へ</button>
       <span id="pageinfo" class="muted">- / -</span>
     </span>
-    <span class="count">件数: <b id="count">-</b></span>
-    <button id="btn_summary" type="button">まとめ</button>
+    <span class="count">件数: <b id="count">-</b></span>    
   </div>
 
   <!-- ヘルプ文言（キーはヘッダーと完全一致） -->
@@ -2276,7 +2385,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       "右肩": "【シグナル】右肩上がりスコアに基づくトレンド持続性の判定。",
       "早期": "【シグナル】右肩の“早期”局面。詳細は『早期種別』参照。",
       "早期S": "【勢い+シグナル】RVOL/代金/値動きの合成スコア。80+ 強い、90+ 主役級。",
-      "早期種別": "当日最有力のエントリー種別（ブレイク/ポケット/20MAリバ/200MAリクレイム等）。",
+      "早期種別": "当日最有力のエントリー種別（ブレイク(今買い)>ポケット(仕込み)>20MAリバ(少な目)>200MAリクレイム等(少な目)）。",
       "判定": "最終判定（候補/監視/非該当など）。",
       "判定理由": "アルゴが候補にした根拠の要約。",
       "推奨": "自動分類の推奨ラベル（有力/小口/監視など）。",
@@ -2288,10 +2397,10 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       "ポケット": "10MA上で直近の下げ日最大出来高を上回るなどの“押し目買い”有利域。",
       "20MAリバ": "20MAを下から上へ再突入。出来高は20日平均以上が望ましい。",
       "200MAリクレイム": "200MAを回復し上で維持。50MA上向き/100MA横ばい以上が理想。",
-
       /* まとめ */
       "まとめ（優先度順）": "・売買代金 × RVOL（まず流動性）\n・前日比％ と 合成S（勢い）\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%（許容リスク）\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」を優先。"
     };
+    
     // data-col → HELP_TEXT マップ（ヘッダーの data-col 用）
     window.DATACOL_TO_HELPKEY = {
       "コード":"コード","銘柄名":"銘柄","現在値":"現在値",
@@ -2327,7 +2436,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="text">早期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
-            <th class="sortable" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
+            <th class="sortable reason-col" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
             <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
             <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
             <th class="sortable" data-col="シグナル更新日" data-type="date">更新<span class="arrow"></span></th>
@@ -2426,32 +2535,76 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       if(typ === 'flag'){ return /候補/.test(text) ? 1 : 0; }
       return text; // text
     }
+
     function wireDomSort(tableSelector){
       const table = document.querySelector(tableSelector); if(!table) return;
-      const ths = Array.from(table.querySelectorAll('thead th.sortable'));
+      // ※ 明日用(#tbl-tmr)は thead 全部に配線、それ以外は .sortable のみ
+      const ths = Array.from(table.querySelectorAll(
+        tableSelector === '#tbl-tmr' ? 'thead th' : 'thead th.sortable'
+      ));
+
+      // data-sort を最優先し、なければ textContent を使う
+      const cellVal = (td)=>{
+        if (!td) return '';
+        const ds = td.getAttribute ? td.getAttribute('data-sort') : null;
+        return (ds !== null && ds !== '') ? ds : (td.textContent || '');
+      };
+
+      // 見出しから型を推測（data-type 未指定でも数値/日付を判定）
+      const guessType = (th)=>{
+        const t = (th.textContent || '').trim();
+        if (th.dataset.type) return th.dataset.type;
+        if (/現在値|終値|出来高|売買代金|時価総額|スコア|比率|％|%|億/.test(t)) return 'num';
+        if (/日|日時|更新/.test(t)) return 'date';
+        return 'text';
+      };
+
+      // 文字→数値
+      const toNum = (s)=>{
+        const t = String(s ?? '').replace(/[,\s円％%]/g,'');
+        const n = parseFloat(t);
+        return Number.isFinite(n) ? n : NaN;
+      };
+
       ths.forEach((th, idx)=>{
-        if(th.__wiredSort) return;
+        if (th.__wiredSort) return;
         th.__wiredSort = true;
+        th.style.cursor = 'pointer';
+
         th.addEventListener('click', ()=>{
-          // 方向トグル
-          const prev = th.dataset.dir;
+          const dirPrev = th.dataset.dir;
           ths.forEach(h=>{ h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
-          const dir = (prev === 'asc') ? 'desc' : 'asc';
+          const dir = (dirPrev === 'asc') ? 'desc' : 'asc';
           th.dataset.dir = dir;
 
-          // 並べ替え
-          const typ = th.dataset.type || 'text';
+          const typ = guessType(th);
           const rows = Array.from(table.querySelectorAll('tbody tr'));
-          rows.sort((r1,r2)=>{
-            const a = _sortKeyByType((r1.children[idx]?.textContent||'').trim(), typ);
-            const b = _sortKeyByType((r2.children[idx]?.textContent||'').trim(), typ);
-            if(a < b) return dir==='asc' ? -1 : 1;
-            if(a > b) return dir==='asc' ?  1 : -1;
-            return 0;
+
+          rows.sort((r1, r2)=>{
+            const aRaw = cellVal(r1.children[idx]).trim();
+            const bRaw = cellVal(r2.children[idx]).trim();
+
+            let aKey, bKey;
+            if (typ === 'num') {
+              aKey = toNum(aRaw); bKey = toNum(bRaw);
+              if (!Number.isNaN(aKey) && !Number.isNaN(bKey)) {
+                return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
+              }
+            } else if (typ === 'date') {
+              aKey = Date.parse(aRaw); bKey = Date.parse(bRaw);
+              if (!Number.isNaN(aKey) && !Number.isNaN(bKey)) {
+                return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
+              }
+            }
+            // フォールバック：文字列比較
+            const sa = String(aRaw).toLowerCase();
+            const sb = String(bRaw).toLowerCase();
+            return dir==='asc' ? sa.localeCompare(sb,'ja') : sb.localeCompare(sa,'ja');
           });
+
           const tb = table.querySelector('tbody');
           rows.forEach(r=>tb.appendChild(r));
-          const arrow = th.querySelector('.arrow'); if(arrow) arrow.textContent = (dir==='asc'?'▲':'▼');
+          const arrow = th.querySelector('.arrow'); if (arrow) arrow.textContent = (dir==='asc'?'▲':'▼');
         });
       });
     }
@@ -2600,41 +2753,31 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         th.appendChild(s);
       });
     }
+    
     function attachToolbarHelps(){
       const map = [
         ["上昇率≥",  document.getElementById("th_rate")],
         ["売買代金≥", document.getElementById("th_turn")],
         ["RVOL代金≥", document.getElementById("th_rvol")],
-        ["規定",      document.getElementById("f_defaultset")],
-        ["まとめ（優先度順）", document.getElementById("btn_summary")]
+        ["規定",      document.getElementById("f_defaultset")]
       ];
       map.forEach(([key, el])=>{
-        if (!el) return;
-
-        // ラベルがあればラベルに、無ければ該当要素を基準にする
+        if(!el) return;
+        // ラベルがあればそこを“近傍アンカー”、無ければ要素自身
         const anchor = el.closest?.('label') || el;
 
-        // “その近傍”に同じキーの ? が既にあるならスキップ（toolbar 全体は見ない）
-        const nearRoot = anchor.tagName === 'LABEL' ? anchor : anchor.parentElement || anchor;
-        if (nearRoot.querySelector(`.qhelp[data-help="${key}"]`)) return;
+        // 近傍に同じキーの ? が既にあるなら生成しない（toolbar 全体は見ない）
+        if(anchor.querySelector(`.qhelp[data-help="${key}"]`)) return;
 
-        // 生成
         const s = document.createElement('span');
         s.className = 'qhelp';
         s.textContent = '?';
         s.title = 'ヘルプ';
         s.dataset.help = key;
-        s.addEventListener('click', (e)=>{ e.stopPropagation?.(); openHelpAt(s); });
-
-        // BUTTON の内側に入れると見づらいので外に出す
-        if (anchor.tagName === 'BUTTON') {
-          anchor.insertAdjacentElement('afterend', s);
-        } else {
-          anchor.appendChild(s);
-        }
+        s.addEventListener('click', () => openHelpAt(s));
+        anchor.appendChild(s);
       });
     }
-
 
     function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
 
@@ -2803,7 +2946,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <td class="num">${r["右肩早期スコア"] ?? ""}</td>
           <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
           <td>${formatJudgeLabel(r)}</td>
-          <td>${r["判定理由"] || ""}</td>
+          <td class="reason-col">${r["判定理由"] || ""}</td>
           <td>${recBadge}</td>
           <td class="num">${r["推奨比率"] ?? ""}</td>
           <td>${r["シグナル更新日"] || ""}</td>
@@ -3099,8 +3242,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <td>${r["銘柄名"]??""}</td>
           <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
           <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
-          <td class="num">${r["現在値"]??""}</td>
-          <td class="num">${r["前日終値比率"]??""}</td>
+          <td data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
+          <td data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
           <td class="num">${r["売買代金(億)"]??""}</td>
           <td class="num">${r["右肩早期スコア"]??""}</td>
           <td>${etBadge}${r["右肩早期種別_mini"]||""}</td>
@@ -4353,12 +4496,12 @@ def main():
     print("=== 開始 ===")
 
     # (0) 付帯処理：空売り機関リストの更新
-    #try:
-    #    _timed("run_karauri_script", run_karauri_script)
-    #except Exception as e:
-    #    print("[karauri][WARN]", e)
-    #
-    #os.makedirs(OUTPUT_DIR, exist_ok=True)
+    try:
+        _timed("run_karauri_script", run_karauri_script)
+    except Exception as e:
+        print("[karauri][WARN]", e)
+    
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # (1) DB open & スキーマ保証
     conn = open_conn(DB_PATH)
