@@ -2201,7 +2201,6 @@ def _prepare_rows(df: pd.DataFrame):
 
 # =================== HTMLテンプレ ===================
 
-
 DASH_TEMPLATE_STR = r"""<!doctype html>
 <html lang="ja">
 <head>
@@ -2351,6 +2350,18 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
   /* 補助クラス */
   .mini{ font-size:10px; color:var(--muted); }
+
+  /* コードコピーリンク（追加） */
+  .copylink{
+    color:var(--blue);
+    text-decoration:underline;
+    cursor:pointer;
+  }
+  .copylink.ok{
+    color:var(--green);
+    text-decoration:none;
+    font-weight:700;
+  }
 </style>
 
 </head>
@@ -2564,6 +2575,35 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     if(!Number.isNaN(da)&&!Number.isNaN(db)) return da-db;
     return String(a).localeCompare(String(b),"ja"); };
   const hasKouho = (v)=> String(v||"").includes("候補");
+
+  /* --- コード用：リンクHTML生成（追加） --- */
+  function codeLink(code){
+    if(code==null) return "";
+    const s = String(code).padStart(4, "0");
+    return `<a href="#" class="copylink" data-copy="${s}" title="コードをコピー">${s}</a>`;
+  }
+
+  /* --- クリップボードへコピー（委譲ハンドラ：追加） --- */
+  document.addEventListener("click", async (e)=>{
+    const a = e.target.closest && e.target.closest("a.copylink");
+    if(!a) return;
+    e.preventDefault();
+    const text = a.dataset.copy || "";
+    try{
+      if(navigator.clipboard && window.isSecureContext !== false){
+        await navigator.clipboard.writeText(text);
+      }else{
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position="fixed"; ta.style.left="-9999px";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+      }
+      const old = a.textContent; a.classList.add("ok"); a.textContent = "コピー済";
+      setTimeout(()=>{ a.classList.remove("ok"); a.textContent = old; }, 1200);
+    }catch(_){
+      const old = a.textContent; a.textContent = "失敗";
+      setTimeout(()=>{ a.textContent = old; }, 1200);
+    }
+  });
 
   // === 汎用DOMソート（全カラム / 明日用） ===
   function _parseNum(s){
@@ -2847,7 +2887,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     });
   }
 
-  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;","~":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
 
   
   // ===== 表示用2桁フォーマッタ（整数は小数を出さない） =====
@@ -2987,7 +3027,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       const isHitRow = /^当たり！/.test(formatJudgeLabel(r));
 
       html += `<tr${isHitRow ? " class='hit'" : ""}>
-        <td>${r["コード"] ?? ""}</td>
+        <td>${codeLink(r["コード"])}</td>
         <td>${r["銘柄名"] ?? ""}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
@@ -3060,7 +3100,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       const isHitRow = /^当たり！/.test(formatJudgeLabel(r));
 
       html += `<tr${isHitRow ? " class='hit'" : ""}>
-        <td>${r["コード"] ?? ""}</td>
+        <td>${codeLink(r["コード"])}</td>
         <td>${r["銘柄名"] ?? ""}</td>
         <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
@@ -3103,6 +3143,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${
       cols.map(c=>{
         let v = (c === "判定") ? formatJudgeLabel(r) : (r[c] ?? "");
+        if (c === "コード") v = codeLink(v);
         const isNum = ['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率','前日終値比率','前日終値比率（％）'].includes(c);
         return `<td class="${isNum?'num':''}">${v}</td>`;
       }).join("")
@@ -3380,8 +3421,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
 </body>
 </html>"""
-
-
 
 
 # =================== HTMLテンプレートの保存 ===================
