@@ -2480,6 +2480,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <tr>
             <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
             <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th data-col="市場">市場</th>
             <th>Yahoo</th>
             <th>X</th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
@@ -2514,6 +2515,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           <tr>
             <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
             <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th data-col="市場">市場</th>
             <th>Yahoo</th>
             <th>X</th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
@@ -3082,6 +3084,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       html += `<tr${isHitTr ? " class='hit'" : ""}>
         <td>${codeLink(r["コード"])}</td>
         <td>${r["銘柄名"] ?? ""}</td>
+        <td>${row["市場"] || "-"}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
         <td class="num">${r["現在値"] ?? ""}</td>
@@ -3158,6 +3161,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       html += `<tr${isHitRow ? " class='hit'" : ""}>
         <td>${codeLink(r["コード"])}</td>
         <td>${r["銘柄名"] ?? ""}</td>
+        <td>${row["市場"] || "-"}</td>
         <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
         <td data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
@@ -3501,7 +3505,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # ---------- 1) DBから候補用の必要最小列だけ取得（存在しない列は触らない） ----------
     df_cand = pd.read_sql_query("""
       SELECT
-        コード, 銘柄名,
+        コード, 銘柄名,市場,
         現在値,
         "前日終値" AS 前日終値,
         "前日円差" AS "前日円差",
