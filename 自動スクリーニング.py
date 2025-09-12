@@ -96,6 +96,13 @@ SIGNAL_LOOKBACK_DAYS = 300      # 52週高値に余裕を持たせる
 # MIDDAYの対象を絞る（Trueで速い）
 MIDDAY_FILTER_BY_FLAGS = False
 
+
+# ===== 外れ→再評価 ルール（遅れて成功を拾う） =====
+REJUDGE_LOOKAHEAD_DAYS = 5     # 何営業日先まで猶予を見るか
+REJUDGE_REQ_HIGH_PCT   = 5.0   # その間に高値が +5%以上
+REJUDGE_MAX_ADVERSE_PCT= 7.0   # 最大逆行（MAE）が -7%以内ならOK
+
+
 # ===== フェイルセーフ =====
 try:
     from plyer import notification
@@ -2486,10 +2493,10 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="sortable" data-col="右肩上がりフラグ" data-type="flag">右肩<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期フラグ" data-type="flag">早期<span class="arrow"></span></th>
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
-            <th class="sortable" data-col="右肩早期種別" data-type="text">早期種別<span class="arrow"></span></th>
-            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="etype">早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="judge">判定<span class="arrow"></span></th>
             <th class="sortable reason-col" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
-            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="rec">推奨<span class="arrow"></span></th>
             <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
             <th class="sortable" data-col="シグナル更新日" data-type="date">更新<span class="arrow"></span></th>
           </tr>
@@ -2513,9 +2520,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
-            <th class="sortable" data-col="右肩早期種別" data-type="text">早期種別<span class="arrow"></span></th>
-            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
-            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="etype">早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="judge">判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="rec">推奨<span class="arrow"></span></th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -2632,10 +2639,10 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       return (ds !== null && ds !== '') ? ds : (td.textContent || '');
     };
 
-    // 見出しから型を推測（data-type 未指定でも数値/日付を判定）
+    // 見出しから型を推測（data-type があればそれを使う）
     const guessType = (th)=>{
       const t = (th.textContent || '').trim();
-      if (th.dataset.type) return th.dataset.type;
+      if (th.dataset.type) return th.dataset.type;        // ← 付けた data-type を最優先
       if (/現在値|終値|出来高|売買代金|時価総額|スコア|比率|％|%|億/.test(t)) return 'num';
       if (/日|日時|更新/.test(t)) return 'date';
       return 'text';
@@ -2647,6 +2654,35 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       const n = parseFloat(t);
       return Number.isFinite(n) ? n : NaN;
     };
+
+    // ▼ 追加：カテゴリ列（flag/judge/rec/etype）のソートキー
+    function keyForCategory(text, typ){
+      const s = String(text || '');
+
+      if (typ === 'flag'){                 // 初動/底打ち/右肩/早期（候補/非候補）
+        return /候補/.test(s) ? 1 : 0;     // 候補=1, それ以外=0
+      }
+      if (typ === 'judge'){                // 判定
+        if (/当たり|再評価OK/.test(s)) return 3;
+        if (/候補/.test(s))             return 2;
+        if (/監視/.test(s))             return 1;
+        if (/外れ/.test(s))             return 0;
+        return -1;
+      }
+      if (typ === 'rec'){                  // 推奨
+        if (/エントリー有力/.test(s)) return 3;
+        if (/小口提案/.test(s))       return 2;
+        if (s.trim())                  return 1;  // その他の推奨
+        return 0;
+      }
+      if (typ === 'etype'){                // 早期種別
+        const order = ["ブレイク", "ポケット", "20MAリバ", "200MAリクレイム"];
+        const i = order.findIndex(k => s.includes(k));
+        // ブレイクが最大点になるように逆点で付与
+        return i >= 0 ? (order.length - i) : 0;
+      }
+      return null; // 対象外
+    }
 
     ths.forEach((th, idx)=>{
       if (th.__wiredSort) return;
@@ -2666,18 +2702,28 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
           const aRaw = cellVal(r1.children[idx]).trim();
           const bRaw = cellVal(r2.children[idx]).trim();
 
-          let aKey, bKey;
-          if (typ === 'num') {
-            aKey = toNum(aRaw); bKey = toNum(bRaw);
-            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)) {
+          // 数値/日付はまず数値・時間で比較
+          if (typ === 'num'){
+            const aKey = toNum(aRaw), bKey = toNum(bRaw);
+            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
               return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
             }
-          } else if (typ === 'date') {
-            aKey = Date.parse(aRaw); bKey = Date.parse(bRaw);
-            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)) {
+          } else if (typ === 'date'){
+            const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
+            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
               return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
             }
           }
+
+          // ▼ 追加：カテゴリ列は専用キーで比較
+          if (['flag','judge','rec','etype'].includes(typ)){
+            const aKey = keyForCategory(aRaw, typ);
+            const bKey = keyForCategory(bRaw, typ);
+            if (aKey !== null && bKey !== null){
+              return dir==='asc' ? (aKey - bKey) : (bKey - aKey);
+            }
+          }
+
           // フォールバック：文字列比較
           const sa = String(aRaw).toLowerCase();
           const sb = String(bRaw).toLowerCase();
@@ -2736,7 +2782,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       const etp = (String(r["右肩早期種別"]||"").trim().length>0);
       const ns  = String(r["空売り機関なし_flag"]||"0")==="1";
       const op  = String(r["営利対時価_flag"]||"0")==="1";
-      const ht  = /^当たり！/.test(formatJudgeLabel(r));
+      const hit  = isHitRow(r);
 
       if($("#f_shodou")?.checked && !sh) return false;
       if($("#f_tei")?.checked    && !te) return false;
@@ -2746,7 +2792,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       if($("#f_etype")?.checked  && !etp) return false;
       if($("#f_noshor")?.checked && !ns) return false;
       if($("#f_opratio")?.checked&& !op) return false;
-      if($("#f_hit")?.checked    && !ht) return false;
+      if($("#f_hit")?.checked    && !hit) return false;
 
       // ★ ここで“選択された早期種別”に合わない行を除外（件数・ページャにも反映）
       if (useEarly){
@@ -2780,6 +2826,13 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       ? rows.slice().sort((a,b)=> state.sortDir * cmp(a[state.sortKey], b[state.sortKey]))
       : rows;
   }
+
+  // === 当たり判定の共通ヘルパ ===
+  const HIT_RE = /^(当たり|再評価OK)/;
+  function isHitRow(r){
+    return HIT_RE.test(String((r && r["判定"]) ?? ""));
+  }
+
 
   /* ---------- ヘルプ（小窓） ---------- */
   const HELP_MAP = window.HELP_TEXT || {};
@@ -2958,7 +3011,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       const code = String(r["コード"] ?? "").trim();
       const date = String(r["シグナル更新日"] ?? r["日付"] ?? "").slice(0,10);
       if (!code || !date) return;
-      const isHit = /^当たり/.test(String(r["判定"] ?? ""));
+      const isHit = isHitRow(r);
       const arr = byCode.get(code) || [];
       const i = arr.findIndex(x=>x.date===date);
       const item = {date, isHit};
@@ -2983,7 +3036,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     const code = String(r?.["コード"] || "").trim();
     const date = String(r?.["シグナル更新日"] || "").slice(0,10);
     const key  = `${code}|${date}`;
-    const hit  = /^当たり/.test(String(r?.["判定"]||""));
+    const hit  = isHitRow(r);
     const v = __CODE_STREAK_IDX.get(key);
     return v ? v : (hit ? "当たり！(1)" : "外れ！(1)");
   }
@@ -3024,9 +3077,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
       }
 
-      const isHitRow = /^当たり！/.test(formatJudgeLabel(r));
+      const isHitTr = isHitRow(r);
 
-      html += `<tr${isHitRow ? " class='hit'" : ""}>
+      html += `<tr${isHitTr ? " class='hit'" : ""}>
         <td>${codeLink(r["コード"])}</td>
         <td>${r["銘柄名"] ?? ""}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
@@ -3075,6 +3128,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
     // 早期種別フィルタを再適用
     if (window.__applyEarlyFilter) window.__applyEarlyFilter();
+    
+    // ★ 追加：候補一覧のソートを wireDomSort に統一
+    if (typeof wireDomSort === "function") wireDomSort("#tbl-candidate");
   }
 
   // ===== 明日用 =====
@@ -3240,7 +3296,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   function openTrendChart(){
     const back=ensureChartModal(), body=$("#__chart_body__");
     const rows=applyFilter(state.data); const byDay=new Map();
-    rows.forEach(r=>{ const d=String(r["シグナル更新日"]||"").slice(0,10); if(!d) return; const hit=(String(r["判定"]||"")==="当たり！")?1:0; const o=byDay.get(d)||{tot:0,hit:0}; o.tot++; o.hit+=hit; byDay.set(d,o); });
+    rows.forEach(r=>{ const d=String(r["シグナル更新日"]||"").slice(0,10); if(!d) return; const hit = isHitRow(r) ? 1 : 0; const o=byDay.get(d)||{tot:0,hit:0}; o.tot++; o.hit+=hit; byDay.set(d,o); });
     const days=Array.from(byDay.keys()).sort(); const rate=days.map(d=>{ const o=byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
     body.innerHTML=`<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" width="940" height="320"></canvas>`;
     drawLine(body.querySelector("#cv3"),days,rate,"当たり率（%）");
@@ -3248,10 +3304,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   }
 
   /* ---------- イベント ---------- */
-  $$("#tbl-candidate thead th.sortable").forEach(th=>{
-    th.style.cursor="pointer";
-    th.addEventListener("click",()=>{ const key=th.dataset.col; if(state.sortKey===key) state.sortDir*=-1; else{ state.sortKey=key; state.sortDir=1; } state.page=1; render(); });
-  });
+  
   $("#perpage")?.addEventListener("change",(e)=>{ const v=parseInt(e.target.value,10); state.per=Number.isFinite(v)?v:500; state.page=1; render(); });
   $("#prev")?.addEventListener("click",()=>{ if(state.page>1){state.page--; render();} });
   $("#next")?.addEventListener("click",()=>{ state.page++; render(); });
@@ -4632,6 +4685,75 @@ def phase_update_since_dates(conn):
         conn.commit(); cur.close()
 
 
+def relax_rejudge_signals(
+    conn,
+    lookahead_days: int = None,
+    req_high_pct: float = None,
+    max_adverse_pct: float = None,
+):
+    """
+    signals_log で '外れ' になっているシグナルを、発生日から一定日数内の値動きで再評価。
+    条件:
+      ・lookahead_days 日以内に +req_high_pct% 到達
+      ・かつ 最大逆行（安値基準）が -max_adverse_pct% 以内
+    満たせば 判定='再評価OK' / 理由 を上書き。
+    """
+    import pandas as pd
+
+    L = lookahead_days or REJUDGE_LOOKAHEAD_DAYS
+    UP = req_high_pct   or REJUDGE_REQ_HIGH_PCT
+    DN = max_adverse_pct or REJUDGE_MAX_ADVERSE_PCT
+
+    cur = conn.cursor()
+    # 直近30日分の “外れ” を対象（必要に応じて期間は調整可）
+    cur.execute("""
+      SELECT コード, 日時
+        FROM signals_log
+       WHERE 判定='外れ'
+         AND 日時 >= date('now','-30 day')
+    """)
+    rows = cur.fetchall()
+
+    upd = 0
+    for code, ts in rows:
+        base_date = str(ts)[:10]
+        g = pd.read_sql_query("""
+          SELECT 日付, 終値, 高値, 安値
+            FROM price_history
+           WHERE コード=?
+             AND 日付 BETWEEN date(?) AND date(?, '+' || ? || ' day')
+           ORDER BY 日付 ASC
+        """, conn, params=(code, base_date, base_date, L))
+
+        if g.empty:
+            continue
+
+        entry = float(g.iloc[0]["終値"])
+        if entry is None or entry == 0:
+            continue
+
+        max_up = (g["高値"].max() / entry - 1.0) * 100.0
+        max_dn = (g["安値"].min() / entry - 1.0) * 100.0  # 負の値（例: -6.3）
+
+        if (max_up >= UP) and (max_dn >= -DN):
+            cur2 = conn.cursor()
+            cur2.execute("""
+              UPDATE signals_log
+                 SET 判定='再評価OK',
+                     理由=?
+               WHERE コード=? AND 日時=?
+            """, (f"delayed hit: {L}D +{max_up:.1f}% / MAE {max_dn:.1f}%", code, ts))
+            conn.commit()
+            cur2.close()
+            upd += 1
+
+    cur.close()
+    if upd:
+        print(f"[rejudge] 再評価OK に更新: {upd} 件")
+    else:
+        print("[rejudge] 該当なし")
+
+
 
 # ===== タイマーユーティリティ =====
 from datetime import datetime, time as dtime
@@ -4644,6 +4766,8 @@ def _timed(label, func, *args, **kwargs):
     finally:
         dt = time.time() - t0
         print(f"[TIMER] {label}: {dt:.2f} 秒")
+        
+
 
 
 # ===== 実行モード判定ユーティリティ =====
@@ -4755,6 +4879,9 @@ def main():
                 _timed("validate_prev_business_day", phase_validate_prev_business_day, conn)
             except Exception as e:
                 print("[validate-prev][WARN]", e)
+
+        # (6.5)
+        _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
 
         # (7) 数値の正規化
         try:
