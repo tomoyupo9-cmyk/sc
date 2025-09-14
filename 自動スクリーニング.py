@@ -2236,13 +2236,18 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
 
   /* ▼ テーブルラッパ（角丸＋横スクロール） */
+  
   .tbl-wrap{
     border-radius:10px;
-    overflow-x:auto;
+    /* 縦横スクロール */
+    overflow:auto;
     -webkit-overflow-scrolling:touch;
     background:#fff;
     box-shadow:0 0 0 1px var(--line) inset;
+    /* 適度な高さ（必要に応じて調整）*/
+    max-height: 70vh;
   }
+
 
   /* ▼ テーブル共通（コンパクト化） */
   .tbl{ border-collapse:collapse; width:100%; background:#fff; }
@@ -2287,8 +2292,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     position:sticky;
     position:-webkit-sticky;
     top:0;
-    background:#f3f6fb;
-    z-index:5;
+    background:#fff;
+    z-index: 2;
     border-bottom:2px solid #ccc;
   }
 
@@ -2301,8 +2306,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   }
   .help-pop{
     position:absolute;
-    z-index:9999;
-    max-width:360px;
+    z-index:9999;    
     background:#fff;
     border:1px solid #e5e7eb;
     border-radius:12px;
@@ -2310,6 +2314,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     padding:12px 14px 14px;
     font-size:13px; line-height:1.55;
     display:none;
+    width:clamp(720px, 90vw, 1200px);
   }
   .help-pop .help-head{
     display:flex; align-items:center; justify-content:space-between;
@@ -2489,6 +2494,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th>財務</th>
+            <th data-col="増資リスク低">増資リスク</th>
+            <th data-col="増資リスク理由">理由</th>
             <th class="sortable" data-col="初動フラグ" data-type="flag">初動<span class="arrow"></span></th>
             <th class="sortable" data-col="底打ちフラグ" data-type="flag">底打ち<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩上がりフラグ" data-type="flag">右肩<span class="arrow"></span></th>
@@ -2521,6 +2529,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th>財務</th>
+            <th data-col="増資リスク低">増資リスク</th>
+            <th data-col="増資リスク理由">理由</th>
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="etype">早期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="判定" data-type="judge">判定<span class="arrow"></span></th>
@@ -2592,6 +2603,16 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     return `<a href="#" class="copylink" data-copy="${s}" title="コードをコピー">${s}</a>`;
   }
 
+  /* --- 財務グラフ用：リンクHTML生成（追加） --- */
+  function financeLink(code){
+    if(code==null) return "";
+    const s = String(code).padStart(4, "0");
+    // 同じフォルダに finance_XXXX.html がある前提（相対パス）
+    const href = `finance_${s}.html`;
+    return `<a href="#" class="financelink" data-code="${s}" title="財務グラフを開く">財務</a>`;
+  }
+
+
   /* --- クリップボードへコピー（委譲ハンドラ：追加） --- */
   document.addEventListener("click", async (e)=>{
     const a = e.target.closest && e.target.closest("a.copylink");
@@ -2613,6 +2634,16 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       setTimeout(()=>{ a.textContent = old; }, 1200);
     }
   });
+
+  /* --- 財務リンク クリック（委譲ハンドラ：追加） --- */
+  document.addEventListener("click", (e)=>{
+    const a = e.target.closest && e.target.closest("a.financelink");
+    if(!a) return;
+    e.preventDefault();
+    const code = a.dataset.code;
+    if(code) openFinanceHtml(code);
+  });
+
 
   // === 汎用DOMソート（全カラム / 明日用） ===
   function _parseNum(s){
@@ -2942,7 +2973,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     });
   }
 
-  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;","~":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
 
   
   // ===== 表示用2桁フォーマッタ（整数は小数を出さない） =====
@@ -3084,7 +3115,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       html += `<tr${isHitTr ? " class='hit'" : ""}>
         <td>${codeLink(r["コード"])}</td>
         <td>${r["銘柄名"] ?? ""}</td>
-        <td>${row["市場"] || "-"}</td>
+        <td>${r["市場"] || "-"}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
         <td class="num">${r["現在値"] ?? ""}</td>
@@ -3093,6 +3124,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         <td class="num">${r["前日終値比率"] ?? ""}</td>
         <td class="num">${r["出来高"] ?? ""}</td>
         <td class="num">${r["売買代金(億)"] ?? ""}</td>
+        <td>${financeLink(r["コード"])}</td>
+        <td>${r["増資リスク低"] || "-"}</td>
+        <td class="reason-col">${r["増資リスク理由"] || ""}</td>
         <td>${r["初動フラグ"] || ""}</td>
         <td>${r["底打ちフラグ"] || ""}</td>
         <td>${r["右肩上がりフラグ"] || ""}</td>
@@ -3161,12 +3195,15 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       html += `<tr${isHitRow ? " class='hit'" : ""}>
         <td>${codeLink(r["コード"])}</td>
         <td>${r["銘柄名"] ?? ""}</td>
-        <td>${row["市場"] || "-"}</td>
+        <td>${r["市場"] || "-"}</td>
         <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
         <td data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
         <td data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
         <td class="num">${r["売買代金(億)"]??""}</td>
+        <td>${financeLink(r["コード"])}</td>
+        <td>${r["増資リスク低"] || "-"}</td>
+        <td class="reason-col">${r["増資リスク理由"] || ""}</td>
         <td class="num">${r["右肩早期スコア"]??""}</td>
         <td>${(r["右肩早期種別"]||"").trim()}</td>
         <td>${formatJudgeLabel(r)}</td>
@@ -3241,18 +3278,27 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     box.querySelector(".help-close").addEventListener("click",()=>{ box.style.display="none"; back.style.display="none"; });
     return back;
   }
+
   function openRowModal(tr){
-    const back=ensureModal(), body=$("#__row_body__");
-    const headers=Array.from($("#tbl-candidate thead").querySelectorAll("th"));
-    const tds=Array.from(tr.children);
-    let html='<div style="display:grid;grid-template-columns:160px 1fr;gap:8px 12px;">';
-    tds.forEach((td,i)=>{ const h=headers[i]?.dataset?.col||headers[i]?.innerText||""; html+=`<div style="color:#6b7280">${h}</div><div>${(td.innerHTML||"").trim()}</div>`; });
-    html+='</div>'; body.innerHTML=html;
-    back.style.display="block";
-    const box=document.querySelector(".help-pop"); box.style.display="block";
-    const vw=document.documentElement.clientWidth, sx=window.scrollX||0, sy=window.scrollY||0;
-    box.style.top = `${sy+80}px`; box.style.left=`${sx+Math.max(20,(vw-940)/2)}px`;
+    const back = ensureModal(), body = $("#__row_body__");
+    const headers = Array.from($("#tbl-candidate thead").querySelectorAll("th"));
+    const tds = Array.from(tr.children);
+    let html = '<div style="display:grid;grid-template-columns:160px 1fr;gap:8px 12px;">';
+    tds.forEach((td,i)=>{ const h = headers[i]?.dataset?.col || headers[i]?.innerText || "";
+      html += `<div style="color:#6b7280">${h}</div><div>${(td.innerHTML||"").trim()}</div>`;
+    });
+    html += '</div>';
+    body.innerHTML = html;
+
+    back.style.display = "block";
+    const box = document.querySelector(".help-pop");
+    box.style.display = "block";
+    const sx = window.scrollX||0, sy = window.scrollY||0;
+    box.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${sx + Math.max(10, (document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
+
+
 
   /* ---------- 簡易グラフ ---------- */
   function ensureChartModal(){
@@ -3285,27 +3331,102 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     values.forEach((v,i)=>{ const x=pad+i*step; const y=H-pad-(H-pad*2)*((v-min)/(max-min||1)); if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }); ctx.stroke();
     ctx.fillStyle="#333"; ctx.font="12px system-ui"; labels.forEach((lb,i)=>{ const x=pad+i*step; ctx.fillText(lb,x-10,H-pad+14); });
   }
+  
   function openStatsChart(){
-    const back=ensureChartModal(), body=$("#__chart_body__");
-    const rows=applyFilter(state.data);
+    const back = ensureChartModal(), body = $("#__chart_body__");
+    const rows = applyFilter(state.data);
     const rvolBuckets=["<1","1-2","2-3","3-5","5+"], rvolCnt=[0,0,0,0,0];
     const turnBuckets=["<5","5-10","10-50","50-100","100+"], turnCnt=[0,0,0,0,0];
-    rows.forEach(r=>{ const rvol=num(r["RVOL代金"]); if(!Number.isNaN(rvol)){ if(rvol<1)rvolCnt[0]++; else if(rvol<2)rvolCnt[1]++; else if(rvol<3)rvolCnt[2]++; else if(rvol<5)rvolCnt[3]++; else rvolCnt[4]++; }
-                      const turn=num(r["売買代金(億)"]); if(!Number.isNaN(turn)){ if(turn<5)turnCnt[0]++; else if(turn<10)turnCnt[1]++; else if(turn<50)turnCnt[2]++; else if(turn<100)turnCnt[3]++; else turnCnt[4]++; } });
-    body.innerHTML=`<h3>傾向グラフ（表示中データ）</h3><canvas id="cv1" width="940" height="320"></canvas><canvas id="cv2" width="940" height="320" style="margin-top:16px;"></canvas>`;
-    const c1=body.querySelector("#cv1"), c2=body.querySelector("#cv2");
-    drawBar(c1,rvolBuckets,rvolCnt,"RVOL代金の分布"); drawBar(c2,turnBuckets,turnCnt,"売買代金(億)の分布");
-    back.style.display="block"; const box=back.nextElementSibling; box.style.display="block"; const sy=window.scrollY||0; box.style.top=`${sy+80}px`; box.style.left=`${Math.max(20,(document.documentElement.clientWidth-940)/2)}px`;
+    rows.forEach(r=>{
+      const rvol = num(r["RVOL代金"]);
+      if(!Number.isNaN(rvol)){ if(rvol<1)rvolCnt[0]++; else if(rvol<2)rvolCnt[1]++; else if(rvol<3)rvolCnt[2]++; else if(rvol<5)rvolCnt[3]++; else rvolCnt[4]++; }
+      const turn = num(r["売買代金(億)"]);
+      if(!Number.isNaN(turn)){ if(turn<5)turnCnt[0]++; else if(turn<10)turnCnt[1]++; else if(turn<50)turnCnt[2]++; else if(turn<100)turnCnt[3]++; else turnCnt[4]++; }
+    });
+
+    body.innerHTML = `
+      <h3>傾向グラフ（表示中データ）</h3>
+      <canvas id="cv1" style="width:100%;height:340px;"></canvas>
+      <canvas id="cv2" style="width:100%;height:340px;margin-top:16px;"></canvas>
+    `;
+    const c1 = body.querySelector("#cv1"), c2 = body.querySelector("#cv2");
+
+    const fit = ()=>{
+      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
+      [c1,c2].forEach(cv=>{
+        cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
+        cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
+        const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
+      });
+      drawBar(c1, rvolBuckets, rvolCnt, "RVOL代金の分布");
+      drawBar(c2, turnBuckets, turnCnt, "売買代金(億)の分布");
+    };
+
+    if (window.__stats_fit__) window.removeEventListener("resize", window.__stats_fit__);
+    window.__stats_fit__ = fit;
+    window.addEventListener("resize", fit, { passive:true });
+    fit();
+
+    back.style.display="block";
+    const box = back.nextElementSibling; box.style.display="block";
+    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
+
   function openTrendChart(){
-    const back=ensureChartModal(), body=$("#__chart_body__");
-    const rows=applyFilter(state.data); const byDay=new Map();
-    rows.forEach(r=>{ const d=String(r["シグナル更新日"]||"").slice(0,10); if(!d) return; const hit = isHitRow(r) ? 1 : 0; const o=byDay.get(d)||{tot:0,hit:0}; o.tot++; o.hit+=hit; byDay.set(d,o); });
-    const days=Array.from(byDay.keys()).sort(); const rate=days.map(d=>{ const o=byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
-    body.innerHTML=`<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" width="940" height="320"></canvas>`;
-    drawLine(body.querySelector("#cv3"),days,rate,"当たり率（%）");
-    back.style.display="block"; const box=back.nextElementSibling; box.style.display="block"; const sy=window.scrollY||0; box.style.top=`${sy+80}px`; box.style.left=`${Math.max(20,(document.documentElement.clientWidth-940)/2)}px`;
+    const back = ensureChartModal(), body = $("#__chart_body__");
+    const rows = applyFilter(state.data);
+    const byDay = new Map();
+    rows.forEach(r=>{
+      const d = String(r["シグナル更新日"]||"").slice(0,10); if(!d) return;
+      const hit = isHitRow(r) ? 1 : 0;
+      const o = byDay.get(d) || {tot:0,hit:0}; o.tot++; o.hit += hit; byDay.set(d,o);
+    });
+    const days = Array.from(byDay.keys()).sort();
+    const rate = days.map(d=>{ const o = byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
+
+    body.innerHTML = `
+      <h3>推移グラフ（日別 当たり率 %）</h3>
+      <canvas id="cv3" style="width:100%;height:340px;"></canvas>
+    `;
+    const cv = body.querySelector("#cv3");
+
+    const fit = ()=>{
+      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
+      cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
+      cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
+      const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
+      drawLine(cv, days, rate, "当たり率（%）");
+    };
+
+    if (window.__trend_fit__) window.removeEventListener("resize", window.__trend_fit__);
+    window.__trend_fit__ = fit;
+    window.addEventListener("resize", fit, { passive:true });
+    fit();
+
+    back.style.display="block";
+    const box = back.nextElementSibling; box.style.display="block";
+    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
+
+
+
+  /* --- 財務HTML（Plotly）をモーダルで開く：置き換え版 --- */
+  function openFinanceHtml(code){
+    const back = ensureChartModal();
+    const body = document.getElementById("__chart_body__");
+    const src = `graph/finance_${String(code).padStart(4,"0")}.html`;
+    body.innerHTML = `<iframe src="${src}" style="width:100%; height:80vh; border:0;"></iframe>`;
+    back.style.display = "block";
+    const box = document.querySelector(".help-pop");
+    box.style.display = "block";
+    const sx = window.scrollX||0, sy = window.scrollY||0;
+    box.style.top = `${sy+60}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${sx + Math.max(10, (document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+  }
+
+
 
   /* ---------- イベント ---------- */
   
@@ -3528,7 +3649,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         右肩早期スコア,
         空売り機関,
         シグナル更新日,
-        営業利益
+        営業利益,
+        増資リスク低, 増資リスク理由
       FROM screener
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
@@ -4759,6 +4881,585 @@ def relax_rejudge_signals(
 
 
 
+# ===== 増資判定用
+
+from datetime import date, timedelta
+import math
+
+def _yf_num(x):
+    try:
+        if x is None or (isinstance(x, float) and math.isnan(x)): return None
+        return float(x)
+    except Exception:
+        return None
+
+def _recent_item(df_like, keys):
+    """balance_sheet/cashflow の直近値（行キー優先）"""
+    if df_like is None or df_like.empty: return None
+    for k in keys:
+        if k in df_like.index:
+            for v in df_like.loc[k].values:  # 直近列から順
+                n = _yf_num(v)
+                if n is not None:
+                    return n
+    return None
+
+def _sum_quarters(df_like, keys, n=4):
+    """直近n四半期の合計"""
+    if df_like is None or df_like.empty: return 0.0
+    for k in keys:
+        if k in df_like.index:
+            vals = [ _yf_num(v) or 0.0 for v in list(df_like.loc[k].values)[:n] ]
+            return float(sum(vals))
+    return 0.0
+
+
+# --- BEGIN: safe wrapper for phase_update_dilution_risk_from_yahoo ---
+def phase_update_dilution_risk_from_yahoo(conn, codes=None, batch_size=200, force_refresh=False, verbose=False):
+    """
+    安全ラッパー:
+    - codes is None -> 全件は batch_update_all_financials に委譲（yahooquery 一括）
+    - codes が list -> チャンクして batch_update_all_financials に委譲
+    - 古い重い実装はファイルに残るが上書きされる（安全）
+    """
+    if 'batch_update_all_financials' not in globals():
+        raise RuntimeError("batch_update_all_financials が見つかりません。先に追加してください。")
+
+    if codes is None:
+        if verbose:
+            print("[dilution-wrapper] full run -> batch_update_all_financials")
+        return batch_update_all_financials(conn, chunk_size=batch_size, force_refresh=force_refresh, verbose=verbose)
+
+    codes = [str(c) for c in codes]
+    for i in range(0, len(codes), batch_size):
+        chunk = codes[i:i+batch_size]
+        if verbose:
+            print(f"[dilution-wrapper] delegating chunk {i}-{i+len(chunk)-1} ({len(chunk)})")
+        # chunkごとに実行（sleep_between_chunks=0 で即実行）
+        batch_update_all_financials(conn, chunk_size=len(chunk), force_refresh=force_refresh, verbose=verbose, sleep_between_chunks=0.0)
+    return {"processed": len(codes)}
+# --- END: safe wrapper ---
+
+
+
+
+from datetime import date, timedelta
+
+# -------------------------
+# Helper: どの銘柄を更新するか決める
+# -------------------------
+def get_fin_update_targets(conn,
+                           max_age_small_days=7,
+                           max_age_large_days=90,
+                           smallcap_threshold_oku=300.0,
+                           new_registered_days=7,
+                           vol_event_pct=5.0):
+    """
+    screener テーブルのカラムを見て、更新対象コードのリストを返す。
+    - 財務更新日 が NULL -> 必須
+    - 登録日 が recent -> 優先
+    - 時価総額が小型なら短周期、大型なら長周期で更新
+    - 前日終値比率が大きければイベント扱いで更新
+    """
+    cur = conn.cursor()
+    q = """
+      SELECT コード, 財務更新日, 時価総額億円, 前日終値比率, 登録日
+      FROM screener
+    """
+    cur.execute(q)
+    rows = cur.fetchall()
+    today = date.today()
+    targets = []
+
+    for code, fin_date, mcap_oku, prev_pct, reg_date in rows:
+        code = str(code)
+        # 1) 財務更新日なし => 必須
+        if fin_date is None or str(fin_date).strip() == "":
+            targets.append(code)
+            continue
+
+        # parse dates safely
+        try:
+            fin_d = date.fromisoformat(str(fin_date))
+        except Exception:
+            fin_d = None
+
+        try:
+            reg_d = date.fromisoformat(str(reg_date)) if reg_date and str(reg_date).strip() else None
+        except Exception:
+            reg_d = None
+
+        # 2) 新規登録なら優先
+        if reg_d and (today - reg_d).days <= new_registered_days:
+            targets.append(code)
+            continue
+
+        # 3) 価格イベント（急騰・急落）
+        try:
+            if prev_pct is not None:
+                if abs(float(prev_pct)) >= float(vol_event_pct):
+                    targets.append(code); continue
+        except Exception:
+            pass
+
+        # 4) 時価総額に応じた周期
+        try:
+            mcap = float(mcap_oku) if mcap_oku is not None else None
+        except Exception:
+            mcap = None
+
+        # もし財務更新日パースできなければ更新
+        if fin_d is None:
+            targets.append(code)
+            continue
+
+        age = (today - fin_d).days
+        if mcap is None:
+            # 時価総額不明は保守的に短め
+            if age >= max_age_small_days:
+                targets.append(code)
+        else:
+            if mcap < smallcap_threshold_oku:
+                if age >= max_age_small_days:
+                    targets.append(code)
+            else:
+                if age >= max_age_large_days:
+                    targets.append(code)
+
+    cur.close()
+    # 重複排除して返す
+    return sorted(list(dict.fromkeys(targets)))
+
+# -------------------------
+# Wrapper: 条件判定して必要なら更新を実行する（修正版）
+# -------------------------
+def phase_update_dilution_risk_conditional(conn,
+                                           force=False,
+                                           batch_size=50,
+                                           verbose=False,
+                                           **get_targets_kwargs):
+    """
+    - force=True のときは全件更新（phase_update_dilution_risk_from_yahoo に委譲）
+    - force=False のときは get_fin_update_targets で絞った銘柄だけを更新（chunkで一括委譲）
+    - batch_size: 一度にまとめて渡すチャンクサイズ（効率化のため）
+    """
+    # 全件フル実行
+    if force:
+        if verbose:
+            print("[dilution] force=True -> 全件更新を実行します（batchで委譲）")
+        return phase_update_dilution_risk_from_yahoo(conn, codes=None, batch_size=batch_size, verbose=verbose)
+
+    # 絞り込み
+    codes = get_fin_update_targets(conn, **get_targets_kwargs)
+    if not codes:
+        if verbose:
+            print("[dilution] 更新対象なし。スキップしました。")
+        return {"processed": 0, "updated_batches": 0}
+
+    if verbose:
+        print(f"[dilution] 更新対象 {len(codes)} 銘柄。バッチサイズ={batch_size} で処理します。")
+
+    processed = 0
+    updated_batches = 0
+    # チャンクして一括委譲（効率高い）
+    for i in range(0, len(codes), batch_size):
+        chunk = codes[i:i+batch_size]
+        if verbose:
+            print(f"[dilution] delegating chunk {i}-{i+len(chunk)-1} ({len(chunk)})")
+        # ここで新しいラッパー関数に chunk を渡す（内部で yahooquery バルク or yfinance fallback を選択）
+        res = phase_update_dilution_risk_from_yahoo(conn, codes=chunk, batch_size=len(chunk), verbose=verbose)
+        # res は {"processed": n} 等を返す想定
+        processed += len(chunk)
+        updated_batches += 1
+    if verbose:
+        print(f"[dilution] バッチ処理 完了 processed={processed}, batches={updated_batches}")
+    return {"processed": processed, "updated_batches": updated_batches}
+
+# -------------------------
+# 互換補助: 単一銘柄を処理する小ラッパー（修正版）
+# -------------------------
+def phase_update_dilution_risk_for_single_code(conn, code, verbose=False):
+    """
+    一銘柄だけ処理したいときの明確なラッパー。
+    - 可能なら _process_single_code_yfinance がある場合はそれを直接呼び、なければ
+      phase_update_dilution_risk_from_yahoo(conn, codes=[code]) に委譲します。
+    """
+    # 1) もし存在すれば一銘柄用の高速ヘルパを呼ぶ
+    if '_process_single_code_yfinance' in globals():
+        return _process_single_code_yfinance(conn, code, verbose=verbose)
+    # 2) なければラッパーを通して chunk=1 で処理（既に追加済みの batch_update_all_financials を使う）
+    res = phase_update_dilution_risk_from_yahoo(conn, codes=[code], batch_size=1, verbose=verbose)
+    # 戻り値が {"processed": ...} なら True/False を返す互換性処理
+    try:
+        if isinstance(res, dict):
+            return res.get("processed", 0) >= 1
+    except Exception:
+        pass
+    return bool(res)
+
+
+# --- BEGIN: batch_update_all_financials (貼り付け用) ---
+# 依存: pip install yahooquery
+import json, time
+import sqlite3
+from datetime import date, timedelta
+try:
+    from yahooquery import Ticker as _YQ
+except Exception:
+    _YQ = None
+
+YQ_MAX_WORKERS = 8
+
+def _safe_num(v):
+    try:
+        if v is None: return None
+        if isinstance(v, str):
+            s = v.strip().replace(",", "").replace(" ", "")
+            if s in ("", "-", "None", "nan", "NaN"): return None
+            return float(s)
+        if isinstance(v, (int, float)):
+            if isinstance(v, float) and (v != v): return None
+            return float(v)
+    except Exception:
+        return None
+
+def _get_from_periods(obj, keys):
+    if obj is None: return None
+    if isinstance(obj, dict):
+        for k in keys:
+            if k in obj and obj[k] is not None:
+                try: return float(obj[k])
+                except Exception: pass
+        # iterate periods
+        for per, fields in obj.items():
+            if isinstance(fields, dict):
+                for k in keys:
+                    if k in fields and fields[k] is not None:
+                        try: return float(fields[k])
+                        except Exception: pass
+    return None
+
+def _sum_recent(obj, keys, n=4):
+    if obj is None: return None
+    total = 0.0; cnt = 0
+    if isinstance(obj, dict):
+        for per, fields in obj.items():
+            if isinstance(fields, dict):
+                v = None
+                for k in keys:
+                    if k in fields and fields[k] is not None:
+                        try: v = float(fields[k]); break
+                        except Exception: v = None
+                if v is not None:
+                    total += v
+                cnt += 1
+                if cnt >= n: break
+    return total if cnt>0 else None
+
+def _sum_dividends_1y(divs, one_year_ago):
+    if divs is None: return 0.0
+    s = 0.0
+    try:
+        if hasattr(divs, "items"):
+            for k, v in dict(divs).items():
+                try:
+                    s += float(v)
+                except Exception:
+                    continue
+            return float(s)
+    except Exception:
+        pass
+    try:
+        for item in divs:
+            if isinstance(item, dict):
+                amt = item.get("amount") or item.get("dividend") or item.get("value")
+                if amt is not None:
+                    try: s += float(amt)
+                    except Exception: pass
+        return float(s)
+    except Exception:
+        return 0.0
+
+def add_column_if_missing(conn, table, colname, decl):
+    cur = conn.cursor()
+    cur.execute(f'PRAGMA table_info({table})')
+    cols = {r[1] for r in cur.fetchall()}
+    if colname not in cols:
+        cur.execute(f'ALTER TABLE {table} ADD COLUMN "{colname}" {decl}')
+        conn.commit()
+
+def batch_update_all_financials(conn,
+                                chunk_size: int = 200,
+                                force_refresh: bool = False,
+                                sleep_between_chunks: float = 0.1,
+                                verbose: bool = False,
+                                set_wal: bool = True):
+    """
+    yahooquery 一括取得 -> raw_fin_json キャッシュ -> 指標抽出 -> DB 一括更新
+    - chunk_size: 一度に投げる銘柄数（環境に応じて調整）
+    - force_refresh: True なら既存キャッシュ無視して強制再取得
+    """
+    one_year_ago = date.today() - timedelta(days=365)
+
+    if set_wal:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = OFF")
+            if verbose: print("[DB] WAL + synchronous=OFF set")
+        except Exception:
+            if verbose: print("[DB] PRAGMA set failed (ignore)")
+
+    # ensure columns exist
+    for name, decl in [
+        ("raw_fin_json", "TEXT"),
+        ("財務更新日", "TEXT"),
+        ("自己資本比率", "REAL"),
+        ("営業CF_直近", "REAL"),
+        ("営業CF_4Q合計", "REAL"),
+        ("配当1年合計", "REAL"),
+        ("自社株買い4Q合計", "REAL"),
+        ("増資リスク低", "TEXT"),
+        ("増資リスク理由", "TEXT"),
+    ]:
+        try:
+            add_column_if_missing(conn, "screener", name, decl)
+        except Exception:
+            if verbose: print(f"[batch] add column {name} failed (ignored)")
+
+    cur = conn.cursor()
+    cur.execute('SELECT コード, raw_fin_json, 財務更新日 FROM screener')
+    rows = cur.fetchall()
+    cur.close()
+    codes = [str(r[0]) for r in rows]
+    raw_map = {str(r[0]): r[1] for r in rows}
+    fin_date_map = {str(r[0]): r[2] for r in rows}
+
+    total = len(codes)
+    processed = 0; updated_rows = 0; flags_set = 0; errors = 0
+    if verbose: print(f"[batch] total={total}, chunk_size={chunk_size}")
+
+    def commit_batch(metrics_rows, flags_rows):
+        nonlocal updated_rows, flags_set
+        if metrics_rows:
+            conn.executemany("""
+                UPDATE screener SET
+                  "自己資本比率"      = ?,
+                  "営業CF_直近"       = ?,
+                  "営業CF_4Q合計"     = ?,
+                  "配当1年合計"       = ?,
+                  "自社株買い4Q合計" = ?,
+                  "財務更新日"        = ?,
+                  "raw_fin_json"      = ?
+                WHERE "コード" = ?
+            """, metrics_rows)
+            conn.commit()
+            updated_rows += len(metrics_rows)
+        if flags_rows:
+            conn.executemany("""
+                UPDATE screener SET
+                  "増資リスク低"   = ?,
+                  "増資リスク理由" = ?
+                WHERE "コード" = ?
+            """, flags_rows)
+            conn.commit()
+            flags_set += len(flags_rows)
+
+    for i in range(0, total, chunk_size):
+        chunk = codes[i:i+chunk_size]
+        syms = [c if c.endswith(".T") else f"{c}.T" for c in chunk]
+        if verbose: print(f"[batch] chunk {i}-{i+len(chunk)-1} ({len(chunk)})")
+
+        # decide fetch list
+        to_fetch = []
+        for c, s in zip(chunk, syms):
+            if force_refresh:
+                to_fetch.append(s); continue
+            raw = raw_map.get(c)
+            if not raw:
+                to_fetch.append(s); continue
+            fin_d = fin_date_map.get(c)
+            if not fin_d:
+                to_fetch.append(s); continue
+            try:
+                fd = date.fromisoformat(str(fin_d))
+                if (date.today() - fd).days >= 30:
+                    to_fetch.append(s)
+            except Exception:
+                to_fetch.append(s)
+
+        fetched_raw = {}
+        if to_fetch:
+            if _YQ is None:
+                if verbose: print("[batch] yahooquery not installed; skipping fetch for this chunk")
+                errors += len(to_fetch)
+            else:
+                try:
+                    tk = _YQ(to_fetch, max_workers=YQ_MAX_WORKERS)
+                    quotes = getattr(tk, "quotes", {}) or {}
+                    try: bs = tk.balance_sheet()
+                    except Exception: bs = None
+                    try: cf = tk.cash_flow()
+                    except Exception: cf = None
+                    try: divs = tk.dividends()
+                    except Exception: divs = None
+
+                    for s in to_fetch:
+                        q = quotes.get(s) if isinstance(quotes, dict) else quotes
+                        b = bs.get(s) if isinstance(bs, dict) else bs
+                        cflow = cf.get(s) if isinstance(cf, dict) else cf
+                        d = divs.get(s) if isinstance(divs, dict) else divs
+                        fetched_raw[s] = {"quotes": q, "balance_sheet": b, "cashflow": cflow, "dividends": d}
+                except Exception as e:
+                    if verbose: print(f"[batch][ERROR] fetch failed chunk {i}-{i+len(chunk)-1}: {e}")
+                    errors += len(to_fetch)
+
+        metrics_rows = []; flags_rows = []
+        for c, s in zip(chunk, syms):
+            processed += 1
+            raw_text = None; sym_raw = None
+            if s in fetched_raw:
+                sym_raw = fetched_raw[s]
+                try: raw_text = json.dumps(sym_raw, default=str, ensure_ascii=False)
+                except Exception: raw_text = None
+            else:
+                raw_text = raw_map.get(c)
+
+            marketCap = None; equity_ratio = None; ocf_recent_val = None; ocf_4q_val = None
+            div_1y = 0.0; buyback_4q = 0.0
+
+            try:
+                if sym_raw:
+                    q = sym_raw.get("quotes") or {}
+                    mc = None
+                    if isinstance(q, dict):
+                        mc = q.get("marketCap") or q.get("market_cap") or q.get("regularMarketMarketCap")
+                    marketCap = _safe_num(mc)
+
+                    bsobj = sym_raw.get("balance_sheet")
+                    if bsobj:
+                        assets = _get_from_periods(bsobj, ["totalAssets","Total Assets","total_assets"])
+                        equity = _get_from_periods(bsobj, ["totalStockholderEquity","Total Stockholder Equity","total_equity"])
+                        if assets and equity:
+                            try: equity_ratio = float(equity) / float(assets) * 100.0
+                            except Exception: equity_ratio = None
+
+                    cfobj = sym_raw.get("cashflow")
+                    if cfobj:
+                        ocf_recent = _get_from_periods(cfobj, ["operatingCashflow","Operating Cash Flow","operatingCashFlow"])
+                        ocf_4q_val = _sum_recent(cfobj, ["operatingCashflow","Operating Cash Flow","operatingCashFlow"], 4) or 0.0
+                        ocf_recent_val = _safe_num(ocf_recent)
+                        buy = _sum_recent(cfobj, ["repurchaseOfStock","Repurchase Of Stock","repurchaseOfCapitalStock","RepurchaseOfCapitalStock"], 4)
+                        buyback_4q = float(buy) if buy is not None else 0.0
+
+                    divobj = sym_raw.get("dividends")
+                    div_1y = _sum_dividends_1y(divobj, one_year_ago)
+                else:
+                    if raw_text:
+                        try:
+                            parsed = json.loads(raw_text)
+                            q = parsed.get("quotes") or {}
+                            marketCap = _safe_num(q.get("marketCap") or q.get("market_cap"))
+                            bsobj = parsed.get("balance_sheet")
+                            if bsobj:
+                                assets = _get_from_periods(bsobj, ["totalAssets","Total Assets","total_assets"])
+                                equity = _get_from_periods(bsobj, ["totalStockholderEquity","Total Stockholder Equity","total_equity"])
+                                if assets and equity:
+                                    equity_ratio = float(equity) / float(assets) * 100.0
+                            cfobj = parsed.get("cashflow")
+                            if cfobj:
+                                ocf_recent_val = _safe_num(_get_from_periods(cfobj, ["operatingCashflow","Operating Cash Flow","operatingCashFlow"]))
+                                ocf_4q_val = _sum_recent(cfobj, ["operatingCashflow","Operating Cash Flow","operatingCashFlow"], 4) or 0.0
+                                buyback_4q = _sum_recent(cfobj, ["repurchaseOfStock","Repurchase Of Stock","repurchaseOfCapitalStock","RepurchaseOfCapitalStock"], 4) or 0.0
+                            divobj = parsed.get("dividends")
+                            div_1y = _sum_dividends_1y(divobj, one_year_ago)
+                        except Exception:
+                            pass
+            except Exception as e:
+                if verbose: print(f"[parse][WARN] {c} parse error: {e}")
+
+            # 判定
+            mcap_ok = False
+            if marketCap is not None:
+                try:
+                    if marketCap >= 300e8: mcap_ok = True
+                except Exception: mcap_ok = False
+
+            ok_equity = (equity_ratio is not None) and (equity_ratio >= 60.0)
+            ok_ocf = (ocf_recent_val is not None and ocf_recent_val > 0) or (ocf_4q_val is not None and ocf_4q_val > 0)
+            ok_return = (div_1y > 0) or (buyback_4q < 0)
+
+            today_iso = date.today().isoformat()
+            metrics_rows.append((
+                float(equity_ratio) if (equity_ratio is not None) else None,
+                float(ocf_recent_val) if (ocf_recent_val is not None) else None,
+                float(ocf_4q_val) if (ocf_4q_val is not None) else None,
+                float(div_1y) if (div_1y is not None) else 0.0,
+                float(buyback_4q) if (buyback_4q is not None) else 0.0,
+                today_iso,
+                raw_text,
+                c
+            ))
+            if all([ok_equity, ok_ocf, ok_return, mcap_ok]):
+                reasons = []
+                if ok_equity: reasons.append("自己資本比率≥60")
+                if ok_ocf: reasons.append("営業CF黒字")
+                if ok_return: reasons.append("配当/自社株買いあり")
+                if mcap_ok: reasons.append("時価総額≥300億")
+                flags_rows.append(("○", " / ".join(reasons), c))
+
+        # commit
+        try:
+            commit_batch(metrics_rows, flags_rows)
+        except Exception as e:
+            if verbose: print(f"[DB][ERROR] commit failed for chunk {i}-{i+len(chunk)-1}: {e}")
+            errors += 1
+
+        if verbose:
+            print(f"[batch] processed {min(i+chunk_size, total)}/{total} updated_rows={updated_rows} flags={flags_set} errors={errors}")
+
+        time.sleep(sleep_between_chunks)
+
+    summary = {"total": total, "processed": processed, "updated_rows": updated_rows, "flags_set": flags_set, "errors": errors}
+    if verbose: print("[batch] done:", summary)
+    return summary
+# --- END: batch_update_all_financials ---
+
+
+
+# ===== カブタン呼び出し
+from datetime import date, datetime
+from pathlib import Path
+import os, subprocess
+
+FUND_SCRIPT = r"H:\desctop\株攻略\twitter_code\スクリーニング自動化プログラム\株探ファンダ.py"
+MARKER_FILE = Path(r"H:\desctop\株攻略\twitter_code\スクリーニング自動化プログラム\screen_data\last_funda.txt")
+
+def run_fundamental_daily(force: bool = False):
+    today = date.today()
+
+    # 1) mtimeで判定（中身は見ない）
+    if not force and MARKER_FILE.exists():
+        mtime = datetime.fromtimestamp(MARKER_FILE.stat().st_mtime).date()
+        print(f"[fundamental] marker_mtime={mtime} today={today}")
+        if mtime == today:
+            print("[fundamental] 今日すでに実行済み → スキップ")
+            return
+
+    # 2) 実行
+    try:
+        print(f"[fundamental] 実行開始: {FUND_SCRIPT}")
+        subprocess.run(["python", FUND_SCRIPT], check=True)
+        print("[fundamental] 株探ファンダ 全銘柄処理 OK")
+    except subprocess.CalledProcessError as e:
+        print(f"[fundamental][ERROR] 子プロセス失敗: returncode={e.returncode}")
+        return
+
+    # 3) マーカー更新（touch相当）
+    MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MARKER_FILE.touch()  # 中身は不要、更新日時だけ使う
+    print(f"[fundamental] マーカー更新(mtime): {MARKER_FILE}")
+
+
 # ===== タイマーユーティリティ =====
 from datetime import datetime, time as dtime
 
@@ -4801,6 +5502,9 @@ def main():
         print("[karauri][WARN]", e)
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # ダッシュボード生成前などに
+    run_fundamental_daily()
 
     # (1) DB open & スキーマ保証
     conn = open_conn(DB_PATH)
@@ -4886,6 +5590,10 @@ def main():
 
         # (6.5)
         _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
+        
+        # (6.5.1) 増資判定用 
+        _timed("phase_update_dilution_risk_from_yahoo", phase_update_dilution_risk_from_yahoo, conn)
+
 
         # (7) 数値の正規化
         try:
