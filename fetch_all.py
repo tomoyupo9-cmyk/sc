@@ -347,6 +347,78 @@ def upsert_earnings_rows(conn: sqlite3.Connection, rows: list[dict]):
 
 
 
+
+
+
+def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mode: str = "nonnegative") -> list[dict]:
+    """
+    HTMLダッシュボード用の 'earnings' を DB から直近N日分で再構築する。
+    - filter_mode: "pos_good" | "nonnegative" | "all"
+      * pos_good    = sentiment=positive または verdict=good のみ
+      * nonnegative = negative 以外（+ verdict=good は常に残す）
+      * all         = 絞り込みなし
+    """
+    import json as _json
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    # v_events_dedup を優先（同コード×同日で最新の提出時刻のみ）
+    rows = cur.execute(
+        """
+        SELECT
+          "コード","銘柄名","タイトル","リンク","発表日時","提出時刻",
+          "要約","判定","判定スコア","理由JSON","指標JSON","進捗率","センチメント","素点"
+        FROM "v_events_dedup"
+        WHERE date("提出時刻") >= date('now', ?)
+        ORDER BY "提出時刻" DESC
+        """,
+        (f"-{days} day",)
+    ).fetchall()
+    conn.close()
+
+    def _to_row(r):
+        # r: tuple in the same order as SELECT
+        try:
+            reasons = _json.loads(r[9]) if r[9] else []
+        except Exception:
+            reasons = []
+        try:
+            metrics = _json.loads(r[10]) if r[10] else {}
+        except Exception:
+            metrics = {}
+        return {
+            "ticker": (r[0] or "0000"),
+            "name":   r[1] or (r[0] or "TDnet"),
+            "title":  r[2] or "",
+            "link":   r[3] or "",
+            "time":   (r[5] or "").replace("T"," ").replace("+09:00",""),
+            "summary": r[6] or "",
+            "verdict": (r[7] or "").strip(),
+            "score_judge": r[8],
+            "reasons": reasons if isinstance(reasons, list) else [str(reasons)],
+            "metrics": metrics if isinstance(metrics, dict) else {},
+            "progress": r[11],
+            "sentiment": r[12] or "neutral",
+            "score": r[13] or 0,
+        }
+
+    items = [_to_row(r) for r in rows]
+    if filter_mode == "pos_good":
+        items = [x for x in items if (x.get("sentiment") == "positive") or ((x.get("verdict") or "") == "good")]
+    elif filter_mode == "nonnegative":
+        items = [x for x in items if (x.get("sentiment") != "negative") or ((x.get("verdict") or "") == "good")]
+    # else: "all" は無条件で通す
+
+    # 念のため最新順→最大300件に制限（フロント側でも slice するが保険）
+    def _ts(s: str) -> float:
+        from datetime import datetime
+        try:
+            return datetime.strptime((s or "").replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            return 0.0
+    items.sort(key=lambda r: _ts(r.get("time","")), reverse=True)
+    return items[:300]
+
+
 # ------------------ HTML生成（日別タブ込み） ------------------
 def render_dashboard_html(payload: dict, api_base: str = "") -> str:
     import json
@@ -450,7 +522,7 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
 
     if(MODE==="earnings_day"){
       const rows=(j.earnings||[])
-        .filter(r => (r.sentiment === "positive" || r.verdict === "good"))
+        .slice()
         .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));})
         .slice(0, 300);
       thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
@@ -473,7 +545,7 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
 
     if(MODE==="earnings"){
       const rows=(j.earnings||[])
-        .filter(r => (r.sentiment === "positive" || r.verdict === "good"))
+        .slice()
         .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));})
         .slice(0, 300);
       thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
@@ -887,6 +959,163 @@ def build_bbs_scores(rows):
 
 # ------------------ main ------------------
 # ==== ここから main() 完全置き換え ====
+
+def _table_exists(conn, name: str) -> bool:
+    try:
+        cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (name,))
+        return cur.fetchone() is not None
+    except Exception:
+        return False
+
+def ensure_misc_objects(conn):
+    """
+    追加インデックス / トリガ / ビューの作成（存在チェック付き）
+    - signals_log(種別, DATE(日時)), signals_log(コード, DATE(日時))
+    - earnings_events(DATE(提出時刻)), earnings_events(コード, DATE(提出時刻))
+    - price_history.date の YYYY-MM-DD 正規化トリガ
+    - v_events_dedup（同コード×同日で最新の提出時刻を採用）
+    """
+    cur = conn.cursor()
+
+    # --- signals_log の式インデックス（テーブルがある場合のみ） ---
+    if _table_exists(conn, "signals_log"):
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_signals_log_type_date
+            ON signals_log(種別, substr(日時,1,10));
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_signals_log_code_date
+            ON signals_log(コード, substr(日時,1,10));
+        """)
+
+    # --- earnings_events の日付系インデックス ---
+    if _table_exists(conn, "earnings_events"):
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_earn_date_only
+            ON earnings_events(substr(提出時刻,1,10));
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_earn_code_date
+            ON earnings_events(コード, substr(提出時刻,1,10));
+        """)
+
+        # --- price_history: 「日付」or「date」を自動判定して正規化トリガ（YYYY-MM-DD） ---
+    if _table_exists(conn, "price_history"):
+        try:
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(price_history)").fetchall()]
+            price_date_col = "日付" if "日付" in cols else ("date" if "date" in cols else None)
+        except Exception:
+            price_date_col = None
+
+        if price_date_col:
+            # 旧トリガ（列名固定）を落として作り直し
+            cur.execute("DROP TRIGGER IF EXISTS trg_price_history_date_norm_ins;")
+            cur.execute("DROP TRIGGER IF EXISTS trg_price_history_date_norm_upd;")
+
+            # INSERT 時の正規化：'/'や'.'を'-'に直し、date()でYYYY-MM-DD化（ダメなら先頭10文字）
+            cur.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS trg_price_history_date_norm_ins
+                AFTER INSERT ON price_history
+                BEGIN
+                  UPDATE price_history
+                     SET "{price_date_col}" =
+                         COALESCE(
+                           date(replace(replace(NEW."{price_date_col}",'/','-'),'.','-')),
+                           substr(replace(replace(NEW."{price_date_col}",'/','-'),'.','-'),1,10)
+                         )
+                   WHERE rowid = NEW.rowid;
+                END;
+            """)
+
+            # UPDATE 時の正規化
+            cur.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS trg_price_history_date_norm_upd
+                AFTER UPDATE OF "{price_date_col}" ON price_history
+                BEGIN
+                  UPDATE price_history
+                     SET "{price_date_col}" =
+                         COALESCE(
+                           date(replace(replace(NEW."{price_date_col}",'/','-'),'.','-')),
+                           substr(replace(replace(NEW."{price_date_col}",'/','-'),'.','-'),1,10)
+                         )
+                   WHERE rowid = NEW.rowid;
+                END;
+            """)
+
+    # --- v_events_dedup: 同コード×同日で最新の提出時刻のみ ---
+    cur.execute("""
+        CREATE VIEW IF NOT EXISTS v_events_dedup AS
+        WITH max_ts AS (
+          SELECT
+            コード,
+            substr(提出時刻,1,10) AS 提出日,
+            MAX(提出時刻) AS max_提出時刻
+          FROM earnings_events
+          GROUP BY コード, 提出日
+        )
+        SELECT e.*
+          FROM earnings_events e
+          JOIN max_ts m
+            ON e.コード = m.コード
+           AND substr(e.提出時刻,1,10) = m.提出日
+           AND e.提出時刻 = m.max_提出時刻;
+    """)
+
+    conn.commit()
+
+def run_light_healthcheck(conn):
+    """
+    軽量ヘルスチェック：
+      - price_history の最新日付と coverage（該当日の distinct(コード) 件数）
+      - earnings_events の最新提出時刻
+    signals_log がある場合は 'healthcheck' として詳細JSONを書き込み
+    """
+    result = {"ok": True}
+    try:
+        # 置き換え後
+        last_date = None
+        dcol = None
+        if _table_exists(conn, "price_history"):
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(price_history)").fetchall()]
+            dcol = "日付" if "日付" in cols else ("date" if "date" in cols else None)
+            if dcol:
+                last_date = conn.execute(f'SELECT MAX("{dcol}") FROM price_history').fetchone()[0]
+
+        cov = None
+        if last_date and dcol:
+            cov = conn.execute(
+                f'SELECT COUNT(DISTINCT "コード") FROM price_history WHERE "{dcol}"=?',
+                (last_date,)
+            ).fetchone()[0]
+
+        last_event_ts = None
+        if _table_exists(conn, "earnings_events"):
+            last_event_ts = conn.execute("SELECT MAX(提出時刻) FROM earnings_events").fetchone()[0]
+        result.update({
+            "price_last_date": last_date,
+            "price_coverage_codes": cov,
+            "earnings_last_ts": last_event_ts
+        })
+    except Exception as e:
+        result["ok"] = False
+        result["error"] = str(e)
+
+    if _table_exists(conn, "signals_log"):
+        try:
+            from datetime import datetime, timezone, timedelta
+            conn.execute(
+                "INSERT INTO signals_log(コード, 種別, 日時, 詳細) VALUES(?, ?, ?, ?)",
+                ("", "healthcheck",
+                 datetime.utcnow().isoformat(),
+                 json.dumps(result, ensure_ascii=False))
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+    return result
+
+
 def main():
     cfg = load_config(str(ROOT / "config.yaml"))
 
@@ -976,25 +1205,15 @@ def main():
     # ---- DB保存（日本語スキーマ earnings_events）----
     conn = sqlite3.connect(DB_PATH)
     ensure_earnings_schema(conn)
+    ensure_misc_objects(conn)
     upsert_earnings_rows(conn, earnings_rows)
+    run_light_healthcheck(conn)
     conn.close()
 
     # ---- 出力（JSON/HTML）----
-    # ダッシュボードは positive のみ＆最大 300 件に絞る
-    def _ts(s: str) -> float:
-        try:
-            return datetime.strptime((s or "").replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
-        except Exception:
-            return 0.0
-
-    earnings_for_dash = [
-        r for r in earnings_rows
-        if (r.get("sentiment") == "positive") or ((r.get("verdict") or "") == "good")
-    ]
-    # 念のため最新順で整列してから最大 300 件に制限
-    earnings_for_dash.sort(key=lambda r: _ts(r.get("time", "")), reverse=True)
-    earnings_for_dash = earnings_for_dash[:300]
-
+    # 表示用の決算データは DB から直近30日分（pos/goodのみ）を再構築
+    earnings_for_dash = load_earnings_for_dashboard_from_db(DB_PATH, days=30, filter_mode="nonnegative")
+    print(f"[earnings][dash] from DB last 30d = {len(earnings_for_dash)}")
     output = {
         "generated_at": now_iso(),
         "rows": rows,                    # 総合/掲示板用（元のまま）
