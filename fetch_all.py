@@ -425,7 +425,7 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
   function yjBoardUrl(code){const c=String(code||"").padStart(4,"0");return `https://finance.yahoo.co.jp/quote/${c}.T/bbs`;}
   function stockCell(code,name){
     const c=String(code||""); const n=esc(name||c);
-    return (/^\\d{4}$/.test(c)) ? `<a href="${yjBoardUrl(c)}" target="_blank" rel="noopener">${n}<span class="code">(${c})</span></a>`
+    return (/^\d{4}$/.test(c)) ? `<a href="${yjBoardUrl(c)}" target="_blank" rel="noopener">${n}<span class="code">(${c})</span></a>`
                                : `${n} <span class="code">${esc(c)}</span>`;
   }
   function parseJST(s){ if(!s) return 0; const t=s.replace("T"," ").replace("+09:00",""); return Date.parse(t+" +09:00"); }
@@ -449,7 +449,10 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
     tbody.innerHTML="";
 
     if(MODE==="earnings_day"){
-      const rows=(j.earnings||[]).slice().sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));});
+      const rows=(j.earnings||[])
+        .filter(r => (r.sentiment === "positive" || r.verdict === "good"))
+        .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));})
+        .slice(0, 300);
       thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
       if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="6" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
       let day=""; rows.forEach((r,idx)=>{
@@ -469,7 +472,10 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
     }
 
     if(MODE==="earnings"){
-      const rows=(j.earnings||[]).slice().sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));});
+      const rows=(j.earnings||[])
+        .filter(r => (r.sentiment === "positive" || r.verdict === "good"))
+        .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));})
+        .slice(0, 300);
       thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
       if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="6" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
       rows.forEach((r,idx)=>{
@@ -719,8 +725,6 @@ def _grade_earnings(title: str, text: str, parsed: Dict[str, Any]) -> Dict[str, 
     return {"verdict": verdict, "score": round(score, 2), "reasons": reasons}
 # ========= ここまでヘルパー =========
 
-
-
 def tdnet_items_to_earnings_rows(tdnet_items):
     """
     fetch_earnings_tdnet_only() の返り値（Tdnet配列）→ ダッシュボードが読む行形式へ整形
@@ -746,16 +750,19 @@ def tdnet_items_to_earnings_rows(tdnet_items):
         link = (td.get("document_url") or td.get("pdf_url") or td.get("url") or "").strip()
         time_str = (td.get("pubdate") or td.get("publish_datetime") or "").replace("T"," ").replace("+09:00","")
 
-        # 既存の簡易summary/reason（タイトルルール）
-        # ※ すでに td["summary"], td["reason"] が入っていれば尊重
+        # 既存の簡易summary/reason（タイトルルール）を尊重しつつ、
+        # summary の有無に関係なくタイトルから sentiment を常に推定して使う
         summary = (td.get("summary") or "").strip()
         reason  = (td.get("reason")  or "").strip()
         label_guess = "neutral"
-        if not summary:
-            s, label_guess, why = _summarize_title_simple(title)
-            summary = s or ""
-            if not reason and why:
-                reason = why
+
+        s_t, label_from_title, why_t = _summarize_title_simple(title)
+        if label_from_title in ("positive", "negative"):
+            label_guess = label_from_title
+        if not summary and s_t:
+            summary = s_t
+        if not reason and why_t:
+            reason = why_t
 
         # PDF本文の要約＆判定（上限 EARNINGS_SUMMARY_MAX 件）
         verdict = (td.get("verdict") or "").strip()
@@ -785,8 +792,12 @@ def tdnet_items_to_earnings_rows(tdnet_items):
                         verdict = judge["verdict"]
                         score_judge = judge["score"]
                         reasons = judge["reasons"]
-                        # センチメント推定
-                        label_guess = "positive" if verdict=="good" else ("negative" if verdict=="bad" else label_guess)
+
+                        # センチメント推定を verdict で上書き（good/bad のときだけ）
+                        if verdict == "good":
+                            label_guess = "positive"
+                        elif verdict == "bad":
+                            label_guess = "negative"
 
                         summarized += 1
                 # 軽いクールダウン（TDnet側/中継CDNの優しさ）
@@ -794,20 +805,19 @@ def tdnet_items_to_earnings_rows(tdnet_items):
             except Exception as e:
                 print(f"[earnings] PDF summarize error: {e}")
 
-
         # reasons は配列
         if isinstance(reasons, str) and reasons:
             reasons = [reasons]
         if reasons is None:
             reasons = ([reason] if reason else [])
 
-        # sentiment は既存の判定があれば優先。なければ推定。
+        # sentiment は既存があれば優先。なければタイトル/判定からの推定を反映
         sentiment = td.get("sentiment") or label_guess or "neutral"
 
         row = {
             "ticker": ticker or "0000",
             "name":   name or (ticker or "TDnet"),
-            "score":  0,                      # 後段で加点するなら調整
+            "score":  0,
             "sentiment": sentiment,          # 'positive' | 'negative' | 'neutral'
             "title": title,
             "link":  link,
@@ -823,8 +833,10 @@ def tdnet_items_to_earnings_rows(tdnet_items):
 
     # 時刻降順に整列（保険）
     def _ts(s):
-        try: return datetime.strptime((s or "").replace("/","-"), "%Y-%m-%d %H:%M:%S").timestamp()
-        except: return 0
+        try:
+            return datetime.strptime((s or "").replace("/","-"), "%Y-%m-%d %H:%M:%S").timestamp()
+        except:
+            return 0
     rows.sort(key=lambda r: _ts(r["time"]), reverse=True)
     return rows
 
@@ -931,7 +943,7 @@ def main():
     # ---- 決算タブ（TDnetを日割りで取得 → 行形式へ整形）----
     try:
         # まず 90 日分（日割り 1日=最大300件で確実に拾う）
-        tdnet_items = fetch_earnings_tdnet_only(days=90, per_day_limit=300)
+        tdnet_items = fetch_earnings_tdnet_only(days=2, per_day_limit=300)
         print(f"[earnings] raw tdnet items = {len(tdnet_items)}")
 
         # 行形式へ整形（ここで summary/reasons/verdict/metrics を詰める）
@@ -968,10 +980,25 @@ def main():
     conn.close()
 
     # ---- 出力（JSON/HTML）----
+    # ダッシュボードは positive のみ＆最大 300 件に絞る
+    def _ts(s: str) -> float:
+        try:
+            return datetime.strptime((s or "").replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            return 0.0
+
+    earnings_for_dash = [
+        r for r in earnings_rows
+        if (r.get("sentiment") == "positive") or ((r.get("verdict") or "") == "good")
+    ]
+    # 念のため最新順で整列してから最大 300 件に制限
+    earnings_for_dash.sort(key=lambda r: _ts(r.get("time", "")), reverse=True)
+    earnings_for_dash = earnings_for_dash[:300]
+
     output = {
         "generated_at": now_iso(),
-        "rows": rows,               # 総合/掲示板用
-        "earnings": earnings_rows,  # 決算用
+        "rows": rows,                    # 総合/掲示板用（元のまま）
+        "earnings": earnings_for_dash,   # 決算タブ／日別タブ用：positive のみ・最大300件
     }
 
     ensure_dir(OUT_DIR); ensure_dir(OUT_DIR / "history")
@@ -987,7 +1014,10 @@ def main():
     html_out = render_dashboard_html(output, api_base="")
     (DASH_DIR / "index.html").write_text(html_out, encoding="utf-8")
     print("[write]", (DASH_DIR / "index.html").resolve())
-    print(f"[OK] {len(rows)} symbols + earnings {len(earnings_rows)} → data.json / index.html 更新完了")
+    print(f"[OK] {len(rows)} symbols + earnings {len(earnings_for_dash)} (filtered) → data.json / index.html 更新完了")
+
+    
+    
 # ==== ここまで main() 完全置き換え ====
 
 if __name__=="__main__":

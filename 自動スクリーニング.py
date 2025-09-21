@@ -176,20 +176,6 @@ def today_str():
     return datetime.now().strftime("%Y-%m-%d")
     
 # ================== 表示整形ヘルパ ==================
-def _format_flag_html(flag: str, start_date: str | None) -> str:
-    """
-    '候補' などのフラグを、崩れないHTMLに整形して返す。
-    start_date は 'YYYY-MM-DD' などを想定（None可）
-    """
-    if flag is None:
-        flag = ""
-    flag = str(flag).strip()
-
-    if flag == "候補":
-        date_html = f"<br><span style='font-size:10px;color:gray'>{start_date}〜</span>" if (start_date and str(start_date).strip()) else ""
-        return f"<div style='line-height:1.1'>候補{date_html}</div>"
-    # 空やその他は空表示
-    return ""
 
 def _safe_jsonable(val):
     """
@@ -407,18 +393,6 @@ def normalize_blob_numeric(conn: sqlite3.Connection):
     conn.commit()
     cur.close()
 
-
-# ===== 初回判定 =====
-def need_full_history(conn: sqlite3.Connection, lookback_days: int = 360) -> bool:
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM price_history")
-    total = (cur.fetchone() or [0])[0]
-
-    since = (date.today() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-    cur.execute("SELECT COUNT(*) FROM price_history WHERE 日付 >= ?", (since,))
-    recent = (cur.fetchone() or [0])[0]
-    cur.close()
-    return total < 5000 or recent < 2000
 
 # ===== 任意：CSV取り込み =====
 
@@ -889,12 +863,6 @@ def r2(x):
     except Exception:
         return None
 
-def r0(x):
-    """整数に丸め（None安全）"""
-    try:
-        return None if x is None else round(float(x), 0)
-    except Exception:
-        return None
 
 
 def phase_yahoo_intraday_snapshot(conn: sqlite3.Connection):
@@ -2575,7 +2543,43 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     </div>
   </section>
 
-  <section id="tab-earn" class="tab hidden"> <div class="tbl-wrap"> <table id="tbl-earn" class="tbl"> <thead><tr><th>銘柄</th><th>センチメント</th><th>タイトル</th><th>時刻</th></tr></thead> <tbody id="earn-body"></tbody> </table> </div> </section> <section id="tab-preearn" class="tab hidden"> <div class="tbl-wrap"> <table id="tbl-preearn" class="tbl"> <thead><tr><th>銘柄</th><th class="num">pre_score</th><th class="num">edge_score</th><th class="num">momentum_score</th></tr></thead> <tbody id="preearn-body"></tbody> </table> </div> </section>
+  <section id="tab-earn" class="tab hidden">
+    <div class="tbl-wrap">
+      <table id="tbl-earn" class="tbl">
+        <thead>
+          <tr>
+            <th>銘柄</th>
+            <th>センチメント</th>
+            <th>タイトル</th>
+            <th>時刻</th>
+          </tr>
+        </thead>
+        <tbody id="earn-body"></tbody>
+      </table>
+     </div>
+   </section>
+  
+  <section id="tab-preearn" class="tab hidden">
+     <div class="tbl-wrap">
+       <table id="tbl-preearn" class="tbl">
+         <thead>
+           <tr>
+             <th>銘柄</th>
+             <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
+
+             <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
+             <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
+             <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
+             <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
+             <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
+           </tr>
+         </thead>
+         <tbody id="preearn-body"></tbody>
+       </table>
+     </div>
+  </section>
   
   {% if include_log %}
   <section id="tab-log" class="tab hidden">
@@ -2607,7 +2611,12 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   const DATA_ALL  = Array.isArray(RAW.all) ? RAW.all : [];
   const DATA_LOG  = Array.isArray(RAW.logs)? RAW.logs: [];
   const DATA_EARN = Array.isArray(RAW.earnings) ? RAW.earnings : [];
-  const DATA_PREEARN = Array.isArray(RAW.preearn) ? RAW.preearn : [];
+  // ← 推奨：キー名ゆれ（pre / pre_rows / preearn_rows…）も全部拾う
+  const _preSrc =
+    RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ??
+    RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
+  const DATA_PREEARN = Array.isArray(_preSrc) ? _preSrc : [];
+
 
   /* ---------- util ---------- */
   const $  = (s,r=document)=>r.querySelector(s);
@@ -3318,18 +3327,29 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
   function renderPreEarnings(rows){
     const tbody = document.getElementById("preearn-body"); if(!tbody) return;
-    if(!rows.length){ tbody.innerHTML = `<tr><td colspan="4" class="muted">データなし</td></tr>`; return; }
+    if(!rows.length){
+      tbody.innerHTML = `<tr><td colspan="9" class="muted">データなし</td></tr>`;
+      return;
+    }
     tbody.innerHTML = rows.map(r=>`
       <tr>
         <td>${r.name ?? r.symbol ?? r.銘柄 ?? ""}</td>
         <td class="num">${_fmt2num(r.pre_score)}</td>
         <td class="num">${_fmt2num(r.edge_score)}</td>
         <td class="num">${_fmt2num(r.momentum_score)}</td>
+
+        <td class="reason-col">${r["スコア理由"] ?? ""}</td>
+        <td>${r["予測ヒント"] ?? ""}</td>
+        <td class="num">${_fmt2num(r["期待株価"])}</td>
+        <td>${r["修正見通し"] ?? ""}</td>
+        <td>${r["過熱度"] ?? ""}</td>
       </tr>
     `).join("");
 
     if (typeof wireDomSort === "function") wireDomSort("#tbl-preearn");
+    _formatTwoDecimals("#tbl-preearn"); // ←「期待株価」も整形したい場合は関数側に追加
   }
+
 
   
 
@@ -4054,24 +4074,64 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     hist_rows = _build_hist_rows()
 
-    # ---- ここから追加（data_obj を作る直前）----
-    try:
-        earnings_rows  # 既に作ってあれば尊重
-    except NameError:
-        earnings_rows = build_earnings_rows_edinet_prev_and_today()
-
-    try:
-        preearn_rows  # 予測は未実装なら空で渡す
-    except NameError:
-        preearn_rows = []
-    # ---- 追加ここまで ----
-    # ---- data_objを作る直前で追加 ----
+    # ---- data_obj を作る直前（この塊でOK）----
+    # 実績（決算）
     try:
         earnings_rows = load_recent_earnings_from_db(DB_PATH, days=7, limit=300)
     except Exception as e:
         print(f"[earnings][WARN] failed to load: {e}")
         earnings_rows = []
-    preearn_rows = []  # 予定タブは今は空でOK
+
+    # ---- 予測タブの行を組み立て（5列を追加してJSON化） ----
+    try:
+        with open_conn(DB_PATH) as _c:
+            tbl = build_earnings_tables(_c)  # (ev_df, pre_df) or {"ev":..., "pre":...} どちらでも可
+
+            # pre_df を取り出し
+            if isinstance(tbl, tuple):
+                _, pre_df = tbl
+            elif isinstance(tbl, dict):
+                pre_df = tbl.get("pre")
+            else:
+                pre_df = None
+
+            if pre_df is not None and not pre_df.empty:
+                # 最新終値を取得（screenerから）
+                px = pd.read_sql_query("SELECT コード, 現在値 FROM screener", _c)
+
+                # 期待株価/修正見通し/過熱度/スコア理由/予測ヒントを作る
+                df = pre_df.merge(px, on="コード", how="left")
+                def _row_apply(r):
+                    code = str(r.get("コード") or "")
+                    last = float(r.get("現在値") or np.nan)
+                    mom  = float(r.get("momentum_score") or 0.0)
+                    edge = float(r.get("edge_score") or 0.0)
+                    return pd.Series({
+                        "期待株価":   calc_expected_price(_c, code, last, mom, edge),
+                        "修正見通し": classify_revision_bias(edge, mom),
+                        "過熱度":     judge_overheat(_c, code, mom),
+                        "スコア理由": _mk_score_reason(r.to_dict()),
+                        "予測ヒント": _mk_hint(r.to_dict())
+                    })
+                extra = df.apply(_row_apply, axis=1)
+                df = pd.concat([df, extra], axis=1)
+
+                # フロント互換の銘柄名
+                if "銘柄" not in df.columns:
+                    names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", _c)
+                    df = df.merge(names, on="コード", how="left")
+                    df["銘柄"] = df["銘柄名"].fillna(df["コード"])
+
+                # JSON化
+                preearn_rows = [{k: _safe_jsonable(v) for k, v in rec.items()}
+                                for rec in df.to_dict("records")]
+            else:
+                preearn_rows = []
+    except Exception as e:
+        print(f"[preearn][WARN] failed to build pre-earnings: {e}")
+        preearn_rows = []
+
+
 
     # ---- data_obj 構築 ----
     data_obj = {
@@ -4081,9 +4141,9 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         "hist": hist_rows,
         "meta": meta,
         "earnings": earnings_rows,
-        "preearn": preearn_rows
+        "preearn": preearn_rows,
     }
-    data_json = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"))
+    data_json = json.dumps(data_obj, ensure_ascii=False, default=str, separators=(",", ":"))
 
 
 
@@ -4226,29 +4286,6 @@ def send_index_html_via_gmail(attach_path: str) -> bool:
     except Exception as e:
         print("[SEND][Gmail] 送信失敗:", e); return False
 
-# ===== 任意CSV出力 =====
-def phase_output_and_notify(conn: sqlite3.Connection):
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT コード, 銘柄名, 初動フラグ, 底打ちフラグ, 右肩上がりフラグ, 上昇余地スコア, 右肩上がりスコア
-        FROM screener
-        WHERE 初動フラグ='候補' OR 底打ちフラグ='候補' OR 右肩上がりフラグ='候補'
-        ORDER BY COALESCE(右肩上がりスコア,0) DESC, COALESCE(上昇余地スコア,0) DESC
-        LIMIT 300
-    """)
-    rows = cur.fetchall(); cur.close()
-    if not rows: return
-    out_path = os.path.join(OUTPUT_DIR, f"signals_{today_str()}.csv")
-    with open(out_path, "w", encoding="utf-8", newline="") as f:
-        f.write("コード,銘柄名,初動,底打ち,右肩上がり,上昇余地スコア,右肩上がりスコア\n")
-        for code, name, sh, bt, tob, sc, ts in rows:
-            name_q = f"\"{name}\"" if name and "," in str(name) else str(name or "")
-            f.write(f"{code},{name_q},{sh or ''},{bt or ''},{tob or ''},{sc if sc is not None else ''},{ts if ts is not None else ''}\n")
-    try:
-        notification.notify(title="シグナル抽出完了", message=f"{len(rows)}件を出力", timeout=5)
-    except Exception:
-        pass
 
 # --- ここから: 前日終値アップデータ（履歴ベース／唯一の定義） ---
 # ---- 前日終値比率(%)＋現在値から前日終値を逆算してDB更新 ----
@@ -4271,133 +4308,6 @@ def _to_raw(v):
     if isinstance(v, dict):
         return v.get("raw", v.get("fmt"))
     return v
-
-def update_prevclose_from_quotes(conn, codes, batch_size=200, max_workers=8):
-    """
-    quotes.regularMarketPrice（現在値）と quotes.regularMarketChangePercent（前日終値比率％）
-    から 前日終値 を逆算し、DB: 前日終値 / 前日円差 / 前日終値比率(％:小数2桁) を更新する。
-    - ％が無い場合は regularMarketChange（円）→ now - change で計算
-    - それも無い場合のみ previousClose を保険で使用
-    """
-    try:
-        from yahooquery import Ticker
-    except ImportError:
-        print("[prevclose-derive] yahooquery 未導入のためスキップ")
-        return
-
-    ensure_prevclose_columns(conn)
-
-    code4s = [str(c).zfill(4) for c in codes if str(c).strip()]
-    if not code4s:
-        print("[prevclose-derive] 対象なし")
-        return
-
-    total = 0
-    cur = conn.cursor()
-
-    for i in range(0, len(code4s), batch_size):
-        chunk = code4s[i:i+batch_size]
-        syms = [f"{c}.T" for c in chunk]
-
-        tq = Ticker(syms, formatted=False, asynchronous=True, max_workers=max_workers)
-        q = tq.quotes if isinstance(tq.quotes, dict) else {}
-
-        updates = []
-        for code in chunk:
-            sym = f"{code}.T"
-            data = q.get(sym, {}) or {}
-
-            now  = _to_raw(data.get("regularMarketPrice"))
-            pct  = _to_raw(data.get("regularMarketChangePercent"))
-            chg  = _to_raw(data.get("regularMarketChange"))  # 円
-            pcls = _to_raw(data.get("regularMarketPreviousClose"))  # 保険
-
-            # 数値化
-            try: now  = float(now)  if now  is not None else None
-            except: now = None
-            try: pct  = float(pct)  if pct  is not None else None
-            except: pct = None
-            try: chg  = float(chg)  if chg  is not None else None
-            except: chg = None
-            try: pcls = float(pcls) if pcls is not None else None
-            except: pcls = None
-
-            if now is None:
-                continue
-
-            # 逆算ロジック
-            if pct is not None:
-                prev = now / (1.0 + pct/100.0)
-            elif chg is not None:
-                prev = now - chg
-            else:
-                prev = pcls  # 最後の保険
-
-            if prev is None or prev == 0:
-                continue
-
-            # 丸め（前日終値は円単位に丸め、％は小数第2位まで）
-            prev_rounded = float(int(round(prev)))
-            diff_yen = float(int(round(now - prev_rounded)))
-            pct_rounded = round(((now - prev_rounded) / prev_rounded) * 100.0, 2)
-
-            updates.append((prev_rounded, diff_yen, pct_rounded, code))
-
-        if updates:
-            cur.executemany(
-                'UPDATE screener SET "前日終値"=?, "前日円差"=?, 前日終値比率=? WHERE コード=?',
-                updates
-            )
-            conn.commit()
-            total += len(updates)
-            print(f"[prevclose-derive] updated {len(updates)} / {len(chunk)} (chunk {i//batch_size+1})")
-        else:
-            print(f"[prevclose-derive] no updates in chunk ({len(chunk)})")
-
-    cur.close()
-    print(f"[prevclose-derive] 合計更新 {total} 件")
-
-
-# --- ここまで ---
-
-
-
-# ==== 簡易正規化（_normalize_map が無い場合の保険）====
-def _normalize_map_simple(sd_raw):
-    """
-    yahooquery の返却（dict / list / DataFrame）を
-    { 'XXXX.T': { ... } } 形式に寄せる簡易版。
-    """
-    try:
-        # DataFrameパターン (pandas)
-        if hasattr(sd_raw, "reset_index"):
-            df = sd_raw.reset_index()
-            m = {}
-            if "symbol" in df.columns:
-                # asOfDate があれば最新順、無ければそのまま
-                key = "asOfDate" if "asOfDate" in df.columns else None
-                for sym, g in df.groupby("symbol"):
-                    gg = g.dropna(subset=[key]) if key else g
-                    gg = gg.sort_values(key) if key else gg
-                    if len(gg):
-                        m[sym] = gg.iloc[-1].to_dict()
-            return m
-
-        # dict（銘柄→辞書 or 銘柄→リスト[辞書...]）パターン
-        if isinstance(sd_raw, dict):
-            m = {}
-            for k, v in sd_raw.items():
-                if isinstance(v, list) and v:
-                    # 末尾を優先
-                    vv = v[-1] if isinstance(v[-1], dict) else v[0]
-                    if isinstance(vv, dict):
-                        m[k] = vv
-                elif isinstance(v, dict):
-                    m[k] = v
-            return m
-    except Exception:
-        pass
-    return {}
 
 
 # ==== _to_raw が無ければ保険で定義（既にあれば不要）====
@@ -5117,17 +5027,6 @@ def _yf_num(x):
     except Exception:
         return None
 
-def _recent_item(df_like, keys):
-    """balance_sheet/cashflow の直近値（行キー優先）"""
-    if df_like is None or df_like.empty: return None
-    for k in keys:
-        if k in df_like.index:
-            for v in df_like.loc[k].values:  # 直近列から順
-                n = _yf_num(v)
-                if n is not None:
-                    return n
-    return None
-
 def _sum_quarters(df_like, keys, n=4):
     """直近n四半期の合計"""
     if df_like is None or df_like.empty: return 0.0
@@ -5844,37 +5743,98 @@ def run_fundamental_daily(force: bool = False):
 # ======= 決算関連 =======
 
 
-def build_earnings_edge_scores(conn: sqlite3.Connection, lookback_n=6) -> pd.DataFrame:
+#  signals_log依存
+def build_earnings_edge_scores(conn, lookback_n=6, follow_days=5, since="2022-01-01"):
     """
-    直近N回の決算反応から“会社固有のエッジ”を算出:
-    - 勝率（翌日ギャップ≥+3% or フォロー5日高値≥+7%）
-    - 平均ギャップ/フォロー高値％
-    - 一貫性（連続良反応の比率）などを合成（0-100）
+    signals_log('決算')に依存せず、earnings_events×price_history から
+    各コードの直近N回の“勝率/ギャップ平均/フォロー平均/直近連勝”をオンザフライで算出。
+    DBには書き込まない（返り値DFのみ）。
     """
-    q = """
-      SELECT e.コード, e.提出時刻, r.翌日ギャップpct, r.フォロー5日高値pct, r.判定
-      FROM earnings_events e
-      LEFT JOIN earnings_reactions r
-        ON e.コード=r.コード AND e.提出時刻=r.提出時刻
-      ORDER BY e.コード, e.提出時刻 DESC
-    """
-    df = pd.read_sql_query(q, conn)
-    if df.empty:
+    import pandas as pd
+
+    ev = pd.read_sql_query(f"""
+        SELECT コード, DATE(提出時刻) AS ev_date
+        FROM earnings_events
+        WHERE DATE(提出時刻) >= DATE(?)
+        ORDER BY コード, 提出時刻 DESC
+    """, conn, params=[since])
+
+    if ev.empty:
         return pd.DataFrame(columns=["コード","edge_score"])
 
+    codes = ev["コード"].astype(str).unique().tolist()
+    ph = pd.read_sql_query(f"""
+        SELECT コード, substr(日付,1,10) AS 日付, 始値, 高値, 安値, 終値
+        FROM price_history
+        WHERE コード IN ({",".join(["?"]*len(codes))})
+        ORDER BY コード, 日付
+    """, conn, params=codes)
+
+    if ph.empty:
+        # price_history が無いと計算不可 → エッジ0扱い（空DF）
+        return pd.DataFrame(columns=["コード","edge_score"])
+
+    ph["日付"] = pd.to_datetime(ph["日付"], format="%Y-%m-%d", errors="coerce")
+    ev["ev_date"] = pd.to_datetime(ev["ev_date"], errors="coerce")
+
     outs = []
-    for code, g in df.groupby("コード", sort=False):
-        g = g.head(lookback_n).copy()
-        win = ((g["翌日ギャップpct"].fillna(-999) >= 3.0) | (g["フォロー5日高値pct"].fillna(-999) >= 7.0)).astype(int)
-        win_rate = win.mean() if len(win) else 0.0
-        gap_mean = g["翌日ギャップpct"].dropna().mean() if g["翌日ギャップpct"].notna().any() else 0.0
-        follow_mean = g["フォロー5日高値pct"].dropna().mean() if g["フォロー5日高値pct"].notna().any() else 0.0
-        # 連続性（直近3イベントで2回以上“良反応”）
-        cons = win.head(3).sum()/3.0 if len(win)>=3 else win.sum()/max(1,len(win))
-        # 正規化して合成
-        s = (win_rate*60.0) + (max(0.0, gap_mean)/6.0*20.0) + (max(0.0, follow_mean)/10.0*10.0) + (cons*10.0)
+    for code, g_ev in ev.groupby("コード", sort=False):
+        g_ph = ph[ph["コード"]==code].dropna(subset=["日付"]).sort_values("日付").reset_index(drop=True)
+        if g_ph.empty:
+            continue
+        g_ph["idx"] = range(len(g_ph))
+
+        # 直近N回のイベントだけ見る
+        g_ev = g_ev.head(max(lookback_n, 6))  # 少し多めに拾っておく
+        rets, follows, wins = [], [], []
+
+        for _, row in g_ev.iterrows():
+            d0 = row["ev_date"]
+            if pd.isna(d0):
+                continue
+            after = g_ph[g_ph["日付"] > d0]
+            if after.empty:
+                continue
+            d1_idx = int(after["idx"].iloc[0])
+            if d1_idx == 0:
+                continue
+            d0_idx = d1_idx - 1
+
+            try:
+                prev_close = float(g_ph.loc[d0_idx, "終値"])
+                next_close = float(g_ph.loc[d1_idx, "終値"])
+            except Exception:
+                continue
+
+            ret_close_pct = ((next_close/prev_close) - 1.0) * 100.0
+            hi_window = g_ph.loc[d1_idx : d1_idx + follow_days - 1, "高値"]
+            follow_hi_pct = None if hi_window.empty else ((float(hi_window.max())/next_close) - 1.0) * 100.0
+
+            rets.append(ret_close_pct)
+            follows.append(follow_hi_pct)
+            win = (ret_close_pct is not None and ret_close_pct >= 3.0) or \
+                  (follow_hi_pct is not None and follow_hi_pct >= 7.0)
+            wins.append(1 if win else 0)
+
+        if not rets and not follows:
+            continue
+
+        # 直近N件に絞ってスコア化
+        wins2 = wins[:lookback_n]
+        rets2 = [x for x in rets[:lookback_n] if x is not None]
+        fol2  = [x for x in follows[:lookback_n] if x is not None]
+
+        win_rate   = (sum(wins2)/len(wins2)) if wins2 else 0.0
+        gap_mean   = (sum(rets2)/len(rets2)) if rets2 else 0.0
+        follow_mean= (sum(fol2)/len(fol2)) if fol2 else 0.0
+        cons       = (sum(wins2[:3])/3.0) if len(wins2)>=3 else (sum(wins2)/max(1,len(wins2)))
+
+        s = (win_rate*60.0) + (max(0.0,gap_mean)/6.0*20.0) + (max(0.0,follow_mean)/10.0*10.0) + (cons*10.0)
         outs.append((code, round(min(100.0, max(0.0, s)), 1)))
+
     return pd.DataFrame(outs, columns=["コード","edge_score"])
+
+
 
 def build_pre_earnings_rank(conn: sqlite3.Connection) -> pd.DataFrame:
     """
@@ -5886,8 +5846,8 @@ def build_pre_earnings_rank(conn: sqlite3.Connection) -> pd.DataFrame:
 
     # モメンタム側（既存カラムを利用）
     q = """
-      SELECT コード, 現在値, 前日終値比率, 出来高, 右肩上がりスコア
-      FROM screener
+       SELECT コード, 銘柄名, 現在値, 前日終値比率, 出来高, 右肩上がりスコア
+       FROM screener
     """
     s = pd.read_sql_query(q, conn)
     if s.empty:
@@ -5941,35 +5901,85 @@ def build_pre_earnings_rank(conn: sqlite3.Connection) -> pd.DataFrame:
     df["momentum_score"] = df["mom_raw"].clip(0,100)
     df["pre_score"] = (0.6*df["edge_score"] + 0.4*df["momentum_score"]).round(1)
     df = df.sort_values(["pre_score"], ascending=False)
-    return df[["コード","pre_score","edge_score","momentum_score"]]
+    print("pre_earn sample:", df.head(5).to_dict(orient="records"))
+    cols = ["コード","銘柄名","pre_score","edge_score","momentum_score"]
+    return df[cols]
 
 
 def yj_board(code: str, name: str):
     c = str(code).zfill(4)
-    return f'<a href="https://finance.yahoo.co.jp/quote/{c}.T/community" target="_blank" rel="noopener">{name} <span class="code">({c})</span></a>'
+    return f'<a href="https://finance.yahoo.co.jp/quote/{c}.T/bbs" target="_blank" rel="noopener">{name} <span class="code">({c})</span></a>'
+
 
 def build_earnings_tables(conn):
-    # 実績（前日～当日）
-    ev = pd.read_sql_query("""
-      SELECT e.コード, e.提出時刻, e.タイトル, e.センチメント, e.ヒットKW
+    """
+    実績(直近1日) と 予測ランキング を返す (ev_df, pre_df)
+    """
+    import pandas as pd
+
+    # ========== 実績（列の存在を動的に確認してSELECT） ==========
+    # 1) 実テーブルの列名を取得
+    cols_df = pd.read_sql_query("PRAGMA table_info(earnings_events);", conn)
+    have = set(cols_df["name"].astype(str))
+
+    base_cols = ["コード", "提出時刻", "タイトル", "センチメント"]  # 必須候補
+    opt_cols  = ["ヒットKW"]                                        # あれば使う
+    sel_cols  = [c for c in base_cols + opt_cols if c in have]      # 実在列だけ
+
+    # 2) SQLを実在列だけで作成
+    ev_sql = f"""
+      SELECT {", ".join("e."+c for c in sel_cols)}
       FROM earnings_events e
-      WHERE 提出時刻 >= datetime(date('now','-1 day') || ' 00:00:00')
-      ORDER BY 提出時刻 DESC
-    """, conn)
-    if not ev.empty:
+      WHERE e.提出時刻 >= datetime(date('now','-1 day') || ' 00:00:00')
+      ORDER BY e.提出時刻 DESC
+    """
+    ev_df = pd.read_sql_query(ev_sql, conn) if sel_cols else pd.DataFrame()
+
+    if not ev_df.empty:
         names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", conn)
-        ev = ev.merge(names, on="コード", how="left")
-        ev["銘柄"] = ev.apply(lambda r: yj_board(r["コード"], r["銘柄名"] or r["コード"]), axis=1)
-        ev["時刻"] = ev["提出時刻"].str.replace("T"," ").str.replace("+09:00","", regex=False)
-        ev = ev[["銘柄","センチメント","タイトル","時刻"]]
-    # 予測（全銘柄）
-    pre = build_pre_earnings_rank(conn).head(200)
-    if not pre.empty:
-        names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", conn)
-        pre = pre.merge(names, on="コード", how="left")
-        pre["銘柄"] = pre.apply(lambda r: yj_board(r["コード"], r["銘柄名"] or r["コード"]), axis=1)
-        pre = pre[["銘柄","pre_score","edge_score","momentum_score"]]
-    return ev, pre
+        ev_df = ev_df.merge(names, on="コード", how="left")
+
+        # 時刻整形（失敗時は元の値）
+        ts = pd.to_datetime(ev_df.get("提出時刻"), errors="coerce")
+        ev_df["時刻"] = ts.dt.strftime("%Y/%m/%d %H:%M").fillna(ev_df.get("提出時刻", "").astype(str))
+
+        # 銘柄リンク（yj_board 未定義でも落ちない）
+        def _mk_name(code, name):
+            label = name if (isinstance(name, str) and name) else str(code)
+            try:
+                return yj_board(code, label)
+            except Exception:
+                return label
+
+        ev_df["銘柄"] = [_mk_name(c, n) for c, n in zip(ev_df["コード"], ev_df.get("銘柄名", ""))]
+        ev_df = ev_df[["銘柄", "センチメント", "タイトル", "時刻"]]
+    else:
+        ev_df = pd.DataFrame(columns=["銘柄", "センチメント", "タイトル", "時刻"])
+
+    # ========== 予測 ==========
+    pre_df = build_pre_earnings_rank(conn)
+
+    if not pre_df.empty:
+        # 銘柄名が無ければ付与
+        if "銘柄名" not in pre_df.columns:
+            names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", conn)
+            pre_df = pre_df.merge(names, on="コード", how="left")
+
+        def _mk_name2(code, name):
+            label = name if (isinstance(name, str) and name) else str(code)
+            try:
+                return yj_board(code, label)
+            except Exception:
+                return label
+
+        pre_df["銘柄"] = [_mk_name2(c, n) for c, n in zip(pre_df["コード"], pre_df.get("銘柄名", ""))]
+        pre_df = pre_df[["銘柄", "pre_score", "edge_score", "momentum_score"]].head(200)
+    else:
+        pre_df = pd.DataFrame(columns=["銘柄", "pre_score", "edge_score", "momentum_score"])
+    
+    print("[dbg] ev/pre rows:", len(ev_df), len(pre_df))
+    return ev_df, pre_df
+
 
 
 # ===================== （決算リスト） =====================
@@ -6033,61 +6043,6 @@ def _x_search_url(code4: str) -> str:
     # ハッシュタグ #コード で検索
     return f"https://x.com/search?q=%23{code4}"
 
-def build_earnings_rows_edinet_for_dates(date_list: list[str]) -> list[dict]:
-    """
-    指定した日付（'YYYY-MM-DD'）の EDINET 一覧から“決算っぽい”書類を抽出し、
-    ダッシュボードに渡す形へ整形して返す。
-    """
-    rows: list[dict] = []
-    for ds in date_list:
-        try:
-            for doc in _edinet_list(ds):
-                # secCode（4桁）を持ち、決算系タイトルのみ
-                code4 = _normalize_sec_code(doc.get("secCode"))
-                if not code4: 
-                    continue
-                if not _is_kessan_like(doc):
-                    continue
-
-                title = (doc.get("docDescription") or "").strip()
-                name  = (doc.get("filerName") or "").strip()
-                ts    = (doc.get("submitDateTime") or "").replace("T"," ").replace("+09:00","").strip()
-                docid = (doc.get("docID") or "").strip()
-
-                # PDF 直リンク（type=1=PDF）
-                pdf_url = f"https://disclosure.edinet-fsa.go.jp/api/v2/documents/{docid}?type=1" if docid else ""
-
-                rows.append({
-                    "コード": code4,
-                    "銘柄名": name or "",
-                    "センチメント": _guess_sentiment_by_title(title),
-                    "タイトル": title,
-                    "時刻": ts,                     # "YYYY-MM-DD HH:MM:SS"
-                    "edinet_doc_id": docid,
-                    "edinet_pdf": pdf_url,
-                    "yahoo_url": _yahoo_quote_url(code4),
-                    "x_url": _x_search_url(code4),
-                })
-        except Exception as e:
-            print(f"[earnings][WARN] EDINET fetch failed for {ds}: {e}")
-
-    # 時刻の降順に並べる（新しい順）
-    def _tskey(r):
-        try:
-            return datetime.strptime(str(r.get("時刻","")), "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return datetime(1970,1,1, tzinfo=None)
-    rows.sort(key=_tskey, reverse=True)
-    return rows
-
-def build_earnings_rows_edinet_prev_and_today() -> list[dict]:
-    """
-    前日＆当日（JST）分をまとめて返すヘルパ。
-    """
-    now = datetime.now(_JST).date()
-    prev = now - timedelta(days=1)
-    return build_earnings_rows_edinet_for_dates([prev.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")])
-
 
 import sqlite3, json
 from pathlib import Path
@@ -6095,100 +6050,6 @@ from pathlib import Path
 
 # ================= 安全版：直近決算読み込み（完全置き換え） =================
 import os, json, sqlite3, datetime
-
-def _resolve_shared_db_path() -> str:
-    """
-    fetch_all.py と同じ SQLite を指すように自動解決。
-    必要なら2行目の固定パスをあなたの実DBパスに変えてください。
-    """
-    cand = [
-        os.environ.get("EARNINGS_DB"),
-        r"H:\desctop\株攻略\2-トレンドツール\market.db",  # ←必要に応じて修正
-        os.path.join(os.path.dirname(__file__), "market.db"),
-    ]
-    for p in cand:
-        if p and os.path.exists(p):
-            return p
-    return cand[-1]  # 最後の候補を返す（存在しなくても）
-
-def _db_has_table(conn: sqlite3.Connection, name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (name,))
-    return cur.fetchone() is not None
-
-def load_recent_earnings(limit_days: int = 7, limit_rows: int = 300):
-    """
-    earnings_events を“日本語カラムのみ”で読む版。
-    ・発表日時が無い場合は 提出時刻 を使用（COALESCE）
-    ・直近 N 日で絞り、時刻降順で返す
-    """
-    import sqlite3, json, datetime
-
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-
-        # テーブル存在チェック
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='earnings_events'")
-        if not cur.fetchone():
-            print("[earnings][WARN] table earnings_events not found → []")
-            return []
-
-        since = (datetime.datetime.now() - datetime.timedelta(days=int(limit_days))).strftime("%Y-%m-%d 00:00:00")
-
-        cur.execute("""
-            SELECT
-              コード,
-              銘柄名,
-              タイトル,
-              リンク,
-              COALESCE(発表日時, 提出時刻) AS ts,
-              要約,
-              判定,
-              判定スコア,
-              理由JSON,
-              指標JSON,
-              進捗率,
-              センチメント,
-              素点
-            FROM earnings_events
-            WHERE COALESCE(発表日時, 提出時刻) >= ?
-            ORDER BY COALESCE(発表日時, 提出時刻) DESC
-            LIMIT ?
-        """, (since, int(limit_rows)))
-
-        out = []
-        for row in cur.fetchall():
-            # Row -> dict
-            d = dict(row)
-
-            # JSON列デコード
-            for k in ("理由JSON", "指標JSON"):
-                if k in d and isinstance(d[k], str):
-                    try:
-                        d[k] = json.loads(d[k])
-                    except Exception:
-                        d[k] = [] if k == "理由JSON" else {}
-
-            out.append({
-                "ticker":   str(d.get("コード") or "").zfill(4),
-                "name":     d.get("銘柄名") or "",
-                "title":    d.get("タイトル") or "",
-                "link":     d.get("リンク") or "",
-                "time":     d.get("ts") or "",
-                "summary":  d.get("要約") or "",
-                "verdict":  d.get("判定") or "",
-                "score_judge": int(d.get("判定スコア") or 0),
-                "reasons":  d.get("理由JSON") or [],
-                "metrics":  d.get("指標JSON") or {},
-                "progress": d.get("進捗率"),
-                "sentiment": d.get("センチメント") or "",
-                "score":     int(d.get("素点") or 0),
-            })
-        return out
-    finally:
-        conn.close()
 
 
 # ===== TDnet決算(earnings)の直近N日をDBから読む =====
@@ -6265,6 +6126,399 @@ def load_recent_earnings_from_db(db_path: str, days: int = 7, limit: int = 300):
         conn.close()
 
 
+
+
+# ===== 予測タブの付加情報（列）を作るユーティリティ =====
+
+def _mk_score_reason(rec: dict) -> str:
+    """pre_score/各サブスコアから短い根拠文を作る（スコア理由）"""
+    t = []
+    mom = float(rec.get("momentum_score") or 0)
+    hh  = float(rec.get("near_hh_score") or 0)
+    vol = float(rec.get("vol_score") or 0)
+    edg = float(rec.get("edge_score") or 0)
+    if mom >= 90:   t.append("トレンド非常に強い")
+    elif mom >= 80: t.append("トレンド強め")
+    elif mom >= 60: t.append("トレンド改善")
+    if hh >= 90:    t.append("直近高値圏")
+    elif hh >= 50:  t.append("高値に接近")
+    if vol >= 90:   t.append("出来高急増")
+    elif vol >= 70: t.append("出来高増加")
+    if edg >= 60:   t.append("ファンダ追い風の可能性")
+    return " / ".join(t) or "根拠薄め（暫定）"
+
+
+def _mk_hint(rec: dict) -> str:
+    """候補一覧と同じトーンの“運用ヒント”を短く（予測ヒント）"""
+    msg = []
+    ru = float(rec.get("右肩上がりスコア") or rec.get("rightup_score") or 0)
+    if ru >= 90:   msg.append("右肩強い")
+    elif ru >= 75: msg.append("右肩安定")
+    et = str(rec.get("右肩早期種別") or "").strip()
+    if et:         msg.append(f"早期:{et}")
+    rvol = float(rec.get("RVOL代金") or 0)
+    if rvol >= 3:  msg.append("資金流入強")
+    rate = float(rec.get("前日終値比率") or 0)
+    if rate >= 5:  msg.append("上昇目立つ")
+    return " / ".join(msg)
+
+
+def _mk_overheat_bucket(r20_pct: float, mom: float) -> str:
+    """過熱度のバケット化（過熱/やや過熱/中立/やや調整/調整）"""
+    if r20_pct >= 90 or mom >= 90: return "過熱"
+    if r20_pct >= 75 or mom >= 85: return "やや過熱"
+    if r20_pct <= 10 or mom <= 40: return "調整"
+    if r20_pct <= 25 or mom <= 60: return "やや調整"
+    return "中立"
+
+
+def _attach_overheat_and_hints(conn, pre_df):
+    """pre_df に『過熱度』『予測ヒント』を付与（順位は変更しない）"""
+    import pandas as pd
+    if pre_df is None or pre_df.empty:
+        pre_df = pd.DataFrame(columns=list(pre_df.columns)+["過熱度","予測ヒント"])
+        return pre_df
+
+    # 直近20日リターンとパーセンタイル
+    r20 = pd.read_sql_query("""
+        WITH cur AS (SELECT コード, MAX(日付) d FROM price_history GROUP BY コード),
+             base AS (
+               SELECT p.コード, p.終値 AS c0,
+                      (SELECT 終値 FROM price_history q
+                       WHERE q.コード=p.コード AND q.日付=date(p.日付,'-20 day')) AS c20
+               FROM price_history p JOIN cur ON p.コード=cur.コード AND p.日付=cur.d
+             )
+        SELECT コード, 100.0*(c0 - c20)/NULLIF(c20,0) AS r20
+        FROM base
+    """, conn)
+    r20["r20"] = pd.to_numeric(r20["r20"], errors="coerce").fillna(0.0)
+    r20["r20_pct"] = (r20["r20"].rank(pct=True) * 100.0).clip(0, 100)
+
+    df = pre_df.merge(r20[["コード","r20","r20_pct"]], on="コード", how="left")
+    df["過熱度"] = df.apply(
+        lambda r: _mk_overheat_bucket(float(r.get("r20_pct") or 0), float(r.get("momentum_score") or 0)),
+        axis=1
+    )
+    # 予測ヒント（行に足りないカラムはあってもなくてもOKな設計）
+    df["予測ヒント"] = df.apply(_mk_hint, axis=1)
+    return df
+
+
+def _compute_expected_price_and_revision(conn, pre_df):
+    """
+    DBの過去決算反応から“期待価格”を作る＋簡易ルールで“業績修正予想”を付与。
+    - 期待価格 = 現在値 × (1 + 期待リターン[%]/100)
+      期待リターンは、過去の earnings_events 当日〜翌営業日の市場平均反応をベースに、
+      今のモメンタム（r20_pct, momentum_score）で弱/強補正。
+    - 業績修正予想 = {上方観測 / 据置見通し / 下方観測}
+      （四半期PLがあれば進捗とYoY、なければ最近のイベント・センチメントで近似）
+    """
+    import pandas as pd
+    import numpy as np
+
+    if pre_df is None or pre_df.empty:
+        return pd.DataFrame(columns=["コード","期待価格","業績修正予想"])
+
+    codes = tuple(pre_df["コード"].astype(str).tolist())
+
+    # いまの現在値（最新終値）
+    px = pd.read_sql_query("""
+        WITH cur AS (SELECT コード, MAX(日付) d FROM price_history GROUP BY コード)
+        SELECT p.コード, p.終値 AS 現在値
+        FROM price_history p JOIN cur ON p.コード=cur.コード AND p.日付=cur.d
+    """, conn)
+    px["現在値"] = pd.to_numeric(px["現在値"], errors="coerce")
+
+    # 過去の決算イベント日と翌営業日のリターン（全銘柄平均）
+    # ※ テーブル・列が無い場合は except で 0% にフォールバック
+    try:
+        ev = pd.read_sql_query("""
+            SELECT コード, DATE(提出時刻) AS d
+            FROM earnings_events
+            WHERE 提出時刻 IS NOT NULL
+              AND DATE(提出時刻) >= date('now','-720 day')
+        """, conn)
+
+        if ev.empty:
+            base_ret = 0.0
+        else:
+            # イベント日の前日終値と翌営業日終値で +1日反応を測る
+            # 前日＝d-1営業日扱いは困難なので近似：d-1カレンダー日/翌営業日をSQLで近似取得
+            # ずれを許容しつつ平均をとる
+            ret = pd.read_sql_query("""
+                WITH e AS (
+                  SELECT コード, DATE(提出時刻) AS d FROM earnings_events
+                  WHERE 提出時刻 IS NOT NULL AND DATE(提出時刻) >= date('now','-720 day')
+                ),
+                p0 AS (
+                  SELECT e.コード, e.d,
+                         (SELECT 終値 FROM price_history p WHERE p.コード=e.コード AND p.日付<=date(e.d,'-1 day') ORDER BY p.日付 DESC LIMIT 1) AS c0
+                  FROM e
+                ),
+                p1 AS (
+                  SELECT e.コード, e.d,
+                         (SELECT 終値 FROM price_history p WHERE p.コード=e.コード AND p.日付>=date(e.d,'+1 day') ORDER BY p.日付 ASC LIMIT 1) AS c1
+                  FROM e
+                )
+                SELECT e.コード, e.d,
+                       100.0 * (p1.c1 - p0.c0) / NULLIF(p0.c0,0) AS r1d
+                FROM e
+                JOIN p0 ON p0.コード=e.コード AND p0.d=e.d
+                JOIN p1 ON p1.コード=e.コード AND p1.d=e.d
+            """, conn)
+            ret["r1d"] = pd.to_numeric(ret["r1d"], errors="coerce")
+            base_ret = float(ret["r1d"].median()) if not ret.empty else 0.0  # 中央値でロバスト
+    except Exception:
+        base_ret = 0.0
+
+    # いまの r20_pct と momentum で弱/強補正（±5%幅）
+    # 例：r20_pctが上位の時は +2.5%、momentumが強い時は +2.5% 上乗せ 等
+    # → 過去平均に “状況係数” を軽く掛ける
+    r20 = pd.read_sql_query("""
+        WITH cur AS (SELECT コード, MAX(日付) d FROM price_history GROUP BY コード),
+             base AS (
+               SELECT p.コード, p.終値 AS c0,
+                      (SELECT 終値 FROM price_history q
+                       WHERE q.コード=p.コード AND q.日付=date(p.日付,'-20 day')) AS c20
+               FROM price_history p JOIN cur ON p.コード=cur.コード AND p.日付=cur.d
+             )
+        SELECT コード, 100.0*(c0 - c20)/NULLIF(c20,0) AS r20
+        FROM base
+    """, conn)
+    r20["r20"] = pd.to_numeric(r20["r20"], errors="coerce").fillna(0.0)
+    r20["r20_pct"] = (r20["r20"].rank(pct=True) * 100.0).clip(0,100)
+
+    df = pre_df.merge(px, on="コード", how="left") \
+               .merge(r20[["コード","r20_pct"]], on="コード", how="left")
+
+    def _situ_boost(r):
+        boost = 1.0
+        r20p = float(r.get("r20_pct") or 0)
+        mom  = float(r.get("momentum_score") or 0)
+        if r20p >= 75: boost += 0.025
+        if r20p >= 90: boost += 0.025
+        if mom  >= 85: boost += 0.025
+        if mom  >= 95: boost += 0.025
+        if r20p <= 25: boost -= 0.025
+        if r20p <= 10: boost -= 0.025
+        if mom  <= 60: boost -= 0.025
+        if mom  <= 40: boost -= 0.025
+        return boost
+
+    df["期待リターン％"] = base_ret * df.apply(_situ_boost, axis=1)
+    df["期待価格"] = (pd.to_numeric(df["現在値"], errors="coerce") *
+                   (1.0 + df["期待リターン％"].astype(float)/100.0)).round(2)
+
+    # 業績修正予想（四半期PLがあれば使う／無ければイベント近似）
+    try:
+        pl = pd.read_sql_query("""
+            SELECT コード, 決算期, 四半期,
+                   売上高, 営業利益,
+                   CASE WHEN 売上高 IS NOT NULL AND 売上高 != 0
+                        THEN 100.0 * 営業利益/売上高 END AS 利益率,
+                   通期進捗率
+            FROM pl_quarter
+        """, conn)
+        pl["決算期_ord"] = pd.to_datetime(pl["決算期"], errors="coerce")
+        last = pl.dropna(subset=["決算期_ord"]).sort_values(["コード","決算期_ord"]).groupby("コード").tail(1)
+        # 進捗の基準：Q1:25/Q2:50/Q3:75/Q4:100
+        import numpy as np
+        q = last["四半期"].fillna(0)
+        target = np.select([q==1,q==2,q==3,q>=4], [25.0,50.0,75.0,100.0], default=0.0)
+        last = last.assign(_prog_gap=(last["通期進捗率"].fillna(0.0) - target))
+
+        # YoY（営業利益）も見る（4Q前比）
+        pl = pl.sort_values(["コード","決算期_ord"])
+        pl["営利YoY"] = pl.groupby("コード")["営業利益"].pct_change(4) * 100.0
+        yoy = pl.groupby("コード").tail(1)[["コード","営利YoY"]]
+
+        base_rev = last[["コード","_prog_gap"]].merge(yoy, on="コード", how="left")
+        def _rev_label(r):
+            prog = float(r.get("_prog_gap") or 0.0)
+            yoyp = float(r.get("営利YoY") or 0.0)
+            if prog >= 5 and yoyp >= 0:  return "上方観測"
+            if prog <= -5 and yoyp <= 0: return "下方観測"
+            return "据置見通し"
+        base_rev["業績修正予想"] = base_rev.apply(_rev_label, axis=1)
+        rev = base_rev[["コード","業績修正予想"]]
+    except Exception:
+        # 近60日イベントセンチメントで近似（プラス多→上方、マイナス多→下方）
+        try:
+            evs = pd.read_sql_query("""
+                SELECT コード,
+                       SUM(CASE WHEN センチメント LIKE '%pos%' OR センチメント LIKE '%ポジ%' THEN 1
+                                WHEN センチメント LIKE '%neg%' OR センチメント LIKE '%ネガ%' THEN -1
+                                ELSE 0 END) AS s
+                FROM earnings_events
+                WHERE 提出時刻 >= datetime('now','-60 day')
+                GROUP BY コード
+            """, conn)
+            def _lbl(s):
+                s = float(s or 0)
+                if s >= 2:  return "上方観測"
+                if s <= -2: return "下方観測"
+                return "据置見通し"
+            evs["業績修正予想"] = evs["s"].apply(_lbl)
+            rev = evs[["コード","業績修正予想"]]
+        except Exception:
+            rev = pd.DataFrame(columns=["コード","業績修正予想"])
+
+    out = df.merge(rev, on="コード", how="left")
+    return out[["コード","期待価格","業績修正予想"]]
+
+
+import pandas as pd
+import numpy as np
+from typing import Literal
+
+def _pct(a, b):
+    try:
+        if b in (0, None) or pd.isna(b):
+            return np.nan
+        return 100.0 * (a - b) / b
+    except Exception:
+        return np.nan
+
+def calc_expected_price(conn, code: str, latest_close: float,
+                        momentum_score: float = 0.0, edge_score: float = 0.0) -> float:
+    """
+    DBの過去決算翌日の実リターン平均から「期待株価」を見積もる簡易版。
+    標本が乏しい場合はモメンタム/エッジで微調整（±0.5%/10pt）。
+    """
+    # 直近の終値が無ければそのまま返す
+    if latest_close in (None, 0) or pd.isna(latest_close):
+        return float("nan")
+
+    # 1) コードの過去決算日を取得
+    ev = pd.read_sql_query("""
+      SELECT 日付 AS ev_day
+      FROM earnings_events
+      WHERE コード = ?
+      ORDER BY 日付 DESC
+      LIMIT 10
+    """, conn, params=[code])
+
+    # 2) 各決算日の「翌営業日」終値を引いて、前営業日比リターンを作る
+    rets = []
+    if not ev.empty:
+      for d in ev["ev_day"].tolist():
+        pr = pd.read_sql_query("""
+          WITH prev AS (
+            SELECT 日付, 終値 FROM price_history
+            WHERE コード=? AND 日付 <= ?
+            ORDER BY 日付 DESC LIMIT 1
+          ),
+          next AS (
+            SELECT 日付, 終値 FROM price_history
+            WHERE コード=? AND 日付 > ?
+            ORDER BY 日付 ASC LIMIT 1
+          )
+          SELECT
+            (SELECT 終値 FROM next) AS c_next,
+            (SELECT 終値 FROM prev) AS c_prev
+        """, conn, params=[code, d, code, d])
+        if not pr.empty:
+            c_prev = pr.at[0, "c_prev"]
+            c_next = pr.at[0, "c_next"]
+            if pd.notna(c_prev) and pd.notna(c_next) and c_prev:
+                rets.append(_pct(c_next, c_prev))
+
+    # 3) 平均反応（%）
+    if rets:
+        base_ret = float(np.nanmean(rets))
+    else:
+        base_ret = 0.0  # 標本が無ければニュートラル
+
+    # 4) サンプル不足のときはスコアで微調整（±0.5%/10pt）
+    if len(rets) < 3:
+        base_ret += 0.05 * ((momentum_score - 50.0) / 10.0)   # 50基準
+        base_ret += 0.05 * ((edge_score     - 50.0) / 10.0)
+
+    # 5) 期待株価 = 最新終値 × (1 + 期待リターン%)
+    expected = latest_close * (1.0 + base_ret / 100.0)
+    return round(float(expected), 2)
+
+
+def classify_revision_bias(edge_score: float,
+                           momentum_score: float) -> Literal["上方寄り", "中立", "下方寄り"]:
+    """
+    決算の上振れ/下振れ“見通し”を超単純化。
+    edge（内容寄り）を主、mom（需給寄り）を従として判定。
+    """
+    e = float(edge_score or 0.0)
+    m = float(momentum_score or 0.0)
+
+    if e >= 65 or (e >= 55 and m >= 70):
+        return "上方寄り"
+    if e <= 35 or (e <= 45 and m <= 40):
+        return "下方寄り"
+    return "中立"
+
+
+def judge_overheat(conn, code: str,
+                   momentum_score: float) -> Literal["過熱", "やや過熱", "中立", "やや押し目", "押し目"]:
+    """
+    銘柄相対の20日リターン（r20 = 直近終値/20日前終値 - 1）と
+    市場全体に対するr20のパーセンタイル（<= r20 の比率）＋ momentum_score で“過熱度”を5分類。
+    """
+    # 対象銘柄の r20
+    r = pd.read_sql_query(
+        """
+        WITH cur AS (
+          SELECT MAX(日付) d FROM price_history WHERE コード=?
+        )
+        SELECT
+          100.0 * (
+            (SELECT 終値 FROM price_history p WHERE p.コード=? AND p.日付=cur.d)
+            -
+            (SELECT 終値 FROM price_history q WHERE q.コード=? AND q.日付=date(cur.d,'-20 day'))
+          ) / NULLIF(
+            (SELECT 終値 FROM price_history q WHERE q.コード=? AND q.日付=date(cur.d,'-20 day')), 0
+          ) AS r20
+        FROM cur
+        """,
+        conn, params=[code, code, code, code]
+    )
+    r20 = float(r.at[0, "r20"]) if (not r.empty and pd.notna(r.at[0, "r20"])) else 0.0
+
+    # 市場全体の r20 分布
+    allr = pd.read_sql_query(
+        """
+        WITH cur AS (
+          SELECT コード, MAX(日付) d FROM price_history GROUP BY コード
+        ),
+        base AS (
+          SELECT p.コード,
+                 p.終値 AS c0,
+                 (SELECT 終値 FROM price_history q
+                  WHERE q.コード=p.コード AND q.日付=date(p.日付,'-20 day')) AS c20
+          FROM price_history p
+          JOIN cur ON p.コード=cur.コード AND p.日付=cur.d
+        )
+        SELECT 100.0 * (c0 - c20) / NULLIF(c20,0) AS r20 FROM base
+        """,
+        conn
+    )
+
+    if allr.empty:
+        r20pct = 50.0
+    else:
+        s = pd.to_numeric(allr["r20"], errors="coerce").fillna(0.0)
+        # パーセンタイルは「全体の中で自分以下の割合」を採用
+        r20pct = float(((s <= r20).mean()) * 100.0)
+
+    mom = float(momentum_score or 0.0)
+
+    # しきい値（必要に応じて微調整可）
+    if r20pct >= 90 or mom >= 90:
+        return "過熱"
+    if r20pct >= 75 or mom >= 80:
+        return "やや過熱"
+    if r20pct <= 10 or mom <= 35:
+        return "押し目"
+    if r20pct <= 25 or mom <= 55:
+        return "やや押し目"
+    return "中立"
 
 # ===== タイマーユーティリティ =====
 from datetime import datetime, time as dtime
@@ -6427,9 +6681,9 @@ def main():
         # (9) メール送信（任意）
         #try:
         #    _timed("send_index_html_via_gmail", send_index_html_via_gmail, html_path)
-        #    # クールダウンなしで強制オープン
-        #    ok = open_html_locally(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\screen_data\index.html", cool_min=0, force=True)
-        #    print("opened:", ok)
+        # クールダウンなしで強制オープン
+        ok = open_html_locally(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\screen_data\index.html", cool_min=0, force=True)
+        print("opened:", ok)
         #
         #except Exception as e:
         #    print("[gmail][WARN]", e)
