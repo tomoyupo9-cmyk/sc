@@ -2970,11 +2970,13 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       : rows;
   }
 
-  // === 当たり判定の共通ヘルパ ===
-  const HIT_RE = /^(当たり|再評価OK)/;
-  function isHitRow(r){
-    return HIT_RE.test(String((r && r["判定"]) ?? ""));
-  }
+  // === 当たり判定（win / AUTO / 日本語の両対応） ===
+function isHitRow(r){
+  const v = String((r && (r["判定"] ?? r["judge"] ?? "")) || "").trim().toLowerCase();
+  if (/^当たり/.test(v)) return true;          // 例: "当たり", "当たり！(3)"
+  if (v === "win" || v === "auto" || v === "再評価ok") return true;
+  return false;
+}
 
 
   /* ---------- ヘルプ（小窓） ---------- */
@@ -3492,16 +3494,25 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(W-pad,H-pad); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(pad,pad); ctx.stroke(); }
 
-function drawBar(canvas, labels, values, title){
-  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+function drawBar(canvas,labels,values,title){
+  const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
   ctx.clearRect(0,0,W,H);
-  ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
-  drawAxes(ctx, W, H, pad);
-
-  // sanitize
+  ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24);
+  drawAxes(ctx,W,H,pad);
   const nums = values.map(v => (v === "" || v == null ? NaN : +v));
   const finite = nums.filter(Number.isFinite);
-  if (!finite.length) { ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
+  if(!finite.length){ ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
+  const max = Math.max(1, ...finite);
+  const bw=(W-pad*2)/labels.length*0.7;
+  labels.forEach((lb,i)=>{
+    const v = Number.isFinite(nums[i]) ? nums[i] : 0;
+    const x=pad+(i+0.15)*(W-pad*2)/labels.length;
+    const h=(H-pad*2)*(v/max);
+    ctx.fillStyle="#4a90e2"; if(h>0) ctx.fillRect(x,H-pad-h,bw,h);
+    ctx.fillStyle="#333"; ctx.font="12px system-ui";
+    ctx.fillText(lb,x,H-pad+14); ctx.fillText(String(v),x,H-pad-h-4);
+  });
+}
 
   const max = Math.max(1, ...finite);
   const bw = (W - pad*2) / labels.length * 0.7;
@@ -3519,16 +3530,32 @@ function drawBar(canvas, labels, values, title){
   });
 }
 
-function drawLine(canvas, labels, values, title){
-  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+function drawLine(canvas,labels,values,title){
+  const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
   ctx.clearRect(0,0,W,H);
-  ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
-  drawAxes(ctx, W, H, pad);
-
-  // sanitize
+  ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24);
+  drawAxes(ctx,W,H,pad);
   const nums = values.map(v => (v === "" || v == null ? NaN : +v));
   const finite = nums.filter(Number.isFinite);
-  if (!finite.length) { ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
+  if(!finite.length){ ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
+  const max = Math.max(1, ...finite), min = Math.min(0, ...finite);
+  const step=(W-pad*2)/Math.max(1,labels.length-1);
+  ctx.strokeStyle="#4a90e2"; ctx.lineWidth=2; ctx.beginPath();
+  nums.forEach((v,i)=>{
+    const val = Number.isFinite(v) ? v : 0;
+    const x=pad+i*step;
+    const y=H-pad-(H-pad*2)*((val-min)/(max-min||1));
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+  if(labels.length===1){ // 1点しかない場合は点を描く
+    const val = Number.isFinite(nums[0]) ? nums[0] : 0;
+    const y=H-pad-(H-pad*2)*((val-min)/(max-min||1));
+    ctx.beginPath(); ctx.arc(pad, y, 3, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle="#333"; ctx.font="12px system-ui";
+  labels.forEach((lb,i)=>{ const x=pad+i*step; ctx.fillText(lb,x-10,H-pad+14); });
+}
 
   const max = Math.max(1, ...finite);
   const min = Math.min(0, ...finite);
@@ -3597,13 +3624,36 @@ function drawLine(canvas, labels, values, title){
   }
 
   function openTrendChart(){
-    const back = ensureChartModal(), body = $("#__chart_body__");
-    const rows = applyFilter(state.data);
-    const byDay = new Map();
-    rows.forEach(r=>{
-      const d = String(r["シグナル更新日"]||"").slice(0,10); if(!d) return;
-      const hit = isHitRow(r) ? 1 : 0;
-      const o = byDay.get(d) || {tot:0,hit:0}; o.tot++; o.hit += hit; byDay.set(d,o);
+  const back = ensureChartModal(), body = $("#__chart_body__");
+  // 1) hist（履歴）があれば優先、無ければ現表示データでフォールバック
+  let src = [];
+  try {
+    const RAW = JSON.parse(document.getElementById("__DATA__").textContent || "{}");
+    if (Array.isArray(RAW.hist) && RAW.hist.length) src = RAW.hist;
+  } catch(_) {}
+  if (!src.length) src = applyFilter(state.data);
+
+  const byDay = new Map();
+  src.forEach(r=>{
+    const d = String(r["シグナル更新日"]||r["日付"]||r["日時"]||"").slice(0,10);
+    if(!d) return;
+    const hit = isHitRow(r) ? 1 : 0;
+    const o = byDay.get(d) || {tot:0,hit:0}; o.tot++; o.hit += hit; byDay.set(d,o);
+  });
+  const days = Array.from(byDay.keys()).sort();
+  const rate = days.map(d=>{ const o = byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
+  body.innerHTML = `<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" style="width:100%;height:340px;"></canvas>`;
+  const cv = body.querySelector("#cv3");
+  const fit = ()=>{
+    const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
+    cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
+    cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
+    const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
+    drawLine(cv, days, rate, "当たり率（%）");
+  };
+  if (window.__trend_fit__) window.removeEventListener("resize", window.__trend_fit__);
+  window.__trend_fit__ = fit; window.addEventListener("resize", fit, {passive:true}); fit();
+}; o.tot++; o.hit += hit; byDay.set(d,o);
     });
     const days = Array.from(byDay.keys()).sort();
     const rate = days.map(d=>{ const o = byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
