@@ -322,6 +322,7 @@ def ensure_schema(conn: sqlite3.Connection):
         ("残日", "INTEGER"),
         ("経過日数", "INTEGER"),
         ("初動検知成功", "TEXT"),
+          ("財務コメント", "TEXT"),
     ]:
         add_column_if_missing(conn, "screener", col, decl)
 
@@ -412,8 +413,10 @@ def phase_csv_import(conn, csv_path=None, overwrite_registered_date=False):
 
 
     # 必須列のみ読み込み
-    df = pd.read_csv(csv_input, dtype=str)
+    df = df = csv_input.astype(str)
     needed = ["コード", "銘柄名", "市場", "登録日"]
+
+    
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError(f"[csv-import] CSVに必須列がありません: {missing}")
@@ -472,20 +475,60 @@ def phase_csv_import(conn, csv_path=None, overwrite_registered_date=False):
 
 
 # ===== 任意：上場廃止反映 =====
-def phase_delist_cleanup(conn: sqlite3.Connection):
-    if not os.path.isfile(MASTER_CODES_PATH):
-        print("上場廃止の基準CSVが見つからないためスキップ:", MASTER_CODES_PATH)
+def phase_delist_cleanup(conn: sqlite3.Connection,
+                         master_csv_path: str = MASTER_CODES_PATH,
+                         also_clean_notes: bool = False) -> None:
+    """
+    マスタCSV(列名: コード)に存在しない銘柄コードを screener から削除する。
+    also_clean_notes=True の場合は finance_notes も同様に削除する。
+    """
+    import os
+    import pandas as pd
+
+    if not os.path.isfile(master_csv_path):
+        print("上場廃止の基準CSVが見つからないためスキップ:", master_csv_path)
         return
-    master = pd.read_csv(MASTER_CODES_PATH, encoding="utf8", sep=",", engine="python")
-    valid = set(master["コード"].astype(str))
+
+    def _norm(code) -> str | None:
+        try:
+            return f"{int(str(code).strip()):04d}"
+        except Exception:
+            return None
+
+    # マスタ側の有効コード集合（4桁ゼロ埋めで正規化）
+    master = pd.read_csv(master_csv_path, encoding="utf8", sep=",", engine="python")
+    valid = {c for c in ( _norm(x) for x in master["コード"] ) if c is not None}
+    if not valid:
+        print("マスタ側の有効コードが0件のためスキップ:", master_csv_path)
+        return
+
     cur = conn.cursor()
+
+    # DB内コードを取得して正規化
     cur.execute("SELECT コード FROM screener")
-    todo = [db_code for (db_code,) in cur.fetchall() if str(db_code) not in valid]
-    for code in todo:
-        print("上場廃止による削除:", code)
-        cur.execute("DELETE FROM screener WHERE コード=?", (code,))
+    rows = cur.fetchall()
+    targets = []
+    for (db_code,) in rows:
+        n = _norm(db_code)
+        if n is None or n not in valid:
+            targets.append((db_code,))
+
+    if not targets:
+        print("上場廃止による削除対象はありません。")
+        cur.close()
+        return
+
+    # 削除（まずは screener）
+    print(f"上場廃止による削除: {len(targets)} 件")
+    cur.executemany("DELETE FROM screener WHERE コード = ?", targets)
+
+    # オプション: finance_notes も掃除
+    if also_clean_notes:
+        cur.executemany("DELETE FROM finance_notes WHERE コード = ?", targets)
+
     conn.commit()
     cur.close()
+
 
 # ===== 任意：空売り無し反映 =====
 def phase_mark_karauri_nashi(conn: sqlite3.Connection):
@@ -2360,6 +2403,29 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     text-decoration:none;
     font-weight:700;
   }
+  /* 予測タブ：理由/ヒントの強調 */
+  .reason-col,.hint-col {vertical-align: top;}
+  .reason-box{
+    display:inline-block; padding:6px 8px; border-radius:10px;
+    background: #fff9db; /* 薄い黄色で視認性UP */
+    line-height:1.4; white-space: pre-wrap;
+  }
+  
+  /* 財務リンクの右に出す小さなグレー文字 */
+  .fn-note{
+    color: var(--muted);      /* 既存のグレー */
+    font-size: 0.78em;        /* セルが 0.85em なので少し小さく */
+    margin-left: 6px;
+    white-space: nowrap;      /* 1行で省略表示 */
+    opacity: .95;
+    max-width: 28ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-block;
+    vertical-align: bottom;
+  }
+
+
 </style>
 
 </head>
@@ -2484,8 +2550,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
-            <th data-col="増資リスク低">増資リスク</th>
-            <th data-col="増資リスク理由">理由</th>
+            <th data-col="増資リスク">増資リスク</th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資S<span class="arrow"></span></th>
+            <th data-col="増資理由">理由</th>
             <th class="sortable" data-col="初動フラグ" data-type="flag">初動<span class="arrow"></span></th>
             <th class="sortable" data-col="底打ちフラグ" data-type="flag">底打ち<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩上がりフラグ" data-type="flag">右肩<span class="arrow"></span></th>
@@ -2519,8 +2586,9 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
-            <th data-col="増資リスク低">増資リスク</th>
-            <th data-col="増資リスク理由">理由</th>
+            <th data-col="増資リスク">増資リスク</th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資S<span class="arrow"></span></th>
+            <th data-col="増資理由">理由</th>
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="etype">早期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="判定" data-type="judge">判定<span class="arrow"></span></th>
@@ -2643,6 +2711,15 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     // 同じフォルダに finance_XXXX.html がある前提（相対パス）
     const href = `finance_${s}.html`;
     return `<a href="#" class="financelink" data-code="${s}" title="財務グラフを開く">財務</a>`;
+  }
+
+  // 財務コメントを“財務”リンクの右にグレー小文字で表示
+  function financeNote(row){
+    const v = row?.["財務コメント"];
+    if (!v) return "";
+    // escapeHtml はテンプレに既に定義あり
+    const t = escapeHtml(String(v));
+    return ` <span class="fn-note" title="${t}">${t}</span>`;
   }
 
 
@@ -3157,9 +3234,10 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         <td class="num">${r["前日終値比率"] ?? ""}</td>
         <td class="num">${r["出来高"] ?? ""}</td>
         <td class="num">${r["売買代金(億)"] ?? ""}</td>
-        <td>${financeLink(r["コード"])}</td>
-        <td>${r["増資リスク低"] || "-"}</td>
-        <td class="reason-col">${r["増資リスク理由"] || ""}</td>
+        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+        <td>${r["増資リスク"] ?? ""}</td>
+        <td class="num">${r["増資スコア"] ?? ""}</td>
+        <td class="reason-col">${r["増資理由"] || ""}</td>
         <td>${r["初動フラグ"] || ""}</td>
         <td>${r["底打ちフラグ"] || ""}</td>
         <td>${r["右肩上がりフラグ"] || ""}</td>
@@ -3234,9 +3312,10 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         <td data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
         <td data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
         <td class="num">${r["売買代金(億)"]??""}</td>
-        <td>${financeLink(r["コード"])}</td>
-        <td>${r["増資リスク低"] || "-"}</td>
-        <td class="reason-col">${r["増資リスク理由"] || ""}</td>
+        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+        <td>${r["増資リスク"] ?? ""}</td>
+        <td class="num">${r["増資スコア"] ?? ""}</td>
+        <td class="reason-col">${r["増資理由"] || ""}</td>
         <td class="num">${r["右肩早期スコア"]??""}</td>
         <td>${(r["右肩早期種別"]||"").trim()}</td>
         <td>${formatJudgeLabel(r)}</td>
@@ -3338,11 +3417,11 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         <td class="num">${_fmt2num(r.edge_score)}</td>
         <td class="num">${_fmt2num(r.momentum_score)}</td>
 
-        <td class="reason-col">${r["スコア理由"] ?? ""}</td>
-        <td>${r["予測ヒント"] ?? ""}</td>
-        <td class="num">${_fmt2num(r["期待株価"])}</td>
-        <td>${r["修正見通し"] ?? ""}</td>
-        <td>${r["過熱度"] ?? ""}</td>
+        <td class="reason-col"><div class="reason-box">${(r["スコア理由"] ?? "根拠薄め（暫定）")}</div></td>
+        <td class="hint-col"><div class="reason-box">${(r["予測ヒント"] ?? "（準備中）")}</div></td>
+        <td class="num">${_fmt2num(r["期待株価"]) || (_fmt2num(r.現在値) || "")}</td>
+        <td>${r["修正見通し"] ?? "中立"}</td>
+        <td>${r["過熱度"] ?? "中立"}</td>
       </tr>
     `).join("");
 
@@ -3412,23 +3491,70 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   function drawAxes(ctx,W,H,pad){ ctx.strokeStyle="#ccc"; ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(W-pad,H-pad); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(pad,pad); ctx.stroke(); }
-  function drawBar(canvas,labels,values,title){
-    const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
-    ctx.clearRect(0,0,W,H); ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24); drawAxes(ctx,W,H,pad);
-    if(!values.length) return; const max=Math.max(1,Math.max(...values)); const bw=(W-pad*2)/values.length*0.7;
-    labels.forEach((lb,i)=>{ const x=pad+(i+0.15)*(W-pad*2)/labels.length; const h=(H-pad*2)*(values[i]/max);
-      ctx.fillStyle="#4a90e2"; ctx.fillRect(x,H-pad-h,bw,h);
-      ctx.fillStyle="#333"; ctx.font="12px system-ui"; ctx.fillText(lb,x,H-pad+14); ctx.fillText(String(values[i]),x,H-pad-h-4); });
+
+function drawBar(canvas, labels, values, title){
+  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+  drawAxes(ctx, W, H, pad);
+
+  // sanitize
+  const nums = values.map(v => (v === "" || v == null ? NaN : +v));
+  const finite = nums.filter(Number.isFinite);
+  if (!finite.length) { ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
+
+  const max = Math.max(1, ...finite);
+  const bw = (W - pad*2) / labels.length * 0.7;
+
+  labels.forEach((lb, i) => {
+    const v = Number.isFinite(nums[i]) ? nums[i] : 0;
+    const x = pad + (i + 0.15) * (W - pad*2) / labels.length;
+    const h = (H - pad*2) * (v / max);
+    // h=0だと見えないので値表示だけは出す
+    ctx.fillStyle = "#4a90e2";
+    if (h > 0) ctx.fillRect(x, H - pad - h, bw, h);
+    ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
+    ctx.fillText(lb, x, H - pad + 14);
+    ctx.fillText(String(v), x, H - pad - h - 4);
+  });
+}
+
+function drawLine(canvas, labels, values, title){
+  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+  drawAxes(ctx, W, H, pad);
+
+  // sanitize
+  const nums = values.map(v => (v === "" || v == null ? NaN : +v));
+  const finite = nums.filter(Number.isFinite);
+  if (!finite.length) { ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
+
+  const max = Math.max(1, ...finite);
+  const min = Math.min(0, ...finite);
+  const step = (W - pad*2) / Math.max(1, labels.length - 1);
+
+  ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 2; ctx.beginPath();
+  nums.forEach((v, i) => {
+    const val = Number.isFinite(v) ? v : 0;
+    const x = pad + i * step;
+    const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // 1点しかないと線が見えないので点を描く
+  if (labels.length === 1) {
+    const x = pad, val = Number.isFinite(nums[0]) ? nums[0] : 0;
+    const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
+    ctx.fillStyle = "#4a90e2"; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fill();
   }
-  function drawLine(canvas,labels,values,title){
-    const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
-    ctx.clearRect(0,0,W,H); ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24); drawAxes(ctx,W,H,pad);
-    if(!values.length) return; const max=Math.max(1,Math.max(...values)), min=Math.min(0,Math.min(...values)); const step=(W-pad*2)/Math.max(1,values.length-1);
-    ctx.strokeStyle="#4a90e2"; ctx.lineWidth=2; ctx.beginPath();
-    values.forEach((v,i)=>{ const x=pad+i*step; const y=H-pad-(H-pad*2)*((v-min)/(max-min||1)); if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }); ctx.stroke();
-    ctx.fillStyle="#333"; ctx.font="12px system-ui"; labels.forEach((lb,i)=>{ const x=pad+i*step; ctx.fillText(lb,x-10,H-pad+14); });
-  }
-  
+
+  ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
+  labels.forEach((lb, i) => { const x = pad + i * step; ctx.fillText(lb, x - 10, H - pad + 14); });
+}
+
+
   function openStatsChart(){
     const back = ensureChartModal(), body = $("#__chart_body__");
     const rows = applyFilter(state.data);
@@ -3539,66 +3665,83 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
   
-  /* ---------- タブ（このブロックを丸ごと置換） ---------- */
-  function switchTab(to){
-    state.tab = to;
+/* ---------- タブ（このブロックを丸ごと置換：安全版） ---------- */
+function switchTab(to){
+  state.tab = to;
 
-    // いったん全タブ非表示＆ナビのactive解除
-    document.querySelectorAll(".tab").forEach(x=>x.classList.add("hidden"));
-    document.querySelectorAll("nav a").forEach(a=>a.classList.remove("active"));
+  // いったん全タブ非表示＆ナビのactive解除
+  var tabs = document.querySelectorAll(".tab");
+  for (var i=0;i<tabs.length;i++){ tabs[i].classList.add("hidden"); }
+  var navs = document.querySelectorAll("nav a");
+  for (var j=0;j<navs.length;j++){ navs[j].classList.remove("active"); }
 
-    if (to === "cand"){
-      document.getElementById("tab-candidate")?.classList.remove("hidden");
-      document.getElementById("lnk-cand")?.classList.add("active");
-      state.data = DATA_CAND.slice();
-      state.page = 1;
-      render();
-      return;
-    }
-
-    if (to === "tmr"){
-      document.getElementById("tab-tmr")?.classList.remove("hidden");
-      document.getElementById("lnk-tmr")?.classList.add("active");
-      renderTomorrowWrapper();
-      return;
-    }
-
-    if (to === "all"){
-      document.getElementById("tab-all")?.classList.remove("hidden");
-      document.getElementById("lnk-all")?.classList.add("active");
-      state.page = 1;
-      render();
-      return;
-    }
-
-    if (to === "log"){
-      document.getElementById("tab-log")?.classList.remove("hidden");
-      document.getElementById("lnk-log")?.classList.add("active");
-      const lb = document.getElementById("log-body");
-      if (lb && !lb.dataset.inited){
-        lb.innerHTML = DATA_LOG.map(r=>`<tr><td>${r["日時"]||""}</td><td>${r["コード"]||""}</td><td>${r["種別"]||""}</td><td>${r["詳細"]||""}</td></tr>`).join("");
-        lb.dataset.inited = "1";
-      }
-      return;
-    }
-
-    if (to === "earn"){
-      document.getElementById("tab-earn")?.classList.remove("hidden");
-      document.getElementById("lnk-earn")?.classList.add("active");
-      renderEarnings(DATA_EARN);
-      return;
-    }
-
-    if (to === "preearn"){
-      document.getElementById("tab-preearn")?.classList.remove("hidden");
-      document.getElementById("lnk-preearn")?.classList.add("active");
-      renderPreEarnings(DATA_PREEARN);
-      return;
-    }
+  if (to === "cand"){
+    var el = document.getElementById("tab-candidate");
+    if (el) el.classList.remove("hidden");
+    var ln = document.getElementById("lnk-cand");
+    if (ln) ln.classList.add("active");
+    state.data = DATA_CAND.slice();
+    state.page = 1;
+    render();
+    return;
   }
 
-  /* ▼ ナビのクリック配線（ここも一緒に置換してOK） */
-  const __linkToTab = {
+  if (to === "tmr"){
+    var el2 = document.getElementById("tab-tmr");
+    if (el2) el2.classList.remove("hidden");
+    var ln2 = document.getElementById("lnk-tmr");
+    if (ln2) ln2.classList.add("active");
+    renderTomorrowWrapper();
+    return;
+  }
+
+  if (to === "all"){
+    var el3 = document.getElementById("tab-all");
+    if (el3) el3.classList.remove("hidden");
+    var ln3 = document.getElementById("lnk-all");
+    if (ln3) ln3.classList.add("active");
+    state.page = 1;
+    render();
+    return;
+  }
+
+  if (to === "log"){
+    var el4 = document.getElementById("tab-log");
+    if (el4) el4.classList.remove("hidden");
+    var ln4 = document.getElementById("lnk-log");
+    if (ln4) ln4.classList.add("active");
+    var lb = document.getElementById("log-body");
+    if (lb && !lb.getAttribute("data-inited")){
+      lb.innerHTML = (DATA_LOG||[]).map(function(r){
+        return '<tr><td>'+(r["日時"]||"")+'</td><td>'+(r["コード"]||"")+'</td><td>'+(r["種別"]||"")+'</td><td>'+(r["詳細"]||"")+'</td></tr>';
+      }).join("");
+      lb.setAttribute("data-inited","1");
+    }
+    return;
+  }
+
+  if (to === "earn"){
+    var el5 = document.getElementById("tab-earn");
+    if (el5) el5.classList.remove("hidden");
+    var ln5 = document.getElementById("lnk-earn");
+    if (ln5) ln5.classList.add("active");
+    renderEarnings(DATA_EARN);
+    return;
+  }
+
+  if (to === "preearn"){
+    var el6 = document.getElementById("tab-preearn");
+    if (el6) el6.classList.remove("hidden");
+    var ln6 = document.getElementById("lnk-preearn");
+    if (ln6) ln6.classList.add("active");
+    renderPreEarnings(DATA_PREEARN);
+    return;
+  }
+}
+
+// ▼ ナビのクリック配線（存在する要素だけに配線）
+(function(){
+  var map = {
     "lnk-cand": "cand",
     "lnk-tmr": "tmr",
     "lnk-all": "all",
@@ -3606,15 +3749,20 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     "lnk-earn": "earn",
     "lnk-preearn": "preearn"
   };
-  Object.entries(__linkToTab).forEach(([id, tab])=>{
-    const el = document.getElementById(id);
-    if (!el) return; // 無いリンクはスキップ（logなど条件付き用）
-    el.addEventListener("click", (e)=>{
-      e.preventDefault();
-      switchTab(tab);
-    });
-  });
-  /* ---------- タブここまで ---------- */
+  for (var id in map){
+    if (!map.hasOwnProperty(id)) continue;
+    var a = document.getElementById(id);
+    if (!a) continue;
+    (function(tab){
+      a.addEventListener("click", function(e){
+        if (e && e.preventDefault) e.preventDefault();
+        switchTab(tab);
+      });
+    })(map[id]);
+  }
+})();
+/* ---------- タブここまで ---------- */
+
 
 
 
@@ -3629,6 +3777,22 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     const ds = rows.map(r=>String(r["シグナル更新日"]||"").slice(0,10)).filter(Boolean);
     return ds.sort().pop() || null;
   }
+  // --- local date helpers (freeze 明日用用) ---
+  function localDateStr(d){
+    const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2);
+    return `${y}-${m}-${da}`;
+  }
+  function prevBusinessDay(d){
+    const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    do{ dt.setDate(dt.getDate()-1); } while([0,6].includes(dt.getDay()));
+    return dt;
+  }
+  function nextBusinessDay(d){
+    const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    do{ dt.setDate(dt.getDate()+1); } while([0,6].includes(dt.getDay()));
+    return dt;
+  }
+
 
   // 「明日用」抽出（直近日に更新 & 初動/右肩/早期のいずれかが候補）
   function toTomorrowRows(src){
@@ -3645,24 +3809,43 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     });
   }
 
+  // 指定した営業日(YYYY-MM-DD)で「明日用」を抽出
+  function toTomorrowRowsForDate(src, dateStr){
+    if(!Array.isArray(src) || !dateStr) return [];
+    return src.filter(r=>{
+      const d = String(r["シグナル更新日"]||"").slice(0,10);
+      if(d !== dateStr) return false;
+      const sh = String(r["初動フラグ"]||"").includes("候補");
+      const ru = String(r["右肩上がりフラグ"]||"").includes("候補");
+      const ea = String(r["右肩早期フラグ"]||"").includes("候補");
+      return sh || ru || ea;
+    });
+  }
+
+  // 00:00–15:30 は「前営業日」を基準にして“明日用”を固定表示
   function renderTomorrowWrapper(){
     const body = document.querySelector("#tbl-tmr tbody");
     if(!body) return;
 
     const md = (RAW.meta || {});
-    const baseStr = md.base_day || latestUpdateDate(DATA_CAND) || null;
-    let targetStr = md.next_business_day || null;
+    const latestStr = md.base_day || latestUpdateDate(DATA_CAND) || null;
 
-    if(!targetStr && baseStr){
-      const dt = new Date(baseStr);
-      dt.setDate(dt.getDate() + 1);
-      while([0,6].includes(dt.getDay())) dt.setDate(dt.getDate() + 1);
-      targetStr = dt.toISOString().slice(0,10);
-    }
+    // freeze 窓：00:00–15:30
+    const now = new Date();
+    const inFreeze = (now.getHours() < 15) || (now.getHours() === 15 && now.getMinutes() < 30);
+
+    // 基準日（freeze 中は前営業日）
+    let baseDate = latestStr ? new Date(latestStr) : new Date();
+    if (inFreeze) baseDate = prevBusinessDay(baseDate);
+
+    // 見出し（日付ラベルは基準日の“次営業日”）
+    const targetStr = localDateStr(nextBusinessDay(baseDate));
     const lbl = document.getElementById("tmr-label");
     if(lbl) lbl.textContent = targetStr ? `📅 ${targetStr} 向け` : "📅 明日用（日付未取得）";
 
-    const rows = toTomorrowRows(DATA_CAND).sort((a,b)=>{
+    // 行データは「基準日」で抽出
+    const baseStr = localDateStr(baseDate);
+    const rows = toTomorrowRowsForDate(DATA_CAND, baseStr).sort((a,b)=>{
       const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
       const r  = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
       if(r!==0) return r;
@@ -3673,6 +3856,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
     renderTomorrow(rows);
   }
+
+
 
   // タブ切替に「tmr」を追加
   const _oldSwitchTab = switchTab;
@@ -3817,7 +4002,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         空売り機関,
         シグナル更新日,
         営業利益,
-        増資リスク低, 増資リスク理由
+        増資リスク, 増資スコア, 増資理由,財務コメント
       FROM screener
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
@@ -4115,6 +4300,16 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                     })
                 extra = df.apply(_row_apply, axis=1)
                 df = pd.concat([df, extra], axis=1)
+                # --- 欠損の埋め＆型整形（空欄になりがちな列を強制的に埋める） ---
+                df["スコア理由"] = df["スコア理由"].fillna("根拠薄め（暫定）")
+                df["予測ヒント"] = df["予測ヒント"].fillna("（準備中）")
+                df["修正見通し"] = df["修正見通し"].fillna("中立")
+                df["過熱度"]     = df["過熱度"].fillna("中立")
+                df["期待株価"]   = pd.to_numeric(df["期待株価"], errors="coerce")
+                # 期待株価が NaN のときは現在値で代用（空欄回避）
+                if "現在値" in df.columns:
+                    df.loc[df["期待株価"].isna(), "期待株価"] = pd.to_numeric(df["現在値"], errors="coerce")
+
 
                 # フロント互換の銘柄名
                 if "銘柄" not in df.columns:
@@ -4133,7 +4328,16 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
 
 
+    
+    # フォールバック：空なら screener から暫定ランキングを生成
+    if not preearn_rows:
+        try:
+            preearn_rows = _build_preearn_fallback(_c)
+            print(f"[preearn][fallback] generated rows: {len(preearn_rows)}")
+        except Exception as _e:
+            print(f"[preearn][fallback][WARN] {_e}")
     # ---- data_obj 構築 ----
+# ---- data_obj 構築 ----
     data_obj = {
         "cand": cand_rows,
         "all":  all_rows,
@@ -5333,9 +5537,7 @@ def batch_update_all_financials(conn,
         ("営業CF_直近", "REAL"),
         ("営業CF_4Q合計", "REAL"),
         ("配当1年合計", "REAL"),
-        ("自社株買い4Q合計", "REAL"),
-        ("増資リスク低", "TEXT"),
-        ("増資リスク理由", "TEXT"),
+        ("自社株買い4Q合計", "REAL"), ("増資リスク", "INTEGER"), ("増資スコア", "REAL"), ("増資理由", "TEXT"),
     ]:
         try:
             add_column_if_missing(conn, "screener", name, decl)
@@ -5377,10 +5579,7 @@ def batch_update_all_financials(conn,
             log.info(f"[commit.metrics] rows={len(metrics_rows)} total_updated={updated_rows}")
         if flags_rows:
             conn.executemany("""
-                UPDATE screener SET
-                  "増資リスク低"   = ?,
-                  "増資リスク理由" = ?
-                WHERE "コード" = ?
+                UPDATE screener SET "増資リスク"=?, "増資スコア"=?, "増資理由"=? WHERE "コード"=?
             """, flags_rows)
             conn.commit()
             flags_set += len(flags_rows)
@@ -5599,7 +5798,7 @@ def batch_update_all_financials(conn,
                 if ok_return: reasons.append("配当/自社株買いあり")
                 if mcap_ok:   reasons.append("時価総額≥300億")
                 flags_rows.append(("○", " / ".join(reasons), c))
-                log.info(f"[flag.ok] {c} 増資リスク低=○ reasons={'; '.join(reasons)}")
+                log.info(f"[flag.ok] {c} 旧ロジック(参考)=○ reasons={'; '.join(reasons)}")
             else:
                 miss = []
                 if not ok_equity: miss.append("EQ<60 or NA")
@@ -5911,6 +6110,51 @@ def yj_board(code: str, name: str):
     return f'<a href="https://finance.yahoo.co.jp/quote/{c}.T/bbs" target="_blank" rel="noopener">{name} <span class="code">({c})</span></a>'
 
 
+
+def _build_preearn_fallback(conn):
+    """
+    フォールバック：preearn_rows が空になった場合、screener から暫定ランキングを作る。
+    ・pre_score = 右肩上がりスコア(無ければ0)
+    ・momentum_score = 右肩上がりスコア
+    ・edge_score = 0
+    ・銘柄 は Yahooリンク付き
+    返り値: list[dict]
+    """
+    import pandas as pd
+    try:
+        s = pd.read_sql_query(
+            """
+            SELECT コード, 銘柄名, 右肩上がりスコア
+              FROM screener
+            """, conn
+        )
+    except Exception:
+        return []
+
+    if s.empty:
+        return []
+
+    def _mk(code, name):
+        c = str(code).zfill(4)
+        nm = name if (isinstance(name, str) and name) else str(code)
+        return f'<a href="https://finance.yahoo.co.jp/quote/{c}.T" target="_blank" rel="noopener">{nm} <span class="code">({c})</span></a>'
+
+    s["銘柄"] = [_mk(c, n) for c, n in zip(s["コード"], s.get("銘柄名", ""))]
+    s["edge_score"] = 0.0
+    s["momentum_score"] = s["右肩上がりスコア"].fillna(0.0)
+    s["pre_score"] = s["momentum_score"].fillna(0.0).round(1)
+    s = s.sort_values(["pre_score"], ascending=False)
+    out = s[["銘柄", "pre_score", "edge_score", "momentum_score"]].head(200)
+    # 予測タブ互換の5列をダミーで付与（空欄化を避ける）
+    out["スコア理由"] = "根拠薄め（暫定）"
+    out["予測ヒント"] = ""
+    out["期待株価"]   = float("nan")
+    out["修正見通し"] = "中立"
+    out["過熱度"]     = "中立"
+
+    # JSON化で NaN を弾く
+    return [{k: (None if (isinstance(v, float) and (v != v)) else v) for k, v in r.items()}
+            for r in out.to_dict("records")]
 def build_earnings_tables(conn):
     """
     実績(直近1日) と 予測ランキング を返す (ev_df, pre_df)
@@ -6131,37 +6375,74 @@ def load_recent_earnings_from_db(db_path: str, days: int = 7, limit: int = 300):
 # ===== 予測タブの付加情報（列）を作るユーティリティ =====
 
 def _mk_score_reason(rec: dict) -> str:
-    """pre_score/各サブスコアから短い根拠文を作る（スコア理由）"""
+    # 決算〈予測〉タブ向けの“決算っぽい”根拠文を生成。
+    # 使う要素: momentum_score / near_hh_score / vol_score / edge_score / 修正見通し
     t = []
-    mom = float(rec.get("momentum_score") or 0)
-    hh  = float(rec.get("near_hh_score") or 0)
-    vol = float(rec.get("vol_score") or 0)
-    edg = float(rec.get("edge_score") or 0)
-    if mom >= 90:   t.append("トレンド非常に強い")
-    elif mom >= 80: t.append("トレンド強め")
-    elif mom >= 60: t.append("トレンド改善")
-    if hh >= 90:    t.append("直近高値圏")
-    elif hh >= 50:  t.append("高値に接近")
-    if vol >= 90:   t.append("出来高急増")
-    elif vol >= 70: t.append("出来高増加")
-    if edg >= 60:   t.append("ファンダ追い風の可能性")
-    return " / ".join(t) or "根拠薄め（暫定）"
+    def f(x):
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
 
+    mom = f(rec.get("momentum_score"))
+    hh  = f(rec.get("near_hh_score"))
+    vol = f(rec.get("vol_score"))
+    edg = f(rec.get("edge_score"))
+    bias = str(rec.get("修正見通し") or "").strip()
+
+    # ---- エッジ（過去決算の“翌日リターン”由来スコア） ----
+    if edg >= 85:
+        t.append("過去決算の翌日リターン勝率が高め（アノマリー良）")
+    elif edg >= 70:
+        t.append("過去決算の翌日パフォーマンスがやや良好")
+
+    # ---- 需給（直前の買い集め/期待先行） ----
+    if mom >= 90:
+        t.append("決算前のモメンタム強")
+    elif mom >= 80:
+        t.append("需給改善（買い優勢）")
+
+    if hh >= 90:
+        t.append("60日高値圏（サプライズ期待の買い上がり）")
+    elif hh >= 50:
+        t.append("60日高値に接近")
+
+    if vol >= 90:
+        t.append("出来高ブースト（決算プレイの資金流入）")
+    elif vol >= 70:
+        t.append("出来高増加")
+
+    # ---- 修正バイアスの補足 ----
+    if bias and bias != "中立":
+        t.append(f"修正見通し:{bias}")
+
+    return " / ".join(t) or "根拠不足（決算前の気配は弱め）"
 
 def _mk_hint(rec: dict) -> str:
-    """候補一覧と同じトーンの“運用ヒント”を短く（予測ヒント）"""
-    msg = []
-    ru = float(rec.get("右肩上がりスコア") or rec.get("rightup_score") or 0)
-    if ru >= 90:   msg.append("右肩強い")
-    elif ru >= 75: msg.append("右肩安定")
-    et = str(rec.get("右肩早期種別") or "").strip()
-    if et:         msg.append(f"早期:{et}")
-    rvol = float(rec.get("RVOL代金") or 0)
-    if rvol >= 3:  msg.append("資金流入強")
-    rate = float(rec.get("前日終値比率") or 0)
-    if rate >= 5:  msg.append("上昇目立つ")
-    return " / ".join(msg)
+    # 決算前の“運用ヒント”。スコアしきい値で簡易に分岐。
+    # - エッジ高×需給強: ブレイク狙い or 直前分割IN
+    # - エッジ中×需給中: 押し目待ち（発表跨ぎは小口）
+    # - 弱: 見送り/材料待ち
+    def f(x):
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+    mom = f(rec.get("momentum_score"))
+    hh  = f(rec.get("near_hh_score"))
+    vol = f(rec.get("vol_score"))
+    edg = f(rec.get("edge_score"))
+    rvol= f(rec.get("RVOL代金") or rec.get("RVOL_代金") or rec.get("rvol"))
 
+    strong_flow = (mom >= 90) or (hh >= 80 and vol >= 70) or (rvol >= 2.0)
+
+    if edg >= 85 and strong_flow:
+        return "上方サプライズ狙い。直近高値ブレイクで分割IN、失速なら即撤退。"
+    if edg >= 70 and (mom >= 80 or rvol >= 1.5):
+        return "好トラックレコード。-3〜-5%押しで拾い、発表は小口跨ぎ。"
+    if edg >= 55:
+        return "中立。発表跨ぎは最小ロット、決算後の初動で追随。"
+    return "見送り。材料/出来高の増加待ち。"
 
 def _mk_overheat_bucket(r20_pct: float, mom: float) -> str:
     """過熱度のバケット化（過熱/やや過熱/中立/やや調整/調整）"""
@@ -6519,6 +6800,30 @@ def judge_overheat(conn, code: str,
     if r20pct <= 25 or mom <= 55:
         return "やや押し目"
     return "中立"
+    
+def phase_sync_finance_comments(conn):
+    """
+    finance_notes(コード, 財務コメント) → screener.財務コメント に同期
+    """
+    cur = conn.cursor()
+    # screener側の列は ensure_schema() で追加済み
+    cur.execute("""
+        UPDATE screener
+        SET 財務コメント = (
+          SELECT n.財務コメント
+          FROM finance_notes n
+          WHERE
+            -- 文字種の差異対策（数値/テキスト混在を吸収）
+            printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(screener.コード AS INTEGER))
+        )
+        WHERE EXISTS (
+          SELECT 1 FROM finance_notes n
+          WHERE printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(screener.コード AS INTEGER))
+        )
+    """)
+    conn.commit()
+    cur.close()
+
 
 # ===== タイマーユーティリティ =====
 from datetime import datetime, time as dtime
@@ -6600,7 +6905,7 @@ def main():
 
     # (4) 上場廃止/空売り無しの反映
     try:
-        _timed("phase_delist_cleanup", phase_delist_cleanup, conn)
+       _timed("phase_delist_cleanup", phase_delist_cleanup, conn, also_clean_notes=True)
     except Exception as e:
         print("[delist][WARN]", e)
 
@@ -6673,6 +6978,9 @@ def main():
             _timed("normalize_blob_numeric", normalize_blob_numeric, conn)
         except Exception as e:
             print("[normalize][WARN]", e)
+        
+        # (7.1) 財務コメント追加
+        phase_sync_finance_comments(conn)
 
         # (8) ダッシュボード出力
         html_path = os.path.join(OUTPUT_DIR, "index.html")
