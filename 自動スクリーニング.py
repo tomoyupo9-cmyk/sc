@@ -2551,7 +2551,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
             <th data-col="増資リスク">増資リスク</th>
-            <th class="num sortable" data-col="増資スコア" data-type="num">増資S<span class="arrow"></span></th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
             <th data-col="増資理由">理由</th>
             <th class="sortable" data-col="初動フラグ" data-type="flag">初動<span class="arrow"></span></th>
             <th class="sortable" data-col="底打ちフラグ" data-type="flag">底打ち<span class="arrow"></span></th>
@@ -2587,7 +2587,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
             <th data-col="増資リスク">増資リスク</th>
-            <th class="num sortable" data-col="増資スコア" data-type="num">増資S<span class="arrow"></span></th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
             <th data-col="増資理由">理由</th>
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="etype">早期種別<span class="arrow"></span></th>
@@ -2792,11 +2792,20 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     };
 
     // 文字→数値
-    const toNum = (s)=>{
-      const t = String(s ?? '').replace(/[,\s円％%]/g,'');
-      const n = parseFloat(t);
-      return Number.isFinite(n) ? n : NaN;
-    };
+    // 文字→数値（カンマ小数 "0,5" → 0.5 / 桁区切りは除去）
+const toNum = (s)=>{
+  // 空白(半角/全角・タブ等)・円・％・% を先に除去
+  let t = String(s ?? '').trim().replace(/\s|[円％%]/g,'');
+  if (t.indexOf('.') == -1 && /^-?\d+,\d+$/.test(t)) {
+    // 小数点としてのカンマ
+    t = t.replace(',', '.');
+  } else {
+    // 桁区切りのカンマを除去
+    t = t.replace(/,/g,'');
+  }
+  const n = parseFloat(t);
+  return Number.isFinite(n) ? n : NaN;
+};
 
     // ▼ 追加：カテゴリ列（flag/judge/rec/etype）のソートキー
     function keyForCategory(text, typ){
@@ -3360,7 +3369,7 @@ function isHitRow(r){
       }).join("")
     }</tr>`).join("");
 
-    attachHeaderHelps("#tbl-all");
+    attachHeaderHelps("#tbl-allcols");
     if (typeof wireDomSort === "function") wireDomSort("#tbl-allcols");
 
     // 2桁整形
@@ -3494,34 +3503,28 @@ function isHitRow(r){
     ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(W-pad,H-pad); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(pad,pad); ctx.stroke(); }
 
-function drawBar(canvas,labels,values,title){
-  const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
+
+function drawBar(canvas, labels, values, title){
+  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
   ctx.clearRect(0,0,W,H);
-  ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24);
-  drawAxes(ctx,W,H,pad);
+  ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+
+  // 軸
+  ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
+
   const nums = values.map(v => (v === "" || v == null ? NaN : +v));
   const finite = nums.filter(Number.isFinite);
-  if(!finite.length){ ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
-  const max = Math.max(1, ...finite);
-  const bw=(W-pad*2)/labels.length*0.7;
-  labels.forEach((lb,i)=>{
-    const v = Number.isFinite(nums[i]) ? nums[i] : 0;
-    const x=pad+(i+0.15)*(W-pad*2)/labels.length;
-    const h=(H-pad*2)*(v/max);
-    ctx.fillStyle="#4a90e2"; if(h>0) ctx.fillRect(x,H-pad-h,bw,h);
-    ctx.fillStyle="#333"; ctx.font="12px system-ui";
-    ctx.fillText(lb,x,H-pad+14); ctx.fillText(String(v),x,H-pad-h-4);
-  });
-}
+  if (!finite.length) { ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
 
   const max = Math.max(1, ...finite);
-  const bw = (W - pad*2) / labels.length * 0.7;
+  const bw  = (W - pad*2) / labels.length * 0.7;
 
   labels.forEach((lb, i) => {
     const v = Number.isFinite(nums[i]) ? nums[i] : 0;
     const x = pad + (i + 0.15) * (W - pad*2) / labels.length;
     const h = (H - pad*2) * (v / max);
-    // h=0だと見えないので値表示だけは出す
     ctx.fillStyle = "#4a90e2";
     if (h > 0) ctx.fillRect(x, H - pad - h, bw, h);
     ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
@@ -3530,32 +3533,20 @@ function drawBar(canvas,labels,values,title){
   });
 }
 
-function drawLine(canvas,labels,values,title){
-  const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, pad=40;
+
+function drawLine(canvas, labels, values, title){
+  const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
   ctx.clearRect(0,0,W,H);
-  ctx.fillStyle="#000"; ctx.font="14px system-ui"; ctx.fillText(title,pad,24);
-  drawAxes(ctx,W,H,pad);
+  ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+
+  // 軸
+  ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
+
   const nums = values.map(v => (v === "" || v == null ? NaN : +v));
   const finite = nums.filter(Number.isFinite);
-  if(!finite.length){ ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
-  const max = Math.max(1, ...finite), min = Math.min(0, ...finite);
-  const step=(W-pad*2)/Math.max(1,labels.length-1);
-  ctx.strokeStyle="#4a90e2"; ctx.lineWidth=2; ctx.beginPath();
-  nums.forEach((v,i)=>{
-    const val = Number.isFinite(v) ? v : 0;
-    const x=pad+i*step;
-    const y=H-pad-(H-pad*2)*((val-min)/(max-min||1));
-    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-  });
-  ctx.stroke();
-  if(labels.length===1){ // 1点しかない場合は点を描く
-    const val = Number.isFinite(nums[0]) ? nums[0] : 0;
-    const y=H-pad-(H-pad*2)*((val-min)/(max-min||1));
-    ctx.beginPath(); ctx.arc(pad, y, 3, 0, Math.PI*2); ctx.fill();
-  }
-  ctx.fillStyle="#333"; ctx.font="12px system-ui";
-  labels.forEach((lb,i)=>{ const x=pad+i*step; ctx.fillText(lb,x-10,H-pad+14); });
-}
+  if (!finite.length) { ctx.fillText("データなし（全てNaN/欠損）", pad, H/2); return; }
 
   const max = Math.max(1, ...finite);
   const min = Math.min(0, ...finite);
@@ -3570,9 +3561,9 @@ function drawLine(canvas,labels,values,title){
   });
   ctx.stroke();
 
-  // 1点しかないと線が見えないので点を描く
-  if (labels.length === 1) {
-    const x = pad, val = Number.isFinite(nums[0]) ? nums[0] : 0;
+  if (labels.length === 1) { // 1点だけなら点を描く
+    const x = pad;
+    const val = Number.isFinite(nums[0]) ? nums[0] : 0;
     const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
     ctx.fillStyle = "#4a90e2"; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fill();
   }
@@ -3580,6 +3571,7 @@ function drawLine(canvas,labels,values,title){
   ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
   labels.forEach((lb, i) => { const x = pad + i * step; ctx.fillText(lb, x - 10, H - pad + 14); });
 }
+
 
 
   function openStatsChart(){
@@ -3623,9 +3615,10 @@ function drawLine(canvas,labels,values,title){
     requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
 
-  function openTrendChart(){
+function openTrendChart(){
   const back = ensureChartModal(), body = $("#__chart_body__");
-  // 1) hist（履歴）があれば優先、無ければ現表示データでフォールバック
+
+  // 1) hist があれば優先、無ければ現表示データ
   let src = [];
   try {
     const RAW = JSON.parse(document.getElementById("__DATA__").textContent || "{}");
@@ -3633,17 +3626,23 @@ function drawLine(canvas,labels,values,title){
   } catch(_) {}
   if (!src.length) src = applyFilter(state.data);
 
+  // 日別集計
   const byDay = new Map();
   src.forEach(r=>{
     const d = String(r["シグナル更新日"]||r["日付"]||r["日時"]||"").slice(0,10);
     if(!d) return;
     const hit = isHitRow(r) ? 1 : 0;
-    const o = byDay.get(d) || {tot:0,hit:0}; o.tot++; o.hit += hit; byDay.set(d,o);
+    const o = byDay.get(d) || {tot:0,hit:0};
+    o.tot++; o.hit += hit;
+    byDay.set(d,o);
   });
+
   const days = Array.from(byDay.keys()).sort();
-  const rate = days.map(d=>{ const o = byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
+  const rate = days.map(d=>{ const o = byDay.get(d)||{tot:0,hit:0}; return o.tot ? Math.round(1000*o.hit/o.tot)/10 : 0; });
+
   body.innerHTML = `<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" style="width:100%;height:340px;"></canvas>`;
   const cv = body.querySelector("#cv3");
+
   const fit = ()=>{
     const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
     cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
@@ -3651,37 +3650,18 @@ function drawLine(canvas,labels,values,title){
     const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
     drawLine(cv, days, rate, "当たり率（%）");
   };
+
   if (window.__trend_fit__) window.removeEventListener("resize", window.__trend_fit__);
-  window.__trend_fit__ = fit; window.addEventListener("resize", fit, {passive:true}); fit();
-}; o.tot++; o.hit += hit; byDay.set(d,o);
-    });
-    const days = Array.from(byDay.keys()).sort();
-    const rate = days.map(d=>{ const o = byDay.get(d); return o&&o.tot?Math.round(1000*o.hit/o.tot)/10:0; });
+  window.__trend_fit__ = fit;
+  window.addEventListener("resize", fit, {passive:true});
+  fit();
 
-    body.innerHTML = `
-      <h3>推移グラフ（日別 当たり率 %）</h3>
-      <canvas id="cv3" style="width:100%;height:340px;"></canvas>
-    `;
-    const cv = body.querySelector("#cv3");
+  back.style.display="block";
+  const box = back.nextElementSibling; box.style.display="block";
+  const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
+  requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+}
 
-    const fit = ()=>{
-      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
-      cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
-      cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
-      const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
-      drawLine(cv, days, rate, "当たり率（%）");
-    };
-
-    if (window.__trend_fit__) window.removeEventListener("resize", window.__trend_fit__);
-    window.__trend_fit__ = fit;
-    window.addEventListener("resize", fit, { passive:true });
-    fit();
-
-    back.style.display="block";
-    const box = back.nextElementSibling; box.style.display="block";
-    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
-    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
-  }
 
 
 
@@ -3880,9 +3860,10 @@ function switchTab(to){
     const md = (RAW.meta || {});
     const latestStr = md.base_day || latestUpdateDate(DATA_CAND) || null;
 
-    // freeze 窓：00:00–15:30
+    // freeze 窓：00:00–14:30
     const now = new Date();
-    const inFreeze = (now.getHours() < 15) || (now.getHours() === 15 && now.getMinutes() < 30);
+    const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
+
 
     // 基準日（freeze 中は前営業日）
     let baseDate = latestStr ? new Date(latestStr) : new Date();
