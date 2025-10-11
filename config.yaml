@@ -1,0 +1,49 @@
+# 必須
+db_path: "H:/desctop/株攻略/1-スクリーニング自動化プログラム/kani2.db"
+
+# 掲示板ライブ取得（Yahoo!掲示板を叩く銘柄数）
+bbs_probe: 5
+
+# 直近◯日の決算を拾う
+earn_days: 7
+
+# ニュース取得の上限（銘柄ランキングの上位N件を残す）
+top_news: 100
+
+# トレンド取得の上限（未使用なら置いておいてOK）
+top_trends: 100
+
+# GoogleニュースRSSで各銘柄あたり何件まで読むか
+news:
+  max_items_per_symbol: 30
+
+# pytrends の期間と地域（fetch_all の trends ブロックで使用）
+trends_timeframe: "today 3-m"  # 直近3ヶ月
+trends_geo: "JP"               # 日本
+
+
+# =========================
+# 自動発見（discovery）設定
+# =========================
+auto_discover:
+  enabled: true           # 自動発見のON/OFF。falseで固定リスト運用に切替可能
+  top_k: 40               # 最終的に採用する銘柄数（上位からスライス）
+  validate_codes: true    # 4桁コードの実在確認（Yahoo銘柄ページの<title>で判定）
+
+  # 株探ニュースの記事本文をたどる件数上限
+  # 例）話題拾い漏れを減らすなら 120〜200 に上げる
+  kabutan_max_articles: 80
+
+  # レート制御（ミリ秒）。スクレイピング先への負荷＆BAN対策
+  sleep_ms:
+    lookup_name: 150      # 銘柄名取得（1コードごと）の待ち時間
+    validate_code: 120    # 実在確認（1コードごと）の待ち時間
+    kabutan_article: 300  # 株探の記事本文1本を見終えた後の待ち時間
+
+# =========================
+# HTTP アクセス共通設定
+# =========================
+http:
+  timeout: 10             # タイムアウト秒（全GET共通の既定値）。通信品質に応じて増減
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36"
+  # ↑ 一部サイトはUAによってHTML構造/ブロック条件が変わることがあります

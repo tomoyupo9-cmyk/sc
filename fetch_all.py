@@ -18,7 +18,7 @@ import sqlite3
 # --- 既存モジュール（環境のまま） ---
 from src.trends import fetch_trends
 from src.news import fetch_news
-from src.bbs import fetch_bbs_stats
+from src.bbs import fetch_bbs_stats, fetch_leak_comments, fetch_tob_comments
 from src.discovery import build_universe
 from src.common import ensure_dir, dump_json, now_iso, load_config
 
@@ -43,8 +43,11 @@ def _judge_sentiment(title: str) -> (str, int, str):
 
 # ------------------ TDnet: 取得 ------------------
 TDNET_LIST_JSON = "https://webapi.yanoshin.jp/webapi/tdnet/list/{date_from}-{date_to}.json"
-TDNET_KEYS = ["決算", "短信", "四半期", "通期", "上方修正", "下方修正", "業績", "配当", "進捗"]
-KEY_RE = re.compile("|".join(map(re.escape, TDNET_KEYS)))
+
+# 用途別キーワードに分離
+EARNINGS_KW = ["決算","短信","四半期","通期","上方修正","下方修正","業績","配当","進捗"]
+# （増資系は既に下の OFFERING_KW が定義済み）
+
 
 def _unescape_text(s: str) -> str:
     if not s: return ""
@@ -78,160 +81,13 @@ def _http_get_json(url: str, retries: int = 3, sleep_sec: float = 0.8):
 
 def fetch_earnings_tdnet_only(days: int = 90, per_day_limit: int = 300,
                               slice_escalation=(12, 6, 3, 1, 0.5)) -> List[Dict[str, Any]]:
-    """
-    Yanoshin TDnet 一覧APIを使って「決算/業績・配当など」を取得。
-    * 時間範囲の list_* が使えるなら分割（12→6→3→1→0.5h）。
-    * 日単位(list/day)しか通らない場合、1日=300件の頭打ちに備え「素直なページ探り」を少数だけ実施。
-      - /list/YYYYMMDD-YYYYMMDD.json?page=2..5
-      - /list/YYYYMMDD-YYYYMMDD.json?p=2..5
-      (- 機能しない場合はすぐ諦める)
-    * タイトルは KEY_RE でフィルタ。id/url/title+pubdate で重複排除。
-    """
-    import time
-    from datetime import datetime, timedelta
-
-    time_capable = False  # _fetch_tdnet_by_range で検出する
-
-    def _fetch_tdnet_by_range(dt_from: datetime, dt_to: datetime) -> list[dict]:
-        nonlocal time_capable
-
-        s_day  = dt_from.strftime("%Y%m%d")
-        e_day  = dt_to.strftime("%Y%m%d")
-        s_isoT = dt_from.strftime("%Y-%m-%dT%H:%M:%S")
-        e_isoT = dt_to.strftime("%Y-%m-%dT%H:%M:%S")
-        s_nosep= dt_from.strftime("%Y%m%d%H%M%S")
-        e_nosep= dt_to.strftime("%Y%m%d%H%M%S")
-        s_spc  = dt_from.strftime("%Y%m%d %H:%M:%S")
-        e_spc  = dt_to.strftime("%Y%m%d %H:%M:%S")
-
-        variants = [
-            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_nosep}-{e_nosep}.json", "list/nosep", True),
-            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_isoT}-{e_isoT}.json",   "list/isoT",  True),
-            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{quote(s_spc)}-{quote(e_spc)}.json", "list/space", True),
-            (f"https://webapi.yanoshin.jp/webapi/tdnet/list_time/{s_nosep}-{e_nosep}.json", "list_time/nosep", True),
-            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_day}-{e_day}.json",     "list/day",  False),
-        ]
-        for url, tag, is_time in variants:
-            js = _http_get_json(url)
-            items = js.get("items") if isinstance(js, dict) else (js if isinstance(js, list) else None)
-            if isinstance(items, list):
-                if is_time:
-                    time_capable = True
-                print(f"[tdnet] {dt_from:%Y-%m-%d %H:%M}~{dt_to:%H:%M} : api={len(items)} (fmt={tag})")
-                return items or []
-        print(f"[tdnet] {dt_from:%Y-%m-%d %H:%M}~{dt_to:%H:%M} : api=None (all time-formats failed)")
-        return []
-
-    def _fetch_day_extra_pages(s_day: str, e_day: str, page_try: int = 4) -> list[dict]:
-        """
-        list/day しか通らず 300件満杯のときだけ、page/p の素直なページを少数だけ試す。
-        例: .../{YYYYMMDD-YYYYMMDD}.json?page=2..(1+page_try)
-        効かなければ空配列で返す。
-        """
-        collected = []
-        base = f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_day}-{e_day}.json"
-        # 代表的な2パターンのみ（やりすぎない）
-        patterns = ["?page={p}", "?p={p}"]
-        for p in range(2, 2 + max(1, page_try)):
-            hit_in_this_p = 0
-            for fmt in patterns:
-                url = base + fmt.format(p=p)
-                js = _http_get_json(url)
-                items = js.get("items") if isinstance(js, dict) else (js if isinstance(js, list) else None)
-                if isinstance(items, list) and items:
-                    collected.extend(items)
-                    hit_in_this_p += len(items)
-                    print(f"[tdnet]   extra page p={p} via '{fmt[1:4]}' -> {len(items)}")
-                    break  # 同じpで別パターンは試さない
-            if hit_in_this_p == 0:
-                # この p で 0 → 以降の p も無いとみなして早期終了
-                break
-            time.sleep(0.15)
-        return collected
-
-    def _dedup_key(it: dict) -> str:
-        td = it.get("Tdnet") or it
-        return (td.get("id") or td.get("document_url") or td.get("title") or "") + "|" + (td.get("pubdate") or "")
-
-    def _slice_fetch(dt_from: datetime, dt_to: datetime, level: int = 0) -> list[dict]:
-        """
-        時間帯が多すぎるとき段階的にスライス。time_capable=False なら分割せず返す。
-        ただし「日単位で300件満杯かつ time_capable=False」のときは _fetch_day_extra_pages を試す。
-        """
-        items = _fetch_tdnet_by_range(dt_from, dt_to)
-        if len(items) < per_day_limit:
-            return items
-
-        # ここから先は 300件カンスト
-        if not time_capable:
-            # 日の境界にピッタリのときだけページ探り
-            if (dt_from.hour, dt_from.minute, dt_from.second) == (0, 0, 0) and (dt_to.hour, dt_to.minute, dt_to.second) == (23, 59, 59) and dt_from.date() == dt_to.date():
-                s_day = dt_from.strftime("%Y%m%d"); e_day = dt_to.strftime("%Y%m%d")
-                extras = _fetch_day_extra_pages(s_day, e_day)
-                if extras:
-                    print(f"[tdnet] day extra merged: base=300 + extras={len(extras)}")
-                    return items + extras
-            print(f"[tdnet] time-capability=NO → stop slicing ({dt_from:%F} {dt_from:%H:%M}~{dt_to:%H:%M}), got={len(items)}")
-            return items
-
-        if level >= len(slice_escalation):
-            print(f"[tdnet] slice exhausted ({dt_from:%F} {dt_from:%H:%M}~{dt_to:%H:%M}), got={len(items)} >= limit={per_day_limit}")
-            return items
-
-        width_h = slice_escalation[level]
-        step_sec = int(max(width_h * 3600, 1800))  # 最小30分
-        parts: list[dict] = []
-        cur = dt_from
-        while cur < dt_to:
-            nxt = min(cur + timedelta(seconds=step_sec), dt_to)
-            parts.extend(_slice_fetch(cur, nxt, level + 1))
-            cur = nxt
-            time.sleep(0.12)
-        print(f"[tdnet] api-slice level={level} w={width_h}h -> merged={len(parts)}")
-        return parts
-
-    def _ts(x: dict) -> float:
-        td = x.get("Tdnet") or {}
-        s = (td.get("pubdate") or "").replace("/", "-")
-        try:
-            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").timestamp()
-        except Exception:
-            return 0.0
-
-    # === 日次ループ ===
-    all_items: list[dict] = []
-    seen: set[str] = set()
-    end = datetime.now(JST).replace(microsecond=0)
-
-    for i in range(days):
-        day_to   = (end - timedelta(days=i)).replace(hour=23, minute=59, second=59)
-        day_from = (end - timedelta(days=i)).replace(hour=0,  minute=0,  second=0)
-
-        # （任意）土日スキップしたい場合は↓を有効化
-        # if day_from.weekday() >= 5:  # 5=Sat, 6=Sun
-        #     continue
-
-        day_items = _slice_fetch(day_from, day_to)
-
-        # フィルタ＆重複排除
-        kept = 0
-        for it in day_items:
-            td = it.get("Tdnet") or it
-            title = _unescape_text(td.get("title") or "")
-            if title and not KEY_RE.search(title):
-                continue
-            td["title"] = title
-            k = _dedup_key(it)
-            if not k or k in seen: 
-                continue
-            seen.add(k)
-            all_items.append(it); kept += 1
-
-        print(f"[tdnet] {day_from:%Y-%m-%d} kept={kept} / raw={len(day_items)}")
-        time.sleep(0.2)
-
-    all_items.sort(key=_ts, reverse=True)
-    return all_items
+    # 汎用関数に EARNINGS_KW を渡すだけ
+    return fetch_tdnet_by_keywords(
+        days=days,
+        keywords=EARNINGS_KW,
+        per_day_limit=per_day_limit,
+        slice_escalation=slice_escalation
+    )
 
 
 
@@ -333,6 +189,37 @@ def ensure_offerings_schema(conn: sqlite3.Connection):
     cur.execute("""CREATE INDEX IF NOT EXISTS idx_offerings_date ON offerings_events(substr(提出時刻,1,10));""")
     cur.execute("""CREATE INDEX IF NOT EXISTS idx_offerings_code_date ON offerings_events(コード, substr(提出時刻,1,10));""")
     conn.commit()
+
+def load_offerings_recent_map(db_path: str, days: int = 365*3) -> dict[str, bool]:
+    """
+    offerings_events から直近days日内に増資/行使/売出/CBなどの履歴があったコード集合を返す。
+    """
+    out: dict[str, bool] = {}
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        # offerings_events が存在しない場合は空
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='offerings_events'")
+        if not cur.fetchone():
+            conn.close()
+            return out
+        rows = cur.execute("""
+            SELECT DISTINCT
+                   CASE
+                     WHEN length(コード)=4 THEN コード
+                     WHEN length(コード)=5 AND substr(コード,1,1) BETWEEN '0' AND '9' THEN substr(コード,1,4)
+                     ELSE printf('%04d', CAST(コード AS INTEGER))
+                   END AS code4
+            FROM offerings_events
+            WHERE date(提出時刻) >= date('now', ?)
+        """, (f"-{days} day",)).fetchall()
+        conn.close()
+        for (c,) in rows:
+            if c:
+                out[str(c).zfill(4)] = True
+    except Exception as e:
+        print("[offerings] load_offerings_recent_map error:", e)
+    return out
 
 def _classify_offering_kind(title: str) -> str:
     t = title or ""
@@ -484,21 +371,15 @@ def upsert_earnings_rows(conn: sqlite3.Connection, rows: list[dict]):
 
 
 
-
-
-
 def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mode: str = "nonnegative") -> list[dict]:
     """
     HTMLダッシュボード用の 'earnings' を DB から直近N日分で再構築する。
     - filter_mode: "pos_good" | "nonnegative" | "all"
-      * pos_good    = sentiment=positive または verdict=good のみ
-      * nonnegative = negative 以外（+ verdict=good は常に残す）
-      * all         = 絞り込みなし
+    さらに price_history から 現在値/前日終値/前日比(円) を付与する。
     """
     import json as _json
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-    # v_events_dedup を優先（同コード×同日で最新の提出時刻のみ）
     rows = cur.execute(
         """
         SELECT
@@ -510,10 +391,8 @@ def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mod
         """,
         (f"-{days} day",)
     ).fetchall()
-    conn.close()
 
     def _to_row(r):
-        # r: tuple in the same order as SELECT
         try:
             reasons = _json.loads(r[9]) if r[9] else []
         except Exception:
@@ -539,13 +418,27 @@ def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mod
         }
 
     items = [_to_row(r) for r in rows]
+
+    # フィルタ
     if filter_mode == "pos_good":
         items = [x for x in items if (x.get("sentiment") == "positive") or ((x.get("verdict") or "") == "good")]
     elif filter_mode == "nonnegative":
         items = [x for x in items if (x.get("sentiment") != "negative") or ((x.get("verdict") or "") == "good")]
-    # else: "all" は無条件で通す
 
-    # 念のため最新順→最大300件に制限（フロント側でも slice するが保険）
+    # 価格データ付与（price_history から）
+    try:
+        codes = list({str(x.get("ticker") or "0000").zfill(4) for x in items})
+        quotes = load_quotes_from_price_history(conn, codes)
+        for x in items:
+            q = quotes.get(str(x["ticker"]).zfill(4))
+            if q:
+                x["quote"] = q
+    except Exception as e:
+        print("[earnings] quotes attach error:", e)
+
+    conn.close()
+
+    # 並べ替え＆制限
     def _ts(s: str) -> float:
         from datetime import datetime
         try:
@@ -581,7 +474,8 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
   table{width:100%;border-collapse:collapse}
   th,td{border-bottom:1px solid #f1f5f9;padding:8px 10px;text-align:left;vertical-align:top}
   th{background:#f8fafc;color:#334155;font-weight:600;position:sticky;top:0}
-  .code{display:inline-block;background:#f1f5f9;border-radius:999px;padding:2px 8px;margin-left:6px;font-size:12px;color:#334155}
+  .codechip{display:inline-flex;align-items:center;gap:6px}
+  .code{display:inline-block;background:#f1f5f9;border-radius:999px;padding:2px 8px;font-size:12px;color:#334155}
   .badge{display:inline-block;padding:2px 10px;border-radius:999px;color:#fff;font-size:12px;white-space:nowrap}
   .pos{background:var(--pos)} .neu{background:var(--neu)} .neg{background:var(--neg)}
   .newslist{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:1100px}
@@ -593,6 +487,18 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
   a{color:#1d4ed8;text-decoration:none} a:hover{text-decoration:underline}
   .day-head{font-weight:700;margin:18px 0 8px}
   .muted{opacity:.85}
+  td.num{text-align:right}
+  td.diff.plus{color:#16a34a;font-weight:600}
+  td.diff.minus{color:#dc2626;font-weight:600}
+  .copybtn{cursor:pointer;text-decoration:none}
+  .judge-row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+  .jdg{ display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:999px; font-weight:700; border:1px solid var(--br); line-height:1.9; }
+  .jdg .score{ font-weight:600; opacity:.8; }
+  .jdg.positive{ color:#065f46; background:#ecfdf5; border-color:#a7f3d0; }
+  .jdg.neutral { color:#374151; background:#f3f4f6; border-color:#e5e7eb; }
+  .jdg.negative{ color:#7f1d1d; background:#fef2f2; border-color:#fecaca; }
+  .ev{ padding:4px 10px; border-radius:12px; line-height:1.9; background:#f0f9ff; color:#0c4a6e; border-left:4px solid #38bdf8; }
+  .ev .chip{ display:inline-block; margin:2px 6px 2px 0; padding:2px 8px; border-radius:999px; background:#e0f2fe; border:1px solid #bae6fd; font-weight:600; }
 </style>
 
 <h1>注目度ダッシュボード</h1>
@@ -602,6 +508,8 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
     <button class="tab" data-mode="bbs">掲示板</button>
     <button class="tab" data-mode="earnings">決算</button>
     <button class="tab" data-mode="earnings_day">決算（日別）</button>
+    <button class="tab" data-mode="leak">漏れ？</button>
+    <button class="tab" data-mode="tob">TOB</button>
   </div>
   <span id="stamp" class="stamp"></span>
   <button class="btn" id="btn-rerender">再描画</button>
@@ -615,14 +523,29 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
 </div>
 
 <script>
-  /* ====== JSONはサーバ側で埋め込み ====== */
   window.__DATA__ = __DATA_JSON__;
   const API_BASE = "";
-  let MODE = "total"; // 初期表示は総合
+  let MODE = "total";
 
   function esc(s){return (s??"").toString().replace(/[&<>\"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
   function fmt(v){const n=Number(v||0);return isFinite(n)?n.toFixed(3):"0.000";}
   function badge(label){const cls=label==="positive"?"pos":(label==="negative"?"neg":"neu");return `<span class="badge ${cls}">${label||"neutral"}</span>`;}
+  function parseJST(s){
+    if(!s) return 0;
+    const t = String(s).replace("T"," ").replace("+09:00","").trim();
+    const m = t.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+    if(m){
+      const y=+m[1], mo=+m[2]-1, d=+m[3], h=+m[4], mi=+m[5], se=+m[6];
+      const utcMs = Date.UTC(y, mo, d, h-9, mi, se);
+      return isFinite(utcMs) ? utcMs : 0;
+    }
+    const dt = Date.parse(t+" +09:00");
+    return isNaN(dt) ? 0 : dt;
+  }
+  function yQuoteUrl(code){const c=String(code||"").padStart(4,"0");return `https://finance.yahoo.co.jp/quote/${c}.T`;}
+  function copyCode(code){
+    navigator.clipboard?.writeText(String(code||""))?.then(()=>{})
+  }
   function toNewsCards(items){
     if(!items||!items.length) return "";
     const html = items.slice(0,3).map(it=>{
@@ -631,24 +554,25 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
     }).join("");
     return `<div class="newslist">${html}</div>`;
   }
-  function yjBoardUrl(code){const c=String(code||"").padStart(4,"0");return `https://finance.yahoo.co.jp/quote/${c}.T/bbs`;}
   function stockCell(code,name){
-    const c=String(code||""); const n=esc(name||c);
-    return (/^\d{4}$/.test(c)) ? `<a href="${yjBoardUrl(c)}" target="_blank" rel="noopener">${n}<span class="code">(${c})</span></a>`
-                               : `${n} <span class="code">${esc(c)}</span>`;
+    const c=String(code||"").padStart(4,"0"); const n=esc(name||c);
+    return `<span class="codechip"><a class="copybtn" title="コードをコピー" href="javascript:void(0)" onclick="copyCode('${c}')">📋</a><span class="code">${c}</span><span>${n}</span></span>`;
   }
-  function parseJST(s){ if(!s) return 0; const t=s.replace("T"," ").replace("+09:00",""); return Date.parse(t+" +09:00"); }
 
-  // ----- タブ制御（ID非依存）
-  function setActiveTab(){
-    document.querySelectorAll(".tab").forEach(btn=>{
-      btn.classList.toggle("active", btn.dataset.mode === MODE);
-    });
+  function offeringCell(f){ return f ? `<span class="code">増資経歴アリ</span>` : ``; }
+  function verdictToLabel(v){
+    if(v==="good") return "positive";
+    if(v==="bad")  return "negative";
+    return "neutral";
   }
-  function switchMode(m){
-    MODE = m;
-    setActiveTab();
-    render(window.__DATA__);
+  function judgeHtml(verdict, score, reasons){
+    const cls = verdictToLabel(verdict||"");
+    const s = (score ?? null) !== null ? `（score ${esc(score)}）` : "";
+    const chips = (Array.isArray(reasons)?reasons:[])
+      .filter(x=>x!=null && String(x).trim()!=="")
+      .map(x=>`<span class="chip">${esc(String(x))}</span>`).join("");
+    const ev = chips ? `<span class="ev">根拠: ${chips}</span>` : "";
+    return `<div class="judge-row"><span class="jdg ${cls}">判定: ${esc(verdict||"")}<span class="score">${s}</span></span>${ev}</div>`;
   }
 
   function render(j){
@@ -662,18 +586,31 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
         .slice()
         .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));})
         .slice(0, 300);
-      thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
-      if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="6" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
+      thead.innerHTML=`<tr>
+        <th>#</th><th>コード</th><th>銘柄</th><th>増資経歴</th><th>Yahoo</th>
+        <th class="num">現在値</th><th class="num">前日終値</th><th class="num">前日比(円)</th>
+        <th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
+      if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="11" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
       let day=""; rows.forEach((r,idx)=>{
         const d=(r.time||"").slice(0,10);
-        if(d!==day){day=d; const trh=document.createElement("tr"); trh.innerHTML=`<td colspan="6" class="day-head">${esc(day)}</td>`; tbody.appendChild(trh);}
-        const tr=document.createElement("tr"); const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
-        t(String(idx+1)); t(stockCell(r.ticker,r.name)); t(String(r.score??0)); t(badge(r.sentiment||"neutral"));
+        if(d!==day){day=d; const trh=document.createElement("tr"); trh.innerHTML=`<td colspan="11" class="day-head">${esc(day)}</td>`; tbody.appendChild(trh);}
+        const q=r.quote||{};
+        const cur = q.current!=null ? Number(q.current).toLocaleString() : "";
+        const prev= q.prev_close!=null ? Number(q.prev_close).toLocaleString() : "";
+        const diff= q.diff_yen!=null ? Number(q.diff_yen) : null;
+        const diffStr = diff!=null ? ((diff>=0?"+":"")+diff.toLocaleString()) : "";
+        const diffCls = diff==null ? "" : (diff>=0?"plus":"minus");
+
+        const tr=document.createElement("tr"); const t=(h,c)=>{const el=document.createElement("td"); if(c) el.className=c; el.innerHTML=h; tr.appendChild(el);};
+        t(String(idx+1));
+        t(`<a class="copybtn" title="コピー" href="javascript:void(0)" onclick="copyCode('${esc(r.ticker)}')">📋</a> ${esc(r.ticker)}`);
+        t(stockCell(r.ticker,r.name)); t(offeringCell(r.has_offering_history)); t(`<a href="${yQuoteUrl(r.ticker)}" target="_blank" rel="noopener">Yahoo</a>`);
+        t(cur, "num"); t(prev, "num"); t(diffStr, "num diff "+diffCls);
+        t(String(r.score??0)); t(badge(r.sentiment||"neutral"));
         const titleHtml=r.link?`<a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.title||"(無題)")}</a>`:esc(r.title||"(無題)");
         const summaryHtml=r.summary?`<div class="small muted" style="margin-top:6px; white-space:pre-line;">${esc(r.summary)}</div>`:"";
-        const verdict=r.verdict||""; const judgeScore=(r.score_judge??null)!==null?`（score ${r.score_judge}）`:"";
-        const reasonsHtml=(r.reasons&&r.reasons.length)?`<div class="small muted" style="margin-top:4px;">判定: ${esc(verdict)}${judgeScore}　根拠: ${esc(r.reasons.join(" / "))}</div>`:"";
-        t(`${titleHtml}${summaryHtml}${reasonsHtml}`);
+        const judgeBlock = judgeHtml(r.verdict||"", r.score_judge, r.reasons||[]);
+        t(`${titleHtml}${summaryHtml}${judgeBlock}`);
         t(esc((r.time||"").replace("T"," ").replace("+09:00","")));
         tbody.appendChild(tr);
       });
@@ -685,16 +622,29 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
         .slice()
         .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score||0)-Number(a.score||0));})
         .slice(0, 300);
-      thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
-      if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="6" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
+      thead.innerHTML=`<tr>
+        <th>#</th><th>コード</th><th>銘柄</th><th>増資経歴</th><th>Yahoo</th>
+        <th class="num">現在値</th><th class="num">前日終値</th><th class="num">前日比(円)</th>
+        <th>スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
+      if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="11" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
       rows.forEach((r,idx)=>{
-        const tr=document.createElement("tr"); const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
-        t(String(idx+1)); t(stockCell(r.ticker,r.name)); t(String(r.score??0)); t(badge(r.sentiment||"neutral"));
+        const q=r.quote||{};
+        const cur = q.current!=null ? Number(q.current).toLocaleString() : "";
+        const prev= q.prev_close!=null ? Number(q.prev_close).toLocaleString() : "";
+        const diff= q.diff_yen!=null ? Number(q.diff_yen) : null;
+        const diffStr = diff!=null ? ((diff>=0?"+":"")+diff.toLocaleString()) : "";
+        const diffCls = diff==null ? "" : (diff>=0?"plus":"minus");
+
+        const tr=document.createElement("tr"); const t=(h,c)=>{const el=document.createElement("td"); if(c) el.className=c; el.innerHTML=h; tr.appendChild(el);};
+        t(String(idx+1));
+        t(`<a class="copybtn" title="コピー" href="javascript:void(0)" onclick="copyCode('${esc(r.ticker)}')">📋</a> ${esc(r.ticker)}`);
+        t(stockCell(r.ticker,r.name)); t(offeringCell(r.has_offering_history)); t(`<a href="${yQuoteUrl(r.ticker)}" target="_blank" rel="noopener">Yahoo</a>`);
+        t(cur, "num"); t(prev, "num"); t(diffStr, "num diff "+diffCls);
+        t(String(r.score??0)); t(badge(r.sentiment||"neutral"));
         const titleHtml=r.link?`<a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.title||"(無題)")}</a>`:esc(r.title||"(無題)");
         const summaryHtml=r.summary?`<div class="small muted" style="margin-top:6px; white-space:pre-line;">${esc(r.summary)}</div>`:"";
-        const verdict=r.verdict||""; const judgeScore=(r.score_judge??null)!==null?`（score ${r.score_judge}）`:"";
-        const reasonsHtml=(r.reasons&&r.reasons.length)?`<div class="small muted" style="margin-top:4px;">判定: ${esc(verdict)}${judgeScore}　根拠: ${esc(r.reasons.join(" / "))}</div>`:"";
-        t(`${titleHtml}${summaryHtml}${reasonsHtml}`);
+        const judgeBlock = judgeHtml(r.verdict||"", r.score_judge, r.reasons||[]);
+        t(`${titleHtml}${summaryHtml}${judgeBlock}`);
         t(esc((r.time||"").replace("T"," ").replace("+09:00","")));
         tbody.appendChild(tr);
       });
@@ -707,40 +657,82 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
         const a72=a?.bbs?.posts_72h||0, b72=b?.bbs?.posts_72h||0; if(b72!==a72) return b72-a72;
         return String(a.name||a.ticker).localeCompare(String(b.name||b.ticker));
       });
-      thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>BBS(24h)</th><th>BBS(72h)</th><th>増加率</th><th>Sentiment(News)</th><th>最新ニュース</th></tr>`;
+      thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>増資経歴</th><th>BBS(24h)</th><th>BBS(72h)</th><th>増加率</th><th>Sentiment(News)</th><th>最新ニュース</th></tr>`;
       rows.forEach((r,idx)=>{
         const tr=document.createElement("tr"); const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
         const b24=r?.bbs?.posts_24h||0, b72=r?.bbs?.posts_72h||0, growth=(b24/Math.max(1,b72)).toFixed(2);
         const items=(r.news&&r.news.items)?r.news.items:[]; const label=(items[0]?.sentiment)||"neutral";
-        t(String(idx+1)); t(stockCell(r.ticker,r.name)); t(String(b24)); t(String(b72)); t(String(growth)); t(badge(label)); t(toNewsCards(items));
+        t(String(idx+1)); t(`${esc(r.name||r.ticker)} <span class="code">(${esc(r.ticker)})</span>`); t(offeringCell(r.has_offering_history)); t(offeringCell(r.has_offering_history)); t(String(b24)); t(String(b72)); t(String(growth)); t(badge(label)); t(toNewsCards(items));
         tbody.appendChild(tr);
       });
       return;
     }
 
+    // 共通: 検索系（漏れ？ / TOB）レンダラ
+    function renderAggRows(agg){
+      const rows=(agg?.rows||[]).slice().sort((a,b)=> (b.count||0)-(a.count||0));
+      thead.innerHTML = `<tr>
+        <th>#</th><th>銘柄</th><th>件数</th><th>サンプル（最大50件）</th>
+      </tr>`;
+      if(!rows.length){
+        const tr=document.createElement("tr");
+        tr.innerHTML=`<td colspan="4" class="small">該当がありません。</td>`;
+        tbody.appendChild(tr);
+        return;
+      }
+      rows.forEach((r,idx)=>{
+        const tr=document.createElement("tr");
+        const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
+        const samples=(r.comments||[]).slice(0,50).map(c=>{
+          const lab = c.sentiment||"neutral";
+          const badgeCls = lab==="positive" ? "pos" : (lab==="negative"?"neg":"neu");
+          const text = esc(c.text||"");
+          const link = esc(c.link||"#");
+          const pub  = esc((c.published||"").toString());
+          return `<div class="newsitem">
+                    <a href="${link}" target="_blank" rel="noopener">${text}</a>
+                    <div class="src"><span class="badge ${badgeCls}">${lab}</span>　${pub}</div>
+                  </div>`;
+        }).join("");
+        t(String(idx+1));
+        t(`${esc(r.name||r.ticker)} <span class="code">(${esc(r.ticker)})</span>`);
+        t(String(r.count||0));
+        t(`<div class="newslist">${samples}</div>`);
+        tbody.appendChild(tr);
+      });
+    }
+
+    if(MODE==="leak"){
+      renderAggRows((j.leak||{}));
+      return;
+    }
+    if(MODE==="tob"){
+      renderAggRows((j.tob||{}));
+      return;
+    }
+
     // 総合
     const rows=(j.rows||[]).slice().sort((a,b)=>(b.score||0)-(a.score||0));
-    thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>スコア</th><th>Trends</th><th>BBS</th><th>News(24h)</th><th>Sentiment</th><th>最新ニュース</th></tr>`;
+    thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>増資経歴</th><th>スコア</th><th>Trends</th><th>BBS</th><th>News(24h)</th><th>Sentiment</th><th>最新ニュース</th></tr>`;
     rows.forEach((r,idx)=>{
       const tr=document.createElement("tr"); const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
       const items=(r.news&&r.news.items)?r.news.items:[]; const label=(items[0]?.sentiment)||"neutral";
-      t(String(idx+1)); t(stockCell(r.ticker,r.name)); t(fmt(r.score)); t(fmt(r.trends?.latest)); t(String(r.bbs?.posts_24h||0)); t(String(r.news?.count_24h||0)); t(badge(label)); t(toNewsCards(items));
+      t(String(idx+1)); t(`${esc(r.name||r.ticker)} <span class="code">(${esc(r.ticker)})</span>`); t(fmt(r.score)); t(fmt(r.trends?.latest)); t(String(r.bbs?.posts_24h||0)); t(String(r.news?.count_24h||0)); t(badge(label)); t(toNewsCards(items));
       tbody.appendChild(tr);
     });
   }
 
-  // 起動時にイベントを束ねて付与
   document.addEventListener("DOMContentLoaded", ()=>{
     document.querySelectorAll(".tab").forEach(btn=>{
-      btn.addEventListener("click", ()=> switchMode(btn.dataset.mode));
+      btn.addEventListener("click", ()=> { MODE=btn.dataset.mode; render(window.__DATA__); document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b===btn)); });
     });
     document.getElementById("btn-rerender").addEventListener("click", ()=> render(window.__DATA__));
-    // 初期表示＝総合
     render(window.__DATA__);
   });
 </script>
 """
     return tpl.replace("__DATA_JSON__", data_json)
+
 
 import re
 from datetime import datetime
@@ -855,6 +847,27 @@ def _parse_earnings_metrics(text: str) -> Dict[str, Any]:
     }
 
     metrics = {}
+    yoy = {}
+
+    # 前後100〜200文字を見てYoY%を拾うヘルパ
+    def _scan_yoy_near(pos: int, text: str):
+        if pos < 0: return None
+        s = text[max(0, pos-120): pos+220]
+        s = s.replace('％','%').replace('▲','-').replace('△','-')
+        # まず % を拾う
+        m = re.search(r'([\-+]?\d+(?:\.\d+)?)\s*%', s)
+        if not m: return None
+        try:
+            val = float(m.group(1))
+        except Exception:
+            return None
+        # 近傍に「減/悪化」があって明示符号が無ければ負号に
+        around = s[max(0, m.start()-10): m.end()+10]
+        if ('-' not in m.group(1) and '+' not in m.group(1)):
+            if re.search(r'(減|悪化|縮小)', around):
+                val = -val
+        return val
+
     for key, pat in fields.items():
         m = re.search(pat, text, flags=re.IGNORECASE)
         if m:
@@ -869,10 +882,20 @@ def _parse_earnings_metrics(text: str) -> Dict[str, Any]:
                         val = val / 100.0  # 百万円→億円
                 metrics[key] = val
 
+            # YoYを近傍テキストから推定
+            try:
+                # 指標名の最初の出現位置
+                pos = text.find(key)
+                y = _scan_yoy_near(pos, text)
+                if y is not None:
+                    yoy[key] = y
+            except Exception:
+                pass
+
     progress = None
     if "進捗率" in metrics:
         progress = float(metrics["進捗率"])
-    return {"metrics": metrics, "progress": progress}
+    return {"metrics": metrics, "progress": progress, "yoy": yoy}
 
 def _summarize_earnings_text(text: str, max_chars: int = 240) -> str:
     """
@@ -894,46 +917,254 @@ def _summarize_earnings_text(text: str, max_chars: int = 240) -> str:
 def _grade_earnings(title: str, text: str, parsed: Dict[str, Any]) -> Dict[str, Any]:
     """
     タイトル＋本文＋抽出指標から “good/bad/neutral” とスコア＆根拠を返す。
-    スコアは -5〜+5 程度の素朴な合成。
+    - 減益/下方などは強ネガ優先
+    - 「黒字」単独は加点しない（黒字“転換”のみ加点）
+    - YoY は外れ値（±120%超）は無視し、複数利益項目の減少を強く減点
     """
-    reasons = []
-    score = 0
+    reasons: list[str] = []
+    score = 0.0
 
     T = title or ""
     X = text or ""
     met = (parsed or {}).get("metrics", {})
     prog = (parsed or {}).get("progress", None)
+    yoy = (parsed or {}).get("yoy", {})
 
-    POS = ["上方修正", "増益", "上振れ", "最高益", "増配", "黒字転換"]
-    NEG = ["下方修正", "減益", "下振れ", "赤字", "減配", "特損"]
+    # ---- ここから個別採点ルール（バンドル加点を廃止）----
+    # ルールは「見出し(T)」と「本文(X)」の両方を見る
+    def _hit(ws):  # 任意の語が含まれれば True
+        return any((w in T) or (w in X) for w in ws)
 
-    if any(k in T for k in POS) or any(k in X for k in POS):
-        score += 2; reasons.append("上方/増益/最高益/増配などのポジ語")
-    if any(k in T for k in NEG) or any(k in X for k in NEG):
-        score -= 2; reasons.append("下方/減益/赤字/減配などのネガ語")
+    # ▼ ポジ要因
+    # 上方修正系は +2（通期・上期の“増額/上方”も含む）
+    if _hit(["上方修正", "通期上方", "通期増額", "上期予想修正（増額）",
+             "業績予想の修正（増額）", "通期予想修正（増額）"]):
+        score += 2
+        reasons.append("上方修正（増額）で+2")
+
+    # 配当/自社株買いは +1
+    if _hit(["増配", "復配", "自社株買い", "配当予想の修正（増額）"]):
+        score += 1
+        reasons.append("配当増額/復配/自社株買いで+1")
+
+    # 最高益は +1
+    if _hit(["最高益", "過去最高益"]):
+        score += 1
+        reasons.append("最高益で+1")
+
+    # 黒字化は単独+0、ただし“黒字転換”は +1（本文/タイトルに明示）
+    if _hit(["黒字転換"]):
+        score += 1
+        reasons.append("黒字転換で+1")
+
+    # ▼ ネガ要因（強めに減点）
+    # 下方修正は -3（強ネガ）
+    if _hit(["下方修正", "通期予想修正（減額）"]):
+        score -= 3
+        reasons.append("下方修正（減額）で-3")
+
+    # 減配は -2
+    if _hit(["減配", "配当予想の修正（減額）"]):
+        score -= 2
+        reasons.append("減配で-2")
+
+    # 特損は -2（“特別損失”など）
+    if _hit(["特損", "特別損失"]):
+        score -= 2
+        reasons.append("特損で-2")
+    # ---- 個別採点ここまで ----
+
 
     # 進捗率ヒューリスティクス
     if isinstance(prog, (int, float)):
         if prog >= 70:
-            score += 1; reasons.append(f"進捗率{prog:.0f}%（高進捗）")
+            score += 1
+            reasons.append(f"進捗率{prog:.0f}%（高進捗）")
         elif prog <= 30:
-            score -= 1; reasons.append(f"進捗率{prog:.0f}%（低進捗）")
+            score -= 1
+            reasons.append(f"進捗率{prog:.0f}%（低進捗）")
 
-    # 指標の符号（ざっくり）
+    # YoY（前年同期比）：外れ値を無視し、利益系の複数マイナスを強く評価
+    def _sane(y):
+        return y if isinstance(y, (int, float)) and -120.0 <= y <= 120.0 else None
+
+    neg_profit_yoy = 0
+    pos_profit_yoy = 0
+    for k in ("売上高", "営業利益", "経常利益", "純利益"):
+        y = _sane(yoy.get(k))
+        if y is None:
+            continue
+        if k in ("営業利益", "経常利益", "純利益"):
+            if y <= -5:
+                neg_profit_yoy += 1
+            if y >= 1:
+                pos_profit_yoy += 1
+        # 個別の加点減点（緩め）
+        if y >= 5:
+            score += 1
+            reasons.append(f"{k}YoY+{y:.1f}%")
+        elif y >= 1:
+            score += 0.5
+            reasons.append(f"{k}YoY+{y:.1f}%")
+        elif y <= -5:
+            score -= 1
+            reasons.append(f"{k}YoY{y:.1f}%")
+        elif y <= -1:
+            score -= 0.5
+            reasons.append(f"{k}YoY{y:.1f}%")
+
+    if neg_profit_yoy >= 2:
+        score -= 1.0
+        reasons.append("利益YoYが複数項目で減少（総じて減益傾向）")
+
+    # 指標の符号：黒字は弱加点。YoYがマイナスのときは黒字加点を無効化
     for k in ("営業利益", "経常利益", "純利益"):
         v = met.get(k, None)
         if isinstance(v, (int, float)):
-            if v > 0: score += 0.5; reasons.append(f"{k}が黒字")
-            if v < 0: score -= 0.5; reasons.append(f"{k}が赤字")
+            if v > 0:
+                if pos_profit_yoy > 0:  # 増益の裏付けがあるときのみ微加点
+                    score += 0.3
+                    reasons.append(f"{k}が黒字（増益傾向と整合）")
+                else:
+                    reasons.append(f"{k}が黒字（単独要素のため加点なし）")
+            if v < 0:
+                score -= 0.5
+                reasons.append(f"{k}が赤字")
 
-    verdict = "neutral"
-    if score >= 1.5:
-        verdict = "good"
-    elif score <= -1.5:
-        verdict = "bad"
+    # 「黒字」単独ワードは無視、黒字転換のみ別途ポジティブ（既にPOSで加点済み）
 
-    return {"verdict": verdict, "score": round(score, 2), "reasons": reasons}
+    # 最終判定のしきい値をやや広げて誤判定を減らす
+    verdict = "good" if score >= 1.5 else ("bad" if score <= -1.5 else "neutral")
+    return {"verdict": verdict, "score": score, "reasons": reasons}
+
 # ========= ここまでヘルパー =========
+def fetch_tdnet_by_keywords(
+    days: int = 90,
+    keywords: list[str] | None = None,
+    per_day_limit: int = 300,
+    slice_escalation=(12, 6, 3, 1, 0.5)
+) -> List[Dict[str, Any]]:
+    """
+    Yanoshin TDnet 一覧APIを使って、与えたキーワード（OR条件）でタイトルをフィルタして取得。
+    - list_time / list の時間範囲フォーマットが通れば段階スライス、ダメなら日単位+追加ページ探査。
+    - keywords が None/空なら『フィルタなし（全件）』で返す。
+    """
+    import time
+    from datetime import datetime, timedelta
+
+    time_capable = False
+    KEY_RE_LOCAL = re.compile("|".join(map(re.escape, keywords or []))) if (keywords and len(keywords)>0) else None
+
+    def _fetch_tdnet_by_range(dt_from: datetime, dt_to: datetime) -> list[dict]:
+        nonlocal time_capable
+        s_day  = dt_from.strftime("%Y%m%d"); e_day  = dt_to.strftime("%Y%m%d")
+        s_isoT = dt_from.strftime("%Y-%m-%dT%H:%M:%S"); e_isoT = dt_to.strftime("%Y-%m-%dT%H:%M:%S")
+        s_nosep= dt_from.strftime("%Y%m%d%H%M%S");      e_nosep= dt_to.strftime("%Y%m%d%H%M%S")
+        s_spc  = dt_from.strftime("%Y%m%d %H:%M:%S");   e_spc  = dt_to.strftime("%Y%m%d %H:%M:%S")
+
+        variants = [
+            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_nosep}-{e_nosep}.json", "list/nosep", True),
+            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_isoT}-{e_isoT}.json",   "list/isoT",  True),
+            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{quote(s_spc)}-{quote(e_spc)}.json", "list/space", True),
+            (f"https://webapi.yanoshin.jp/webapi/tdnet/list_time/{s_nosep}-{e_nosep}.json", "list_time/nosep", True),
+            (f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_day}-{e_day}.json",     "list/day",  False),
+        ]
+        for url, tag, is_time in variants:
+            js = _http_get_json(url)
+            items = js.get("items") if isinstance(js, dict) else (js if isinstance(js, list) else None)
+            if isinstance(items, list):
+                if is_time: time_capable = True
+                print(f"[tdnet] {dt_from:%Y-%m-%d %H:%M}~{dt_to:%H:%M} : api={len(items)} (fmt={tag})")
+                return items or []
+        print(f"[tdnet] {dt_from:%Y-%m-%d %H:%M}~{dt_to:%H:%M} : api=None (all time-formats failed)")
+        return []
+
+    def _fetch_day_extra_pages(s_day: str, e_day: str, page_try: int = 15) -> list[dict]:
+        collected = []
+        base = f"https://webapi.yanoshin.jp/webapi/tdnet/list/{s_day}-{e_day}.json"
+        patterns = ["?page={p}", "?p={p}"]
+        for p in range(2, 2 + max(1, page_try)):
+            hit = 0
+            for fmt in patterns:
+                url = base + fmt.format(p=p)
+                js = _http_get_json(url)
+                items = js.get("items") if isinstance(js, dict) else (js if isinstance(js, list) else None)
+                if isinstance(items, list) and items:
+                    collected.extend(items); hit += len(items)
+                    print(f"[tdnet]   extra page p={p} via '{fmt[1:4]}' -> {len(items)}")
+                    break
+            if hit == 0: break
+            time.sleep(0.15)
+        return collected
+
+    def _dedup_key(it: dict) -> str:
+        td = it.get("Tdnet") or it
+        return (td.get("id") or td.get("document_url") or td.get("title") or "") + "|" + (td.get("pubdate") or "")
+
+    def _slice_fetch(dt_from: datetime, dt_to: datetime, level: int = 0) -> list[dict]:
+        items = _fetch_tdnet_by_range(dt_from, dt_to)
+        if len(items) < per_day_limit:
+            return items
+        if not time_capable:
+            if (dt_from.hour, dt_from.minute, dt_from.second) == (0,0,0) and (dt_to.hour, dt_to.minute, dt_to.second) == (23,59,59) and dt_from.date()==dt_to.date():
+                s_day = dt_from.strftime("%Y%m%d"); e_day = dt_to.strftime("%Y%m%d")
+                extras = _fetch_day_extra_pages(s_day, e_day)
+                if extras:
+                    print(f"[tdnet] day extra merged: base=300 + extras={len(extras)}")
+                    return items + extras
+            print(f"[tdnet] time-capability=NO → stop slicing ({dt_from:%F} {dt_from:%H:%M}~{dt_to:%H:%M}), got={len(items)}")
+            return items
+        if level >= len(slice_escalation):
+            print(f"[tdnet] slice exhausted ({dt_from:%F} {dt_from:%H:%M}~{dt_to:%H:%M}), got={len(items)} >= limit={per_day_limit}")
+            return items
+        width_h = slice_escalation[level]
+        step_sec = int(max(width_h * 3600, 1800))
+        parts: list[dict] = []
+        cur = dt_from
+        while cur < dt_to:
+            nxt = min(cur + timedelta(seconds=step_sec), dt_to)
+            parts.extend(_slice_fetch(cur, nxt, level + 1))
+            cur = nxt
+            time.sleep(0.12)
+        print(f"[tdnet] api-slice level={level} w={width_h}h -> merged={len(parts)}")
+        return parts
+
+    def _ts(x: dict) -> float:
+        td = x.get("Tdnet") or {}
+        s = (td.get("pubdate") or "").replace("/", "-")
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            return 0.0
+
+    all_items: list[dict] = []
+    seen: set[str] = set()
+    end = datetime.now(JST).replace(microsecond=0)
+
+    for i in range(days):
+        day_to   = (end - timedelta(days=i)).replace(hour=23, minute=59, second=59)
+        day_from = (end - timedelta(days=i)).replace(hour=0,  minute=0,  second=0)
+        day_items = _slice_fetch(day_from, day_to)
+
+        kept = 0
+        for it in day_items:
+            td = it.get("Tdnet") or it
+            title = _unescape_text(td.get("title") or "")
+            # ← キーワード指定があるときだけフィルタ。無指定なら全件通す
+            if KEY_RE_LOCAL and title and not KEY_RE_LOCAL.search(title):
+                continue
+            td["title"] = title
+            k = _dedup_key(it)
+            if not k or k in seen: 
+                continue
+            seen.add(k)
+            all_items.append(it); kept += 1
+
+        print(f"[tdnet] {day_from:%Y-%m-%d} kept={kept} / raw={len(day_items)}")
+        time.sleep(0.2)
+
+    all_items.sort(key=_ts, reverse=True)
+    return all_items
 
 def tdnet_items_to_earnings_rows(tdnet_items):
     """
@@ -1254,6 +1485,92 @@ def run_light_healthcheck(conn):
     return result
 
 
+def _detect_price_cols(conn: sqlite3.Connection):
+    """
+    price_history の列名を動的検出する。
+    - 日付: 「日付」優先、なければ「date」
+    - コード: 「コード」優先、なければ「code」
+    - 終値: 候補のうち最初に見つかった列（'終値', '終値調整後', 'close', 'Close' など）
+    """
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(price_history);")
+    cols = [r[1] for r in cur.fetchall()]
+    if not cols:
+        return None, None, None
+
+    def pick(*cands):
+        for c in cands:
+            if c in cols:
+                return c
+        return None
+
+    date_col = pick("日付", "date")
+    code_col = pick("コード", "code", "ticker")
+    price_col = pick("終値", "終値調整後", "close", "Close", "終値(円)", "終値_円")
+
+    return date_col, code_col, price_col
+
+
+def load_quotes_from_price_history(conn: sqlite3.Connection, codes: list[str]) -> dict[str, dict]:
+    """
+    price_history から各コードの 最新終値 と 直前終値 を取り出し、
+    {"2792": {"current": 1234.0, "prev_close": 1200.0, "diff_yen": 34.0}, ...}
+    を返す。列名は動的検出。
+    """
+    out: dict[str, dict] = {}
+    if not codes:
+        return out
+
+    date_col, code_col, price_col = _detect_price_cols(conn)
+    if not all([date_col, code_col, price_col]):
+        # 必要列が見つからない場合は空で返す
+        return out
+
+    qmarks = ",".join("?" for _ in codes)
+    cur = conn.cursor()
+
+    # 各コードの最新日付を取る
+    latest = dict(cur.execute(
+        f'SELECT "{code_col}", MAX("{date_col}") '
+        f'FROM price_history WHERE "{code_col}" IN ({qmarks}) GROUP BY "{code_col}"',
+        codes
+    ).fetchall())
+
+    # 最新日付とその前日（2件）を取得して current / prev を決める
+    for code, max_d in latest.items():
+        rows = cur.execute(
+            f'''SELECT "{price_col}" FROM price_history
+                WHERE "{code_col}"=? AND "{date_col}"<=?
+                ORDER BY "{date_col}" DESC LIMIT 2''',
+            (code, max_d)
+        ).fetchall()
+        if not rows:
+            continue
+        cur_px = rows[0][0]
+        prev_px = rows[1][0] if len(rows) >= 2 else None
+
+        try:
+            cur_px = float(cur_px) if cur_px is not None else None
+        except Exception:
+            cur_px = None
+        try:
+            prev_px = float(prev_px) if prev_px is not None else None
+        except Exception:
+            prev_px = None
+
+        diff = None
+        if cur_px is not None and prev_px is not None:
+            diff = cur_px - prev_px
+
+        out[str(code).zfill(4)] = {
+            "current": cur_px,
+            "prev_close": prev_px,
+            "diff_yen": diff,
+        }
+    return out
+
+
+
 def main():
     cfg = load_config(str(ROOT / "config.yaml"))
 
@@ -1310,7 +1627,7 @@ def main():
     # ---- 決算タブ（TDnetを日割りで取得 → 行形式へ整形）----
     try:
         # まず 3日分（日割り 1日=最大300件で確実に拾う）
-        tdnet_items = fetch_earnings_tdnet_only(days=700, per_day_limit=300)
+        tdnet_items = fetch_earnings_tdnet_only(days=3, per_day_limit=300)
         print(f"[earnings] raw tdnet items = {len(tdnet_items)}")
 
         # 行形式へ整形（ここで summary/reasons/verdict/metrics を詰める）
@@ -1323,8 +1640,8 @@ def main():
 
         # 万一0件なら、フォールバックで直近3日を再取得（API不調対策）
         if not earnings_rows:
-            print("[earnings][fallback] 直近3日で再取得します…")
-            tdnet_items_fallback = fetch_earnings_tdnet_only(days=3, per_day_limit=300)
+            print("[earnings][fallback] 直近7日で再取得します…")
+            tdnet_items_fallback = fetch_earnings_tdnet_only(days=7, per_day_limit=300)
             print(f"[earnings][fallback] raw items = {len(tdnet_items_fallback)}")
             earnings_rows = tdnet_items_to_earnings_rows(tdnet_items_fallback)
             print(f"[earnings][fallback] shaped rows = {len(earnings_rows)}")
@@ -1339,19 +1656,27 @@ def main():
     except Exception as e:
         print("[earnings] 取得/整形で例外:", e)
         earnings_rows = []
+        
+    # ---- 増資レーン：決算とは別に取りに行く ----
+    offer_items = []
+    try:
+        offer_items = fetch_tdnet_by_keywords(days=7, keywords=OFFERING_KW, per_day_limit=300)
+        print(f"[offerings] raw tdnet items (by KW) = {len(offer_items)}")
+    except Exception as e:
+        print("[offerings] fetch error:", e)
+
 
     # ---- DB保存（日本語スキーマ earnings_events）----
     conn = sqlite3.connect(DB_PATH)
     ensure_earnings_schema(conn)
     ensure_offerings_schema(conn)
     ensure_misc_objects(conn)
-    # 直近で取得した TDnet raw を offerings_events にも保存（fallbackがあれば両方保存）
-    try: upsert_offerings_events(conn, tdnet_items)
-    except NameError: pass
+    # 増資/行使/売出は “増資レーン”の raw のみを保存
     try:
-        if 'tdnet_items_fallback' in locals():
-            upsert_offerings_events(conn, tdnet_items_fallback)
-    except Exception: pass
+        upsert_offerings_events(conn, offer_items)
+    except Exception as e:
+        print("[offerings] upsert error:", e)
+
     
     
     upsert_earnings_rows(conn, earnings_rows)
@@ -1361,11 +1686,48 @@ def main():
     # ---- 出力（JSON/HTML）----
     # 表示用の決算データは DB から直近30日分（pos/goodのみ）を再構築
     earnings_for_dash = load_earnings_for_dashboard_from_db(DB_PATH, days=30, filter_mode="nonnegative")
+
+    # --- 増資経歴フラグ付与（直近3年） ---
+    try:
+        offerings_map = load_offerings_recent_map(DB_PATH, days=365*3)
+    except Exception as e:
+        print("[offerings] map build error:", e)
+        offerings_map = {}
+
+    # 総合/掲示板タブ rows（ユニバース）へ付与
+    try:
+        for r in rows:
+            code4 = str(r.get("ticker") or "").zfill(4)
+            r["has_offering_history"] = bool(offerings_map.get(code4, False))
+    except Exception as e:
+        print("[offerings] annotate rows error:", e)
+
+    # 決算タブ earnings へ付与
+    try:
+        for r in earnings_for_dash:
+            code4 = str(r.get("ticker") or "").zfill(4)
+            r["has_offering_history"] = bool(offerings_map.get(code4, False))
+    except Exception as e:
+        print("[offerings] annotate earnings error:", e)
     print(f"[earnings][dash] from DB last 30d = {len(earnings_for_dash)}")
+    
+    # --- 掲示板検索：漏れてる？ / TOB ---
+    try:
+        leak = fetch_leak_comments(DB_PATH, max_pages=60)
+    except Exception as e:
+        print("[bbs_search][leak] error:", e)
+        leak = {"rows": [], "total_comments": 0, "total_tickers": 0, "generated_at": now_iso()}
+    try:
+        tob = fetch_tob_comments(DB_PATH, max_pages=60)
+    except Exception as e:
+        print("[bbs_search][tob] error:", e)
+        tob = {"rows": [], "total_comments": 0, "total_tickers": 0, "generated_at": now_iso()}
     output = {
         "generated_at": now_iso(),
         "rows": rows,                    # 総合/掲示板用（元のまま）
         "earnings": earnings_for_dash,   # 決算タブ／日別タブ用：positive のみ・最大300件
+        "leak": leak,
+        "tob": tob
     }
 
     ensure_dir(OUT_DIR); ensure_dir(OUT_DIR / "history")
