@@ -888,82 +888,128 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     wireDomSort("#tbl-candidate");
   }
 
-  // tomorrow
-  function latestUpdateDate(rows){
-    const ds = rows.map(r=>String(r["シグナル更新日"]||"").slice(0,10)).filter(Boolean);
-    return ds.sort().pop() || null;
+// tomorrow
+// 正規化: 任意の Date / 文字列 → YYYY-MM-DD
+function toKey(x){
+  if (x instanceof Date) {
+    const y=x.getFullYear(), m=('0'+(x.getMonth()+1)).slice(-2), d=('0'+x.getDate()).slice(-2);
+    return `${y}-${m}-${d}`;
   }
-  function toTomorrowRowsForDate(src, dateStr){
-    if(!Array.isArray(src) || !dateStr) return [];
-    return src.filter(r=>{
-      const d = String(r["シグナル更新日"]||"").slice(0,10);
-      if(d !== dateStr) return false;
-      const sh = String(r["初動フラグ"]||"").includes("候補");
-      const ru = String(r["右肩上がりフラグ"]||"").includes("候補");
-      const ea = String(r["右肩早期フラグ"]||"").includes("候補");
-      return sh || ru || ea;
-    });
-  }
-  function localDateStr(d){ const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2); return `${y}-${m}-${da}`; }
-  function prevBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()-1);}while([0,6].includes(dt.getDay())); return dt; }
-  function nextBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt; }
+  const s = String(x ?? "").trim().slice(0,10).replace(/[./]/g,'-').replace(/\//g,'-');
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  const dt = new Date(s);
+  if (isNaN(+dt)) return "";
+  const yy=dt.getFullYear(), mm=('0'+(dt.getMonth()+1)).slice(-2), dd=('0'+dt.getDate()).slice(-2);
+  return `${yy}-${mm}-${dd}`;
+}
 
-  function renderTomorrow(rows){
-    const body = document.querySelector("#tbl-tmr tbody");
-    if (!body) return;
-    let html = "";
-    rows.forEach(r=>{
-      const rec = (r["推奨アクション"] || "").trim();
-      let recBadge = "";
-      if (rec === "エントリー有力") recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
-      else if (rec === "小口提案")   recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
-      else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
-      const isHit = isHitRow(r);
-      html += `<tr${isHit ? " class='hit'" : ""}>
-        <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
-        <td>${r["銘柄名"] ?? ""}</td>
-        <td>${r["市場"] || "-"}</td>
-        <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
-        <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
-        <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
-        <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
-        <td class="num">${r["売買代金(億)"]??""}</td>
-        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
-        <td>${r["増資リスク"] ?? ""}</td>
-        <td class="num">${r["増資スコア"] ?? ""}</td>
-        <td class="reason-col">${r["増資理由"] || ""}</td>
-        <td class="num">${r["右肩早期スコア"]??""}</td>
-        <td>${(r["右肩早期種別"]||"").trim()}</td>
-        <td>${formatJudgeLabel(r)}</td>
-        <td>${recBadge}</td>
-      </tr>`;
+function latestUpdateDate(rows){
+  const ds = (rows||[]).map(r=>toKey(r?.["シグナル更新日"])).filter(Boolean);
+  return ds.sort().pop() || null;
+}
+
+function toTomorrowRowsForDate(src, dateKey){
+  if(!Array.isArray(src) || !dateKey) return [];
+  return src.filter(r=>{
+    const d = toKey(r?.["シグナル更新日"]);
+    if(d !== dateKey) return false;
+    const sh = String(r?.["初動フラグ"]||"").includes("候補");
+    const ru = String(r?.["右肩上がりフラグ"]||"").includes("候補");
+    const ea = String(r?.["右肩早期フラグ"]||"").includes("候補");
+    return sh || ru || ea;
+  });
+}
+
+// ← ここに余計な `}` は置かない
+
+function localDateStr(d){
+  const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2);
+  return `${y}-${m}-${da}`;
+}
+function prevBusinessDay(d){
+  const dt=new Date(d); do{ dt.setDate(dt.getDate()-1);}while([0,6].includes(dt.getDay())); return dt;
+}
+function nextBusinessDay(d){
+  const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt;
+}
+
+function renderTomorrow(rows){
+  const body = document.querySelector("#tbl-tmr tbody");
+  if (!body) return;
+  let html = "";
+  rows.forEach(r=>{
+    const rec = (r["推奨アクション"] || "").trim();
+    let recBadge = "";
+    if (rec === "エントリー有力") recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+    else if (rec === "小口提案")   recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+    else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+    const isHit = isHitRow(r);
+    html += `<tr${isHit ? " class='hit'" : ""}>
+      <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
+      <td>${r["銘柄名"] ?? ""}</td>
+      <td>${r["市場"] || "-"}</td>
+      <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
+      <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
+      <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
+      <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
+      <td class="num">${r["売買代金(億)"]??""}</td>
+      <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+      <td>${r["増資リスク"] ?? ""}</td>
+      <td class="num">${r["増資スコア"] ?? ""}</td>
+      <td class="reason-col">${r["増資理由"] || ""}</td>
+      <td class="num">${r["右肩早期スコア"]??""}</td>
+      <td>${(r["右肩早期種別"]||"").trim()}</td>
+      <td>${formatJudgeLabel(r)}</td>
+      <td>${recBadge}</td>
+    </tr>`;
+  });
+  body.innerHTML = html;
+  wireDomSort("#tbl-tmr");
+}
+
+function renderTomorrowWrapper(){
+  const md = (RAW.meta || {});
+  const latestStr = md.base_day || latestUpdateDate(DATA_CAND) || null;
+  const now = new Date();
+  const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
+  let baseDate = latestStr ? new Date(latestStr) : new Date();
+  if (inFreeze) baseDate = prevBusinessDay(baseDate);
+
+  const targetStr = localDateStr(nextBusinessDay(baseDate));
+  const lbl = document.getElementById("tmr-label");
+  if (lbl) lbl.textContent = targetStr ? `📅 ${targetStr} 向け` : "📅 明日用（日付未取得）";
+
+  const baseKey = toKey(baseDate);
+  let rows = toTomorrowRowsForDate(DATA_CAND, baseKey);
+
+  if (rows.length === 0) {
+    const sample = (DATA_CAND||[]).slice(0,10).map(r=>({code:r["コード"], sig: toKey(r["シグナル更新日"])}));
+    console.info("[tmr] no rows", { latestStr, inFreeze, baseKey, targetStr, sample });
+    const sameDay = (DATA_CAND||[]).filter(r=>toKey(r["シグナル更新日"])===baseKey);
+    const withFlags = sameDay.filter(r=>{
+      return String(r?.["初動フラグ"]||"").includes("候補")
+          || String(r?.["右肩上がりフラグ"]||"").includes("候補")
+          || String(r?.["右肩早期フラグ"]||"").includes("候補");
     });
-    body.innerHTML = html;
-    wireDomSort("#tbl-tmr");
+    console.info("[tmr] same-day counts", { sameDay: sameDay.length, withFlags: withFlags.length });
   }
 
-  function renderTomorrowWrapper(){
-    const md = (RAW.meta || {});
-    const latestStr = md.base_day || latestUpdateDate(DATA_CAND) || null;
-    const now = new Date();
-    const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
-    let baseDate = latestStr ? new Date(latestStr) : new Date();
-    if (inFreeze) baseDate = prevBusinessDay(baseDate);
-    const targetStr = localDateStr(nextBusinessDay(baseDate));
-    const lbl = document.getElementById("tmr-label");
-    if(lbl) lbl.textContent = targetStr ? `📅 ${targetStr} 向け` : "📅 明日用（日付未取得）";
-    const baseStr = localDateStr(baseDate);
-    const rows = toTomorrowRowsForDate(DATA_CAND, baseStr).sort((a,b)=>{
-      const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
-      const r  = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
-      if(r!==0) return r;
-      const s  = (+b["右肩早期スコア"]||0) - (+a["右肩早期スコア"]||0);
-      if(s!==0) return s;
-      return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
-    });
-    window.DATA_TMR = rows;
-    renderTomorrow(rows);
-  }
+  // 並び替え（推奨アクション > 右肩早期スコア > 売買代金）
+  rows = rows.sort((a,b)=>{
+    const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
+    const r = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
+    if (r !== 0) return r;
+    const s = (+b["右肩早期スコア"]||0) - (+a["右肩早期スコア"]||0);
+    if (s !== 0) return s;
+    return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
+  });
+
+  window.DATA_TMR = rows;
+  renderTomorrow(rows);
+}
+
+
 
   // all
   function renderAll(){
