@@ -3532,7 +3532,9 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         空売り機関,
         シグナル更新日,
         営業利益,
-        増資リスク, 増資スコア, 増資理由,財務コメント
+        増資リスク, 増資スコア, 増資理由,財務コメント,
+        スコア,
+        進捗率
       FROM screener
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
@@ -3553,21 +3555,21 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         percent_cols = [
             "前日終値比率", "前日終値比率（％）",
             "フォロー高値pct", "最大逆行pct", "リターン終値pct",
-            "推奨比率", "ATR14%"
-        ,
-    "進捗率"]
+            "推奨比率", "ATR14%",
+            "進捗率",
+        ]
         money_cols = [
             "売買代金(億)", "売買代金億",          # テンプレ用の別名/DB実体の両対応
             "売買代金20日平均億", "RVOL代金",
-            "時価総額億円"
+            "時価総額億円",
         ]
         price_cols = [
             "現在値", "前日終値", "前日円差",      # Yahoo由来でブレやすい
             # 全カラムタブに混ざる可能性を考慮（存在すれば丸める）
-            "始値", "高値", "安値", "終値"
+            "始値", "高値", "安値", "終値",
         ]
         score_cols = [
-            "右肩早期スコア", "合成スコア"
+            "右肩早期スコア", "合成スコア", "スコア",
         ]
 
         # ラウンド対象を一括で2桁に統一
@@ -3578,6 +3580,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     _round2_inplace(df_cand)
     _round2_inplace(df_all)
+
 
     # ログ（任意）
     if include_log:
