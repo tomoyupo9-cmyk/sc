@@ -3554,7 +3554,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             "前日終値比率", "前日終値比率（％）",
             "フォロー高値pct", "最大逆行pct", "リターン終値pct",
             "推奨比率", "ATR14%"
-        ]
+        ,
+    "進捗率"]
         money_cols = [
             "売買代金(億)", "売買代金億",          # テンプレ用の別名/DB実体の両対応
             "売買代金20日平均億", "RVOL代金",
