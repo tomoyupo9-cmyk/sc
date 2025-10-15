@@ -1665,20 +1665,22 @@ except Exception:
 """
 
 def run_karauri_script():
-    """Node.js の puppeteer スクリプトを起動して、空売り無しリストを更新する"""
+    """Node.js の puppeteer / もしくは Python スクリプトを“待たずに”起動して続行"""
     if not os.path.exists(KARAURI_PY_PATH):
-        print(f"[karauri]  スクリプトが見つかりません: {KARAURI_PY_PATH}")
+        print(f"[karauri] スクリプトが見つかりません: {KARAURI_PY_PATH}")
         return
 
     try:
-        print("[karauri] 空売り無しリスト抽出を開始...")
-        # node 実行。スキップ条件（日付チェック）は JS 側に組み込み済み
-        subprocess.run(["python", KARAURI_PY_PATH], check=True)
-        print("[karauri] 抽出処理 完了")
-    except subprocess.CalledProcessError as e:
-        print(f"[karauri][WARN] スクリプト実行に失敗しました: {e}")
+        print("[karauri] 空売り無しリスト抽出をバックグラウンド起動...")
+        # ※ すでに追加済みのユーティリティを使用（fire_and_forget_script）
+        #    ログは %TEMP%/karauri_xxx.log に出ます
+        proc = fire_and_forget_script(KARAURI_PY_PATH)
+        print(f"[karauri] 起動しました PID={proc.pid}（処理はバックグラウンドで継続）")
+        # 戻り値を使いたければ proc を返す
+        return proc
     except Exception as e:
-        print(f"[karauri][WARN] 予期せぬエラー: {e}")
+        print(f"[karauri][WARN] 起動に失敗しました: {e}")
+
 
 # --- EDINET 取得で使う ---
 
@@ -6259,6 +6261,7 @@ def main():
 
     # (0) 付帯処理：空売り機関リストの更新
     try:
+        #ここだけDB絡まないから別プロセスの非同期実行。他のスクリプトはダッシュボードに影響するのでやめておく。
         _timed("run_karauri_script", run_karauri_script)
     except Exception as e:
         print("[karauri][WARN]", e)
