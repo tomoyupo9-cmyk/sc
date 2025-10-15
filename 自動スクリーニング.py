@@ -144,7 +144,7 @@ LOOKBACK = 90
 
 # --- KARAURI settings ---
 # JS スクリプトと出力ファイルのパス
-KARAURI_JS_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\空売り無しリスト出しスクリプト_k.js"
+KARAURI_PY_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\空売り無しリスト出しスクリプト.py"
 # 空売り関連の設定
 KARAURI_OUTPUT_TXT = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\空売り無しリスト.txt"
 
@@ -581,8 +581,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     <span class="pager">
       <label>表示件数
         <select id="perpage">
-          <option value="200">200</option><option value="500" selected>500</option>
-          <option value="1000">1000</option><option value="2000">2000</option>
+          <option value="200">200</option><option value="500">500</option>
+          <option value="1000">1000</option><option value="2000" selected>2000</option>
         </select>
       </label>
       <button class="btn" id="prev">前へ</button>
@@ -829,66 +829,74 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   }
 
   // render: candidate
-  function renderCand(){
-    const body = document.querySelector("#tbl-candidate tbody");
-    if(!body) return;
-    const rows = sortRows(applyFilter(state.data));
-    const total = rows.length, per = state.per, maxPage = Math.max(1, Math.ceil(total/per));
-    state.page = Math.min(state.page, maxPage);
-    const s = (state.page-1)*per, e = Math.min(s+per, total);
+// render: candidate
+function renderCand(){
+  const body = document.querySelector("#tbl-candidate tbody");
+  if(!body) return;
+  const rows = sortRows(applyFilter(state.data));
+  const total = rows.length, per = state.per, maxPage = Math.max(1, Math.ceil(total/per));
+  state.page = Math.min(state.page, maxPage);
+  const s = (state.page-1)*per, e = Math.min(s+per, total);
 
-    let html = "";
-    for (let i = s; i < e; i++) {
-      const r = rows[i] || {};
-      const et = (r["右肩早期種別"] || "").trim();
-      let etBadge = et;
-      if (et === "ブレイク") etBadge = '<span class="badge b-green">● ブレイク</span>';
-      else if (et === "20MAリバ") etBadge = '<span class="badge b-green">● 20MAリバ</span>';
-      else if (et === "ポケット") etBadge = '<span class="badge b-orange">● ポケット</span>';
-      else if (et === "200MAリクレイム") etBadge = '<span class="badge b-yellow">● 200MAリクレイム</span>';
-      const rec = (r["推奨アクション"] || "").trim();
-      let recBadge = "";
-      if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
-      else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
-      else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+  let html = "";
+  for (let i = s; i < e; i++) {
+    const r = rows[i] || {};
+    const et = (r["右肩早期種別"] || "").trim();
+    let etBadge = et;
+    if (et === "ブレイク") etBadge = '<span class="badge b-green">● ブレイク</span>';
+    else if (et === "20MAリバ") etBadge = '<span class="badge b-green">● 20MAリバ</span>';
+    else if (et === "ポケット") etBadge = '<span class="badge b-orange">● ポケット</span>';
+    else if (et === "200MAリクレイム") etBadge = '<span class="badge b-yellow">● 200MAリクレイム</span>';
 
-      const isHitTr = isHitRow(r);
-      html += `<tr${isHitTr ? " class='hit'" : ""}>
-        <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
-        <td>${r["銘柄名"] ?? ""}</td>
-        <td>${r["市場"] || "-"}</td>
-        <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
-        <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
-        <td class="num">${r["現在値"] ?? ""}</td>
-        <td class="num">${r["前日終値"] ?? ""}</td>
-        <td class="num">${r["前日円差"] ?? ""}</td>
-        <td class="num">${r["前日終値比率"] ?? ""}</td>
-        <td class="num">${r["出来高"] ?? ""}</td>
-        <td class="num">${r["売買代金(億)"] ?? ""}</td>
-        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
-        <td>${r["増資リスク"] ?? ""}</td>
-        <td class="num">${r["増資スコア"] ?? ""}</td>
-        <td class="reason-col">${r["増資理由"] || ""}</td>
-        <td>${r["初動フラグ"] || ""}</td>
-        <td>${r["底打ちフラグ"] || ""}</td>
-        <td>${r["右肩上がりフラグ"] || ""}</td>
-        <td>${r["右肩早期フラグ"] || ""}</td>
-        <td class="num">${r["右肩早期スコア"] ?? ""}</td>
-        <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
-        <td>${formatJudgeLabel(r)}</td>
-        <td class="reason-col">${r["判定理由"] || ""}</td>
-        <td>${recBadge}</td>
-        <td class="num">${r["推奨比率"] ?? ""}</td>
-        <td>${r["シグナル更新日"] || ""}</td>
-      </tr>`;
-    }
-    body.innerHTML = html;
-    document.querySelector("#count").textContent = String(total);
-    document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
-    wireDomSort("#tbl-candidate");
+    const rec = (r["推奨アクション"] || "").trim();
+    let recBadge = "";
+    if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+    else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+    else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+
+    const isHitTr = isHitRow(r);
+    html += `<tr${isHitTr ? " class='hit'" : ""}>
+      <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
+      <td>${r["銘柄名"] ?? ""}</td>
+      <td>${r["市場"] || "-"}</td>
+      <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
+      <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
+      <td class="num">${r["現在値"] ?? ""}</td>
+      <td class="num">${r["前日終値"] ?? ""}</td>
+      <td class="num">${r["前日円差"] ?? ""}</td>
+      <td class="num">${r["前日終値比率"] ?? ""}</td>
+      <td class="num">${r["出来高"] ?? ""}</td>
+      <td class="num">${r["売買代金(億)"] ?? ""}</td>
+      <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+      <!-- ▼▼ ここを追加：thead の「スコア」「進捗率」に対応 ▼▼ -->
+      <td class="num">${r["スコア"] ?? ""}</td>
+      <td class="num">${r["進捗率"] ?? ""}</td>
+      <!-- ▲▲ 追加ここまで ▲▲ -->
+      <td>${r["増資リスク"] ?? ""}</td>
+      <td class="num">${r["増資スコア"] ?? ""}</td>
+      <td class="reason-col">${r["増資理由"] || ""}</td>
+      <td>${r["初動フラグ"] || ""}</td>
+      <td>${r["底打ちフラグ"] || ""}</td>
+      <td>${r["右肩上がりフラグ"] || ""}</td>
+      <td>${r["右肩早期フラグ"] || ""}</td>
+      <td class="num">${r["右肩早期スコア"] ?? ""}</td>
+      <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
+      <td>${formatJudgeLabel(r)}</td>
+      <td class="reason-col">${r["判定理由"] || ""}</td>
+      <td>${recBadge}</td>
+      <td class="num">${r["推奨比率"] ?? ""}</td>
+      <td>${r["シグナル更新日"] || ""}</td>
+    </tr>`;
   }
+  body.innerHTML = html;
+  document.querySelector("#count").textContent = String(total);
+  document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
+  wireDomSort("#tbl-candidate");
+}
 
-// tomorrow
+
+// === Tomorrow logic START =====================================
+
 // 正規化: 任意の Date / 文字列 → YYYY-MM-DD
 function toKey(x){
   if (x instanceof Date) {
@@ -909,20 +917,6 @@ function latestUpdateDate(rows){
   return ds.sort().pop() || null;
 }
 
-function toTomorrowRowsForDate(src, dateKey){
-  if(!Array.isArray(src) || !dateKey) return [];
-  return src.filter(r=>{
-    const d = toKey(r?.["シグナル更新日"]);
-    if(d !== dateKey) return false;
-    const sh = String(r?.["初動フラグ"]||"").includes("候補");
-    const ru = String(r?.["右肩上がりフラグ"]||"").includes("候補");
-    const ea = String(r?.["右肩早期フラグ"]||"").includes("候補");
-    return sh || ru || ea;
-  });
-}
-
-// ← ここに余計な `}` は置かない
-
 function localDateStr(d){
   const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2);
   return `${y}-${m}-${da}`;
@@ -932,6 +926,29 @@ function prevBusinessDay(d){
 }
 function nextBusinessDay(d){
   const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt;
+}
+
+// 「候補」判定（初動/右肩/早期のいずれか）
+function _hasCandidateFlag(r){
+  return String(r?.["初動フラグ"]||"").includes("候補")
+      || String(r?.["右肩上がりフラグ"]||"").includes("候補")
+      || String(r?.["右肩早期フラグ"]||"").includes("候補");
+}
+
+// 基準日キーに対して「候補」だけを抽出
+function _pickTomorrowRows(src, baseKey){
+  if(!Array.isArray(src) || !baseKey) return [];
+  return src.filter(r => toKey(r?.["シグナル更新日"])===baseKey && _hasCandidateFlag(r));
+}
+
+// ローカル時計から基準日/対象日を計算（14:30 凍結ルール）
+function _computeBaseAndTargetFromLocalNow(){
+  const now = new Date();
+  const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const baseDate = inFreeze ? prevBusinessDay(today) : today;
+  const targetDate = nextBusinessDay(baseDate);
+  return { inFreeze, baseDate, targetDate };
 }
 
 function renderTomorrow(rows){
@@ -960,7 +977,7 @@ function renderTomorrow(rows){
       <td class="reason-col">${r["増資理由"] || ""}</td>
       <td class="num">${r["右肩早期スコア"]??""}</td>
       <td>${(r["右肩早期種別"]||"").trim()}</td>
-      <td>${formatJudgeLabel(r)}</td>
+      <td>${isHit ? "当たり！(1)" : "外れ！(1)"}</td>
       <td>${recBadge}</td>
     </tr>`;
   });
@@ -968,35 +985,9 @@ function renderTomorrow(rows){
   wireDomSort("#tbl-tmr");
 }
 
-function renderTomorrowWrapper(){
-  const md = (RAW.meta || {});
-  const latestStr = md.base_day || latestUpdateDate(DATA_CAND) || null;
-  const now = new Date();
-  const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
-  let baseDate = latestStr ? new Date(latestStr) : new Date();
-  if (inFreeze) baseDate = prevBusinessDay(baseDate);
-
-  const targetStr = localDateStr(nextBusinessDay(baseDate));
-  const lbl = document.getElementById("tmr-label");
-  if (lbl) lbl.textContent = targetStr ? `📅 ${targetStr} 向け` : "📅 明日用（日付未取得）";
-
-  const baseKey = toKey(baseDate);
-  let rows = toTomorrowRowsForDate(DATA_CAND, baseKey);
-
-  if (rows.length === 0) {
-    const sample = (DATA_CAND||[]).slice(0,10).map(r=>({code:r["コード"], sig: toKey(r["シグナル更新日"])}));
-    console.info("[tmr] no rows", { latestStr, inFreeze, baseKey, targetStr, sample });
-    const sameDay = (DATA_CAND||[]).filter(r=>toKey(r["シグナル更新日"])===baseKey);
-    const withFlags = sameDay.filter(r=>{
-      return String(r?.["初動フラグ"]||"").includes("候補")
-          || String(r?.["右肩上がりフラグ"]||"").includes("候補")
-          || String(r?.["右肩早期フラグ"]||"").includes("候補");
-    });
-    console.info("[tmr] same-day counts", { sameDay: sameDay.length, withFlags: withFlags.length });
-  }
-
-  // 並び替え（推奨アクション > 右肩早期スコア > 売買代金）
-  rows = rows.sort((a,b)=>{
+// 並び替え（推奨 > 右肩早期S > 売買代金）
+function _sortTomorrow(rows){
+  return rows.slice().sort((a,b)=>{
     const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
     const r = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
     if (r !== 0) return r;
@@ -1004,10 +995,57 @@ function renderTomorrowWrapper(){
     if (s !== 0) return s;
     return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
   });
+}
 
+function renderTomorrowWrapper(){
+  // 1) 基準日/対象日（ローカル時計 & 14:30 凍結）
+  const { inFreeze, baseDate, targetDate } = _computeBaseAndTargetFromLocalNow();
+  const baseKey = toKey(baseDate);
+  const targetKey = toKey(targetDate);
+
+  // 2) データ側の最新更新日（フォールバック用）
+  const latestKey = latestUpdateDate(DATA_CAND);
+
+  // 3) 抽出（ゼロ回避の多段フォールバック）
+  let reason = `基準日の「候補」`;
+  let rows = _pickTomorrowRows(DATA_CAND, baseKey);
+
+  if (rows.length === 0 && latestKey && latestKey !== baseKey){
+    rows = _pickTomorrowRows(DATA_CAND, latestKey);
+    if (rows.length) reason = `最新日(${latestKey})の「候補」にフォールバック`;
+  }
+  if (rows.length === 0){
+    rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===baseKey);
+    if (rows.length) reason = `基準日(${baseKey})の全件（候補条件なし）`;
+  }
+  if (rows.length === 0 && latestKey){
+    rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===latestKey);
+    if (rows.length) reason = `最新日(${latestKey})の全件（候補条件なし）`;
+  }
+  if (rows.length === 0){
+    rows = (DATA_CAND||[]).slice();
+    reason = `全体からのサンプル`;
+  }
+
+  // 並び替え & 上限（見やすさ用に最大2000はそのまま）
+  rows = _sortTomorrow(rows);
+
+  // 4) ラベル更新（基準日・対象日・凍結状態・抽出根拠）
+  const lbl = document.getElementById("tmr-label");
+  if (lbl){
+    const baseStr = localDateStr(baseDate);
+    const tgtStr  = localDateStr(targetDate);
+    const freezeStr = inFreeze ? "ON" : "OFF";
+    lbl.textContent = `📅 ${tgtStr} 向け（基準日: ${baseStr} / 凍結: ${freezeStr} / 抽出: ${rows.length}件・${reason}）`;
+  }
+
+  // 5) 描画
   window.DATA_TMR = rows;
   renderTomorrow(rows);
 }
+
+// === Tomorrow logic END =====================================
+
 
 
 
@@ -1374,6 +1412,8 @@ function renderTomorrowWrapper(){
             <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
+<th class="num sortable" data-col="スコア" data-type="num">スコア<span class="arrow"></span></th>
+<th class="num sortable" data-col="進捗率" data-type="num">進捗率<span class="arrow"></span></th>
             <th data-col="増資リスク">増資リスク</th>
             <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
             <th class="reason-col" data-col="増資理由">理由</th>
@@ -1571,14 +1611,14 @@ except Exception:
 
 def run_karauri_script():
     """Node.js の puppeteer スクリプトを起動して、空売り無しリストを更新する"""
-    if not os.path.exists(KARAURI_JS_PATH):
-        print(f"[karauri] JS スクリプトが見つかりません: {KARAURI_JS_PATH}")
+    if not os.path.exists(KARAURI_PY_PATH):
+        print(f"[karauri]  スクリプトが見つかりません: {KARAURI_PY_PATH}")
         return
 
     try:
         print("[karauri] 空売り無しリスト抽出を開始...")
-        # node 実行。スキップ条件（日付チェック）は JS 側に組み込み済み
-        subprocess.run(["node", KARAURI_JS_PATH], check=True)
+        # python 実行。スキップ条件（日付チェック）は JS 側に組み込み済み
+        subprocess.run(["python", KARAURI_PY_PATH], check=True)
         print("[karauri] 抽出処理 完了")
     except subprocess.CalledProcessError as e:
         print(f"[karauri][WARN] スクリプト実行に失敗しました: {e}")
@@ -6083,28 +6123,56 @@ def judge_overheat(conn, code: str,
     
 def phase_sync_finance_comments(conn):
     """
-    finance_notes(コード, 財務コメント) → screener.財務コメント に同期
+    finance_notes(コード, 財務コメント, score, progress_percent)
+      -> screener.財務コメント, screener.スコア, screener.進捗率 に同期
     """
+    import sqlite3
     cur = conn.cursor()
-    # screener側の列は ensure_schema() で追加済み
-    cur.execute("""
-        UPDATE screener
+
+    # 1) 後方互換: 列が無ければ追加
+    cur.execute("PRAGMA table_info(screener)")
+    cols = {r[1] for r in cur.fetchall()}
+    add_sql = []
+    if "財務コメント" not in cols:
+        add_sql.append("ALTER TABLE screener ADD COLUMN 財務コメント TEXT")
+    if "スコア" not in cols:
+        add_sql.append("ALTER TABLE screener ADD COLUMN スコア REAL")
+    if "進捗率" not in cols:
+        add_sql.append("ALTER TABLE screener ADD COLUMN 進捗率 REAL")
+    for s in add_sql:
+        try:
+            cur.execute(s)
+        except Exception:
+            pass
+    conn.commit()
+
+    # 2) finance_notes -> screener 同期（コードは0埋め4桁で比較）
+    cur.execute(
+        """
+        UPDATE screener AS s
         SET 財務コメント = (
-          SELECT n.財務コメント
-          FROM finance_notes n
-          WHERE
-            -- 文字種の差異対策（数値/テキスト混在を吸収）
-            printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(screener.コード AS INTEGER))
-        )
+              SELECT n.財務コメント
+              FROM finance_notes n
+              WHERE printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(s.コード AS INTEGER))
+            ),
+            スコア = (
+              SELECT n.score
+              FROM finance_notes n
+              WHERE printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(s.コード AS INTEGER))
+            ),
+            進捗率 = (
+              SELECT n.progress_percent
+              FROM finance_notes n
+              WHERE printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(s.コード AS INTEGER))
+            )
         WHERE EXISTS (
           SELECT 1 FROM finance_notes n
-          WHERE printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(screener.コード AS INTEGER))
+          WHERE printf('%04d', CAST(n.コード AS INTEGER)) = printf('%04d', CAST(s.コード AS INTEGER))
         )
-    """)
+        """
+    )
     conn.commit()
     cur.close()
-
-# ===== タイマーユーティリティ =====
 
 def _timed(label, func, *args, **kwargs):
     """関数の処理時間を計測してログ出力するラッパー"""
@@ -6163,13 +6231,6 @@ def main():
     # [v12] removed: lib.parse import quote as _q
 
 
-
-
-
-
-
-
-
     extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
     # if is_jp_market_holiday(dtm.date.today(), extra_closed):
     #     print(f"日本の休場日（{dtm.date.today()}）のためスキップします。")
@@ -6225,7 +6286,7 @@ def main():
             # 現在時刻が12:30以前なら「重い処理」も実行する
             now = dtm.datetime.now().time()
             if now < dtm.time(12,30):
-                _timed("update_market_cap_all", update_market_cap_all, conn, batch_size=150, max_workers=8)
+                _timed("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
                 try:
                     _timed("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
                 except Exception as e:
