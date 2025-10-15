@@ -48,6 +48,61 @@ import yfinance as yf
 import zipfile
 from yahooquery import Ticker as YQ
 
+# ==== 非同期実行ユーティリティ（投げっぱなし起動） ====
+import os as _os, sys as _sys, tempfile as _tempfile, subprocess as _subprocess, time as _time
+from datetime import datetime as _dt
+
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+def _ff__log_path_for(script_path: str) -> str:
+    base = _os.path.splitext(_os.path.basename(script_path))[0]
+    ts   = _dt.now().strftime("%Y%m%d_%H%M%S")
+    return _os.path.join(_tempfile.gettempdir(), f"{base}_{ts}.log")
+
+def fire_and_forget_script(script_path: str, python_exe: str | None = None) -> "_subprocess.Popen[bytes]":
+    """
+    スクリプトを“待たずに”起動して Popen を返す。
+    - 標準出力/標準エラーは TEMP にログとして保存
+    - 親プロセスは即座に先へ進む
+    """
+    py = python_exe or _sys.executable
+    log = _ff__log_path_for(script_path)
+    f = open(log, "ab", buffering=0)  # バッファ無しで即書き
+    proc = _subprocess.Popen(
+        [py, "-u", script_path],
+        stdout=f, stderr=_subprocess.STDOUT,
+        creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
+        close_fds=True
+    )
+    return proc
+
+def fire_and_forget_many(scripts, python_exe: str | None = None, max_parallel: int | None = None):
+    """
+    複数スクリプトを非同期でまとめて起動。
+    max_parallel を指定すると同時起動数を制限（簡易キュー）。
+    戻り値: 起動した Popen のリスト
+    """
+    py = python_exe or _sys.executable
+    procs = []
+    if not max_parallel or max_parallel <= 0:
+        for sp in scripts:
+            procs.append(fire_and_forget_script(sp, py))
+        return procs
+
+    running = []
+    for sp in scripts:
+        while len(running) >= max_parallel:
+            running = [p for p in running if p.poll() is None]
+            _time.sleep(0.2)
+        p = fire_and_forget_script(sp, py)
+        running.append(p)
+        procs.append(p)
+    return procs
+# ==== /非同期実行ユーティリティ ====
+
+
+
 # ========= bulk utils (v8 additions) =========
 def _chunked(seq, n=500):
     it = iter(seq)
@@ -1617,7 +1672,7 @@ def run_karauri_script():
 
     try:
         print("[karauri] 空売り無しリスト抽出を開始...")
-        # python 実行。スキップ条件（日付チェック）は JS 側に組み込み済み
+        # node 実行。スキップ条件（日付チェック）は JS 側に組み込み済み
         subprocess.run(["python", KARAURI_PY_PATH], check=True)
         print("[karauri] 抽出処理 完了")
     except subprocess.CalledProcessError as e:
