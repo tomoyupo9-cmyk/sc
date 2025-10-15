@@ -1,0 +1,76 @@
+# =========================================
+#  必須設定
+# =========================================
+db_path: "H:/desctop/株攻略/1-スクリーニング自動化プログラム/kani2.db"
+
+# Yahoo!掲示板のライブ取得を回す銘柄数（上位N件）
+bbs_probe: 5
+
+# TDnet（決算）取得の対象日数
+earn_days: 7
+
+# ダッシュボードで使うニュース件数の上限（ランキング後の残数）
+top_news: 100
+
+# ダッシュボードで使うトレンド件数の上限（未使用ならそのままでOK）
+top_trends: 100
+
+# GoogleニュースRSSで各銘柄あたり何件まで読むか
+news:
+  max_items_per_symbol: 30
+
+# pytrends の期間と地域（fetch_all の trends ブロックで使用）
+trends_timeframe: "today 3-m"  # 直近3ヶ月
+trends_geo: "JP"               # 日本
+
+
+# =========================================
+#  自動発見（discovery）
+# =========================================
+auto_discover:
+  enabled: true           # 自動発見ON/OFF（false で固定リスト運用）
+  top_k: 40               # 採用する銘柄数
+  validate_codes: true    # 4桁コードの実在確認を行う
+
+  # 並列度（ネットワーク品質に応じて調整）
+  max_workers: 6
+  max_workers_namecheck: 4
+
+  # 株探ニュース：本文を辿る件数上限（増やすと発見力↑だが時間↑）
+  kabutan_max_articles: 80
+
+  # レート制御（ミリ秒）— BAN回避・安定化
+  sleep_ms:
+    lookup_name: 150      # 銘柄名取得（1コードごと）待ち
+    validate_code: 120    # 実在確認（1コードごと）待ち
+    kabutan_article: 300  # 株探の記事本文 1 本を見た後の待ち
+
+
+# =========================================
+#  掲示板（スレ解析）
+# =========================================
+bbs:
+  look_threads: 50   # 投稿時間の解析に使う上位スレッド数
+  max_samples: 20    # UIに載せるサンプル抽出件数
+
+
+# =========================================
+#  感情分析（sentiment）
+# =========================================
+sentiment:
+  model: "daigo/bert-base-japanese-sentiment"
+  threshold:
+    news: 0.65
+    bbs: 0.70
+  hf:
+    device: null       # 例: "cuda:0" でGPU使用 / null で自動
+    batch_size: 32
+    threads: 1         # CPUスレッド数（多すぎると逆効果のことあり）
+
+
+# =========================================
+#  HTTP 共通
+# =========================================
+http:
+  timeout: 10
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36"
