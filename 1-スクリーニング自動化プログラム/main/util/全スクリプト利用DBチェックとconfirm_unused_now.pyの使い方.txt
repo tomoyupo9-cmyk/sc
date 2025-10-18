@@ -1,0 +1,2 @@
+python 全スクリプト利用DBチェック.py   --run "H:\desctop\株攻略\2-トレンドツール\fetch_all.py"   --run "H:\desctop\株攻略\1-スクリーニング自動化プログラム\自動スクリーニング.py"   --run "H:\desctop\株攻略\1-スクリーニング自動化プログラム\株探ファンダ.py"   --out-dir ".\rt_probe_out"   --verbose 
+python confirm_unused_now.py   --db "H:\desctop\株攻略\1-スクリーニング自動化プログラム\kani2.db"   --rt-dir ".\rt_probe_out"   --out-dir ".\now_check"

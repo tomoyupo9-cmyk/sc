@@ -1,0 +1,1309 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta http-equiv="Cache-Control" content="no-store">
+<meta http-equiv="Pragma" content="no-cache">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>スクリーニング ダッシュボード</title>
+<style>
+  :root{
+    --ink:#1f2937; --muted:#6b7280; --bg:#f9fafb; --line:#e5e7eb;
+    --blue:#0d3b66; --green:#15803d; --orange:#b45309; --yellow:#a16207;
+    --hit:#ffe6ef; --rowhover:#f6faff;
+  }
+
+  /* 全体 */
+  body{
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans JP',sans-serif;
+    margin:16px; color:var(--ink); background:#fff;
+  }
+
+  nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  nav a{padding:6px 10px;border-radius:8px;text-decoration:none;background:#e1e8f0;color:#1f2d3d;font-weight:600}
+  nav a.active{background:var(--blue);color:#fff}
+
+  .toolbar{display:flex;gap:14px;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
+  .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #ccd;border-radius:8px;background:#fff}
+  .toolbar input[type="number"]{width:80px}
+  .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
+
+  /* テーブルラッパ（角丸＋横スクロール） */
+  .tbl-wrap{
+    border-radius:10px;
+    overflow:auto; /* 縦横 */
+    -webkit-overflow-scrolling:touch;
+    background:#fff;
+    box-shadow:0 0 0 1px var(--line) inset;
+    max-height:70vh;
+  }
+
+  /* テーブル共通（コンパクト化） */
+  .tbl{ border-collapse:collapse; width:100%; background:#fff; }
+  .tbl th,.tbl td{
+    border-bottom:1px solid var(--line);
+    padding:4px 6px;
+    font-size:0.85em;
+    vertical-align:top;
+  }
+  .tbl tbody tr:nth-child(even){background:#fcfdff}
+  .tbl tbody tr:hover{background:var(--rowhover)}
+  .tbl th.sortable{cursor:pointer;user-select:none}
+  .tbl th.sortable .arrow{margin-left:6px;font-size:11px;color:#666}
+  .num{text-align:right}
+  .muted{color:var(--muted)}
+  .hidden{display:none}
+  .count{margin-left:6px;color:var(--muted)}
+  .pager{display:flex;gap:8px;align-items:center}
+  tr.hit>td{background:var(--hit)}
+
+  /* バッジ */
+  .badge{display:inline-flex;gap:6px;align-items:center;padding:2px 8px;border-radius:999px;font-size:12px;line-height:1;font-weight:700}
+  .b-green{background:#e7f6ed;color:var(--green);border:1px solid #cceedd}
+  .b-orange{background:#fff4e6;color:#b45309;border:1px solid #ffe2c2}
+  .b-yellow{background:#fff9db;color:var(--yellow);border:1px solid #ffe9a8}
+  .b-gray{background:#eef2f7;color:#475569;border:1px solid #dbe4ef}
+
+  /* 推奨バッジ */
+  .rec-badge{display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; line-height:1; white-space:nowrap;}
+  .rec-strong{ background:#e7f6ed; color:#166534; border:1px solid #cceedd; }
+  .rec-small { background:#fff4e6; color:#9a3412; border:1px solid #ffe2c2; }
+  .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
+  .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor;}
+
+  /* ヘッダー固定（候補一覧 / 全カラム） */
+  #tbl-candidate thead th,
+  #tbl-allcols  thead th{
+    position:sticky;
+    position:-webkit-sticky;
+    top:0;
+    background:#fff;
+    z-index:2;
+    border-bottom:2px solid #ccc;
+  }
+
+  /* ヘルプ（小窓＋暗幕） */
+  .help-backdrop{
+    position:fixed; inset:0; background:rgba(17,24,39,.45);
+    z-index:9998; display:none;
+  }
+  .help-pop{
+    position:absolute; z-index:9999; background:#fff; border:1px solid #e5e7eb;
+    border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.18);
+    padding:12px 14px 14px; font-size:13px; line-height:1.55;
+    display:none; width:clamp(720px, 90vw, 1200px);
+  }
+  .help-pop .help-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; font-weight:700;}
+  .help-pop .help-close{ display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:6px; cursor:pointer; user-select:none; font-weight:700;}
+  .help-pop .help-close:hover{ background:#f3f4f6; }
+
+  /* ？アイコン（テーブル/ツールバー共通） */
+  .qhelp{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; margin-left:6px;
+    border-radius:50%; border:1px solid #cbd5e1; font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;}
+  .qhelp:hover{ background:#e0e7ff; }
+
+  /* 1行固定（改行は潰す） */
+  #tbl-candidate td, #tbl-candidate th,
+  #tbl-allcols  td, #tbl-allcols  th{ white-space:nowrap !important; word-break:keep-all !important; }
+  #tbl-candidate td br, #tbl-candidate th br,
+  #tbl-allcols  td br, #tbl-allcols  th br{ display:none !important; }
+
+  /* 判定理由は極小で折り返し可 */
+  th.reason-col, td.reason-col{ font-size:0.78em; line-height:1.2; white-space:normal !important; word-break:break-word !important; }
+
+  .mini{ font-size:10px; color:var(--muted); }
+
+  /* コードコピーリンク */
+  .copylink{ color:var(--blue); text-decoration:underline; cursor:pointer; }
+  .copylink.ok{ color:var(--green); text-decoration:none; font-weight:700; }
+
+  /* 予測タブ：理由/ヒントの強調 */
+  .reason-col,.hint-col {vertical-align: top;}
+  .reason-box{ display:inline-block; padding:6px 8px; border-radius:10px; background:#fff9db; line-height:1.4; white-space: pre-wrap; }
+
+  /* 財務コメント（財務リンク右） */
+  .fn-note{
+    color:#b91c1c; font-weight:700; font-size:0.78em; margin-left:8px;
+    white-space:pre-wrap; overflow:visible; text-overflow:clip; display:inline-block;
+    max-width:clamp(600px, 60vw, 1200px); vertical-align:bottom;
+  }
+
+  /* ツールチップ/ポップオーバーはクリック貫通 */
+  .tooltip, .popover { pointer-events:none; }
+  
+  /* 決算タブ：判定理由をタグ風に表示 */
+  .reason-tags{ display:flex; flex-wrap:wrap; gap:6px; }
+  .reason-tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
+    background:#eef2ff; border:1px solid #c7d2fe; color:#334155; white-space:nowrap; }
+
+</style>
+</head>
+
+<body>
+  <nav>
+    <a href="#" id="lnk-cand" class="active">候補一覧</a>
+    <a href="#" id="lnk-tmr">明日用</a>
+    <a href="#" id="lnk-all">全カラム</a>
+    <a href="#" id="lnk-earn">決算(実績)</a>
+    <a href="#" id="lnk-preearn">決算(予測)</a>
+    {% if include_log %}<a href="#" id="lnk-log">signals_log</a>{% endif %}
+    <span class="mini" style="margin-left:auto">build: {{ build_id }}</span>
+  </nav>
+
+  <div id="toolbar" class="toolbar">
+    <label><input type="checkbox" id="f_shodou"> 初動のみ</label>
+    <label><input type="checkbox" id="f_tei"> 底打ちのみ</label>
+    <label><input type="checkbox" id="f_both"> 両立のみ</label>
+    <label><input type="checkbox" id="f_rightup"> 右肩上がりのみ</label>
+    <label><input type="checkbox" id="f_early"> 早期のみ</label>
+    <label><input type="checkbox" id="f_etype"> 早期種別あり</label>
+    <label><input type="checkbox" id="f_recstrong"> エントリー有力のみ</label>
+    <label><input type="checkbox" id="f_smallpos"> 小口提案のみ</label>
+    <label><input type="checkbox" id="f_noshor"> 空売り機関なしのみ</label>
+    <label><input type="checkbox" id="f_opratio"> 割安（営利対時価10%以上）のみ</label>
+    <label><input type="checkbox" id="f_hit"> 当たりのみ</label>
+    <div class="toolbar early-filter">
+      <label class="ef-chk"><input type="checkbox" value="ブレイク" ><span>ブレイク</span></label>
+      <label class="ef-chk"><input type="checkbox" value="ポケット" ><span>ポケット</span></label>
+      <label class="ef-chk"><input type="checkbox" value="20MAリバ" ><span>20MAリバ</span></label>
+      <label class="ef-chk"><input type="checkbox" value="200MAリクレイム" ><span>200MAリクレイム</span></label>
+    </div>
+
+    <label>上昇率≥ <input type="number" id="th_rate" placeholder="3.0" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label>売買代金≥ <input type="number" id="th_turn" placeholder="10" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label>RVOL代金≥ <input type="number" id="th_rvol" placeholder="3.0" step="0.1" inputmode="decimal" autocomplete="off"></label>
+
+    <!-- ▼ 進捗率 / スコア（最小値フィルタ） -->
+    <label>進捗率≥ <input type="number" id="th_progress" placeholder="80" step="1" inputmode="decimal" autocomplete="off"></label>
+    <label>スコア≥ <input type="number" id="th_score" placeholder="0" step="1" inputmode="decimal" autocomplete="off"></label>
+    <!-- ▲ ここまで -->
+
+    <label><input type="checkbox" id="f_defaultset"> 規定</label>
+
+
+
+    <input type="text" id="q" placeholder="全文検索（コード/銘柄/判定理由など）" style="min-width:240px">
+    <button class="btn" id="btn-stats">傾向グラフ</button>
+    <button class="btn" id="btn-ts">推移グラフ</button>
+
+    <span class="pager">
+      <label>表示件数
+        <select id="perpage">
+          <option value="200">200</option><option value="500">500</option>
+          <option value="1000">1000</option><option value="2000" selected>2000</option>
+        </select>
+      </label>
+      <button class="btn" id="prev">前へ</button>
+      <button class="btn" id="next">次へ</button>
+      <span id="pageinfo" class="muted">- / -</span>
+    </span>
+    <span class="count">件数: <b id="count">-</b></span>
+  </div>
+
+
+<script id="__DATA__" type="application/json">{{ data_json|safe }}</script>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---- data ----
+  const RAW = (()=>{ try{ return JSON.parse(document.getElementById("__DATA__").textContent||"{}"); }catch(_){ return {}; } })();
+  const DATA_CAND = Array.isArray(RAW.cand)? RAW.cand: [];
+  const DATA_ALL  = Array.isArray(RAW.all) ? RAW.all : [];
+  const DATA_LOG  = Array.isArray(RAW.logs)? RAW.logs: [];
+  const DATA_EARN = Array.isArray(RAW.earnings) ? RAW.earnings : [];
+  const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
+  const DATA_PREEARN = Array.isArray(_preSrc) ? _preSrc : [];
+
+  // ---- utils ----
+  const $  = (s,r=document)=>r.querySelector(s);
+  const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
+  const num = (v)=>{ const s=String(v??"").replace(/[,\s円％%]/g,""); const n=parseFloat(s); return Number.isFinite(n)?n:NaN; };
+  const cmp = (a,b)=>{ if(a==null&&b==null) return 0; if(a==null) return -1; if(b==null) return 1;
+    const na=+a, nb=+b, da=new Date(a), db=new Date(b);
+    if(!Number.isNaN(na)&&!Number.isNaN(nb)) return na-nb;
+    if(!Number.isNaN(da)&&!Number.isNaN(db)) return da-db;
+    return String(a).localeCompare(String(b),"ja"); };
+  const hasKouho = (v)=> String(v||"").includes("候補");
+
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
+
+  // copy link
+  function codeLink(code){
+    if(code==null) return "";
+    const s = String(code).padStart(4, "0");
+    return `<a href="#" class="copylink" data-copy="${s}" title="コードをコピー">${s}</a>`;
+  }
+  document.addEventListener("click", async (e)=>{
+    const a = e.target.closest && e.target.closest("a.copylink");
+    if (!a) return;
+    e.preventDefault();
+    const text = a.dataset.copy || "";
+    try{
+      if (navigator.clipboard && window.isSecureContext !== false) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.left = "-9999px";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+      }
+      const old = a.textContent; a.classList.add("ok"); a.textContent = "コピー済";
+      setTimeout(() => { a.classList.remove("ok"); a.textContent = old; }, 1200);
+    } catch (_){
+      const old = a.textContent; a.textContent = "失敗"; setTimeout(() => { a.textContent = old; }, 1200);
+    }
+  });
+
+  // offerings badge
+  const OFFER_SET = new Set((Array.isArray(RAW.offer_codes) ? RAW.offer_codes : []).map(x => String(x).padStart(4,"0")));
+  function offeringBadge(code){
+    const c = String(code ?? "").padStart(4,"0");
+    return OFFER_SET.has(c) ? `<span class="badge b-gray" title="直近に増資/行使/売出/CBなどの履歴あり">増資経歴</span>` : "";
+  }
+
+  // finance modal
+  function openFinanceHtml(code){
+    closeAllTips();
+    const back = ensureChartModal();
+    const body = document.getElementById("__chart_body__");
+    const src = `graph/finance_${String(code).padStart(4,"0")}.html`;
+    body.innerHTML = `<iframe src="${src}" style="width:100%; height:80vh; border:0;"></iframe>`;
+    back.style.display = "block";
+    const box = document.querySelector(".help-pop");
+    box.style.display = "block";
+    const sx = window.scrollX||0, sy = window.scrollY||0;
+    box.style.top = `${sy+60}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${sx + Math.max(10, (document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+  }
+  function financeLink(code){
+    if(code==null) return "";
+    const s = String(code).padStart(4, "0");
+    return `<a href="#" class="financelink" data-code="${s}" title="財務グラフを開く">財務</a>`;
+  }
+  function financeNote(row){
+    let v = row?.["財務コメント"];
+    if (!v) return "";
+    let s = String(v).trim();
+    // 先頭の「⚠」「判定（…）:」「判定:」「コメント:」などを除去
+    s = s
+      .replace(/^\s*[⚠︎⚠️△▲※＊*]?\s*判定（[^）]*）\s*[:：]?\s*/i, "")
+      .replace(/^\s*[⚠︎⚠️△▲※＊*]?\s*(判定|コメント)\s*[:：]?\s*/i, "")
+      .replace(/^\s*[：:\-・]+\s*/, ""); // 余分な区切りが続く場合の掃除
+    const t = escapeHtml(s);
+    return ` <span class="fn-note" title="${t}">${t}</span>`;
+  }
+  document.addEventListener("click", (e)=>{
+    const a = e.target.closest && e.target.closest("a.financelink");
+    if(!a) return;
+    e.preventDefault();
+    const code = a.dataset.code;
+    if(code) openFinanceHtml(code);
+  });
+
+  // DOM sort (generic)
+  function wireDomSort(tableSelector){
+    const table = document.querySelector(tableSelector); if(!table) return;
+    const ths = Array.from(table.querySelectorAll('thead th.sortable'));
+    const cellVal = (td)=>{
+      if (!td) return '';
+      const ds = td.getAttribute ? td.getAttribute('data-sort') : null;
+      return (ds !== null && ds !== '') ? ds : (td.textContent || '');
+    };
+    const toNum = (s)=>{
+      let t = String(s ?? '').trim().replace(/\s|[円％%]/g,'');
+      if (t.indexOf('.') === -1 && /^-?\d+,\d+$/.test(t)) t = t.replace(',', '.'); else t = t.replace(/,/g,'');
+      const n = parseFloat(t);
+      return Number.isFinite(n) ? n : NaN;
+    };
+    ths.forEach((th)=>{
+      if (th.__wiredSort) return;
+      th.__wiredSort = true;
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', ()=>{
+        const colIndex = th.cellIndex;
+        const dirPrev = th.dataset.dir;
+        ths.forEach(h=>{ h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
+        const dir = (dirPrev === 'asc') ? 'desc' : 'asc';
+        th.dataset.dir = dir;
+        const typ = th.dataset.type || 'text';
+        const rows = Array.from(table.querySelectorAll('tbody tr'));
+        rows.sort((r1, r2)=>{
+          const aRaw = cellVal(r1.children[colIndex]).trim();
+          const bRaw = cellVal(r2.children[colIndex]).trim();
+          if (typ === 'num'){
+            const aKey = toNum(aRaw), bKey = toNum(bRaw);
+            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
+              return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
+            }
+          } else if (typ === 'date'){
+            const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
+            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
+              return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
+            }
+          }
+          const sa = String(aRaw).toLowerCase();
+          const sb = String(bRaw).toLowerCase();
+          return dir==='asc' ? sa.localeCompare(sb,'ja') : sb.localeCompare(sa,'ja');
+        });
+        const tb = table.querySelector('tbody');
+        rows.forEach(r=>tb.appendChild(r));
+        const arrow = th.querySelector('.arrow'); if (arrow) arrow.textContent = (dir==='asc'?'▲':'▼');
+      });
+    });
+  }
+
+  // state
+  const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), sortKey:null, sortDir:1, q:"", data: DATA_CAND.slice() };
+  window.state = state;
+
+  const DEFAULTS = { rate:3, turn:5, rvol:2 };
+  function applyDefaults(on){
+    const ia=$("#th_rate"), it=$("#th_turn"), ir=$("#th_rvol");
+    if(!ia||!it||!ir) return;
+    if(on){ ia.value=DEFAULTS.rate; it.value=DEFAULTS.turn; ir.value=DEFAULTS.rvol; }
+    else  { ia.value=""; it.value=""; ir.value=""; ia.removeAttribute("value"); it.removeAttribute("value"); ir.removeAttribute("value"); }
+    state.page=1; render();
+  }
+  function forceClearThresholds(){
+    const cb=$("#f_defaultset");
+    if(cb) cb.checked=false;
+    applyDefaults(false);
+  }
+  function thRate(){ const v=num($("#th_rate")?.value); return Number.isNaN(v)?null:v; }
+  function thTurn(){ const v=num($("#th_turn")?.value); return Number.isNaN(v)?null:v; }
+  function thRvol(){ const v=num($("#th_rvol")?.value); return Number.isNaN(v)?null:v; }
+  function thProg(){ const v=num($("#th_progress")?.value); return Number.isNaN(v)?null:v; }
+  function thScore(){ const v=num($("#th_score")?.value); return Number.isNaN(v)?null:v; }  // ★追加
+
+  function getSelectedTypes(){
+    const box = document.querySelector(".early-filter");
+    if (!box) return [];
+    return Array.from(box.querySelectorAll(".ef-chk input:checked")).map(el => el.value);
+  }
+
+  function isHitRow(r){
+    const v = String((r && (r["判定"] ?? r["judge"] ?? "")) || "").trim().toLowerCase();
+    if (/^当たり/.test(v)) return true;
+    if (v === "win" || v === "auto" || v === "再評価ok") return true;
+    return false;
+  }
+
+  function applyFilter(rows){
+    const q   = ($("#q")?.value||"").trim();
+    const sel = getSelectedTypes();
+    const useEarly = sel.length > 0;
+    return rows.filter(r=>{
+      const sh  = hasKouho(r["初動フラグ"]);
+      const te  = hasKouho(r["底打ちフラグ"]);
+      const ru  = hasKouho(r["右肩上がりフラグ"]);
+      const ea  = hasKouho(r["右肩早期フラグ"]);
+      const etp = (String(r["右肩早期種別"]||"").trim().length>0);
+      const ns  = String(r["空売り機関なし_flag"]||"0")==="1";
+      const op  = String(r["営利対時価_flag"]||"0")==="1";
+      const hit = isHitRow(r);
+
+      // 推奨アクション（エントリー有力/小口提案）フィルタ
+      const rec = (String(r["推奨アクション"]||"").trim());
+      const recStrong = (rec === "エントリー有力");
+      const recSmall  = (rec === "小口提案");
+
+      if($("#f_shodou")?.checked && !sh) return false;
+      if($("#f_tei")?.checked    && !te) return false;
+      if($("#f_both")?.checked   && !(sh && ru)) return false;
+      if($("#f_rightup")?.checked&& !ru) return false;
+      if($("#f_early")?.checked  && !ea) return false;
+      if($("#f_etype")?.checked  && !etp) return false;
+      if($("#f_recstrong")?.checked && !recStrong) return false; // ★追加
+      if($("#f_smallpos")?.checked  && !recSmall)  return false; // ★追加
+      if($("#f_noshor")?.checked && !ns) return false;
+      if($("#f_opratio")?.checked&& !op) return false;
+      if($("#f_hit")?.checked    && !hit) return false;
+
+      if (useEarly){
+        const val = String(r["右肩早期種別"]||"");
+        if (!sel.some(v => val.includes(v))) return false;
+      }
+
+      const rate  = num(r["前日終値比率"]);
+      const turn  = num(r["売買代金(億)"]);
+      const rvol  = num(r["RVOL代金"]);
+      const prog  = num(r["進捗率"]);   // ％想定
+      const score = num(r["スコア"]);   // ★追加
+
+      const tr = thRate(), tt = thTurn(), tv = thRvol(), tp = thProg(), ts = thScore(); // ★ts追加
+
+      if(tr!=null && !(rate>=tr)) return false;
+      if(tt!=null && !(turn>=tt)) return false;
+      if(tv!=null && !(rvol>=tv)) return false;
+      if(tp!=null && !(prog>=tp)) return false;     // 進捗率
+      if(ts!=null && !(score>=ts)) return false;    // ★スコア
+
+      if(q){
+        const keys=["コード","銘柄名","判定理由","右肩早期種別","初動フラグ","底打ちフラグ","右肩上がりフラグ","右肩早期フラグ","推奨アクション"];
+        if(!keys.some(k=>String(r[k]??"").includes(q))) return false;
+      }
+      return true;
+    });
+  }
+
+  function sortRows(rows){
+    return state.sortKey ? rows.slice().sort((a,b)=> state.sortDir * cmp(a[state.sortKey], b[state.sortKey])) : rows;
+  }
+
+  function formatJudgeLabel(r){
+    return isHitRow(r) ? "当たり！(1)" : "外れ！(1)";
+  }
+
+  // render: candidate
+  function renderCand(){
+    const body = document.querySelector("#tbl-candidate tbody");
+    if(!body) return;
+    const rows = sortRows(applyFilter(state.data));
+    const total = rows.length, per = state.per, maxPage = Math.max(1, Math.ceil(total/per));
+    state.page = Math.min(state.page, maxPage);
+    const s = (state.page-1)*per, e = Math.min(s+per, total);
+
+    let html = "";
+    for (let i = s; i < e; i++) {
+      const r = rows[i] || {};
+      const et = (r["右肩早期種別"] || "").trim();
+      let etBadge = et;
+      if (et === "ブレイク") etBadge = '<span class="badge b-green">● ブレイク</span>';
+      else if (et === "20MAリバ") etBadge = '<span class="badge b-green">● 20MAリバ</span>';
+      else if (et === "ポケット") etBadge = '<span class="badge b-orange">● ポケット</span>';
+      else if (et === "200MAリクレイム") etBadge = '<span class="badge b-yellow">● 200MAリクレイム</span>';
+
+      const rec = (r["推奨アクション"] || "").trim();
+      let recBadge = "";
+      if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+      else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+      else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+
+      const isHitTr = isHitRow(r);
+      html += `<tr${isHitTr ? " class='hit'" : ""}>
+        <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
+        <td>${r["銘柄名"] ?? ""}</td>
+        <td>${r["市場"] || "-"}</td>
+        <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
+        <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
+        <td class="num">${r["現在値"] ?? ""}</td>
+        <td class="num">${r["前日終値"] ?? ""}</td>
+        <td class="num">${r["前日円差"] ?? ""}</td>
+        <td class="num">${r["前日終値比率"] ?? ""}</td>
+        <td class="num">${r["出来高"] ?? ""}</td>
+        <td class="num">${r["売買代金(億)"] ?? ""}</td>
+        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+        <td>${escapeHtml(r["overall_alpha"] ?? "")}</td>
+        <td class="num">${r["スコア"] ?? ""}</td>
+        <td class="num">${r["進捗率"] ?? ""}</td>
+        <td>${r["増資リスク"] ?? ""}</td>
+        <td class="num">${r["増資スコア"] ?? ""}</td>
+        <td class="reason-col">${r["増資理由"] || ""}</td>
+        <td>${r["初動フラグ"] || ""}</td>
+        <td>${r["底打ちフラグ"] || ""}</td>
+        <td>${r["右肩上がりフラグ"] || ""}</td>
+        <td>${r["右肩早期フラグ"] || ""}</td>
+        <td class="num">${r["右肩早期スコア"] ?? ""}</td>
+        <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
+        <td>${formatJudgeLabel(r)}</td>
+        <td class="reason-col">${r["判定理由"] || ""}</td>
+        <td>${recBadge}</td>
+        <td class="num">${r["推奨比率"] ?? ""}</td>
+        <td>${r["シグナル更新日"] || ""}</td>
+      </tr>`;
+    }
+    body.innerHTML = html;
+    document.querySelector("#count").textContent = String(total);
+    document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
+    wireDomSort("#tbl-candidate");
+  }
+
+  // === Tomorrow logic START =====================================
+
+  // 正規化: 任意の Date / 文字列 → YYYY-MM-DD
+  function toKey(x){
+    if (x instanceof Date) {
+      const y=x.getFullYear(), m=('0'+(x.getMonth()+1)).slice(-2), d=('0'+x.getDate()).slice(-2);
+      return `${y}-${m}-${d}`;
+    }
+    const s = String(x ?? "").trim().slice(0,10).replace(/[./]/g,'-').replace(/\//g,'-');
+    const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+    const dt = new Date(s);
+    if (isNaN(+dt)) return "";
+    const yy=dt.getFullYear(), mm=('0'+(dt.getMonth()+1)).slice(-2), dd=('0'+dt.getDate()).slice(-2);
+    return `${yy}-${mm}-${dd}`;
+  }
+
+  function latestUpdateDate(rows){
+    const ds = (rows||[]).map(r=>toKey(r?.["シグナル更新日"])).filter(Boolean);
+    return ds.sort().pop() || null;
+  }
+
+  function localDateStr(d){
+    const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2);
+    return `${y}-${m}-${da}`;
+  }
+  function prevBusinessDay(d){
+    const dt=new Date(d); do{ dt.setDate(dt.getDate()-1);}while([0,6].includes(dt.getDay())); return dt;
+  }
+  function nextBusinessDay(d){
+    const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt;
+  }
+
+  // 「候補」判定（初動/右肩/早期のいずれか）
+  function _hasCandidateFlag(r){
+    return String(r?.["初動フラグ"]||"").includes("候補")
+        || String(r?.["右肩上がりフラグ"]||"").includes("候補")
+        || String(r?.["右肩早期フラグ"]||"").includes("候補");
+  }
+
+  // 基準日キーに対して「候補」だけを抽出
+  function _pickTomorrowRows(src, baseKey){
+    if(!Array.isArray(src) || !baseKey) return [];
+    return src.filter(r => toKey(r?.["シグナル更新日"])===baseKey && _hasCandidateFlag(r));
+  }
+
+  // ローカル時計から基準日/対象日を計算（14:30 凍結ルール）
+  function _computeBaseAndTargetFromLocalNow(){
+    const now = new Date();
+    const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const baseDate = inFreeze ? prevBusinessDay(today) : today;
+    const targetDate = nextBusinessDay(baseDate);
+    return { inFreeze, baseDate, targetDate };
+  }
+
+  function renderTomorrow(rows){
+    const body = document.querySelector("#tbl-tmr tbody");
+    if (!body) return;
+    let html = "";
+    rows.forEach(r=>{
+      const rec = (r["推奨アクション"] || "").trim();
+      let recBadge = "";
+      if (rec === "エントリー有力") recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+      else if (rec === "小口提案")   recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+      else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+      const isHit = isHitRow(r);
+      html += `<tr${isHit ? " class='hit'" : ""}>
+        <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
+        <td>${r["銘柄名"] ?? ""}</td>
+        <td>${r["市場"] || "-"}</td>
+        <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
+        <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
+        <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
+        <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
+        <td class="num">${r["売買代金(億)"]??""}</td>
+        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+        <td>${r["増資リスク"] ?? ""}</td>
+        <td class="num">${r["増資スコア"] ?? ""}</td>
+        <td class="reason-col">${r["増資理由"] || ""}</td>
+        <td class="num">${r["右肩早期スコア"]??""}</td>
+        <td>${(r["右肩早期種別"]||"").trim()}</td>
+        <td>${isHit ? "当たり！(1)" : "外れ！(1)"}</td>
+        <td>${recBadge}</td>
+      </tr>`;
+    });
+    body.innerHTML = html;
+    wireDomSort("#tbl-tmr");
+  }
+
+  // 並び替え（推奨 > 右肩早期S > 売買代金）
+  function _sortTomorrow(rows){
+    return rows.slice().sort((a,b)=>{
+      const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
+      const r = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
+      if (r !== 0) return r;
+      const s = (+b["右肩早期スコア"]||0) - (+a["右肩早期スコア"]||0);
+      if (s !== 0) return s;
+      return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
+    });
+  }
+
+  function renderTomorrowWrapper(){
+    // 1) 基準日/対象日（ローカル時計 & 14:30 凍結）
+    const { inFreeze, baseDate, targetDate } = _computeBaseAndTargetFromLocalNow();
+    const baseKey = toKey(baseDate);
+    const targetKey = toKey(targetDate);
+
+    // 2) データ側の最新更新日（フォールバック用）
+    const latestKey = latestUpdateDate(DATA_CAND);
+
+    // 3) 抽出（ゼロ回避の多段フォールバック）
+    let reason = `基準日の「候補」`;
+    let rows = _pickTomorrowRows(DATA_CAND, baseKey);
+
+    if (rows.length === 0 && latestKey && latestKey !== baseKey){
+      rows = _pickTomorrowRows(DATA_CAND, latestKey);
+      if (rows.length) reason = `最新日(${latestKey})の「候補」にフォールバック`;
+    }
+    if (rows.length === 0){
+      rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===baseKey);
+      if (rows.length) reason = `基準日(${baseKey})の全件（候補条件なし）`;
+    }
+    if (rows.length === 0 && latestKey){
+      rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===latestKey);
+      if (rows.length) reason = `最新日(${latestKey})の全件（候補条件なし）`;
+    }
+    if (rows.length === 0){
+      rows = (DATA_CAND||[]).slice();
+      reason = `全体からのサンプル`;
+    }
+
+    // 並び替え & 上限（見やすさ用に最大2000はそのまま）
+    rows = _sortTomorrow(rows);
+
+    // 4) ラベル更新（基準日・対象日・凍結状態・抽出根拠）
+    const lbl = document.getElementById("tmr-label");
+    if (lbl){
+      const baseStr = localDateStr(baseDate);
+      const tgtStr  = localDateStr(targetDate);
+      const freezeStr = inFreeze ? "ON" : "OFF";
+      lbl.textContent = `📅 ${tgtStr} 向け（基準日: ${baseStr} / 凍結: ${freezeStr} / 抽出: ${rows.length}件・${reason}）`;
+    }
+
+    // 5) 描画
+    window.DATA_TMR = rows;
+    renderTomorrow(rows);
+  }
+
+  // === Tomorrow logic END =====================================
+
+  // all
+  function renderAll(){
+    const head = document.querySelector("#all-head"), body = document.querySelector("#all-body");
+    if(!head||!body) return;
+    head.innerHTML=body.innerHTML="";
+    const rows=DATA_ALL;
+    if(!rows.length) return;
+    const cols=Object.keys(rows[0]);
+    head.innerHTML=cols.map(c=>{
+      const typ=(c.includes("フラグ")?"flag":(c.includes("日")||c.includes("更新")||c==="日時"?"date":(["現在値","出来高","売買代金(億)","時価総額億円","右肩早期スコア","推奨比率","前日終値比率","前日終値比率（％）"].includes(c)?"num":"text")));
+      return `<th class="sortable ${typ==='num'?'num':''}" data-col="${c}" data-type="${typ}">${c}<span class="arrow"></span></th>`;
+    }).join("");
+    body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${
+      cols.map(c=>{
+        let v = (c === "判定") ? formatJudgeLabel(r) : (r[c] ?? "");
+        if (c === "コード") v = codeLink(v);
+        const isNum = ['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率','前日終値比率','前日終値比率（％）'].includes(c);
+        return `<td class="${isNum?'num':''}">${v}</td>`;
+      }).join("")
+    }</tr>`).join("");
+    wireDomSort("#tbl-allcols");
+  }
+  
+  // --- ここから追加 ---
+  // タブ共通レンダラー（フィルタ/ページャ/初期化から呼ばれる）
+  function render(){
+    if (state.tab === "all") { renderAll(); return; }
+    if (state.tab === "tmr") { renderTomorrowWrapper(); return; }
+    // 既定は候補一覧
+    renderCand();
+  }
+  // --- ここまで追加 ---
+
+  // earn
+  function fmtTime(ts){
+    try{
+      const d = new Date(ts);
+      if (!isNaN(d)) {
+        const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2);
+        const hh=('0'+d.getHours()).slice(-2), mm=('0'+d.getMinutes()).slice(-2);
+        return `${y}/${m}/${da} ${hh}:${mm}`;
+      }
+      return String(ts ?? "");
+    }catch(_){ return String(ts ?? ""); }
+  }
+
+  function renderEarnings(rows){
+    
+    // ▼ 銘柄HTMLから 会社名 / 4桁コード を抜くヘルパ
+    function pickNameAndCode(rawName, rawCode){
+      const html = String(rawName ?? "");
+      // name: タグ除去 + 末尾の(dddd)を消す
+      let name = html.replace(/<[^>]*>/g,"").replace(/\s*\(\d{4}\)\s*$/,"").trim();
+      if (!name) name = String(rawName ?? "").trim();
+      // code: 優先順 1) rawCode 2) (dddd) 3) quote/dddd.T
+      let code = (rawCode ?? "").toString();
+      if (!/^\d{4}$/.test(code)){
+        const m1 = html.match(/\((\d{4})\)/);
+        if (m1) code = m1[1];
+      }
+      if (!/^\d{4}$/.test(code)){
+        const m2 = html.match(/quote\/(\d{4})\.T/i);
+        if (m2) code = m2[1];
+      }
+      return { name, code: /^\d{4}$/.test(code) ? code : "" };
+    }
+
+    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
+
+    const tbl   = document.getElementById("tbl-earn");
+    const thead = tbl?.querySelector("thead tr");
+    const tbody = document.getElementById("earn-body");
+    if(!tbl||!thead||!tbody){ return; }
+
+    // ▼ ヘッダーを「コード｜銘柄｜市場｜Yahoo」+ 既存列に差し替え
+    thead.innerHTML = `
+      <th>コード</th><th>銘柄</th><th>Yahoo</th>
+      <th>センチメント</th><th>タイトル</th><th>要約</th>
+      <th>判定</th><th class="reason-col">理由</th><th>時刻</th>
+    `;
+
+    if(!rows?.length){
+      tbody.innerHTML = `<tr><td colspan="10" class="muted">データなし</td></tr>`;
+      wireDomSort("#tbl-earn");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r=>{
+      const rawName = r.name ?? r.symbol ?? r.銘柄 ?? "";
+      const rawCode = r.code ?? r.ticker ?? r.symbol ?? r.コード ?? "";
+      const { name, code } = pickNameAndCode(rawName, rawCode);
+      const code4   = code ? String(code).padStart(4,"0") : "";
+      const market  = r.market ?? r.市場 ?? "";
+      const yahoo   = code4 ? `<a href="${yUrl(code4)}" target="_blank" rel="noopener">Yahoo</a>` : "";
+
+      const sRaw = (r.sentiment ?? "").toString().toLowerCase();
+      const cls  = sRaw.includes("pos")||sRaw.includes("良") ? "b-green"
+                 : sRaw.includes("neg")||sRaw.includes("悪") ? "b-orange" : "b-yellow";
+      const pill = `<span class="badge ${cls}">● ${r.sentiment ?? "neutral"}</span>`;
+
+      const title = r.title ? esc(r.title) : "";
+      const link  = r.link  ? String(r.link) : "";
+      const titleHtml = link ? `<a href="${link}" target="_blank" rel="noopener">${title}</a>` : (title||"-");
+
+      const summary = esc(r.summary ?? "");
+      const verdict = esc((r.verdict ?? "").toString());
+      const reasons = Array.isArray(r.reasons) ? r.reasons : [];
+      const reasonHtml = reasons.length
+        ? `<div class="reason-tags">${reasons.slice(0,12).map(x=>`<span class="reason-tag">${esc(String(x))}</span>`).join("")}</div>`
+        : `<span class="muted">-</span>`;
+
+      return `<tr>
+        <td>${code4 ? codeLink(code4) : ""}</td>
+        <td>${esc(name)}</td>
+        <td>${yahoo}</td>
+        <td>${pill}</td>
+        <td>${titleHtml}</td>
+        <td class="reason-col">${summary || "<span class='muted'>-</span>"}</td>
+        <td>${verdict || "<span class='muted'>-</span>"}</td>
+        <td class="reason-col">${reasonHtml}</td>
+        <td class="mono">${fmtTime(r.time)}</td>
+      </tr>`;
+    }).join("");
+
+    wireDomSort("#tbl-earn");
+  }
+
+  // pre-earn
+  function _fmt2num(x){
+    if (x === null || x === undefined) return "";
+    const n = parseFloat(String(x).replace(/[,％%]/g,""));
+    if (!Number.isFinite(n)) return String(x ?? "");
+    return Number.isInteger(n) ? String(n) : n.toFixed(2);
+  }
+  function _formatTwoDecimals(tableSelector){
+    const tbl = document.querySelector(tableSelector);
+    if (!tbl) return;
+    const ths = Array.from(tbl.querySelectorAll("thead th"));
+    const targets = [];
+    const norm = (s)=> String(s||"").replace(/\s+/g,"").replace(/[（）]/g, v=> (v==="（"?"(" : ")")).trim();
+    ths.forEach((th, idx)=>{
+      const t = norm(th.textContent);
+      if (t.includes("前日終値比率")) targets.push(idx);
+      if (t === "売買代金(億)" || t === "売買代金億") targets.push(idx);
+      if (t === "現在値" || t === "前日終値" || t === "前日比(円)") targets.push(idx);
+    });
+    if (!targets.length) return;
+    const rows = tbl.querySelectorAll("tbody tr");
+    rows.forEach(tr=>{
+      targets.forEach(ci=>{
+        const td = tr.children[ci]; if (!td) return;
+        const raw = td.textContent.trim(); if (!raw) return;
+        td.textContent = _fmt2num(raw); td.classList.add("num");
+      });
+    });
+  }
+
+  function renderPreEarnings(rows){
+    
+    // ▼ 銘柄HTMLから 会社名 / 4桁コード を抜くヘルパ
+    function pickNameAndCode(rawName, rawCode){
+      const html = String(rawName ?? "");
+      let name = html.replace(/<[^>]*>/g,"").replace(/\s*\(\d{4}\)\s*$/,"").trim();
+      if (!name) name = String(rawName ?? "").trim();
+      let code = (rawCode ?? "").toString();
+      if (!/^\d{4}$/.test(code)){
+        const m1 = html.match(/\((\d{4})\)/);
+        if (m1) code = m1[1];
+      }
+      if (!/^\d{4}$/.test(code)){
+        const m2 = html.match(/quote\/(\d{4})\.T/i);
+        if (m2) code = m2[1];
+      }
+      return { name, code: /^\d{4}$/.test(code) ? code : "" };
+    }
+
+    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
+
+    const tbl   = document.getElementById("tbl-preearn");
+    const thead = tbl?.querySelector("thead tr");
+    const tbody = document.getElementById("preearn-body");
+    if(!tbl||!thead||!tbody){ return; }
+
+    // ▼ ヘッダー差し替え
+    thead.innerHTML = `
+      <th>コード</th><th>銘柄</th><th>Yahoo</th>
+      <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
+      <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
+      <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
+      <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
+      <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
+      <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
+      <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
+      <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
+    `;
+
+    if(!rows?.length){
+      tbody.innerHTML = `<tr><td colspan="12" class="muted">データなし</td></tr>`;
+      wireDomSort("#tbl-preearn");
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r=>{
+      const rawName = r.name ?? r.symbol ?? r.銘柄 ?? "";
+      const rawCode = r.code ?? r.ticker ?? r.symbol ?? r.コード ?? "";
+      const { name, code } = pickNameAndCode(rawName, rawCode);
+      const code4   = code ? String(code).padStart(4,"0") : "";
+      const market  = r.market ?? r.市場 ?? "";
+      const yahoo   = code4 ? `<a href="${yUrl(code4)}" target="_blank" rel="noopener">Yahoo</a>` : "";
+
+      return `<tr>
+        <td>${code4 ? codeLink(code4) : ""}</td>
+        <td>${escapeHtml(name)}</td>
+        <td>${yahoo}</td>
+        <td class="num">${_fmt2num(r.pre_score)}</td>
+        <td class="num">${_fmt2num(r.edge_score)}</td>
+        <td class="num">${_fmt2num(r.momentum_score)}</td>
+        <td class="reason-col"><div class="reason-box">${(r["スコア理由"] ?? "根拠薄め（暫定）")}</div></td>
+        <td class="hint-col"><div class="reason-box">${(r["予測ヒント"] ?? "（準備中）")}</div></td>
+        <td class="num">${_fmt2num(r["期待株価"]) || (_fmt2num(r.現在値) || "")}</td>
+        <td>${r["修正見通し"] ?? "中立"}</td>
+        <td>${r["過熱度"] ?? "中立"}</td>
+      </tr>`;
+    }).join("");
+
+    wireDomSort("#tbl-preearn");
+    _formatTwoDecimals("#tbl-preearn");
+  }
+
+  // help & modal
+  function ensureHelpDom(){
+    let bd=document.querySelector(".help-backdrop");
+    if(!bd){ bd=document.createElement("div"); bd.className="help-backdrop"; document.body.appendChild(bd); }
+    let pp=document.querySelector(".help-pop");
+    if(!pp){ pp=document.createElement("div"); pp.className="help-pop"; pp.innerHTML='<div class="help-head"><div>ヘルプ</div><div class="help-close">×</div></div><div class="help-body"></div>'; document.body.appendChild(pp); }
+    pp.querySelector(".help-close").onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    bd.onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    return {bd,pp};
+  }
+  function openHelp(html){
+    const {bd,pp}=ensureHelpDom();
+    const body = pp.querySelector(".help-body");
+    body.innerHTML = html;
+    bd.style.display = "block";
+    pp.style.display = "block";
+    const sy = window.scrollY||0; pp.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ pp.style.left = `${Math.max(10,(document.documentElement.clientWidth - pp.offsetWidth)/2)}px`; });
+  }
+  function closeAllTips(){ const t=document.querySelectorAll('.tooltip, .popover'); t.forEach(el=>el.remove()); }
+  function ensureChartModal(){
+    let bd=document.getElementById("__chart_back__");
+    if(!bd){ bd=document.createElement("div"); bd.id="__chart_back__"; bd.className="help-backdrop"; document.body.appendChild(bd); }
+    let pp=document.querySelector("#__chart_box__");
+    if(!pp){
+      pp=document.createElement("div"); pp.id="__chart_box__"; pp.className="help-pop";
+      pp.innerHTML=`<div class="help-head"><div>グラフ</div><div class="help-close">×</div></div><div id="__chart_body__"></div>`;
+      document.body.appendChild(pp);
+    }
+    pp.querySelector(".help-close").onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    bd.onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    return bd;
+  }
+
+  // charts (simple canvas)
+  function drawBar(canvas, labels, values, title){
+    const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+    ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
+    const nums = values.map(v => (v === "" || v == null ? NaN : +v));
+    const finite = nums.filter(Number.isFinite);
+    if (!finite.length) { ctx.fillText("データなし（欠損）", pad, H/2); return; }
+    const max = Math.max(1, ...finite);
+    const bw  = (W - pad*2) / labels.length * 0.7;
+    labels.forEach((lb, i) => {
+      const v = Number.isFinite(nums[i]) ? nums[i] : 0;
+      const x = pad + (i + 0.15) * (W - pad*2) / labels.length;
+      const h = (H - pad*2) * (v / max);
+      ctx.fillStyle = "#4a90e2";
+      if (h > 0) ctx.fillRect(x, H - pad - h, bw, h);
+      ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
+      ctx.fillText(lb, x, H - pad + 14);
+      ctx.fillText(String(v), x, H - pad - h - 4);
+    });
+  }
+  function drawLine(canvas, labels, values, title){
+    const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+    ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
+    const nums = values.map(v => (v === "" || v == null ? NaN : +v));
+    const finite = nums.filter(Number.isFinite);
+    if (!finite.length) { ctx.fillText("データなし（欠損）", pad, H/2); return; }
+    const max = Math.max(1, ...finite);
+    const min = Math.min(0, ...finite);
+    const step = (W - pad*2) / Math.max(1, labels.length - 1);
+    ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 2; ctx.beginPath();
+    nums.forEach((v, i) => {
+      const val = Number.isFinite(v) ? v : 0;
+      const x = pad + i * step;
+      const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    if (labels.length === 1) { const x = pad; const val = Number.isFinite(nums[0]) ? nums[0] : 0;
+      const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
+      ctx.fillStyle = "#4a90e2"; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fill(); }
+    ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
+    labels.forEach((lb, i) => { const x = pad + i * step; ctx.fillText(lb, x - 10, H - pad + 14); });
+  }
+
+  function openStatsChart(){
+    const back = ensureChartModal(), body = $("#__chart_body__");
+    const rows = applyFilter(state.data);
+    const rvolBuckets=["<1","1-2","2-3","3-5","5+"], rvolCnt=[0,0,0,0,0];
+    const turnBuckets=["<5","5-10","10-50","50-100","100+"], turnCnt=[0,0,0,0,0];
+    rows.forEach(r=>{
+      const rvol = num(r["RVOL代金"]);
+      if(!Number.isNaN(rvol)){ if(rvol<1)rvolCnt[0]++; else if(rvol<2)rvolCnt[1]++; else if(rvol<3)rvolCnt[2]++; else if(rvol<5)rvolCnt[3]++; else rvolCnt[4]++; }
+      const turn = num(r["売買代金(億)"]);
+      if(!Number.isNaN(turn)){ if(turn<5)turnCnt[0]++; else if(turn<10)turnCnt[1]++; else if(turn<50)turnCnt[2]++; else if(turn<100)turnCnt[3]++; else turnCnt[4]++; }
+    });
+    body.innerHTML = `<h3>傾向グラフ（表示中データ）</h3><canvas id="cv1" style="width:100%;height:340px;"></canvas><canvas id="cv2" style="width:100%;height:340px;margin-top:16px;"></canvas>`;
+    const c1 = body.querySelector("#cv1"), c2 = body.querySelector("#cv2");
+    const fit = ()=>{
+      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
+      [c1,c2].forEach(cv=>{
+        cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
+        cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
+        const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
+      });
+      drawBar(c1, rvolBuckets, rvolCnt, "RVOL代金の分布");
+      drawBar(c2, turnBuckets, turnCnt, "売買代金(億)の分布");
+    };
+    if (window.__stats_fit__) window.removeEventListener("resize", window.__stats_fit__);
+    window.__stats_fit__ = fit;
+    window.addEventListener("resize", fit, { passive:true });
+    fit();
+    back.style.display="block";
+    const box = document.querySelector("#__chart_box__"); box.style.display="block";
+    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+  }
+
+  function openTrendChart(){
+    const back = ensureChartModal(), body = $("#__chart_body__");
+    let src = [];
+    try { const RAW = JSON.parse(document.getElementById("__DATA__").textContent || "{}"); if (Array.isArray(RAW.hist) && RAW.hist.length) src = RAW.hist; } catch(_) {}
+    if (!src.length) src = applyFilter(state.data);
+    const byDay = new Map();
+    src.forEach(r=>{
+      const d = String(r["シグナル更新日"]||r["日付"]||r["日時"]||"").slice(0,10);
+      if(!d) return;
+      const hit = isHitRow(r) ? 1 : 0;
+      const o = byDay.get(d) || {tot:0,hit:0};
+      o.tot++; o.hit += hit;
+      byDay.set(d,o);
+    });
+    const days = Array.from(byDay.keys()).sort();
+    const rate = days.map(d=>{ const o = byDay.get(d)||{tot:0,hit:0}; return o.tot ? Math.round(1000*o.hit/o.tot)/10 : 0; });
+    body.innerHTML = `<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" style="width:100%;height:340px;"></canvas>`;
+    const cv = body.querySelector("#cv3");
+    const fit = ()=>{
+      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
+      cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
+      cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
+      const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
+      drawLine(cv, days, rate, "当たり率（%）");
+    };
+    if (window.__trend_fit__) window.removeEventListener("resize", window.__trend_fit__);
+    window.__trend_fit__ = fit;
+    window.addEventListener("resize", fit, {passive:true});
+    fit();
+    back.style.display="block";
+    const box = document.querySelector("#__chart_box__"); box.style.display="block";
+    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+  }
+
+  // events（各種フィルタ・入力）
+  $("#perpage")?.addEventListener("change",(e)=>{ const v=parseInt(e.target.value,10); state.per=Number.isFinite(v)?v:500; state.page=1; render(); });
+  $("#prev")?.addEventListener("click",()=>{ if(state.page>1){state.page--; render();} });
+  $("#next")?.addEventListener("click",()=>{ state.page++; render(); });
+  $("#q")?.addEventListener("input",(e)=>{ state.q=e.target.value||""; state.page=1; render(); });
+
+  // 単体IDで管理しているチェック・入力
+  ["th_rate","th_turn","th_rvol","th_progress","th_score",
+   "f_shodou","f_tei","f_both","f_rightup","f_early","f_etype",
+   "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit"]
+    .forEach(id=>{
+      $("#"+id)?.addEventListener("input", ()=>{ state.page=1; render(); });
+      $("#"+id)?.addEventListener("change",()=>{ state.page=1; render(); });
+    });
+
+  // 早期種別（ブレイク/ポケット/20MAリバ/200MAリクレイム）チェックの配線（.early-filter 内）
+  $$(".early-filter .ef-chk input").forEach(el=>{
+    el.addEventListener("change", ()=>{ state.page=1; render(); });
+  });
+
+  $("#btn-stats")?.addEventListener("click",openStatsChart);
+  $("#btn-ts")?.addEventListener("click",openTrendChart);
+  $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
+
+  // 任意：ヘルプボタン（存在すれば有効）
+  $("#btn-help")?.addEventListener("click", ()=>{
+    openHelp(`
+      <div style="max-width:1000px">
+        <p><b>候補一覧のフィルタ</b></p>
+        <ul>
+          <li><b>エントリー有力のみ</b>…「推奨アクション」が<strong>エントリー有力</strong>の銘柄を抽出</li>
+          <li><b>小口提案のみ</b>…「推奨アクション」が<strong>小口提案</strong>の銘柄を抽出</li>
+          <li><b>早期種別</b>… ブレイク / ポケット / 20MAリバ / 200MAリクレイム を複数選択可</li>
+          <li><b>規定</b>… 上昇率・売買代金・RVOL の既定値を一括セット</li>
+        </ul>
+        <p>列名クリックでソート、コードの数字をクリックでコピーできます。</p>
+      </div>
+    `);
+  });
+
+  // tabs
+  function switchTab(to){
+    state.tab = to;
+    $$(".tab").forEach(el=>el.classList.add("hidden"));
+    $$("nav a").forEach(a=>a.classList.remove("active"));
+    if (to === "cand"){
+      $("#tab-candidate")?.classList.remove("hidden");
+      $("#lnk-cand")?.classList.add("active");
+      state.data = DATA_CAND.slice();
+      state.page = 1;
+      render();
+      return;
+    }
+    if (to === "tmr"){
+      $("#tab-tmr")?.classList.remove("hidden");
+      $("#lnk-tmr")?.classList.add("active");
+      renderTomorrowWrapper();
+      return;
+    }
+    if (to === "all"){
+      $("#tab-all")?.classList.remove("hidden");
+      $("#lnk-all")?.classList.add("active");
+      state.page = 1;
+      render();
+      return;
+    }
+    if (to === "log"){
+      $("#tab-log")?.classList.remove("hidden");
+      $("#lnk-log")?.classList.add("active");
+      const lb = $("#log-body");
+      if (lb && !lb.getAttribute("data-inited")){
+        lb.innerHTML = (DATA_LOG||[]).map(r=> `<tr><td>${r["日時"]||""}</td><td>${r["コード"]||""}</td><td>${r["種別"]||""}</td><td>${r["詳細"]||""}</td></tr>`).join("");
+        lb.setAttribute("data-inited","1");
+      }
+      return;
+    }
+    if (to === "earn"){
+      $("#tab-earn")?.classList.remove("hidden");
+      $("#lnk-earn")?.classList.add("active");
+      renderEarnings(DATA_EARN);
+      return;
+    }
+    if (to === "preearn"){
+      $("#tab-preearn")?.classList.remove("hidden");
+      $("#lnk-preearn")?.classList.add("active");
+      renderPreEarnings(DATA_PREEARN);
+      return;
+    }
+  }
+  (function(){
+    const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all","lnk-log":"log","lnk-earn":"earn","lnk-preearn":"preearn" };
+    Object.keys(map).forEach(id=>{
+      const a = document.getElementById(id);
+      if (!a) return;
+      a.addEventListener("click", (e)=>{ e.preventDefault(); switchTab(map[id]); });
+    });
+  })();
+
+  // initial（ここを差し替え）
+  window.addEventListener("DOMContentLoaded", () => {
+    // 1) タブ初期化（この時点でDOMが出来ているので描画される）
+    switchTab("cand");
+    forceClearThresholds();
+
+    // 2) 1行表での <br> をスペースに置換（元の処理を統合）
+    document.querySelectorAll('#tbl-candidate td br, #tbl-allcols td br')
+      .forEach(br => br.replaceWith(' '));
+  });
+
+})();
+</script>
+
+
+
+  <section id="tab-candidate" class="tab">
+    <div class="tbl-wrap">
+      <table id="tbl-candidate" class="tbl">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
+            <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th data-col="市場">市場</th>
+            <th>Yahoo</th>
+            <th>X</th>
+            <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th>財務</th>
+            <th class="sortable" data-col="overall_alpha" data-type="text">α<span class="arrow"></span></th>
+            <th class="num sortable" data-col="スコア" data-type="num">スコア<span class="arrow"></span></th>
+            <th class="num sortable" data-col="進捗率" data-type="num">進捗率<span class="arrow"></span></th>
+            <th data-col="増資リスク">増資リスク</th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
+            <th class="reason-col" data-col="増資理由">理由</th>
+            <th class="sortable" data-col="初動フラグ" data-type="text">初動<span class="arrow"></span></th>
+            <th class="sortable" data-col="底打ちフラグ" data-type="text">底打ち<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩上がりフラグ" data-type="text">右肩<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期フラグ" data-type="text">早期<span class="arrow"></span></th>
+            <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
+            <th class="sortable reason-col" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+            <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
+            <th class="sortable" data-col="シグナル更新日" data-type="date">更新<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-tmr" class="tab hidden">
+    <div class="tbl-wrap">
+      <div id="tmr-label" style="margin:8px 0 4px;font-weight:800;font-size:16px;color:#0d3b66;"></div>
+      <table id="tbl-tmr" class="tbl">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
+            <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th data-col="市場">市場</th>
+            <th>Yahoo</th>
+            <th>X</th>
+            <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th>財務</th>
+            <th data-col="増資リスク">増資リスク</th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
+            <th class="reason-col" data-col="増資理由">理由</th>
+            <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-all" class="tab hidden">
+    <div class="tbl-wrap">
+      <table id="tbl-allcols" class="tbl">
+        <thead><tr id="all-head"></tr></thead>
+        <tbody id="all-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-earn" class="tab hidden">
+    <div class="tbl-wrap">
+      <table id="tbl-earn" class="tbl">
+        <thead>
+          <tr>
+            <th>銘柄</th>
+            <th>センチメント</th>
+            <th>タイトル</th>
+            <th>要約</th>
+            <th>判定</th>
+            <th class="reason-col">理由</th>
+            <th>時刻</th>
+          </tr>
+        </thead>
+        <tbody id="earn-body"></tbody>
+      </table>
+     </div>
+   </section>
+
+  <section id="tab-preearn" class="tab hidden">
+     <div class="tbl-wrap">
+       <table id="tbl-preearn" class="tbl">
+         <thead>
+           <tr>
+             <th>銘柄</th>
+             <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
+             <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
+             <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
+             <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
+             <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
+             <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
+           </tr>
+         </thead>
+         <tbody id="preearn-body"></tbody>
+       </table>
+     </div>
+  </section>
+
+  {% if include_log %}
+  <section id="tab-log" class="tab hidden">
+    <div class="tbl-wrap">
+      <table id="tbl-log" class="tbl">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="日時" data-type="date">日時<span class="arrow"></span></th>
+            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
+            <th class="sortable" data-col="種別" data-type="text">種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="詳細" data-type="text">詳細<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+</body>
+</html>
