@@ -253,6 +253,143 @@ from datetime import datetime as _dt
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
+
+# --- PATCH: live quote (price/volume/dayHigh/dayLow/marketCap) fetch ---
+def _fetch_live_quote_map(codes4):
+    """
+    yahooquery.price から 価格/出来高/日中高値/安値/時価総額/prevClose をまとめ取得。
+    戻り値: { "1234": {"price":.., "volume":.., "dayHigh":.., "dayLow":.., "marketCap":.., "prevClose":..}, ... }
+    """
+    try:
+        if not codes4:
+            return {}
+        try:
+            from yahooquery import Ticker as _YQ
+        except Exception as _e:
+            print(f"[live][WARN] yahooquery import failed: {_e}")
+            return {}
+        syms = [f"{str(c).zfill(4)}.T" for c in codes4]
+        yq = _YQ(syms, validate=True)
+        price = yq.price  # dict or DataFrame
+        out = {}
+        def ffloat(x):
+            try: return None if x is None else float(x)
+            except Exception: return None
+        def fint(x):
+            try: return None if x is None else int(float(x))
+            except Exception: return None
+        if isinstance(price, dict):
+            it = price.items()
+            for sym, p in it:
+                if not isinstance(p, dict):
+                    continue
+                c4 = str(sym).split(".")[0]
+                out[c4] = {
+                    "price":      ffloat(p.get("regularMarketPrice")),
+                    "prevClose":  ffloat(p.get("regularMarketPreviousClose")),
+                    "volume":     fint(p.get("regularMarketVolume")),
+                    "dayHigh":    ffloat(p.get("regularMarketDayHigh")),
+                    "dayLow":     ffloat(p.get("regularMarketDayLow")),
+                    "marketCap":  ffloat(p.get("marketCap")),
+                }
+        else:
+            try:
+                for _, row in price.iterrows():
+                    sym = str(row.get("symbol") or "")
+                    c4 = sym.split(".")[0]
+                    out[c4] = {
+                        "price":      ffloat(row.get("regularMarketPrice")),
+                        "prevClose":  ffloat(row.get("regularMarketPreviousClose")),
+                        "volume":     fint(row.get("regularMarketVolume")),
+                        "dayHigh":    ffloat(row.get("regularMarketDayHigh")),
+                        "dayLow":     ffloat(row.get("regularMarketDayLow")),
+                        "marketCap":  ffloat(row.get("marketCap")),
+                    }
+            except Exception:
+                pass
+        return out
+    except Exception as _e:
+        print(f"[live][WARN] quote fetch failed: {_e}")
+        return {}
+# --- /PATCH live quote fetch ---
+
+
+# --- PATCH: RVOL denominator loader (20-day average turnover in Oku) ---
+def _load_avg_turnover_map(conn, codes4, window: int = 20):
+    if not codes4:
+        return {}
+    ph = ",".join("?"*len(codes4))
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT コード, 日付, 終値, 出来高, COALESCE(売買代金億, 0) AS 代金億
+        FROM price_history
+        WHERE コード IN ({ph})
+        ORDER BY コード, 日付
+    """, codes4)
+    avg = {}
+    buf, last_code = [], None
+    def _flush(code, buf):
+        if code is None: return
+        arr = buf[-window:] if len(buf) >= window else buf
+        avg[code] = (sum(arr)/len(arr) if arr else 0.0)
+    for code, d, close, vol, turn_oku in cur.fetchall():
+        c4 = str(code).zfill(4)
+        if last_code is None: last_code = c4
+        if c4 != last_code:
+            _flush(last_code, buf); buf, last_code = [], c4
+        if turn_oku and float(turn_oku) > 0:
+            val = float(turn_oku)
+        else:
+            try: val = (float(close) * float(vol)) / 1e8
+            except Exception: val = 0.0
+        buf.append(val)
+    _flush(last_code, buf)
+    return avg
+# --- /PATCH RVOL denominator ---
+
+
+# --- PATCH: apply live overrides (incl. RVOL turnover) ---
+def _apply_live_overrides(row: dict, q: dict, avg_turn_map: dict):
+    code4 = str(row.get("コード") or "").zfill(4)
+    px = q.get("price")
+    if isinstance(px, (int, float)):
+        try:
+            _apply_price_fields(row, live_price=px)
+        except NameError:
+            row["現在値_raw"] = float(px); row["現在値"] = f"{px:.2f}"
+            try:
+                prev = float(str(row.get("前日終値") or q.get("prevClose") or "").replace(",", ""))
+                diff = px - prev
+                ratio = (px/prev - 1.0) * 100.0
+                row["前日円差"] = f"{diff:.2f}"
+                row["前日終値比率"] = f"{ratio:.2f}"
+                row["前日終値比率_raw"] = ratio
+            except Exception:
+                pass
+    vol = q.get("volume"); turn_oku = None
+    if isinstance(vol, (int, float)) and vol >= 0:
+        row["出来高"] = f"{int(vol):,}"
+        if isinstance(px, (int, float)):
+            try:
+                turn_oku = (px * float(vol)) / 1e8
+                row["売買代金(億)"] = f"{turn_oku:.2f}"
+            except Exception:
+                pass
+    try:
+        denom = float(avg_turn_map.get(code4) or 0.0)
+        if denom > 0 and (turn_oku is not None):
+            row["RVOL代金"] = f"{(turn_oku/denom):.2f}"
+    except Exception:
+        pass
+    if isinstance(q.get("dayHigh"), (int, float)):
+        row["高値"] = f"{float(q['dayHigh']):.2f}"
+    if isinstance(q.get("dayLow"), (int, float)):
+        row["安値"] = f"{float(q['dayLow']):.2f}"
+    if isinstance(q.get("marketCap"), (int, float)) and q["marketCap"] > 0:
+        row["時価総額億円"] = f"{(float(q['marketCap'])/1e8):.2f}"
+# --- /PATCH apply live overrides ---
+
+
 def _ff__log_path_for(script_path: str) -> str:
     base = _os.path.splitext(_os.path.basename(script_path))[0]
     ts   = _dt.now().strftime("%Y%m%d_%H%M%S")
@@ -4258,7 +4395,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     live_price_map = {}
     try:
         # 休日のみ干渉する方針のため、ここでは何もしない
-        if False and _is_trading_session_now():
+        if _is_trading_session_now():
             _codes_union = set()
             try:
                 if 'df_all' in locals() and not df_all.empty:
@@ -4270,7 +4407,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                     _codes_union.update(df_cand["コード"].astype(str).str.zfill(4).unique().tolist())
             except Exception:
                 pass
-            live_price_map = _fetch_live_price_map(sorted(_codes_union))
+            live_quote_map = _fetch_live_quote_map(sorted(_codes_union))
     except Exception as _e:
         print(f"[live][WARN] bootstrap failed: {_e}")
     # === /ライブ価格 ===
@@ -4290,6 +4427,31 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     all_rows  = _records_safe(pd.DataFrame(all_rows))  if all_rows  else []
 
     # --- PATCH: 高値/安値/5日/25日 フィールド注入 ---
+
+# --- PATCH: apply live quotes (incl. RVOL) to rows during trading hours ---
+try:
+    if _is_trading_session_now() and 'live_quote_map' in locals() and live_quote_map:
+        codes4 = sorted(set([str(r.get("コード") or "").zfill(4) for r in cand_rows + all_rows if r.get("コード")]))
+        try:
+            avg_turn = _load_avg_turnover_map(conn, codes4, window=20)
+        except Exception as _e:
+            print(f"[live][WARN] avg turnover load failed: {_e}")
+            avg_turn = {}
+        for __r in cand_rows:
+            c4 = str(__r.get("コード") or "").zfill(4)
+            q = live_quote_map.get(c4) or {}
+            if q:
+                _apply_live_overrides(__r, q, avg_turn)
+        for __r in all_rows:
+            c4 = str(__r.get("コード") or "").zfill(4)
+            q = live_quote_map.get(c4) or {}
+            if q:
+                _apply_live_overrides(__r, q, avg_turn)
+except Exception as _e:
+    print(f"[live][WARN] apply-live failed: {_e}")
+# --- /PATCH live apply ---
+
+
     try:
         _apply_price_fields_from_db(conn, cand_rows)
         _apply_price_fields_from_db(conn, all_rows)
@@ -7173,14 +7335,45 @@ def main():
         # (6.5)
         _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
 
-        # (7) 数値の正規化
-        # [v12] 数値の正規化ステップはスキップ（固定スキーマ前提）
+        # ===== ここから追記：JST 19時だけ EODバッチを実行 =====
+        try:
+            try:
+                from zoneinfo import ZoneInfo
+                JST = ZoneInfo("Asia/Tokyo")
+                _now = dtm.datetime.now(JST)
+            except Exception:
+                JST = None
+                _now = dtm.datetime.now()  # フォールバック（ローカル時刻）
 
+            # 19時のみ実行（ちょうど19:00限定にしたければ minute 条件を追加）
+            if _now.hour == 19:  # and _now.minute == 0
+                print(f"[EOD@{_now}] run screener EOD batch")
 
+                # 直近2営業日のEODデータで screener の価格系を再更新
+                _timed("EOD:_update_screener_from_history",
+                       _update_screener_from_history, conn, [str(c).zfill(4) for c in codes])
 
+                # 財務・配当・自社株買い等を一括更新（yahooquery → 抽出 → UPDATE）
+                _timed("EOD:batch_update_all_financials",
+                       batch_update_all_financials, conn,
+                       200,      # chunk_size
+                       False,    # force_refresh
+                       True)     # verbose
 
+                # （任意）EOD更新の結果を軽く再導出したい場合は、以下を必要に応じてON
+                # _timed("compute_right_up_persistent", compute_right_up_persistent, conn)
+                # _timed("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                # _timed("derive_update", phase_derive_update, conn)
+                # _timed("signal_detection", phase_signal_detection, conn)
+                # _timed("update_since_dates", phase_update_since_dates, conn)
 
+            else:
+                print(f"[EOD] skip (current time = {_now})")
+        except Exception as e:
+            print("[EOD][WARN]", e)
+        # ===== 追記ここまで =====
 
+        
         # (7.1) 財務コメント追加
         phase_sync_finance_comments(conn)
 
