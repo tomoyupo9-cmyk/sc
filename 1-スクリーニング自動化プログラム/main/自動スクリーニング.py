@@ -844,13 +844,29 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   }
 
   /* テーブル共通（コンパクト化） */
+  
+  /* 市場・Yahoo・X 列だけ更にタイトに（候補テーブル） */
+  #tbl-candidate th:nth-child(3),
+  #tbl-candidate th:nth-child(4),
+  #tbl-candidate th:nth-child(5),
+  #tbl-candidate td:nth-child(3),
+  #tbl-candidate td:nth-child(4),
+  #tbl-candidate td:nth-child(5){
+    padding-left: 2px;
+    padding-right: 2px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  
   .tbl{ border-collapse:collapse; width:100%; background:#fff; }
   .tbl th,.tbl td{
     border-bottom:1px solid var(--line);
-    padding:4px 6px;
-    font-size:0.85em;
+    padding:2px 4px;
+    font-size:0.78em;
     vertical-align:top;
   }
+  .tbl tbody tr { height:22px; }
   .tbl tbody tr:nth-child(even){background:#fcfdff}
   .tbl tbody tr:hover{background:var(--rowhover)}
   .tbl th.sortable{cursor:pointer;user-select:none}
@@ -885,6 +901,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     background:#fff;
     z-index:2;
     border-bottom:2px solid #ccc;
+    font-size:0.75em;   /* ← 見出しを小さく */
+    padding:3px 4px;    /* ← 上下の余白も圧縮 */
   }
 
   /* ヘルプ（小窓＋暗幕） */
@@ -944,6 +962,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
   /* PATCH: ensure white text for bulk-copy button */
   #copy-page{ color:#fff !important; text-decoration:none; }
+  
+
 </style>
 </head>
 
@@ -1200,7 +1220,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     const src = `graph/finance_${String(code).padStart(4,"0")}.html`;
     body.innerHTML = `<iframe src="${src}" style="width:100%; height:80vh; border:0;"></iframe>`;
     back.style.display = "block";
-    const box = document.querySelector(".help-pop");
+    const box = document.getElementById("__chart_box__");
     box.style.display = "block";
     const sx = window.scrollX||0, sy = window.scrollY||0;
     box.style.top = `${sy+60}px`;
@@ -1418,7 +1438,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         <td>${r["銘柄名"] ?? ""}</td>
         <td>${r["市場"] || "-"}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
-        <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X検索</a></td>
+        <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
         <td class="num">${r["前日円差"] ?? ""}</td>
@@ -1525,7 +1545,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
         <td>${r["銘柄名"] ?? ""}</td>
         <td>${r["市場"] || "-"}</td>
         <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
-        <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X検索</a></td>
+        <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
         <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
         <td class="num">${r["売買代金(億)"]??""}</td>
@@ -1765,7 +1785,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       return { name, code: /^\d{4}$/.test(code) ? code : "" };
     }
 
-    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;"," >":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
     const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
 
     const tbl   = document.getElementById("tbl-preearn");
@@ -2242,6 +2262,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 
 </body>
 </html>"""
+
 
 
 
@@ -4428,28 +4449,28 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     # --- PATCH: 高値/安値/5日/25日 フィールド注入 ---
 
-# --- PATCH: apply live quotes (incl. RVOL) to rows during trading hours ---
-try:
-    if _is_trading_session_now() and 'live_quote_map' in locals() and live_quote_map:
-        codes4 = sorted(set([str(r.get("コード") or "").zfill(4) for r in cand_rows + all_rows if r.get("コード")]))
-        try:
-            avg_turn = _load_avg_turnover_map(conn, codes4, window=20)
-        except Exception as _e:
-            print(f"[live][WARN] avg turnover load failed: {_e}")
-            avg_turn = {}
-        for __r in cand_rows:
-            c4 = str(__r.get("コード") or "").zfill(4)
-            q = live_quote_map.get(c4) or {}
-            if q:
-                _apply_live_overrides(__r, q, avg_turn)
-        for __r in all_rows:
-            c4 = str(__r.get("コード") or "").zfill(4)
-            q = live_quote_map.get(c4) or {}
-            if q:
-                _apply_live_overrides(__r, q, avg_turn)
-except Exception as _e:
-    print(f"[live][WARN] apply-live failed: {_e}")
-# --- /PATCH live apply ---
+    # --- PATCH: apply live quotes (incl. RVOL) to rows during trading hours ---
+    try:
+        if _is_trading_session_now() and 'live_quote_map' in locals() and live_quote_map:
+            codes4 = sorted(set([str(r.get("コード") or "").zfill(4) for r in cand_rows + all_rows if r.get("コード")]))
+            try:
+                avg_turn = _load_avg_turnover_map(conn, codes4, window=20)
+            except Exception as _e:
+                print(f"[live][WARN] avg turnover load failed: {_e}")
+                avg_turn = {}
+            for __r in cand_rows:
+                c4 = str(__r.get("コード") or "").zfill(4)
+                q = live_quote_map.get(c4) or {}
+                if q:
+                    _apply_live_overrides(__r, q, avg_turn)
+            for __r in all_rows:
+                c4 = str(__r.get("コード") or "").zfill(4)
+                q = live_quote_map.get(c4) or {}
+                if q:
+                    _apply_live_overrides(__r, q, avg_turn)
+    except Exception as _e:
+        print(f"[live][WARN] apply-live failed: {_e}")
+    # --- /PATCH live apply ---
 
 
     try:
@@ -4726,7 +4747,7 @@ except Exception as _e:
     except Exception as _e:
         print(f"[EOD-overwrite][WARN] {str(_e)}")
     # === /EOD優先 ===
-# ---- data_obj 構築 ----
+    # ---- data_obj 構築 ----
     offer_codes = sorted(list(_load_offering_codes_from_db(conn, days=400)))
     # === FINAL HOLIDAY OVERRIDE: price fields (EOD two-day compare) ===
     try:
@@ -4769,7 +4790,7 @@ except Exception as _e:
         "earnings": earnings_rows,
         "preearn": preearn_rows,
         "offer_codes": offer_codes
-}
+    }
     data_json = json.dumps(data_obj, ensure_ascii=False, default=str, separators=(",", ":"))
 
     # ---------- 5) テンプレート描画 ----------
@@ -7379,7 +7400,13 @@ def main():
 
         # (8) ダッシュボード出力
         html_path = os.path.join(OUTPUT_DIR, "index.html")
-        _timed("export_html_dashboard", phase_export_html_dashboard_offline, conn, html_path)
+        try:
+            # _timedの呼び出しをtryブロックで囲む
+            _timed("export_html_dashboard", phase_export_html_dashboard_offline, conn, html_path)
+        except Exception as e:
+            # HTML生成の失敗を捕捉し、ログに出力してから処理を停止させる
+            print(f"[HTML-EXPORT][FATAL] HTML生成中に致命的なエラーが発生しました: {e}")
+            raise # 再スローしてプログラムを強制終了させ、原因を特定する
 
         # (9) メール送信（任意）
         #try:
