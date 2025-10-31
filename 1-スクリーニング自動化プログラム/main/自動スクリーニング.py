@@ -1550,38 +1550,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   #tbl-candidate col{ width:auto; }
   #tbl-candidate col.col-collapsed{ width:22px !important; }
 
-  /* ボタンは列幅に影響させない（絶対配置） */
-  #tbl-candidate thead th{ position: relative; }
-  th .fold-btn{
-    position:absolute; left:4px; top:2px;
-    width:18px; height:18px; padding:0; line-height:18px;
-    border:1px solid var(--line); border-radius:6px; background:#f3f4f6;
-    font-size:12px; cursor:pointer;
-  }
-  th .fold-btn[aria-pressed="true"]{ background:#e0e7ff; }
-
-  /* ボタンとラベルが重なる場合だけ余白を足す */
-  th .fold-label{ padding-left:22px; }
-
-  /* 見出しを畳んだときはテキスト類だけ隠す（幅は<col>が保持） */
-  th.colfold-folded .fold-label,
-  th.colfold-folded .arrow,
-  th.colfold-folded .qhelp{ display:none !important; }
-
-  /* 行側は“中身だけ”隠す（幅は<col>が保持） */
-  td.colfold-hide{
-    overflow:hidden !important;
-    padding-left:4px !important;
-    padding-right:4px !important;
-    white-space:nowrap !important;
-  }
-  td.colfold-hide, td.colfold-hide *{
-    color:transparent !important;
-    pointer-events:none;
-    user-select:none;
-  }
-
-/* 長文列（財務/理由/注記/ニュース 等）だけは広め＋折り返し許可 */
+  /* 長文列（財務/理由/注記/ニュース 等）だけは広め＋折り返し許可 */
 th[data-col="財務"], td[data-col="財務"],
 th[data-col="理由"], td[data-col="理由"],
 th[data-col="判定理由"], td[data-col="判定理由"],
@@ -1601,7 +1570,94 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
 }
 
 
+
+
+/* === injected: freeze columns === */
+/* === freeze columns (列固定) === */
+.tbl .frozen-cell{
+  position: sticky;
+  background:#fff;
+  z-index: 2;
+  will-change: left;
+}
+.tbl thead th.frozen-cell{ z-index: 3; }
+.tbl .frozen-edge::after{
+  content:"";
+  position:absolute; top:0; bottom:0; right:-1px;
+  width:0; box-shadow: 6px 0 8px -6px rgba(0,0,0,.25);
+  pointer-events:none;
+}
+.tbl-wrap{ overflow:auto; }
 </style>
+
+
+<!-- injected: freeze columns -->
+<script>
+(function(g,d){
+  function getCandTable(){ return d.getElementById('tbl-candidate'); }
+  function px(n){ return (Math.round(n)||0) + 'px'; }
+
+  function freezeColumns(table, n){
+    if(!table) return;
+    const thead = table.tHead, tbody = table.tBodies && table.tBodies[0];
+    if(!thead || !tbody) return;
+    for(const th of thead.rows[0].cells){ th.classList.remove('frozen-cell','frozen-edge'); th.style.left=''; }
+    for(const tr of tbody.rows){
+      for(const td of tr.cells){ td.classList.remove('frozen-cell','frozen-edge'); td.style.left=''; }
+    }
+    if(!n || n<=0) return;
+
+    const ths = Array.from(thead.rows[0].cells);
+    const lefts = []; let acc = 0;
+    for(let i=0;i<ths.length;i++){ const w = ths[i].getBoundingClientRect().width; lefts[i]=acc; acc+=w; }
+    const clamp = Math.min(n, ths.length);
+
+    for(let i=0;i<clamp;i++){ const th = ths[i]; th.classList.add('frozen-cell'); th.style.left = px(lefts[i]); }
+    if(clamp>0) ths[clamp-1].classList.add('frozen-edge');
+
+    for(const tr of tbody.rows){
+      for(let i=0;i<clamp;i++){ const td = tr.cells[i]; if(!td) continue; td.classList.add('frozen-cell'); td.style.left = px(lefts[i]); }
+      const edge = tr.cells[clamp-1]; if(edge) edge.classList.add('frozen-edge');
+    }
+  }
+
+  function resolveIndexFromSelect(sel, table){
+    if(!sel || !table) return 0;
+    const val = String(sel.value||'').trim();
+    const ths = Array.from(table.tHead?.rows?.[0]?.cells || []);
+    if(/^-?\d+$/.test(val)){ const num = parseInt(val,10); if(num<=0) return 0; return Math.min(num, ths.length); }
+    const byDataCol = ths.findIndex(th => (th.getAttribute('data-col')||'').trim() === val);
+    if(byDataCol >= 0) return byDataCol+1;
+    const norm = (s)=>String(s||'').replace(/\s+/g,' ').trim();
+    const byText = ths.findIndex(th => norm(th.innerText) === norm(val));
+    if(byText >= 0) return byText+1;
+    return 0;
+  }
+
+  function hookupFreezeUI(){
+    const table = getCandTable();
+    if(!table) return;
+    const sel = d.querySelector('[data-role="freeze-select"]')
+              || d.getElementById('freeze-select')
+              || d.querySelector('select[name="列固定選択"]');
+    const btn = d.querySelector('[data-role="freeze-apply"]')
+              || d.getElementById('freeze-apply')
+              || Array.from(d.querySelectorAll('button, input[type="button"]'))
+                   .find(el => /列固定/.test(el.textContent||el.value||''));
+    if(!sel || !btn) return;
+    const apply = ()=> freezeColumns(table, resolveIndexFromSelect(sel, table));
+    btn.addEventListener('click', apply);
+    g.addEventListener('resize', apply);
+    apply();
+  }
+
+  if(document.readyState === 'loading'){
+    d.addEventListener('DOMContentLoaded', hookupFreezeUI);
+  }else{
+    hookupFreezeUI();
+  }
+})(window, document);
+</script>
 </head>
 
 <body>
@@ -1690,7 +1746,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     <!-- ▼ 今のページの銘柄コード＆銘柄名を一括コピー（追加） -->
     <button class="btn copylink" id="copy-page">今のページの銘柄をコピー</button>
     <button class="btn" id="download-csv">CSVダウンロード</button>
-    <button class="btn" id="btn-fold-reset">列表示リセット</button>
     <!-- ▲ 追加 -->
   </div>
 
@@ -1715,6 +1770,7 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     "安値": "当日の安値。",
     "5日": "単純移動平均（5日）。終値ベース。",
     "25日": "単純移動平均（25日）。終値ベース。",
+      "75日": "単純移動平均（75日）。終値ベース。",
     "抵抗HH": "過去N日(設定値)の最高値。",
     "抵抗ゾーン": "タッチ回数最大の水平帯の中心値（ヒゲ/終値が帯に入った回数）。",
     "タッチ": "抵抗ゾーンへの到達回数。",
@@ -1764,7 +1820,7 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     "判定":"判定","判定理由":"判定理由",
     "推奨アクション":"推奨","推奨比率":"推奨比率%",
     "シグナル更新日":"更新",
-    "高値":"高値","安値":"安値","5日":"5日","25日":"25日"
+    "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日"
   };
 </script>
 
@@ -2322,6 +2378,7 @@ document.addEventListener('change', e=>{
         <td class="num">${r["安値"] ?? ""}</td>
         <td class="num">${r["MA5"] ?? r["5日"] ?? r["５日"] ?? ""}</td>
         <td class="num">${r["MA25"] ?? r["25日"] ?? r["２５日"] ?? ""}</td>
+        <td class="num">${r["MA75"] ?? r["75日"] ?? r["７５日"] ?? ""}</td>
         <td class="num">${r["出来高"] ?? ""}</td>
         <td class="num">${r["売買代金(億)"] ?? ""}</td>
         <td>${financeLink(r["コード"])}${financeNote(r)}</td>
@@ -3065,208 +3122,7 @@ document.addEventListener('change', e=>{
 })();
 
 
-// ===== Column Fold (via <col>) =====
-(function(){
-  const LS_BASE = "colhide_state_v1";
-  const ICON_CLOSE = "×";  // 今は開いている（押すと閉じる）
-  const ICON_OPEN  = "＋"; // 今は閉じている（押すと開く）
 
-
-  // -------------- storage --------------
-  function keyFor(tableId){ return `${LS_BASE}:${tableId||"tbl-candidate"}`; }
-  function loadFoldState(tableId){
-    try{ return new Set((JSON.parse(localStorage.getItem(keyFor(tableId))||"[]")||[]).filter(Number.isInteger)); }
-    catch(_) { return new Set(); }
-  }
-  function saveFoldState(tableId, set){
-    try{ localStorage.setItem(keyFor(tableId), JSON.stringify([...set])); }catch(_){}
-  }
-  function clearFoldState(tableId){
-    try{ localStorage.removeItem(keyFor(tableId)); }catch(_){}
-  }
-
-  // -------------- dynamic CSS for body-hiding --------------
-  // 各テーブルごとに「今たたまれている列」の nth-child ルールを1本にまとめて注入する。
-  function ensureDynStyle(tableId){
-    const id = `colfold-style-${tableId}`;
-    let el = document.getElementById(id);
-    if (!el){
-      el = document.createElement('style');
-      el.id = id;
-      document.head.appendChild(el);
-    }
-    return el;
-  }
-
-  // 折りたたみ状態（folds: Set<index>）から、tbody用の非表示CSSを生成して反映
-  function applyFoldCSS(table, folds){
-    if (!table) return;
-    const tableId = table.id || 'tbl-candidate';
-    const styleEl = ensureDynStyle(tableId);
-
-    if (!folds || !folds.size){
-      styleEl.textContent = ''; // 全解除
-      return;
-    }
-    // 例: #tbl-candidate tbody td:nth-child(3), #tbl-candidate tbody td:nth-child(7) { ... }
-    const sels = [...folds].sort((a,b)=>a-b).map(idx => `#${tableId} tbody td:nth-child(${idx+1})`);
-    styleEl.textContent = `
-      ${sels.join(', ')}{
-        color: transparent !important;
-        pointer-events: none;
-        user-select: none;
-        overflow: hidden !important;
-        white-space: nowrap !important;
-        padding-left: 4px !important;
-        padding-right: 4px !important;
-      }
-    `;
-  }
-
-
-
-  // -------------- colgroup helpers --------------
-  // thead の th 数に合わせて colgroup を先頭に用意する
-  function ensureColgroup(table){
-    if (!table) return {cols:[]};
-    let cg = table.querySelector(':scope > colgroup');
-    const ths = table.querySelectorAll(':scope > thead > tr:first-child > th');
-    const need = ths.length;
-
-    if (!cg){
-      cg = document.createElement('colgroup');
-      table.insertBefore(cg, table.firstChild); // <colgroup> は <thead> の前に
-    }
-    // 足りなければ追加・多ければ削る
-    while (cg.children.length < need){ cg.appendChild(document.createElement('col')); }
-    while (cg.children.length > need){ cg.removeChild(cg.lastElementChild); }
-
-    return {cols: Array.from(cg.children), ths: Array.from(ths)};
-  }
-
-  // -------------- core apply --------------
-  function setFold(table, colIndex, folded){
-    if(!table) return;
-
-    // 列幅は <col> で制御
-    const {cols} = ensureColgroup(table);
-    const colEl = cols[colIndex];
-    if (colEl){ colEl.classList.toggle('col-collapsed', !!folded); }
-
-    // ヘッダ側：見出しテキスト等は非表示、ボタンは残す
-    const headRowList = table.querySelectorAll(':scope > thead > tr');
-    headRowList.forEach(tr=>{
-      const th = tr.children[colIndex];
-      if (!th) return;
-      th.classList.toggle('colfold-folded', !!folded);
-      const btn = th.querySelector('.fold-btn');
-      if (btn){
-        btn.textContent = folded ? ICON_OPEN : ICON_CLOSE;
-        btn.title       = folded ? 'この列を開く' : 'この列を閉じる';
-        btn.setAttribute('aria-pressed', folded ? 'true' : 'false');
-      }
-    });
-
-    // ★ 本文側は「全TDを触らない」→ 動的スタイルで一括制御
-    // 保存済みfoldsを読み直してCSSを再生成
-    const tableId = table.id || 'tbl-candidate';
-    const folds = loadFoldState(tableId);
-    applyFoldCSS(table, folds);
-  }
-
-
-  // -------------- UI wiring --------------
-  function ensureFoldButtons(table){
-    if(!table) return {ths:[], folds:new Set()};
-    const tableId = table.id || 'tbl-candidate';
-
-    // colgroup を先に整備
-    const {ths} = ensureColgroup(table);
-    const folds = loadFoldState(tableId);
-
-    ths.forEach((th, idx)=>{
-      if (th.querySelector('.fold-btn')) return;
-
-      // ラベルを包む
-      const wrap = document.createElement('span');
-      wrap.className = 'fold-label';
-      while (th.firstChild) wrap.appendChild(th.firstChild);
-      th.appendChild(wrap);
-
-      // 左上に小ボタン（絶対配置）
-      const btn = document.createElement('button');
-      btn.type  = 'button';
-      btn.className = 'fold-btn';
-      btn.textContent = ICON_CLOSE;
-      btn.title       = 'この列を閉じる';
-      btn.setAttribute('aria-pressed', 'false');
-      th.insertBefore(btn, th.firstChild);
-
-      btn.addEventListener('click', (e)=>{
-        e.preventDefault();
-        const willFold = !th.classList.contains('colfold-folded');
-        setFold(table, idx, willFold);
-        if (willFold) folds.add(idx); else folds.delete(idx);
-        saveFoldState(tableId, folds);
-        applyFoldCSS(table, folds);   // ★ 追加：動的CSSを更新
-
-      });
-    });
-
-    // 保存状態の反映
-    ths.forEach((_, idx)=>{
-      const folded = folds.has(idx);
-      setFold(table, idx, folded);
-    });
-
-    return {ths, folds, tableId};
-  }
-
-  // -------------- public API --------------
-  window.installCandidateFolds = function(){
-    const tbl = document.getElementById('tbl-candidate');
-    if (!tbl) return;
-    ensureFoldButtons(tbl);
-  };
-  window.installFoldsFor = function(tableId){
-    const tbl = document.getElementById(tableId);
-    if (!tbl) return;
-    ensureFoldButtons(tbl);
-  };
-
-  // -------------- reset button --------------
-  window.addEventListener('DOMContentLoaded', ()=>{
-    const btn = document.getElementById('btn-fold-reset');
-    if (!btn) return;
-    btn.addEventListener('click', ()=>{
-      ['tbl-candidate','tbl-allcols','tbl-tmr','tbl-earn','tbl-preearn','tbl-log'].forEach(id=>{
-        const tbl = document.getElementById(id);
-        if (!tbl) return;
-        clearFoldState(id);
-
-        // <col> の圧縮クラスを全解除
-        const cg = tbl.querySelector(':scope > colgroup');
-        if (cg) Array.from(cg.children).forEach(c => c.classList.remove('col-collapsed'));
-
-        // ヘッダ/本文の可視状態を全開に
-        const ths = Array.from(tbl.querySelectorAll(':scope > thead th'));
-        ths.forEach(th => th.classList.remove('colfold-folded'));
-        const tds = Array.from(tbl.querySelectorAll(':scope td'));
-        tds.forEach(td => td.classList.remove('colfold-hide'));
-
-        // ボタン表示も更新
-        ths.forEach(th=>{
-          const btn = th.querySelector('.fold-btn');
-          if (btn){ btn.textContent = ICON_CLOSE; btn.title = 'この列を閉じる'; btn.setAttribute('aria-pressed','false'); }
-        });
-
-        // ★ 動的CSSも消す
-        applyFoldCSS(tbl, new Set());
-
-      });
-    });
-  });
-})();
 
 
 
@@ -3295,6 +3151,7 @@ document.addEventListener('change', e=>{
             <th class="num sortable" data-col="安値" data-type="num">安値<span class="arrow"></span></th>
             <th class="num sortable" data-col="5日" data-type="num">5日<span class="arrow"></span></th>
             <th class="num sortable" data-col="25日" data-type="num">25日<span class="arrow"></span></th>
+            <th class="num sortable" data-col="75日" data-type="num">75日<span class="arrow"></span></th>
             <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
@@ -5578,7 +5435,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
               FROM price_history
               WHERE コード = ?
               ORDER BY 日付 DESC
-              LIMIT 40
+              LIMIT 100
             """
             df = pd.read_sql_query(q, conn, params=[str(code)], parse_dates=["日付"])
             if df.empty:
@@ -5589,6 +5446,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             d["安値"] = pd.to_numeric(d["安値"], errors="coerce")
             ma5  = d["終値"].rolling(5,  min_periods=1).mean().iloc[-1]
             ma25 = d["終値"].rolling(25, min_periods=1).mean().iloc[-1]
+            ma75 = d["終値"].rolling(75, min_periods=1).mean().iloc[-1]
             last = d.iloc[-1]
             return (None if pd.isna(last["高値"]) else float(last["高値"])), \
                    (None if pd.isna(last["安値"]) else float(last["安値"])), \
@@ -5603,13 +5461,15 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         for r in rows:
             code = str(r.get("コード") or r.get("code") or "").strip()
             if not code: continue
-            hi, lo, ma5, ma25 = _hilo_ma_from_db(conn, code)
+            hi, lo, ma5, ma25, ma75 = _hilo_ma_from_db(conn, code)
             r["高値"]  = "" if hi   is None else f"{hi:,.0f}"
             r["安値"]  = "" if lo   is None else f"{lo:,.0f}"
             r["MA5"]   = "" if ma5  is None else f"{ma5:,.0f}"
             r["5日"]   = r["MA5"]
             r["MA25"]  = "" if ma25 is None else f"{ma25:,.0f}"
             r["25日"]  = r["MA25"]
+            r["MA75"]  = "" if ma75 is None else f"{ma75:,.0f}"
+            r["75日"]  = r["MA75"]
         return rows
 
     try:
