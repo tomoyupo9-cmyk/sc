@@ -1801,10 +1801,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     <!-- 抵抗フィルタ -->
     <div class="res-filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 4px">
       <span class="muted" style="font-size:12px">抵抗の表示:</span>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_HH" checked> 最高値</label>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_Zone" checked> ゾーン</label>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_Round" checked> キリ番</label>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_Line_Today" checked> 斜め</label>
       <span class="muted" style="font-size:12px">近接ハイライト±</span>
       <input id="resNearPct" type="number" min="0" step="0.1" value="0.5" style="width:60px">% 
     </div>
@@ -8451,6 +8447,8 @@ def main():
             print("[EOD][WARN]", e)
         # ===== 追記ここまで =====
 
+        # ★ 抵抗/支持を最終更新（ここで1回だけ確実に走らせる）
+        _timed("resistance_update", phase_resistance_update, conn)
         
         # (7.1) 財務コメント追加
         phase_sync_finance_comments(conn)
