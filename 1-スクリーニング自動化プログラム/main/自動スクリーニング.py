@@ -1621,12 +1621,7 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     }
   }
 
-  function resolveIndexFromSelect(sel, table){
-    if(!sel || !table) return 0;
-    const val = String(sel.value||'').trim();
-    const ths = Array.from(table.tHead?.rows?.[0]?.cells || []);
-    if(/^-?\d+$/.test(val)){ const num = parseInt(val,10); if(num<=0) return 0; return Math.min(num, ths.length); }
-    const byDataCol = ths.findIndex(th => (th.getAttribute('data-col')||'').trim() === val);
+  const byDataCol = ths.findIndex(th => (th.getAttribute('data-col')||'').trim() === val);
     if(byDataCol >= 0) return byDataCol+1;
     const norm = (s)=>String(s||'').replace(/\s+/g,' ').trim();
     const byText = ths.findIndex(th => norm(th.innerText) === norm(val));
@@ -1634,30 +1629,19 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     return 0;
   }
 
-  function hookupFreezeUI(){
-    const table = getCandTable();
-    if(!table) return;
-    const sel = d.querySelector('[data-role="freeze-select"]')
-              || d.getElementById('freeze-select')
-              || d.querySelector('select[name="列固定選択"]');
-    const btn = d.querySelector('[data-role="freeze-apply"]')
-              || d.getElementById('freeze-apply')
-              || Array.from(d.querySelectorAll('button, input[type="button"]'))
-                   .find(el => /列固定/.test(el.textContent||el.value||''));
-    if(!sel || !btn) return;
-    const apply = ()=> freezeColumns(table, resolveIndexFromSelect(sel, table));
-    btn.addEventListener('click', apply);
-    g.addEventListener('resize', apply);
-    apply();
-  }
-
-  if(document.readyState === 'loading'){
-    d.addEventListener('DOMContentLoaded', hookupFreezeUI);
-  }else{
-    hookupFreezeUI();
-  }
-})(window, document);
+  })(window, document);
 </script>
+
+
+
+
+<style>
+  /* 数値列 右寄せ */
+  th[data-col="抵抗帯中心"], th[data-col="最寄り抵抗"],
+  th[data-col="支持帯中心"], th[data-col="最寄り支持"],
+  td[data-col="抵抗帯中心"], td[data-col="最寄り抵抗"],
+  td[data-col="支持帯中心"], td[data-col="最寄り支持"] { text-align:right; }
+</style>
 
 <script id="freeze-cols">
 (function(){
@@ -1667,7 +1651,7 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   function createFreezeUI(tableId, label){
     var tbl = document.getElementById(tableId);
     if (!tbl) return null;
-    if (document.getElementById(tableId + "-freeze-ui")) return null; // already
+    if (document.getElementById(tableId + "-freeze-ui")) return null;
 
     var wrap = tbl.closest(".tbl-wrap") || tbl.parentElement;
     var ui = document.createElement("div");
@@ -1692,7 +1676,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     ui.appendChild(lab);
     ui.appendChild(sel);
 
-    // insert before table wrapper or table
     if (wrap && wrap.parentNode) {
       wrap.parentNode.insertBefore(ui, wrap);
     } else if (tbl.parentNode) {
@@ -1701,20 +1684,15 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       document.body.insertBefore(ui, document.body.firstChild);
     }
 
-    // Build options from header th[data-col]
     var ths = tbl.querySelectorAll("thead th");
-    var headerNames = [];
     ths.forEach(function(th, i){
-      var nm = (th.textContent || "").trim();
-      if (!nm) nm = th.getAttribute("data-col") || ("列" + (i+1));
-      headerNames.push(nm);
+      var nm = (th.textContent || "").trim() || th.getAttribute("data-col") || ("列" + (i+1));
       var opt = document.createElement("option");
       opt.value = String(i);
       opt.textContent = nm;
       sel.appendChild(opt);
     });
 
-    // apply stored
     try {
       var key = "freezeIdx:" + tableId;
       var saved = localStorage.getItem(key);
@@ -1747,7 +1725,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     clearFreeze(tableId);
     if (uptoIdx === null || isNaN(uptoIdx)) return;
 
-    // compute cumulative left offsets from header widths
     var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
     var lefts = [];
     var sum = 0;
@@ -1756,10 +1733,8 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
     }
 
-    // apply sticky to each column up to uptoIdx
     for (var col=0; col<=uptoIdx && col<ths.length; col++){
       var left = lefts[col] + "px";
-      // headers
       tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
         th.style.position = "sticky";
         th.style.left = left;
@@ -1767,7 +1742,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
         th.style.background = "#fff";
         th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
       });
-      // cells
       tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
         td.style.position = "sticky";
         td.style.left = left;
@@ -1779,11 +1753,34 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   }
 
   document.addEventListener("DOMContentLoaded", function(){
-    // Auto-create UIs for both tables if present
     createFreezeUI("tbl-candidate", "固定列（候補一覧）：");
     createFreezeUI("tbl-allcols", "固定列（全カラム）：");
   });
 })();
+</script>
+
+<script id="res-map">
+(function(g){
+  if (g.__RES_MAP_INSTALLED__) return; g.__RES_MAP_INSTALLED__ = true;
+  function fmt(v){
+    if (v===null || v===undefined || v==='') return '';
+    var n = Number(v); if (!isFinite(n)) return '';
+    return n.toLocaleString('ja-JP');
+  }
+  function mapRow(row){
+    try{
+      if (row.Res_Zone !== undefined)      row["抵抗帯中心"] = fmt(row.Res_Zone);
+      if (row.Res_Zone_Last !== undefined) row["抵抗最終日"] = row.Res_Zone_Last || "";
+      if (row.Res_Nearest !== undefined)   row["最寄り抵抗"] = fmt(row.Res_Nearest);
+      if (row.Sup_Zone !== undefined)      row["支持帯中心"] = fmt(row.Sup_Zone);
+      if (row.Sup_Zone_Last !== undefined) row["支持最終日"] = row.Sup_Zone_Last || "";
+      if (row.Sup_Nearest !== undefined)   row["最寄り支持"] = fmt(row.Sup_Nearest);
+    }catch(_){}
+    return row;
+  }
+  if (Array.isArray(g.DATA_CAND)) g.DATA_CAND = g.DATA_CAND.map(mapRow);
+  if (Array.isArray(g.DATA_ALL))  g.DATA_ALL  = g.DATA_ALL.map(mapRow);
+})(window);
 </script>
 
 </head>
@@ -3354,7 +3351,14 @@ document.addEventListener('change', e=>{
   <section id="tab-all" class="tab hidden">
     <div class="tbl-wrap">
       <table id="tbl-allcols" class="tbl">
-        <thead><tr id="all-head"></tr></thead>
+        <thead><tr id="all-head">
+<th data-col="抵抗帯中心" class="num">抵抗帯中心 <span class="qhelp" title="複数回タッチした抵抗帯の中心値">?</span></th>
+<th data-col="抵抗最終日">抵抗最終日 <span class="qhelp" title="最後にその帯へ到達した日付">?</span></th>
+<th data-col="最寄り抵抗" class="num">最寄り抵抗 <span class="qhelp" title="現在値から最も近い上側の抵抗">?</span></th>
+<th data-col="支持帯中心" class="num">支持帯中心 <span class="qhelp" title="複数回タッチした支持帯の中心値">?</span></th>
+<th data-col="支持最終日">支持最終日 <span class="qhelp" title="最後にその帯へ到達した日付">?</span></th>
+<th data-col="最寄り支持" class="num">最寄り支持 <span class="qhelp" title="現在値から最も近い下側の支持">?</span></th>
+</tr></thead>
         <tbody id="all-body"></tbody>
       </table>
     </div>
