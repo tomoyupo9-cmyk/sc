@@ -1658,6 +1658,134 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   }
 })(window, document);
 </script>
+
+<script id="freeze-cols">
+(function(){
+  if (window.__FREEZE_COLS_INSTALLED__) return;
+  window.__FREEZE_COLS_INSTALLED__ = true;
+
+  function createFreezeUI(tableId, label){
+    var tbl = document.getElementById(tableId);
+    if (!tbl) return null;
+    if (document.getElementById(tableId + "-freeze-ui")) return null; // already
+
+    var wrap = tbl.closest(".tbl-wrap") || tbl.parentElement;
+    var ui = document.createElement("div");
+    ui.id = tableId + "-freeze-ui";
+    ui.className = "freeze-toolbar";
+    ui.style.display = "flex";
+    ui.style.gap = "8px";
+    ui.style.alignItems = "center";
+    ui.style.margin = "6px 0 8px";
+
+    var lab = document.createElement("label");
+    lab.textContent = label || "固定列：";
+
+    var sel = document.createElement("select");
+    sel.id = tableId + "-freeze-select";
+    sel.innerHTML = '<option value="">選択してください</option>';
+    sel.style.padding = "4px 8px";
+    sel.style.border = "1px solid #ccd";
+    sel.style.borderRadius = "8px";
+    sel.style.background = "#fff";
+
+    ui.appendChild(lab);
+    ui.appendChild(sel);
+
+    // insert before table wrapper or table
+    if (wrap && wrap.parentNode) {
+      wrap.parentNode.insertBefore(ui, wrap);
+    } else if (tbl.parentNode) {
+      tbl.parentNode.insertBefore(ui, tbl);
+    } else {
+      document.body.insertBefore(ui, document.body.firstChild);
+    }
+
+    // Build options from header th[data-col]
+    var ths = tbl.querySelectorAll("thead th");
+    var headerNames = [];
+    ths.forEach(function(th, i){
+      var nm = (th.textContent || "").trim();
+      if (!nm) nm = th.getAttribute("data-col") || ("列" + (i+1));
+      headerNames.push(nm);
+      var opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = nm;
+      sel.appendChild(opt);
+    });
+
+    // apply stored
+    try {
+      var key = "freezeIdx:" + tableId;
+      var saved = localStorage.getItem(key);
+      if (saved !== null && saved !== "") sel.value = saved;
+      applyFreeze(tableId, sel.value === "" ? null : parseInt(sel.value, 10));
+      sel.addEventListener("change", function(e){
+        var v = e.target.value;
+        localStorage.setItem(key, v);
+        applyFreeze(tableId, v === "" ? null : parseInt(v, 10));
+      });
+    } catch(e){}
+    return ui;
+  }
+
+  function clearFreeze(tableId){
+    var tbl = document.getElementById(tableId);
+    if (!tbl) return;
+    tbl.querySelectorAll("th,td").forEach(function(cell){
+      cell.style.position = "";
+      cell.style.left = "";
+      cell.style.zIndex = "";
+      cell.style.boxShadow = "";
+      cell.style.background = "";
+    });
+  }
+
+  function applyFreeze(tableId, uptoIdx){
+    var tbl = document.getElementById(tableId);
+    if (!tbl) return;
+    clearFreeze(tableId);
+    if (uptoIdx === null || isNaN(uptoIdx)) return;
+
+    // compute cumulative left offsets from header widths
+    var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
+    var lefts = [];
+    var sum = 0;
+    for (var i=0;i<ths.length;i++){
+      lefts[i] = sum;
+      sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
+    }
+
+    // apply sticky to each column up to uptoIdx
+    for (var col=0; col<=uptoIdx && col<ths.length; col++){
+      var left = lefts[col] + "px";
+      // headers
+      tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
+        th.style.position = "sticky";
+        th.style.left = left;
+        th.style.zIndex = "3";
+        th.style.background = "#fff";
+        th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
+      });
+      // cells
+      tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
+        td.style.position = "sticky";
+        td.style.left = left;
+        td.style.zIndex = "2";
+        td.style.background = "#fff";
+        td.style.boxShadow = "1px 0 0 rgba(0,0,0,0.06)";
+      });
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", function(){
+    // Auto-create UIs for both tables if present
+    createFreezeUI("tbl-candidate", "固定列（候補一覧）：");
+    createFreezeUI("tbl-allcols", "固定列（全カラム）：");
+  });
+})();
+</script>
+
 </head>
 
 <body>
@@ -1747,6 +1875,8 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     <button class="btn copylink" id="copy-page">今のページの銘柄をコピー</button>
     <button class="btn" id="download-csv">CSVダウンロード</button>
     <!-- ▲ 追加 -->
+    
+
   </div>
 
 
