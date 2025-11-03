@@ -63,6 +63,74 @@ import ssl
 import subprocess
 import sys
 import time
+# ===== 日次実行ログユーティリティ（同日スキップ） =====
+def ensure_runlog_schema(conn):
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS run_log (
+      phase       TEXT NOT NULL,
+      run_date    TEXT NOT NULL,   -- 'YYYY-MM-DD' JST
+      status      TEXT,            -- 'ok' | 'error' | 'running'
+      started_at  TEXT,
+      finished_at TEXT,
+      info_json   TEXT,
+      PRIMARY KEY (phase, run_date)
+    );
+    """)
+    conn.commit()
+
+from datetime import datetime as __dt
+try:
+    from zoneinfo import ZoneInfo as __Z
+    __JST = __Z("Asia/Tokyo")
+except Exception:
+    __JST = None
+
+def _today_jst():
+    now = __dt.now(__JST) if __JST else __dt.now()
+    return now.strftime("%Y-%m-%d")
+
+def _should_skip_today(conn, phase, force=False):
+    if force: return False
+    row = conn.execute(
+        "SELECT status FROM run_log WHERE phase=? AND run_date=?",
+        (phase, _today_jst())
+    ).fetchone()
+    return bool(row and row[0] == "ok")
+
+def _mark_start(conn, phase):
+    conn.execute(
+        "INSERT INTO run_log(phase, run_date, status, started_at) VALUES(?,?, 'running', datetime('now')) "
+        "ON CONFLICT(phase, run_date) DO UPDATE SET status='running', started_at=datetime('now'), finished_at=NULL",
+        (phase, _today_jst()))
+    conn.commit()
+
+def _mark_done(conn, phase, ok=True, info_json=None):
+    conn.execute(
+        "INSERT INTO run_log(phase, run_date, status, started_at, finished_at, info_json) "
+        "VALUES(?,?,?,?, datetime('now'), ?) "
+        "ON CONFLICT(phase, run_date) DO UPDATE SET status=?, finished_at=datetime('now'), info_json=COALESCE(?, info_json)",
+        (phase, _today_jst(), 'ok' if ok else 'error', None, info_json, 'ok' if ok else 'error', info_json)
+    )
+    conn.commit()
+
+def _timed_daily_once(phase_name, fn, conn, *args, force=False, **kwargs):
+    if _should_skip_today(conn, phase_name, force=force):
+        print(f"[SKIP daily] {phase_name} (already ok for {_today_jst()})")
+        return None
+    print(f"[RUN daily]  {phase_name}")
+    _mark_start(conn, phase_name)
+    t0 = time.time()
+    try:
+        out = fn(conn, *args, **kwargs)
+        _mark_done(conn, phase_name, ok=True)
+        print(f"[OK] {phase_name} {time.time()-t0:.2f}s")
+        return out
+    except Exception as e:
+        _mark_done(conn, phase_name, ok=False, info_json=str(e))
+        print(f"[ERR] {phase_name}: {e}")
+        raise
+# ===== /日次実行ログユーティリティ =====
+
 import warnings
 import webbrowser
 import yfinance as yf
@@ -8270,6 +8338,8 @@ def _run_charts60(py_path: str):
         raise FileNotFoundError(f"charts60_make.py が見つかりません: {py}")
     # そのまま実行（DBパスはスクリプト内に埋め込み済み）
     subprocess.run(["python", str(py)], check=True)
+    
+
 
 def _timed(label, func, *args, **kwargs):
     """関数の処理時間を計測してログ出力するラッパー"""
@@ -8296,23 +8366,52 @@ def _auto_run_mode():
 
 # ===== メイン処理 =====
 def main():
+
+    # ---------------------------------------------------------------------
+    # 実行方針（同日スキップと毎回実行）
+    #   ■ 同日スキップ（日次で1回だけ実行：_timed_daily_once）
+    #     - run_fundamental_daily：基礎データ（日次で十分）
+    #     - phase_csv_import：CSVマスタ取り込み
+    #     - phase_delist_cleanup：上場廃止の整理
+    #     - phase_mark_karauri_nashi：空売り無しフラグ付け
+    #     - yahoo_bulk_refresh：EOD一括更新
+    #     - refresh_full_history_for_insufficient：履歴不足の補完
+    #     - compute_right_up_persistent：右肩継続の重計算
+    #     - compute_right_up_early_triggers：右肩早期トリガー抽出
+    #     - update_market_cap_all：時価総額更新（12:30以前）
+    #     - update_operating_income_and_ratio：営業利益等の更新
+    #     - validate_prev_business_day：営業日整合チェック
+    #     - phase_sync_finance_comments：財務コメント同期
+    #
+    #   ■ 毎回実行（_timed）
+    #     - run_karauri_script：付帯スクレイプ（DB非依存）
+    #     - fetch_all：各種ソースからの直近収集
+    #     - MIDDAY：yahoo_intraday_snapshot / snapshot_shodou_baseline
+    #               / update_shodou_multipliers / derive_update
+    #               / signal_detection / update_since_dates
+    #     - relax_rejudge_signals：シグナル再判定（緩和）
+    #     - resistance_update：抵抗/支持をHTML直前で確定
+    #     - charts60_make：チャート再生成
+    #     - export_html_dashboard：HTML出力
+    #     - open_html_locally：ローカル表示
+    # ---------------------------------------------------------------------
     t0 = time.time()
     print("=== 開始 ===")
 
     # (0) 付帯処理：空売り機関リストの更新
     try:
         #ここだけDB絡まないから別プロセスの非同期実行。他のスクリプトはダッシュボードに影響するのでやめておく。
+        # 付帯スクレイプ（DB非依存）【毎回】
         _timed("run_karauri_script", run_karauri_script)
     except Exception as e:
         print("[karauri][WARN]", e)
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # ダッシュボード生成前などに
-    run_fundamental_daily()
     
     # ▼ ここを追加：起動時にまず fetch_all を実行（DBに収集・保存させる）
     try:
+                # 最新データの収集・保存【毎回】
         _timed("fetch_all", _run_fetch_all,
                # fetch_path=None → 自動解決。固定したければ絶対パスを渡す
                FETCH_PATH,
@@ -8326,6 +8425,9 @@ def main():
 
     # (1) DB open & スキーマ保証
     conn = open_conn(DB_PATH)
+    ensure_runlog_schema(conn)
+            # 基礎データ（日次更新）【同日スキップ】
+    _timed_daily_once("run_fundamental_daily", run_fundamental_daily, conn)
     # [v12] removed: lib.parse import quote as _q
 
 
@@ -8337,18 +8439,21 @@ def main():
     # (3) CSV取り込み（コード・銘柄名・市場・登録日のみ）
     if USE_CSV:
         try:
-            _timed("phase_csv_import", phase_csv_import, conn, overwrite_registered_date=False)
+                    # CSVマスタ取り込み【同日スキップ】
+            _timed_daily_once("phase_csv_import", phase_csv_import, conn, overwrite_registered_date=False)
         except Exception as e:
             print("[csv-import][WARN]", e)
 
     # (4) 上場廃止/空売り無しの反映
     try:
-       _timed("phase_delist_cleanup", phase_delist_cleanup, conn, also_clean_notes=True)
+               # 上場廃止や不要レコードの整理【同日スキップ】
+        _timed_daily_once("phase_delist_cleanup", phase_delist_cleanup, conn, also_clean_notes=True)
     except Exception as e:
         print("[delist][WARN]", e)
 
     try:
-        _timed("phase_mark_karauri_nashi", phase_mark_karauri_nashi, conn)
+                # 空売り無しフラグ付与【同日スキップ】
+        _timed_daily_once("phase_mark_karauri_nashi", phase_mark_karauri_nashi, conn)
     except Exception as e:
         print("[karauri-flag][WARN]", e)
 
@@ -8365,49 +8470,72 @@ def main():
     try:
         if RUN == "MIDDAY":
             # ===== MIDDAYモード =====
+            # 場中スナップショット【毎回（MIDDAY）】
             _timed("yahoo_intraday_snapshot", phase_yahoo_intraday_snapshot, conn)
+                    # 初動用ベースライン確定【毎回】
             _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
+                    # 初動倍率の更新【毎回】
             _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
-            _timed("compute_right_up_persistent", compute_right_up_persistent, conn)
-            _timed("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                    # 右肩継続（重い）【同日スキップ】
+            _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
+                    # 右肩早期トリガー抽出【同日スキップ】
+            _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                    # 派生指標の再計算【毎回】
             _timed("derive_update", phase_derive_update, conn)
+                    # 売買シグナル判定【毎回】
             _timed("signal_detection", phase_signal_detection, conn)
+                    # 起点日・最終更新日メンテ【毎回】
             _timed("update_since_dates", phase_update_since_dates, conn)
 
         else:
             # ===== EODモード =====
-            _timed("yahoo_bulk_refresh", phase_yahoo_bulk_refresh, conn, codes, batch_size=200)
-            _timed("refresh_full_history_for_insufficient", refresh_full_history_for_insufficient,conn, codes, batch_size=200)
-            _timed("compute_right_up_persistent", compute_right_up_persistent, conn)
-            _timed("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+            # EOD一括更新【同日スキップ】
+            _timed_daily_once("yahoo_bulk_refresh", phase_yahoo_bulk_refresh, conn, codes, batch_size=200)
+                    # 履歴不足の補完【同日スキップ】
+            _timed_daily_once("refresh_full_history_for_insufficient", refresh_full_history_for_insufficient,conn, codes, batch_size=200)
+                    # 右肩継続（重い）【同日スキップ】
+            _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
+                    # 右肩早期トリガー抽出【同日スキップ】
+            _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
 
             # 現在時刻が12:30以前なら「重い処理」も実行する
             now = dtm.datetime.now().time()
             if now < dtm.time(12,30):
-                _timed("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
+                        # 時価総額の更新【同日スキップ（～12:30）】
+                _timed_daily_once("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
                 try:
-                    _timed("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
+                            # 営業利益・利益率の更新【同日スキップ】
+                    _timed_daily_once("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
                 except Exception as e:
                     print("[operating-income][WARN]", e)
             else:
                 print("[SKIP] 営業利益・時価総額の更新（12:30以降のためスキップ）")
 
-            _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
-            _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
-            _timed("derive_update", phase_derive_update, conn)
-            _timed("signal_detection", phase_signal_detection, conn)
-            _timed("update_since_dates", phase_update_since_dates, conn)
+                    # 初動用ベースライン確定【毎回】
+                _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
+                    # 初動倍率の更新【毎回】
+                _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
+                    # 派生指標の再計算【毎回】
+                _timed("derive_update", phase_derive_update, conn)
+                    # 売買シグナル判定【毎回】
+                _timed("signal_detection", phase_signal_detection, conn)
+                    # 起点日・最終更新日メンテ【毎回】
+                _timed("update_since_dates", phase_update_since_dates, conn)
 
             try:
-                _timed("validate_prev_business_day", phase_validate_prev_business_day, conn)
+                        # 前営業日整合チェック【同日スキップ】
+                _timed_daily_once("validate_prev_business_day", phase_validate_prev_business_day, conn)
             except Exception as e:
                 print("[validate-prev][WARN]", e)
                 
         
         # 最後に build_earnings_tables(conn) を呼んで HTML にタブを追加
+                
+                # (6.5)
+                # シグナル緩和・再判定【毎回】
+                _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
+        # 19時にだけEODバッチ（必要なら中身もdaily化可能）
 
-        # (6.5)
-        _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
 
         # ===== ここから追記：JST 19時だけ EODバッチを実行 =====
         try:
@@ -8425,37 +8553,45 @@ def main():
 
                 # 直近2営業日のEODデータで screener の価格系を再更新
                 _timed("EOD:_update_screener_from_history",
-                       _update_screener_from_history, conn, [str(c).zfill(4) for c in codes])
+                _update_screener_from_history, conn, [str(c).zfill(4) for c in codes])
 
                 # 財務・配当・自社株買い等を一括更新（yahooquery → 抽出 → UPDATE）
                 _timed("EOD:batch_update_all_financials",
-                       batch_update_all_financials, conn,
-                       200,      # chunk_size
-                       False,    # force_refresh
-                       True)     # verbose
+                batch_update_all_financials, conn,
+                200,      # chunk_size
+                False,    # force_refresh
+                True)     # verbose
 
                 # （任意）EOD更新の結果を軽く再導出したい場合は、以下を必要に応じてON
-                # _timed("compute_right_up_persistent", compute_right_up_persistent, conn)
-                # _timed("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
-                # _timed("derive_update", phase_derive_update, conn)
-                # _timed("signal_detection", phase_signal_detection, conn)
-                # _timed("update_since_dates", phase_update_since_dates, conn)
+                #         # 右肩継続（重い）【同日スキップ】
+                _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
+                #         # 右肩早期トリガー抽出【同日スキップ】
+                _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                #         # 派生指標の再計算【毎回】
+                _timed("derive_update", phase_derive_update, conn)
+                #         # 売買シグナル判定【毎回】
+                _timed("signal_detection", phase_signal_detection, conn)
+                #         # 起点日・最終更新日メンテ【毎回】
+                _timed("update_since_dates", phase_update_since_dates, conn)
 
             else:
                 print(f"[EOD] skip (current time = {_now})")
         except Exception as e:
             print("[EOD][WARN]", e)
         # ===== 追記ここまで =====
-
-        # ★ 抵抗/支持を最終更新（ここで1回だけ確実に走らせる）
-        _timed("resistance_update", phase_resistance_update, conn)
+            
+            # ★ 抵抗/支持を最終更新（ここで1回だけ確実に走らせる）
+            # 抵抗/支持の最終更新（HTML直前）【毎回】
+            _timed("resistance_update", phase_resistance_update, conn)
         
         # (7.1) 財務コメント追加
         phase_sync_finance_comments(conn)
         
         # (7.2) チャート生成
+        # チャート再生成【毎回】
+
         try:
-          _run_charts60(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\charts60_make.py")
+            _run_charts60(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\charts60_make.py")
         except Exception as e:
           print(f"[charts60][WARN] {e}")  # エラーでも本体処理は続行したい場合
 
@@ -8463,23 +8599,33 @@ def main():
         html_path = os.path.join(OUTPUT_DIR, "index.html")
         try:
             # _timedの呼び出しをtryブロックで囲む
+            # ダッシュボードHTML出力【毎回】
             _timed("export_html_dashboard", phase_export_html_dashboard_offline, conn, html_path)
         except Exception as e:
             # HTML生成の失敗を捕捉し、ログに出力してから処理を停止させる
             print(f"[HTML-EXPORT][FATAL] HTML生成中に致命的なエラーが発生しました: {e}")
             raise # 再スローしてプログラムを強制終了させ、原因を特定する
 
+        
         # (9) メール送信（任意）
-        #try:
-        #    _timed("send_index_html_via_gmail", send_index_html_via_gmail, html_path)
+        # try:
+        #     _timed("send_index_html_via_gmail", send_index_html_via_gmail, html_path)
+
         # クールダウンなしで強制オープン
-        ok = open_html_locally(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\index.html", cool_min=0, force=True)
+        ok = False  # ← 先に初期化しておく（例外時でも参照できるように）
+        try:
+            ok = open_html_locally(
+                r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\index.html",
+                cool_min=0,
+                force=True
+            )
+        except Exception as e:
+            print("[open-html][WARN]", e)
+
         print("opened:", ok)
-        #
-        #except Exception as e:
-        #    print("[gmail][WARN]", e)
-        #    
-        #
+
+        # except Exception as e:
+        #     print("[gmail][WARN]", e)
 
     finally:
         conn.close()
@@ -8487,7 +8633,6 @@ def main():
     print("=== 終了 ===")
 
 # ===== エントリーポイント =====
-
 
 def eod_refresh_recent_3days(conn, batch_size: int = 60):
     """直近3営業日のみ price_history を補強（yfinance）。
