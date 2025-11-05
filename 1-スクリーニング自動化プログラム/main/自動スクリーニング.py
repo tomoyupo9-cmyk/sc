@@ -36,6 +36,115 @@ import numpy as np
 import os
 import pandas as pd
 
+import re
+import sqlite3
+from typing import Optional
+
+import sqlite3
+
+_DB_SINGLETON = None
+
+def _get_db_conn() -> sqlite3.Connection:
+    """必要になった時だけ開いて使い回す（WAL等のPRAGMA付き）"""
+    global _DB_SINGLETON
+    if _DB_SINGLETON is None:
+        conn = sqlite3.connect(DB_PATH, timeout=60.0, isolation_level=None)
+        cur = conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA busy_timeout=60000;")
+        conn.commit()
+        _DB_SINGLETON = conn
+    return _DB_SINGLETON
+
+
+# === Canonicalize code for DB keys (再発防止の要) ===
+_TOPIX_ALIASES = {'^TOPIX', 'TOPIX', '998405.T', '^TOPX'}
+
+def canonical_code_for_db(code: str) -> str:
+    s = (code or "").strip()
+    u = s.upper()
+    if u in {a.upper() for a in _TOPIX_ALIASES}:
+        return '^TOPX'
+    return s
+
+def resolve_yahoo_symbol(code: str,
+                         conn: Optional[sqlite3.Connection] = None,
+                         try_online: bool = False) -> str:
+    """
+    screenerの 'コード' を Yahoo Finance 問い合わせ用シンボルに解決する。
+
+    優先順位:
+      1) DB上書きテーブル yahoo_symbol_override に一致があればそれを最優先で採用
+      2) 規則で解決
+         - '^'で始まる指数 or 既に'.T'付き   → そのまま
+         - 4桁の純数字（例: 7203）          → 'XXXX.T'
+         - 3桁数字+英字/4桁英数字ミックス   → 候補 ['CODE.T','CODE'] を順に採用
+           （try_online=Trueならyfinanceで実在チェック、Falseなら'.T'優先）
+         - それ以外                           → そのまま
+
+    注意:
+      - price_history へ保存する「コード」は問い合わせシンボルではなく
+        *元の code（screenerのコード文字列）* を使ってください（JOINのキー保持）。
+    """
+    s = (code or "").strip()
+    if not s:
+        return s
+    S = s.upper()  # 判定用（戻り値は元の表記を優先）
+
+    # 1) 明示オーバーライド（最優先）
+    if conn is not None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS yahoo_symbol_override (
+              コード TEXT PRIMARY KEY,
+              問い合わせシンボル TEXT NOT NULL
+            )
+        """)
+        row = conn.execute(
+            "SELECT 問い合わせシンボル FROM yahoo_symbol_override WHERE コード=?",
+            (s,)
+        ).fetchone()
+        if row:
+            return row[0]
+            
+    # === 追加ここから：TOPIXの素朴な別名吸収（DBに無いときの保険） ===
+    alias = {'^TOPIX': '^TOPX', 'TOPIX': '^TOPX', '998405.T': '^TOPX'}
+    if S in alias:
+        return alias[S]
+    # === 追加ここまで ===
+
+    # 2) 規則解決
+    # 2-1) 指数 or 既に .T 付き
+    if S.startswith("^") or S.endswith(".T"):
+        return s  # 元の表記で返す（大文字化しない）
+
+    # 2-2) 4桁の純数字 → .T
+    if len(S) == 4 and S.isdigit():
+        return s + ".T"
+
+    # 2-3) 3桁数字+英字 or 4桁英数字ミックス
+    pat_3d1a    = re.compile(r"^\d{3}[A-Z]$")   # 例: 130A
+    pat_4_alnum = re.compile(r"^[A-Z0-9]{4}$")  # 例: 1A3B, A130, 13AB など
+
+    if pat_3d1a.match(S) or (len(S) == 4 and pat_4_alnum.match(S) and not S.isdigit()):
+        if try_online:
+            # .T → 生 の順で“取れた方”を採用
+            try:
+                import yfinance as yf  # 局所import
+                for cand in (s + ".T", s):
+                    df = yf.download(cand, period="5d", interval="1d", progress=False)
+                    if not df.empty:
+                        return cand
+            except Exception:
+                pass  # 失敗時はオフラインフォールバック
+        # オフライン or チェック失敗 → .T を優先
+        return s + ".T"
+
+    # 2-4) それ以外 → そのまま
+    return s
+
+
+
 def _ensure_latest_prices_code_col(conn):
     try:
         cur = conn.cursor()
@@ -133,13 +242,14 @@ def _timed_daily_once(phase_name, fn, conn, *args, force=False, **kwargs):
 
 import warnings
 import webbrowser
-import yfinance as yf
+
 import zipfile
 from yahooquery import Ticker as YQ
 # === V5_ResSup: 抵抗/支持 計算＋HTML出力（静的UI・自然統合） ===============
 import sqlite3 as _v5_sqlite3, math as _v5_math
 from pathlib import Path as _v5_Path
 from html import escape as _v5_escape
+
 _V5_N_DAYS = 90
 _V5_TOUCH_PCT = 0.005
 _V5_TOUCH_MIN = 3
@@ -148,58 +258,113 @@ _V5_SWING_LOOKBACK = 60
 _V5_HISTORY_TABLE = "price_history"
 _V5_LATEST_TABLE  = "latest_prices"
 _V5_COLS = {
- "Res_HH":"REAL","Res_Zone":"REAL","Res_Zone_Touches":"INTEGER","Res_Zone_Last":"TEXT",
- "Res_Round":"REAL","Res_Round_Step":"INTEGER","Res_Round_Near":"INTEGER",
- "Res_Line_Today":"REAL","Res_Line_R2":"REAL","Res_Nearest":"REAL",
- "Sup_LL":"REAL","Sup_Zone":"REAL","Sup_Zone_Touches":"INTEGER","Sup_Zone_Last":"TEXT",
- "Sup_Round":"REAL","Sup_Round_Step":"INTEGER","Sup_Round_Near":"INTEGER",
- "Sup_Line_Today":"REAL","Sup_Line_R2":"REAL","Sup_Nearest":"REAL",
+    "Res_HH":"REAL","Res_Zone":"REAL","Res_Zone_Touches":"INTEGER","Res_Zone_Last":"TEXT",
+    "Res_Round":"REAL","Res_Round_Step":"INTEGER","Res_Round_Near":"INTEGER",
+    "Res_Line_Today":"REAL","Res_Line_R2":"REAL","Res_Nearest":"REAL",
+    "Sup_LL":"REAL","Sup_Zone":"REAL","Sup_Zone_Touches":"INTEGER","Sup_Zone_Last":"TEXT",
+    "Sup_Round":"REAL","Sup_Round_Step":"INTEGER","Sup_Round_Near":"INTEGER",
+    "Sup_Line_Today":"REAL","Sup_Line_R2":"REAL","Sup_Nearest":"REAL",
 }
-def _v5_q(conn, sql, params=()): return list(conn.execute(sql, params))
+
+def _v5_q(conn, sql, params=()):
+    return list(conn.execute(sql, params))
+
 def _v5_ensure_cols(conn, latest):
     cur = conn.cursor()
     existing = {r[1] for r in cur.execute(f"PRAGMA table_info({latest})")}
-    for k,decl in _V5_COLS.items():
-        if k not in existing: cur.execute(f"ALTER TABLE {latest} ADD COLUMN {k} {decl}")
+    for k, decl in _V5_COLS.items():
+        if k not in existing:
+            cur.execute(f"ALTER TABLE {latest} ADD COLUMN {k} {decl}")
     conn.commit()
+
 def _v5_unify_code(conn, latest):
     cols = [r[1] for r in _v5_q(conn, f"PRAGMA table_info({latest})")]
-    if "コード" in cols: return "コード"
+    if "コード" in cols:
+        return "コード"
     if "code" in cols:
         cur = conn.cursor()
-        try: cur.execute(f"ALTER TABLE {latest} ADD COLUMN コード TEXT")
-        except Exception: pass
-        cur.execute(f"UPDATE {latest} SET コード = CAST(code AS TEXT) WHERE コード IS NULL"); conn.commit(); return "コード"
+        try:
+            cur.execute(f"ALTER TABLE {latest} ADD COLUMN コード TEXT")
+        except Exception:
+            pass
+        cur.execute(f"UPDATE {latest} SET コード = CAST(code AS TEXT) WHERE コード IS NULL")
+        conn.commit()
+        return "コード"
     return cols[0] if cols else "コード"
+
+# --- 安全変換ユーティリティ（None/空/NaN→default） ---
+def _v5_num(x, default=None):
+    try:
+        if x is None:
+            return default
+        v = float(x)
+        if v != v:  # NaN
+            return default
+        return v
+    except Exception:
+        return default
+
 def _v5_round_levels(p: float):
-    out=[]; 
+    pval = _v5_num(p, None)
+    if pval is None:
+        return [(0, None, None)]
+    out = []
     for step in _V5_ROUND_STEPS:
-        if step<=0: continue
-        nearest=round(p/step)*step; out.append((step,float(nearest),abs(float(nearest)-p)))
-    out.sort(key=lambda x:(-x[0],x[2])); return out
+        if step <= 0:
+            continue
+        nearest = round(pval / step) * step
+        diff = abs(float(nearest) - pval)
+        out.append((step, float(nearest), diff))
+    out.sort(key=lambda x: (-x[0], x[2]))
+    return out
+
 def _v5_hist_zone(values, band_ratio, touch_min):
-    vals=[float(v) for v in values if v is not None and _v5_math.isfinite(float(v))]
-    if not vals: return None
-    vals.sort(); best_center=None; best_cnt=0
-    for i,v in enumerate(vals):
-        hi=v*(1+band_ratio); j=i
-        while j+1<len(vals) and vals[j+1]<=hi: j+=1
-        cnt=j-i+1
-        if cnt>best_cnt: best_cnt=cnt; best_center=sum(vals[i:j+1])/cnt
-    return (best_center,best_cnt) if best_cnt>=touch_min else None
+    vals = []
+    for v in values:
+        vv = _v5_num(v, None)
+        if vv is not None:
+            vals.append(vv)
+    if not vals:
+        return None
+    vals.sort()
+    best_center = None
+    best_cnt = 0
+    for i, v in enumerate(vals):
+        hi = v * (1 + band_ratio)
+        j = i
+        while j + 1 < len(vals) and vals[j + 1] <= hi:
+            j += 1
+        cnt = j - i + 1
+        if cnt > best_cnt:
+            best_cnt = cnt
+            best_center = sum(vals[i:j+1]) / cnt
+    return (best_center, best_cnt) if best_cnt >= touch_min else None
+
 def _v5_linreg_today(xs, ys):
-    n=len(xs)
-    if n<5: return (None,None)
-    mx=sum(xs)/n; my=sum(ys)/n
-    sxx=sum((x-mx)**2 for x in xs)
-    if sxx==0: return (None,None)
-    sxy=sum((x-mx)*(y-my) for x,y in zip(xs,ys))
-    a=sxy/sxx; b=my-a*mx
-    yhat=[a*x+b for x in xs]
-    sst=sum((y-my)**2 for y in ys); ssr=sum((yh-my)**2 for yh in yhat)
-    r2=(ssr/sst) if sst else None
-    y_today=a*(xs[-1]+1)+b
-    return (float(y_today),(float(r2) if r2 is not None else None))
+    xs2, ys2 = [], []
+    for x, y in zip(xs, ys):
+        yy = _v5_num(y, None)
+        if yy is not None:
+            xs2.append(float(x))
+            ys2.append(yy)
+    n = len(xs2)
+    if n < 5:
+        return (None, None)
+    mx = sum(xs2) / n
+    my = sum(ys2) / n
+    sxx = sum((x - mx) ** 2 for x in xs2)
+    if sxx == 0:
+        return (None, None)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs2, ys2))
+    a = sxy / sxx
+    b = my - a * mx
+    yhat = [a * x + b for x in xs2]
+    sst = sum((y - my) ** 2 for y in ys2)
+    ssr = sum((yh - my) ** 2 for yh in yhat)
+    r2 = (ssr / sst) if sst else None
+    y_today = a * (xs2[-1] + 1) + b
+    return (float(y_today), (float(r2) if r2 is not None else None))
+
 def _v5_fetch_ohlcv(conn, code):
     return _v5_q(conn, f"""
         SELECT 日付, 始値, 高値, 安値, 終値
@@ -207,54 +372,116 @@ def _v5_fetch_ohlcv(conn, code):
         WHERE コード = ?
         ORDER BY 日付 ASC
     """, (str(code),))
+
 def _v5_calc(rows):
-    keys=list(_V5_COLS.keys())
-    if not rows: return {k:None for k in keys}
-    rows=rows[-_V5_N_DAYS:]
-    dates=[r[0] for r in rows]; highs=[float(r[2]) for r in rows]; lows=[float(r[3]) for r in rows]
-    close_today=float(rows[-1][4])
-    res_hh=max(highs) if highs else None; sup_ll=min(lows) if lows else None
-    zr=_v5_hist_zone(highs,_V5_TOUCH_PCT,_V5_TOUCH_MIN); zs=_v5_hist_zone(lows,_V5_TOUCH_PCT,_V5_TOUCH_MIN)
-    res_zone,res_touch=(zr[0],zr[1]) if zr else (None,None); sup_zone,sup_touch=(zs[0],zs[1]) if zs else (None,None)
-    res_last=None; sup_last=None
+    keys = list(_V5_COLS.keys())
+    if not rows:
+        return {k: None for k in keys}
+
+    rows = rows[-_V5_N_DAYS:]
+    dates = [r[0] for r in rows]
+    highs = [_v5_num(r[2], None) for r in rows]
+    lows  = [_v5_num(r[3], None) for r in rows]
+    close_today = _v5_num(rows[-1][4], None)
+
+    res_hh = max([v for v in highs if v is not None], default=None)
+    sup_ll = min([v for v in lows  if v is not None], default=None)
+
+    zr = _v5_hist_zone(highs, _V5_TOUCH_PCT, _V5_TOUCH_MIN)
+    zs = _v5_hist_zone(lows,  _V5_TOUCH_PCT, _V5_TOUCH_MIN)
+    res_zone, res_touch = (zr[0], zr[1]) if zr else (None, None)
+    sup_zone, sup_touch = (zs[0], zs[1]) if zs else (None, None)
+
+    res_last = None
+    sup_last = None
     if res_zone is not None:
-        for i in range(len(rows)-1,-1,-1):
-            if abs(highs[i]-res_zone)<=res_zone*_V5_TOUCH_PCT: res_last=dates[i]; break
+        for i in range(len(rows) - 1, -1, -1):
+            hi = highs[i]
+            if hi is None:
+                continue
+            if abs(hi - res_zone) <= res_zone * _V5_TOUCH_PCT:
+                res_last = dates[i]
+                break
     if sup_zone is not None:
-        for i in range(len(rows)-1,-1,-1):
-            if abs(lows[i]-sup_zone)<=sup_zone*_V5_TOUCH_PCT: sup_last=dates[i]; break
-    step,nearest,_=_v5_round_levels(close_today)[0]
-    res_round_step=sup_round_step=step; res_round=sup_round=nearest
-    near_flag=1 if abs(close_today-res_round)<=close_today*_V5_TOUCH_PCT else 0
-    sw=rows[-_V5_SWING_LOOKBACK:]; xs=list(range(len(sw)))
-    rh=[float(r[2]) for r in sw]; rl=[float(r[3]) for r in sw]
-    res_line_today,res_r2=_v5_linreg_today(xs,rh); sup_line_today,sup_r2=_v5_linreg_today(xs,rl)
-    up=[v for v in [res_hh,res_zone,res_round,res_line_today] if v is not None and v>=close_today]
-    dn=[v for v in [sup_ll,sup_zone,sup_round,sup_line_today] if v is not None and v<=close_today]
-    res_near=min(up) if up else None; sup_near=max(dn) if dn else None
+        for i in range(len(rows) - 1, -1, -1):
+            lo = lows[i]
+            if lo is None:
+                continue
+            if abs(lo - sup_zone) <= sup_zone * _V5_TOUCH_PCT:
+                sup_last = dates[i]
+                break
+
+    rl = _v5_round_levels(close_today)
+    step, nearest, _ = rl[0] if rl and rl[0][1] is not None else (None, None, None)
+    res_round_step = sup_round_step = step
+    res_round = sup_round = nearest
+
+    if close_today is None or nearest is None:
+        near_flag = None
+    else:
+        near_flag = 1 if abs(close_today - nearest) <= close_today * _V5_TOUCH_PCT else 0
+
+    sw = rows[-_V5_SWING_LOOKBACK:]
+    xs = list(range(len(sw)))
+    rh = [_v5_num(r[2], None) for r in sw]
+    rl_ = [_v5_num(r[3], None) for r in sw]
+    res_line_today, res_r2 = _v5_linreg_today(xs, rh)
+    sup_line_today, sup_r2 = _v5_linreg_today(xs, rl_)
+
+    if close_today is None:
+        res_near = None
+        sup_near = None
+    else:
+        up = [v for v in (res_hh, res_zone, res_round, res_line_today) if v is not None and v >= close_today]
+        dn = [v for v in (sup_ll, sup_zone, sup_round, sup_line_today) if v is not None and v <= close_today]
+        res_near = min(up) if up else None
+        sup_near = max(dn) if dn else None
+
     return {
-        "Res_HH":res_hh,"Res_Zone":res_zone,"Res_Zone_Touches":res_touch,"Res_Zone_Last":res_last,
-        "Res_Round":res_round,"Res_Round_Step":res_round_step,"Res_Round_Near":near_flag,
-        "Res_Line_Today":res_line_today,"Res_Line_R2":res_r2,"Res_Nearest":res_near,
-        "Sup_LL":sup_ll,"Sup_Zone":sup_zone,"Sup_Zone_Touches":sup_touch,"Sup_Zone_Last":sup_last,
-        "Sup_Round":res_round,"Sup_Round_Step":res_round_step,"Sup_Round_Near":near_flag,
-        "Sup_Line_Today":sup_line_today,"Sup_Line_R2":sup_r2,"Sup_Nearest":sup_near,
+        "Res_HH": res_hh,
+        "Res_Zone": res_zone,
+        "Res_Zone_Touches": res_touch,
+        "Res_Zone_Last": res_last,
+        "Res_Round": res_round,
+        "Res_Round_Step": res_round_step,
+        "Res_Round_Near": near_flag,
+        "Res_Line_Today": res_line_today,
+        "Res_Line_R2": res_r2,
+        "Res_Nearest": res_near,
+        "Sup_LL": sup_ll,
+        "Sup_Zone": sup_zone,
+        "Sup_Zone_Touches": sup_touch,
+        "Sup_Zone_Last": sup_last,
+        "Sup_Round": res_round,            # 丸めは上下同一ベース
+        "Sup_Round_Step": res_round_step,
+        "Sup_Round_Near": near_flag,
+        "Sup_Line_Today": sup_line_today,
+        "Sup_Line_R2": sup_r2,
+        "Sup_Nearest": sup_near,
     }
+
 def _v5_update_latest(conn, latest):
-    _v5_ensure_cols(conn, latest); code_col=_v5_unify_code(conn, latest)
-    codes=[r[0] for r in _v5_q(conn, f"SELECT {code_col} FROM {latest}")]
-    if not codes: return 0
-    set_clause=",".join([f"{k}=?" for k in _V5_COLS.keys()])
-    sql=f"UPDATE {latest} SET {set_clause} WHERE {code_col}=?"
-    cur=conn.cursor(); n=0
+    _v5_ensure_cols(conn, latest)
+    code_col = _v5_unify_code(conn, latest)
+    codes = [r[0] for r in _v5_q(conn, f"SELECT {code_col} FROM {latest}")]
+    if not codes:
+        return 0
+    set_clause = ",".join([f"{k}=?" for k in _V5_COLS.keys()])
+    sql = f"UPDATE {latest} SET {set_clause} WHERE {code_col}=?"
+    cur = conn.cursor()
+    n = 0
     for code in codes:
-        vals=_v5_calc(_v5_fetch_ohlcv(conn, code)); params=[vals[k] for k in _V5_COLS.keys()]+[code]
-        cur.execute(sql, params); n+=1
-    conn.commit(); return n
+        vals = _v5_calc(_v5_fetch_ohlcv(conn, code))
+        params = [vals[k] for k in _V5_COLS.keys()] + [code]
+        cur.execute(sql, params)
+        n += 1
+    conn.commit()
+    return n
 
 # [REMOVED by integrator: legacy V5 HTML block]
 # [REMOVED by integrator: legacy V5 HTML block]
 # === /V5_ResSup =============================================================
+
 
 
 # === 価格計算の安全ガード（内蔵版） ===
@@ -322,6 +549,10 @@ def _get_last_two_closes(conn, code: str):
         df = _pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
         if df.empty:
             print(f"[price-guard][DEBUG] price_history empty for code={code_raw} (db-path={DB_PATH})")
+
+
+
+
             return None, None, None, None
 
         # 安全な数値化
@@ -395,19 +626,21 @@ def _run_eod_overwrite_pipeline(
     sync_latest_prices=None,    # Optional[callable(conn)]
     conn=None,
 ):
+    """単一ライターに作業を順番投入（history → screener → latest）。
+    conn は使用せず、writer 側が保持する接続で実行する。
     """
-    「history更新 → screener上書き → latest_prices同期」の順序を厳守して実行する。
-    休日/非営業時もこの順でEOD上書きを最後に通せば「前日＝現在」問題を抑止できる。
-    """
-    if conn is None:
-        raise ValueError("_run_eod_overwrite_pipeline: conn を渡してください")
-    history_refresher(conn)
-    screener_from_history(conn)
+    if history_refresher is None or screener_from_history is None:
+        raise ValueError("_run_eod_overwrite_pipeline: 関数を渡してください")
+    # enqueue in order
+    enqueue_call(history_refresher.__name__)
+    enqueue_call(screener_from_history.__name__)
     if sync_latest_prices is not None:
-        sync_latest_prices(conn)
+        enqueue_call(sync_latest_prices.__name__)
+    # wait until finished
+    wait_writes()
 # === /価格計算の安全ガード ===
 # === ライブ価格取得（場中のみ自動） ===
-def _fetch_live_price_map(codes):
+def _fetch_live_price_map(conn,codes):
     """
     yahooquery で regularMarketPrice をまとめ取得して {コード4桁: 価格(float)} を返す。
     失敗時は空 dict。
@@ -420,7 +653,7 @@ def _fetch_live_price_map(codes):
         except Exception as _e:
             print(f"[live][WARN] yahooquery import failed: {_e}")
             return {}
-        syms = [f"{str(c).zfill(4)}.T" for c in codes]
+        syms = [resolve_yahoo_symbol(str(c), conn) for c in codes]
         yq = _YQ(syms, validate=True)
         price = yq.price  # dict or dataframe-like
         out = {}
@@ -462,7 +695,7 @@ _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 # --- PATCH: live quote (price/volume/dayHigh/dayLow/marketCap) fetch ---
-def _fetch_live_quote_map(codes4):
+def _fetch_live_quote_map(conn,codes4):
     """
     yahooquery.price から 価格/出来高/日中高値/安値/時価総額/prevClose をまとめ取得。
     戻り値: { "1234": {"price":.., "volume":.., "dayHigh":.., "dayLow":.., "marketCap":.., "prevClose":..}, ... }
@@ -475,7 +708,8 @@ def _fetch_live_quote_map(codes4):
         except Exception as _e:
             print(f"[live][WARN] yahooquery import failed: {_e}")
             return {}
-        syms = [f"{str(c).zfill(4)}.T" for c in codes4]
+        #syms = [f"{str(c).zfill(4)}.T" for c in codes4]
+        syms = [resolve_yahoo_symbol(str(c), conn) for c in codes4]
         yq = _YQ(syms, validate=True)
         price = yq.price  # dict or DataFrame
         out = {}
@@ -556,12 +790,12 @@ def _load_avg_turnover_map(conn, codes4, window: int = 20):
 
 
 # --- PATCH: apply live overrides (incl. RVOL turnover) ---
-def _apply_live_overrides(row: dict, q: dict, avg_turn_map: dict):
+def _apply_live_overrides(conn,row: dict, q: dict, avg_turn_map: dict):
     code4 = str(row.get("コード") or "").zfill(4)
     px = q.get("price")
     if isinstance(px, (int, float)):
         try:
-            _apply_price_fields(row, live_price=px)
+            _apply_price_fields(conn, row, code=str(row.get("コード") or ""), live_price=px)
         except NameError:
             row["現在値_raw"] = float(px); row["現在値"] = f"{px:.2f}"
             try:
@@ -904,10 +1138,17 @@ def _calculate_atr_ewm(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 def _apply_shortterm_metrics(conn: sqlite3.Connection):
     """
-    スキーマ/テーブルは既に拡張済みで存在する前提:
-      - latest_prices(コード, 日付, 終値|現在値, ..., ATR_14, Rate_Since_Signal_High, Days_Since_Signal_High)
-      - price_history(コード, 日付, 始値, 高値, 安値, 終値, 出来高)
+    latest_prices … (コード, 日付, 終値|現在値, ..., ATR_14, Rate_Since_Signal_High, Days_Since_Signal_High)
+    price_history … (コード, 日付, 始値, 高値, 安値, 終値, 出来高)
+
+    ・signal_date/シグナル更新日 が無い銘柄（指数など）でも安全に更新
+      - ATR_14 は履歴があれば通常計算
+      - Rate_Since_Signal_High / Days_Since_Signal_High は
+        シグナル日が無い場合、直近60日（営業日相当）で代替計算
     """
+    import pandas as pd
+    import numpy as _np
+
     cur = conn.cursor()
     try:
         hist_tbl = "price_history"
@@ -917,8 +1158,10 @@ def _apply_shortterm_metrics(conn: sqlite3.Connection):
         col_names = [d[0] for d in cur.description]
 
         def idx(name, default=-1):
-            try: return col_names.index(name)
-            except ValueError: return default
+            try:
+                return col_names.index(name)
+            except ValueError:
+                return default
 
         i_code = idx("コード")
         i_date = idx("日付")
@@ -934,37 +1177,142 @@ def _apply_shortterm_metrics(conn: sqlite3.Connection):
             ldate = r[i_date]
             close_v = r[i_close]
 
-            # ATR(14)
-            q_hist = f"SELECT 日付, 高値, 安値, 終値 FROM {hist_tbl} WHERE コード = ? ORDER BY 日付"
+            # ===== 履歴取得 =====
+            q_hist = f"""
+                SELECT 日付, 高値, 安値, 終値
+                FROM {hist_tbl}
+                WHERE コード = ?
+                ORDER BY 日付
+            """
             hdf = pd.read_sql_query(q_hist, conn, params=[code], parse_dates=["日付"])
-            hdf = hdf.set_index("日付").sort_index()
-            atr14 = float(_calculate_atr_ewm(hdf, 14).iloc[-1])
 
-            # シグナル後モメンタム
-            sig_val = r[i_sig]
-            signal_date = pd.to_datetime(str(sig_val), errors="coerce")
+            # ===== ATR(14) =====
+            if hdf.empty:
+                atr14 = None
+            else:
+                hdf = hdf.set_index("日付").sort_index()
+                # 数値化
+                for c in ("高値", "安値", "終値"):
+                    if c in hdf:
+                        hdf[c] = pd.to_numeric(hdf[c], errors="coerce")
 
-            q2 = f"SELECT 日付, 高値, 終値 FROM {hist_tbl} WHERE コード = ? AND 日付 >= ? ORDER BY 日付"
-            h2 = pd.read_sql_query(q2, conn, params=[code, str(signal_date.date())], parse_dates=["日付"])
-            max_high = float(pd.to_numeric(h2["高値"], errors="coerce").max())
-            idx_max = h2.loc[pd.to_numeric(h2["高値"], errors="coerce").idxmax(), "日付"]
+                # 既存の _calculate_atr_ewm があれば利用、無ければフォールバック
+                atr14 = None
+                try:
+                    atr_series = _calculate_atr_ewm(hdf, 14)  # 既存関数想定
+                    if len(atr_series):
+                        atr14 = float(atr_series.iloc[-1])
+                except Exception:
+                    pass
 
-            cur_close = float(close_v) if close_v is not None else float(pd.to_numeric(h2["終値"].iloc[-1], errors="coerce"))
-            rate_since = (cur_close / max_high - 1.0) * 100.0
-            base_date = pd.to_datetime(ldate)
-            days_since = int((base_date - idx_max).days)
+                if atr14 is None:
+                    # フォールバックATR（TRのEWMA）
+                    try:
+                        hi = hdf["高値"]
+                        lo = hdf["安値"]
+                        cl = hdf["終値"]
+                        prev_cl = cl.shift(1)
+                        tr = _np.nanmax(
+                            _np.vstack([
+                                (hi - lo).to_numpy(_np.float64),
+                                (hi - prev_cl).abs().to_numpy(_np.float64),
+                                (lo - prev_cl).abs().to_numpy(_np.float64),
+                            ]),
+                            axis=0
+                        )
+                        tr = pd.Series(tr, index=hdf.index)
+                        atr_series = tr.ewm(span=14, adjust=False, min_periods=1).mean()
+                        atr14 = float(atr_series.iloc[-1]) if len(atr_series) else None
+                    except Exception:
+                        atr14 = None
+
+            # ===== シグナル後モメンタム =====
+            # signal_date（またはシグナル更新日）
+            sig_val = r[i_sig] if i_sig != -1 else None
+            signal_date = pd.to_datetime(str(sig_val), errors="coerce") if sig_val is not None else pd.NaT
+
+            # どこから比較するか：シグナル日が無ければ直近60日
+            if pd.isna(signal_date):
+                q2 = f"""
+                    SELECT 日付, 高値, 終値
+                    FROM {hist_tbl}
+                    WHERE コード = ?
+                      AND 日付 >= date((SELECT MAX(日付) FROM {hist_tbl} WHERE コード = ?), '-60 days')
+                    ORDER BY 日付
+                """
+                h2 = pd.read_sql_query(q2, conn, params=[code, code], parse_dates=["日付"])
+            else:
+                q2 = f"""
+                    SELECT 日付, 高値, 終値
+                    FROM {hist_tbl}
+                    WHERE コード = ?
+                      AND 日付 >= ?
+                    ORDER BY 日付
+                """
+                h2 = pd.read_sql_query(q2, conn, params=[code, str(pd.to_datetime(signal_date).date())], parse_dates=["日付"])
+
+            # max_high / idx_max（高値の最大とその日付）
+            if h2.empty:
+                max_high = _np.nan
+                idx_max_dt = pd.to_datetime(ldate, errors="coerce")
+            else:
+                hi_num = pd.to_numeric(h2["高値"], errors="coerce")
+                if hi_num.dropna().empty:
+                    max_high = _np.nan
+                    idx_max_dt = pd.to_datetime(ldate, errors="coerce")
+                else:
+                    max_high = float(hi_num.max())
+                    # idxmax は Series のindex（行ラベル）。locで日付取得
+                    idx_max_row = hi_num.idxmax()
+                    idx_max_dt = pd.to_datetime(h2.loc[idx_max_row, "日付"], errors="coerce")
+
+            # 現在値の決定：latestの値が無ければ、比較区間 or 全履歴の最終終値を使用
+            if close_v is not None:
+                try:
+                    cur_close = float(close_v)
+                except Exception:
+                    cur_close = _np.nan
+            else:
+                if not h2.empty and pd.to_numeric(h2["終値"], errors="coerce").dropna().size > 0:
+                    cur_close = float(pd.to_numeric(h2["終値"], errors="coerce").dropna().iloc[-1])
+                elif not hdf.empty and pd.to_numeric(hdf["終値"], errors="coerce").dropna().size > 0:
+                    cur_close = float(pd.to_numeric(hdf["終値"], errors="coerce").dropna().iloc[-1])
+                else:
+                    cur_close = _np.nan
+
+            # 騰落率・経過日数（NaNはNoneへ）
+            if not _np.isfinite(cur_close) or not _np.isfinite(max_high) or max_high == 0.0:
+                rate_since = None
+            else:
+                rate_since = (cur_close / max_high - 1.0) * 100.0
+
+            base_date = pd.to_datetime(ldate, errors="coerce")
+            if pd.isna(base_date) or pd.isna(idx_max_dt):
+                days_since = None
+            else:
+                try:
+                    days_since = int((base_date - idx_max_dt).days)
+                except Exception:
+                    days_since = None
 
             updates.append((atr14, rate_since, days_since, r[0]))
 
+        # 一括更新
         cur.executemany(
-            "UPDATE latest_prices SET ATR_14 = ?, Rate_Since_Signal_High = ?, Days_Since_Signal_High = ? WHERE rowid = ?",
+            "UPDATE latest_prices "
+            "SET ATR_14 = ?, Rate_Since_Signal_High = ?, Days_Since_Signal_High = ? "
+            "WHERE rowid = ?",
             updates
         )
         conn.commit()
         print(f"[derive-update] ATR_14/Rate/Days updated: {len(updates)} rows")
+
     finally:
-        try: cur.close()
-        except Exception: pass
+        try:
+            cur.close()
+        except Exception:
+            pass
+
 
 # ==== 最新行同期（price_history -> latest_prices） ====
 def phase_sync_latest_prices(conn: sqlite3.Connection):
@@ -1397,7 +1745,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>スクリーニング ダッシュボード</title>
 <style>
-  :root{
+  :root{ --sticky-left-w: 0px; 
     --ink:#1f2937; --muted:#6b7280; --bg:#f9fafb; --line:#e5e7eb;
     --blue:#0d3b66; --green:#15803d; --orange:#b45309; --yellow:#a16207;
     --hit:#ffe6ef; --rowhover:#f6faff;
@@ -1450,7 +1798,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     background:#fff;
     /* 列幅を固定 → 省略記号や data-col ごとの幅が効く */
     table-layout:fixed;
-  }
+  
+    padding-right: var(--sticky-left-w);}
 
 
   .tbl th,.tbl td{
@@ -1656,7 +2005,48 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   pointer-events:none;
 }
 .tbl-wrap{ overflow:auto; }
+
+  /* === scroll-pad (extend horizontal scroll so fixed columns can be aligned beside any column) === */
+  :root{ --sticky-left-w: 0px; 
+    --railW: 520px;       /* right edge of fixed (sticky-left) columns; updated by JS */
+    --padFactor: 1.05;    /* 1.0 = exact, >1 gives a little extra room */
+    --padGutter: 16px;
+  }
+  .scroll-pad{
+    min-width: calc(var(--railW) * var(--padFactor) + var(--padGutter));
+    width:     calc(var(--railW) * var(--padFactor) + var(--padGutter));
+    border: none !important;
+    background: transparent !important;
+    pointer-events: none;
+    padding: 0 !important;
+  }
 </style>
+<script>
+(function(){
+  function measureStickyWidth(){
+    var tbl = document.getElementById('tbl-candidate');
+    if(!tbl) return;
+    var hdr = tbl.querySelector('thead tr');
+    if(!hdr) return;
+    var cells = hdr.querySelectorAll('.sticky, [data-sticky="1"], [data-sticky="true"], .sticky-0, .sticky-1, .sticky-2, .sticky-3');
+    var w = 0;
+    if(cells.length){
+      cells.forEach(function(td){ try{ w += td.getBoundingClientRect().width; }catch(e){} });
+    } else {
+      var ths = hdr.querySelectorAll('th');
+      ths.forEach(function(th){
+        var left = parseFloat(getComputedStyle(th).left || '0');
+        if(left > 0){ w = Math.max(w, left + th.getBoundingClientRect().width); }
+      });
+    }
+    document.documentElement.style.setProperty('--sticky-left-w', (Math.round(w) || 0) + 'px');
+  }
+  window.addEventListener('load', measureStickyWidth);
+  window.addEventListener('resize', measureStickyWidth);
+  document.addEventListener('readystatechange', function(){ if(document.readyState === 'complete'){ measureStickyWidth(); }});
+})();
+</script>
+
 
 
 <!-- injected: freeze columns -->
@@ -1851,6 +2241,87 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
 })(window);
 </script>
 
+
+<script>
+// === scroll-pad injector: allows scrolling further right so any column can align next to the fixed columns ===
+(function(g,d){
+  function measureRailRight(table){
+    // Find the rightmost edge of sticky-left header cells (fixed columns)
+    try{
+      var ths = Array.prototype.slice.call(table.querySelectorAll('thead th'));
+      var edge = 0;
+      ths.forEach(function(th){
+        var cs = g.getComputedStyle(th);
+        // Heuristic: header cells that are sticky and have a non-auto left are part of the fixed rail
+        if (cs.position === 'sticky' && cs.left !== 'auto'){
+          var right = th.offsetLeft + th.offsetWidth;
+          if (right > edge) edge = right;
+        }
+      });
+      // Fallback: if nothing detected, try to find the last header that visually sits at the left (code/name rails)
+      if (edge === 0 && ths.length){
+        // assume first 2~5 columns may be fixed; take the max right among them
+        var limit = Math.min(5, ths.length);
+        for (var i=0;i<limit;i++){
+          var th = ths[i];
+          var right = th.offsetLeft + th.offsetWidth;
+          if (right > edge) edge = right;
+        }
+      }
+      return edge;
+    }catch(e){ return 0; }
+  }
+
+  function ensurePadColumn(table){
+    try{
+      var theadTr = table.querySelector('thead tr');
+      var hasPad  = !!table.querySelector('thead th[data-col="__PAD__"]');
+      if (!hasPad && theadTr){
+        var th = d.createElement('th');
+        th.className = 'scroll-pad';
+        th.setAttribute('data-col','__PAD__');
+        theadTr.appendChild(th);
+      }
+      var rows = table.querySelectorAll('tbody tr');
+      for (var i=0;i<rows.length;i++){
+        var tr = rows[i];
+        if (!tr.querySelector('td[data-col="__PAD__"]')){
+          var td = d.createElement('td');
+          td.className = 'scroll-pad';
+          td.setAttribute('data-col','__PAD__');
+          tr.appendChild(td);
+        }
+      }
+    }catch(e){}
+  }
+
+  function update(){
+    var table = d.getElementById('tbl-candidate');
+    if (!table) return;
+    ensurePadColumn(table);
+    var w = measureRailRight(table);
+    if (w && w>0){
+      d.documentElement.style.setProperty('--railW', w + 'px');
+    }
+  }
+
+  d.addEventListener('DOMContentLoaded', function(){
+    try{
+      update();
+      // Recompute on resize (header width/left may change)
+      g.addEventListener('resize', update);
+      // If tabs or column-freeze settings toggle later, try to observe mutations on the thead
+      try{
+        var table = d.getElementById('tbl-candidate');
+        if (table && g.MutationObserver){
+          var obs = new MutationObserver(function(){ update(); });
+          obs.observe(table.querySelector('thead'), {childList:true, attributes:true, subtree:true});
+        }
+      }catch(_){}
+    }catch(e){ console.warn('[scroll-pad]', e); }
+  });
+})(window, document);
+</script>
 </head>
 
 <body>
@@ -3715,71 +4186,110 @@ def prev_business_day_jp(d: dtm.date, extra_closed: set = None) -> dtm.date:
 
 # ===== DB =====
 def open_conn(db_path: str):
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA cache_size=-200000;")
+    import sqlite3
+    conn = sqlite3.connect(
+        db_path,
+        timeout=60.0,
+        isolation_level=None,         # autocommit
+        check_same_thread=False,
+        detect_types=sqlite3.PARSE_DECLTYPES
+    )
+    cur = conn.cursor()
+    try:
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA busy_timeout=60000;")   # 60s
+        cur.execute("PRAGMA temp_store=MEMORY;")
+        cur.execute("PRAGMA mmap_size=134217728;")  # 128MB
+        cur.execute("PRAGMA cache_size=-200000;")   # ~200MB
+        cur.execute("PRAGMA foreign_keys=ON;")
+    finally:
+        try: cur.close()
+        except Exception: pass
     return conn
-
 def add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, decl: str):
     """Schema fixed: no-op."""
     return
 
-def phase_csv_import(conn, csv_path=None, overwrite_registered_date=False):
 
+import re
+import pandas as pd
+import os
+import sqlite3
+
+# 4桁純数字 or 3桁数字+英字 or 4桁英数字 を受け入れ、
+# それ以外（指数 ^N225 / 998405.T 等）はそのまま大文字化だけして返す
+_CODE_4DIGIT   = re.compile(r"^\d{4}$")
+_CODE_3D1A     = re.compile(r"^\d{3}[A-Za-z]$")
+_CODE_4ALNUM   = re.compile(r"^[A-Za-z0-9]{4}$")
+
+def _normalize_code_for_insert(s: str) -> str | None:
+    if s is None:
+        return None
+    t = str(s).strip()
+    if not t:
+        return None
+    T = t.upper()
+    # 国内コード系はそのまま（表記統一のみ）
+    if _CODE_4DIGIT.fullmatch(T) or _CODE_3D1A.fullmatch(T) or _CODE_4ALNUM.fullmatch(T):
+        return T
+    # それ以外（指数/ETFの ^ や .T 付きなど）も“そのまま採用”
+    return T
+
+def phase_csv_import(conn, csv_path=None, overwrite_registered_date=None, **_ignored):
     """
-    CSV から「コード・銘柄名・市場・登録日」のみを取り込む固定スキーマ実装。
-    - スキーマ操作（PRAGMA/ALTER/CREATE）は一切行わない
-    - overwrite_registered_date=False の場合、既存登録日が空/NULLのときのみ上書き
+    CSVの「コード, 銘柄名, 市場」だけ取り込み。
+    登録日は INSERT 時のみ（JSTの今日）セット。UPDATEでは変更しない。
+    値の正規化はしない（CSVの表記を優先）。
     """
+    import os, pandas as pd
+    from datetime import datetime, timezone, timedelta
+
     path = csv_path or CSV_INPUT_PATH
     if not os.path.isfile(path):
         print("CSVがないのでスキップ:", path)
         return
 
-    df = pd.read_csv(path, encoding="utf8", sep=",", engine="python").astype(str)
-    needed = ["コード", "銘柄名", "市場", "登録日"]
+    JST = timezone(timedelta(hours=9))
+    today_str = datetime.now(JST).strftime("%Y-%m-%d")
+
+    # ← ここが重要：区切り/エンコーディング自動吸収
+    df = pd.read_csv(path, sep=None, engine="python", dtype=str, encoding="utf-8-sig")
+
+    needed = ["コード", "銘柄名", "市場"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError(f"[csv-import] CSVに必須列がありません: {missing}")
 
     df = df[needed].copy()
-    df["コード"] = df["コード"].astype(str).str.strip().str.zfill(4)
-    df["銘柄名"] = df["銘柄名"].astype(str).str.strip()
-    df["市場"]   = df["市場"].astype(str).str.strip()
-    df["登録日"] = df["登録日"].where(df["登録日"].notna() & (df["登録日"].str.strip() != ""), None)
+    for c in needed:
+        df[c] = df[c].astype(str).map(lambda x: x.strip() if x is not None else x)
 
-    cur = conn.cursor()
-    if overwrite_registered_date:
-        sql = """
-        INSERT INTO screener(コード, 銘柄名, 市場, 登録日)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(コード) DO UPDATE SET
-          銘柄名 = excluded.銘柄名,
-          市場   = excluded.市場,
-          登録日 = excluded.登録日
-        """
-    else:
-        sql = """
-        INSERT INTO screener(コード, 銘柄名, 市場, 登録日)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(コード) DO UPDATE SET
-          銘柄名 = excluded.銘柄名,
-          市場   = excluded.市場,
-          登録日 = CASE
-                     WHEN screener.登録日 IS NULL OR screener.登録日 = '' THEN excluded.登録日
-                     ELSE screener.登録日
-                   END
-        """
+    df["登録日"] = today_str  # INSERT時だけ使われる
+
+    sql = """
+    INSERT INTO screener(コード, 銘柄名, 市場, 登録日)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(コード) DO UPDATE SET
+      銘柄名 = excluded.銘柄名,
+      市場   = excluded.市場
+      -- 登録日は更新しない（INSERT時のみ設定）
+    """
     rows = list(df.itertuples(index=False, name=None))
+    cur = conn.cursor()
     cur.executemany(sql, rows)
     conn.commit()
     cur.close()
 
-    print(f"[csv-import] 取り込み完了: {len(rows)}件（コード/銘柄名/市場/登録日のみ反映, overwrite_registered_date={overwrite_registered_date})")
+    print(f"[csv-import] 取り込み完了: {len(rows)}件（登録日はINSERT時のみ {today_str}）")
+
+
 def phase_delist_cleanup(conn: sqlite3.Connection,
                          master_csv_path: str = MASTER_CODES_PATH,
                          also_clean_notes: bool = False) -> None:
     """
     マスタCSV(列名: コード)に存在しない銘柄コードを screener から削除する。
+    ただし screener_protect に登録されたコードは CSV に無くても削除対象外。
     also_clean_notes=True の場合は finance_notes も同様に削除する。
     """
 
@@ -3787,45 +4297,85 @@ def phase_delist_cleanup(conn: sqlite3.Connection,
         print("上場廃止の基準CSVが見つからないためスキップ:", master_csv_path)
         return
 
-    def _norm(code) -> str | None:
-        try:
-            return f"{int(str(code).strip()):04d}"
-        except Exception:
-            return None
+    import re
+    _re_num4      = re.compile(r"^\s*(\d{4})\s*$")            # 4桁数字（例: 7203）
+    _re_num3alpha = re.compile(r"^\s*(\d{3})([A-Za-z])\s*$")  # 3桁+英字（例: 330A）
 
-    # マスタ側の有効コード集合（4桁ゼロ埋めで正規化）
+    def _norm_domestic(code: object) -> str | None:
+        """
+        国内コードの正規化：
+        - 4桁数字       -> 'dddd'
+        - 3桁+英字      -> 'dddX'（英字は大文字化）
+        - それ以外      -> None（国内コード比較の対象外）
+        """
+        if code is None:
+            return None
+        s = str(code).strip()
+        m = _re_num4.match(s)
+        if m:
+            return m.group(1)
+        m = _re_num3alpha.match(s)
+        if m:
+            return f"{m.group(1)}{m.group(2).upper()}"
+        return None
+
+    # マスタ側の有効コード集合（国内コードのみ対象）
     master = pd.read_csv(master_csv_path, encoding="utf8", sep=",", engine="python")
-    valid = {c for c in ( _norm(x) for x in master["コード"] ) if c is not None}
+    if "コード" not in master.columns:
+        print("CSVに列 'コード' が見つからないためスキップ:", master_csv_path)
+        return
+    valid = {c for c in (_norm_domestic(x) for x in master["コード"]) if c is not None}
     if not valid:
         print("マスタ側の有効コードが0件のためスキップ:", master_csv_path)
         return
 
     cur = conn.cursor()
 
-    # DB内コードを取得して正規化
+    # 保護テーブル（大文字化で比較を統一）
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screener_protect'")
+    has_protect = cur.fetchone() is not None
+    protect_set: set[str] = set()
+    if has_protect:
+        cur.execute("SELECT コード FROM screener_protect")
+        protect_set = {str(row[0]).strip().upper() for row in cur.fetchall()}
+
+    # DB内コードを走査。protectは無条件除外。
     cur.execute("SELECT コード FROM screener")
     rows = cur.fetchall()
     targets = []
+    skipped_by_protect = 0
     for (db_code,) in rows:
-        n = _norm(db_code)
-        if n is None or n not in valid:
-            targets.append((db_code,))
+        raw = str(db_code).strip()
+        raw_u = raw.upper()
+        if raw_u in protect_set:
+            skipped_by_protect += 1
+            continue
+
+        nd = _norm_domestic(raw_u)
+        if nd is None:
+            # 国内コード形式でないもの（例: ^N225, 998405.T）は
+            # マスタCSVの対象外なので削除判定しない
+            continue
+        if nd not in valid:
+            targets.append((raw,))  # 保存時は原文でOK
 
     if not targets:
-        print("上場廃止による削除対象はありません。")
+        msg = "上場廃止による削除対象はありません。"
+        if skipped_by_protect:
+            msg += f"（保護:{skipped_by_protect} 件）"
+        print(msg)
         cur.close()
         return
 
-    # 削除（まずは screener）
-    print(f"上場廃止による削除: {len(targets)} 件")
+    print(f"上場廃止による削除: {len(targets)} 件" + (f"（保護:{skipped_by_protect} 件）" if skipped_by_protect else ""))
     cur.executemany("DELETE FROM screener WHERE コード = ?", targets)
 
-    # オプション: finance_notes も掃除
     if also_clean_notes:
         cur.executemany("DELETE FROM finance_notes WHERE コード = ?", targets)
 
     conn.commit()
     cur.close()
+
 
 # ===== 任意：空売り無し反映 =====
 def phase_mark_karauri_nashi(conn: sqlite3.Connection):
@@ -3838,7 +4388,7 @@ def phase_mark_karauri_nashi(conn: sqlite3.Connection):
         exec_many(conn, 'UPDATE screener SET 空売り機関="なし" WHERE コード=?', rows, chunk=500)
     except NameError:
         import sqlite3
-        _tmp_conn = sqlite3.connect(DB_PATH)
+        _tmp_conn = open_conn(DB_PATH)
         try:
             exec_many(_tmp_conn, 'UPDATE screener SET 空売り機関="なし" WHERE コード=?', rows, chunk=500)
         finally:
@@ -3851,7 +4401,7 @@ def phase_mark_karauri_nashi(conn: sqlite3.Connection):
         phase_resistance_update(conn)
     except Exception as _e:
         print('[resistance][WARN]', _e)
-# 必要: pip install yfinance pandas
+
 
 def _latest2_ok(conn: sqlite3.Connection, code: str) -> bool:
     """
@@ -3906,7 +4456,8 @@ def refresh_full_history_for_insufficient(conn: sqlite3.Connection, universe_cod
     # 2) yfinance で 12mo を取得して price_history に upsert
     for i in range(0, len(targets), batch_size):
         chunk = targets[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}   # 日本株想定
+        #tickers_map = {c: f"{c}.T" for c in chunk}   # 日本株想定
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         try:
             df_wide = yf.download(
                 list(tickers_map.values()),
@@ -4049,7 +4600,8 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
     # 1) 既存銘柄: 2日分だけ一括取得（バッチ分割）
     for i in range(0, len(exist_codes), batch_size):
         chunk = exist_codes[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}  # 日本株前提
+        #tickers_map = {c: f"{c}.T" for c in chunk}  # 日本株前提
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         df_wide = yf.download(list(tickers_map.values()), period="2d", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
         df_add = _to_long_history(df_wide, tickers_map)
         total_added += _upsert_price_history(conn, df_add)
@@ -4058,7 +4610,8 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
     # 2) 新規銘柄: 12ヶ月ぶんを一括取得（バッチ分割）
     for i in range(0, len(new_codes), batch_size):
         chunk = new_codes[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}
+        #tickers_map = {c: f"{c}.T" for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         df_wide = yf.download(list(tickers_map.values()), period="12mo", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
         df_add = _to_long_history(df_wide, tickers_map)
         total_added += _upsert_price_history(conn, df_add)
@@ -4074,9 +4627,6 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
 
 # ===== 全銘柄の時価総額を一括更新 =====
 
-def _to_symbol(c: str) -> str:
-    s = str(c).strip()
-    return s if "." in s else s + ".T"   # 4桁数字コード想定：.T 付与
 
 def _normalize_map(obj):
     """
@@ -4138,7 +4688,8 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
     try:
         for i in range(0, len(codes), batch_size):
             chunk = codes[i:i+batch_size]
-            symbols = [_to_symbol(c) for c in chunk]
+            #symbols = [_to_symbol(c) for c in chunk]
+            symbols = [resolve_yahoo_symbol(c,conn) for c in chunk]
 
             tq = YQ(symbols, asynchronous=True, max_workers=max_workers)
             sd = _normalize_map(tq.summary_detail)
@@ -4172,7 +4723,8 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
         rows = []
         for c in codes:
             try:
-                fi = yf.YQ(_to_symbol(c)).fast_info
+                #fi = yf.YQ(_to_symbol(c)).fast_info
+                fi = yf.YQ(resolve_yahoo_symbol(c,conn)).fast_info
                 mc = getattr(fi, "market_cap", None)
                 if mc:
                     rows.append((float(mc)/1e8, c))
@@ -4214,7 +4766,7 @@ LEFT JOIN latest_prices lp
         codes = codes[:TEST_LIMIT]
         print(f"[TEST] {len(codes)}銘柄(MIDDAY)に絞って実行")
 
-    symbols_all = [f"{c}.T" for c in codes]
+    symbols_all = [resolve_yahoo_symbol(c, conn) for c in codes]
     print(f"[MIDDAY] quotes取得: {len(symbols_all)}銘柄")
     trade_date = None  # per-symbol from quote
 
@@ -4227,7 +4779,7 @@ LEFT JOIN latest_prices lp
 
         for sym in symbols:
             q = quotes.get(sym) or {}
-            code = sym.replace(".T", "")
+            code = sym.split('.', 1)[0]
             trade_date = _trade_date_from_quote(q)
 
             last = ffloat(q.get("regularMarketPrice"), None)
@@ -4246,7 +4798,8 @@ LEFT JOIN latest_prices lp
             zika_oku = None if not mcap else round(mcap / 100_000_000.0, 2)
 
             # ← tupleの順序を変更：前日終値・前日円差・前日終値比率を全部入れる
-            # これに置換
+            # ここでDB側の正規コードに寄せる（^TOPIX → ^TOPX など）
+            code = canonical_code_for_db(code)
             up_screener.append((
                 None if last is None else round(float(last), 2),   # 現在値 2桁
                 None if prev is None else round(float(prev), 2),   # 前日終値 2桁
@@ -4262,7 +4815,8 @@ LEFT JOIN latest_prices lp
             h1 = ffloat(q.get("regularMarketDayHigh"), None)
             l1 = ffloat(q.get("regularMarketDayLow"), None)
             c1 = last
-            # これに置換
+            # ここでDB側の正規コードに寄せる（^TOPIX → ^TOPX など）
+            code = canonical_code_for_db(code)
             up_hist.append((
                 code, trade_date,
                 None if o1 is None else round(float(o1), 2),
@@ -5320,8 +5874,11 @@ def _derive_opratio_flag(d, threshold_pct: float = 10.0) -> str:
 # =======================================================================
 
 # ---------- 行整形（欠損安全 & 外部列に依存しない） ----------
-def _prepare_rows(df: pd.DataFrame):
+def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
     rows = []
+    # 1回だけ有効な接続を確保（毎行 open/close しない）
+    _conn = conn or _get_db_conn()
+
     for _, r in df.iterrows():
         d = {k: (None if (isinstance(r.get(k), float) and math.isnan(r.get(k))) else r.get(k)) for k in df.columns}
 
@@ -5336,20 +5893,14 @@ def _prepare_rows(df: pd.DataFrame):
 
         # ---- 価格フィールド（現在値/前日終値/前日比）の安全埋め込み ----
         try:
-            import sqlite3 as _sqlite3
-            _conn = _sqlite3.connect(DB_PATH)
-            try:
-                code4 = (d.get("コード") or "").zfill(4)
-                if code4:
-                    # live（場中スナップショット）を使わない場合は引数省略でEOD固定
-                    import datetime as _dt
-                    if not _is_jp_business_day(_dt.datetime.now(JST).date()):
-                        _apply_price_fields(_conn, d, code4)  # 休日のみEODで安全埋め
-                    # 平日は既存ロジックのまま（ここでは触らない）
-            finally:
-                _conn.close()
+            code4 = (d.get("コード") or "").zfill(4)
+            if code4:
+                import datetime as _dt
+                # 休日のみEODで安全埋め（既存方針を踏襲）
+                if not _is_jp_business_day(_dt.datetime.now(JST).date()):
+                    _apply_price_fields(_conn, d, code4)  # ← conn を使って呼ぶ
+                # 平日は既存ロジックに委ねる
         except Exception as _e:
-            # 価格埋め込みで失敗してもダッシュボード生成は続行
             print(f"[price-guard][WARN] {d.get('コード')} fill failed: {_e}")
 
         # 売買代金(億) 補完
@@ -5375,7 +5926,7 @@ def _prepare_rows(df: pd.DataFrame):
         cv = _to_float(d.get("現在値"))
         d["現在値_raw"] = cv if cv is not None else ""
 
-        # 前日終値比率 raw（「前日終値比率（％）」という列名の揺れにも対応）
+        # 前日終値比率 raw（「前日終値比率（％）」にも対応）
         pct_val = d.get("前日終値比率")
         if pct_val is None:
             pct_val = d.get("前日終値比率（％）")
@@ -5388,31 +5939,20 @@ def _prepare_rows(df: pd.DataFrame):
 
         # 付加フラグ
         d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
-        d["営利対時価_flag"]     = _op_ratio_flag(d)  # ← チェックボックス用（割安）
+        d["営利対時価_flag"]     = _op_ratio_flag(d)
 
         # 判定/理由
         pct = _to_float(d.get("前日終値比率"))
         d["判定"] = "当たり！" if (pct is not None and pct > 0) else ""
         d["判定理由"] = _build_reason(d)
-        
+
         # --- 推奨アクション／推奨比率（連続＆バンド） ---
         rec, ratio_band, ratio_raw = _derive_recommendation(d)
-
-        # 表示列：％は見た目、raw は後続のヒステリシス維持に使える
-        if rec:
-            d["推奨アクション"] = rec
-        else:
-            d["推奨アクション"] = d.get("推奨アクション", "") or ""
-
+        d["推奨アクション"] = rec or (d.get("推奨アクション", "") or "")
         d["推奨比率_raw"] = ratio_raw if ratio_raw is not None else d.get("推奨比率_raw", "")
+        d["推奨比率"] = "" if ratio_band is None else f"{int(round(float(ratio_band)*100))}%"
 
-        # UI表示はバンド値を％に（None は空白）
-        if ratio_band is None:
-            d["推奨比率"] = ""
-        else:
-            d["推奨比率"] = f"{int(round(float(ratio_band)*100))}%"
-
-        # --- 営利対時価_flag（DB列が無い/空なら導出） ---
+        # 営利対時価_flag（DB列が無い/空なら導出）
         if not (d.get("営利対時価_flag") or "").strip():
             d["営利対時価_flag"] = _derive_opratio_flag(d)
 
@@ -5613,10 +6153,10 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         return out
 
     # --- 8) cand/allの行化とURL等の補完 ---
-    cand_rows = _prepare_rows(df_cand) if not df_cand.empty else []
+    cand_rows = _prepare_rows(df_cand, conn=conn) if not df_cand.empty else []
 
     cand_rows = enhance_with_chart_flags(conn, cand_rows)
-    all_rows  = _prepare_rows(df_all)  if not df_all.empty  else []
+    all_rows  = _prepare_rows(df_all, conn=conn)  if not df_all.empty  else []
     n_strong = sum(1 for r in cand_rows if r.get("推奨アクション") == "エントリー有力")
     n_small  = sum(1 for r in cand_rows if r.get("推奨アクション") == "小口提案")
     print(f"[recommend] 有力:{n_strong} / 小口:{n_small}")
@@ -5625,7 +6165,8 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     all_rows  = _records_safe(pd.DataFrame(all_rows))  if all_rows  else []
     log_rows  = _records_safe(df_log)                 if include_log else []
 
-    # --- 9) 高値/安値/MA5/25 を price_history から補完 ---
+    
+    # --- 9) 高値/安値/MA5/25/75 を price_history から補完 ---
     def _hilo_ma_from_db(conn: sqlite3.Connection, code: str):
         try:
             q = """
@@ -5637,22 +6178,36 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             """
             df = pd.read_sql_query(q, conn, params=[str(code)], parse_dates=["日付"])
             if df.empty:
-                return None, None, None, None
+                # hi, lo, ma5, ma25, ma75
+                return None, None, None, None, None
+
             d = df.sort_values("日付")
-            d["終値"] = pd.to_numeric(d["終値"], errors="coerce")
-            d["高値"] = pd.to_numeric(d["高値"], errors="coerce")
-            d["安値"] = pd.to_numeric(d["安値"], errors="coerce")
+            # 数値化（NaNは許容）
+            for c in ("終値", "高値", "安値"):
+                if c in d:
+                    d[c] = pd.to_numeric(d[c], errors="coerce")
+
+            # 移動平均（データ不足でも min_periods=1 で安全）
             ma5  = d["終値"].rolling(5,  min_periods=1).mean().iloc[-1]
             ma25 = d["終値"].rolling(25, min_periods=1).mean().iloc[-1]
             ma75 = d["終値"].rolling(75, min_periods=1).mean().iloc[-1]
+
             last = d.iloc[-1]
-            return (None if pd.isna(last["高値"]) else float(last["高値"])), \
-                   (None if pd.isna(last["安値"]) else float(last["安値"])), \
-                   (None if pd.isna(ma5) else float(ma5)), \
-                   (None if pd.isna(ma25) else float(ma25))
+            hi = None if pd.isna(last.get("高値")) else float(last["高値"])
+            lo = None if pd.isna(last.get("安値")) else float(last["安値"])
+
+            # ★ 5要素（ma75 を含む）で返す
+            return (
+                hi,
+                lo,
+                None if pd.isna(ma5)  else float(ma5),
+                None if pd.isna(ma25) else float(ma25),
+                None if pd.isna(ma75) else float(ma75),
+            )
         except Exception as _e:
             print(f"[patch][WARN] _hilo_ma_from_db({code}) failed: {_e}")
-            return None, None, None, None
+            return None, None, None, None, None
+
 
     def _apply_price_fields_from_db_local(conn: sqlite3.Connection, rows):
         if not rows: return rows
@@ -5686,7 +6241,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             try:
                 if cand_rows: codes_union.update([str(r.get("コード") or "").zfill(4) for r in cand_rows if r.get("コード")])
             except Exception: pass
-            live_quote_map = _fetch_live_quote_map(sorted(codes_union))
+            live_quote_map = _fetch_live_quote_map(conn,sorted(codes_union))
             if live_quote_map:
                 try:
                     avg_turn = _load_avg_turnover_map(conn, sorted(codes_union), window=20)
@@ -5696,11 +6251,11 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
                 for __r in cand_rows:
                     c4 = str(__r.get("コード") or "").zfill(4)
                     q = live_quote_map.get(c4) or {}
-                    if q: _apply_live_overrides(__r, q, avg_turn)
+                    if q: _apply_live_overrides(conn,__r, q, avg_turn)
                 for __r in all_rows:
                     c4 = str(__r.get("コード") or "").zfill(4)
                     q = live_quote_map.get(c4) or {}
-                    if q: _apply_live_overrides(__r, q, avg_turn)
+                    if q: _apply_live_overrides(conn,__r, q, avg_turn)
     except Exception as _e:
         print(f"[live][WARN] apply-live failed: {_e}")
 
@@ -5853,7 +6408,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             try: phase_sync_latest_prices(conn_)
             except Exception: pass
 
-        _conn_pg = sqlite3.connect(DB_PATH)
+        _conn_pg = open_conn(DB_PATH)
         try:
             if _hist_ref is not None:
                 _run_eod_overwrite_pipeline(_hist_ref, _scr_from_hist, _sync_latest, conn=_conn_pg)
@@ -5875,7 +6430,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         import datetime as _dt
         _is_holiday = not _is_jp_business_day(_dt.datetime.now(JST).date())
         if _is_holiday:
-            _conn_h = sqlite3.connect(DB_PATH)
+            _conn_h = open_conn(DB_PATH)
             try:
                 def _fix_rows(_rows):
                     if not isinstance(_rows, list): return 0
@@ -7059,7 +7614,7 @@ def batch_update_all_financials(conn,
     # --------------------------
     for i in range(0, total, chunk_size):
         chunk = codes[i:i+chunk_size]
-        syms = [c if c.endswith(".T") else f"{c}.T" for c in chunk]
+        syms = [resolve_yahoo_symbol(str(c), conn) for c in chunk]
         log.info(f"[batch.chunk] {i}-{i+len(chunk)-1} ({len(chunk)})")
 
         # 取得要否判定
@@ -7605,6 +8160,7 @@ def build_earnings_tables(conn):
 
     # ========== 実績（列の存在を動的に確認してSELECT） ==========
     # 1) 実テーブルの列名を取得
+    cols_df = pd.read_sql_query("PRAGMA table_info(earnings_events)", conn)
     have = set(cols_df["name"].astype(str))
 
     base_cols = ["コード", "提出時刻", "タイトル", "センチメント"]  # 必須候補
@@ -8440,7 +8996,7 @@ def main():
     if USE_CSV:
         try:
                     # CSVマスタ取り込み【同日スキップ】
-            _timed_daily_once("phase_csv_import", phase_csv_import, conn, overwrite_registered_date=False)
+            _timed_daily_once("phase_csv_import", phase_csv_import, conn)
         except Exception as e:
             print("[csv-import][WARN]", e)
 
@@ -8679,7 +9235,9 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
         total = 0
         for i in range(0, len(codes), batch_size):
             chunk = codes[i:i+batch_size]
-            tickers_map = {c: f"{c}.T" for c in chunk}
+            #tickers_map = {c: f"{c}.T" for c in chunk}
+            tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
+            
             try:
                 df_wide = yf.download(list(tickers_map.values()), period="10d", interval="1d",
                                       group_by="ticker", threads=True, auto_adjust=False)
@@ -8865,7 +9423,8 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
     total = 0
     for i in range(0, len(codes), batch_size):
         chunk = codes[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}
+        #tickers_map = {c: f"{c}.T" for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         try:
             df_wide = yf.download(list(tickers_map.values()), period="30d", interval="1d",
                                   group_by="ticker", threads=True, auto_adjust=False)
@@ -8925,3 +9484,100 @@ if __name__ == "__main__":
 # === Light EOD Addons (3 functions) ===
 
 # == Unified V5 data collector (HTML-free) ===
+
+
+# ===== Moved Single-Writer block to module bottom =====
+# === Single-Writer Process (Pattern A) =======================================
+from multiprocessing import Process, JoinableQueue
+
+_write_q = None
+_writer_proc = None
+
+def _writer_loop(q):
+    conn = open_conn(DB_PATH)
+    import sqlite3
+    while True:
+        job = q.get()
+        if job is None:
+            q.task_done()
+            break
+        try:
+            kind = job.get("kind")
+            if kind == "sql":
+                sql = job["sql"]
+                params = job.get("params") or []
+                if isinstance(params, (list, tuple)):
+                    conn.execute(sql, params)
+                else:
+                    conn.execute(sql)
+                conn.commit()
+            elif kind == "execmany":
+                sql = job["sql"]
+                rows = job.get("rows") or []
+                chunk = int(job.get("chunk") or 500)
+                cur = conn.cursor()
+                try:
+                    if rows:
+                        # chunked executemany
+                        for i in range(0, len(rows), chunk):
+                            cur.executemany(sql, rows[i:i+chunk])
+                    conn.commit()
+                finally:
+                    cur.close()
+            elif kind == "call":
+                name = job["name"]
+                fn = globals().get(name)
+                if fn is None:
+                    print(f"[writer][WARN] function not found: {name}")
+                else:
+                    # call with writer-owned connection
+                    fn(conn)
+            else:
+                print(f"[writer][WARN] unknown job kind: {kind}")
+        except Exception as e:
+            print("[writer][ERROR]", e)
+        finally:
+            q.task_done()
+
+def start_writer():
+    global _write_q, _writer_proc
+    if _write_q is not None:
+        return
+    _write_q = JoinableQueue()
+    _writer_proc = Process(target=_writer_loop, args=(_write_q,), daemon=True)
+    _writer_proc.start()
+    print("[writer] started")
+
+def stop_writer():
+    global _write_q, _writer_proc
+    if _write_q is None:
+        return
+    _write_q.put(None)
+    _write_q.join()
+    _write_q = None
+    _writer_proc = None
+    print("[writer] stopped")
+
+def enqueue_sql(sql, params=None):
+    start_writer()
+    _write_q.put({"kind": "sql", "sql": sql, "params": params or []})
+
+def enqueue_execmany(sql, rows, chunk=500):
+    start_writer()
+    _write_q.put({"kind": "execmany", "sql": sql, "rows": rows, "chunk": chunk})
+
+def enqueue_call(func_name: str):
+    start_writer()
+    _write_q.put({"kind": "call", "name": func_name})
+
+def wait_writes():
+    if _write_q is not None:
+        _write_q.join()
+# === /Single-Writer ==========================================================
+
+# === start single-writer early (module import safe) ===
+try:
+    start_writer()
+except Exception as _e:
+    print("[writer][WARN] failed to start at import:", _e)
+
