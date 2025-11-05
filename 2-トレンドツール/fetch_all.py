@@ -53,6 +53,40 @@ def _judge_sentiment(title: str) -> (str, int, str):
         if kw in t: return ("negative", -2, kw)
     return ("neutral", 0, "")
 
+# ---- title summarizer (backward-compat) ------------------------------------
+import re  # 既にimport済みなら重複可
+
+def _normalize_spaces(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+def summarize_title_simple(title: str) -> str:
+    """
+    TDnet等のタイトルからノイズを軽く落として要約（最大80文字）。
+    - 各種括弧（全角含む）内をざっくり除去
+    - 「適時開示:」「〜のお知らせ」等の定型を整理
+    - 連続空白を1つに
+    """
+    t = str(title or "")
+    t = re.sub(r"【.*?】|\[.*?\]|\(.*?\)|（.*?）|＜.*?＞|〈.*?〉", "", t)
+    t = re.sub(r"^\s*適時開示\s*[:：-]?\s*", "", t)
+    t = re.sub(r"\s*のお知らせ\s*$", "", t)
+    t = _normalize_spaces(t)
+    return (t[:80] + "…") if len(t) > 80 else t
+
+def _summarize_title_simple(title: str):
+    """
+    旧コード互換の戻り値（三つ組）を返す:
+      (summary:str, sentiment_label:str, hit_keyword:str)
+    既存の upsert_offerings_events 等で
+      '_, label, _ = _summarize_title_simple(title)'
+    と受ける想定に合わせる。
+    """
+    summary = summarize_title_simple(title)
+    label, score, hit_kw = _judge_sentiment(title)  # label: "positive"/"neutral"/"negative"
+    return summary, label, hit_kw
+# ---------------------------------------------------------------------------
+
+
 # ------------------ TDnet: 取得 ------------------
 TDNET_LIST_JSON = "https://webapi.yanoshin.jp/webapi/tdnet/list/{date_from}-{date_to}.json"
 
@@ -1026,6 +1060,16 @@ def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
         return text
     text = _extract_text_pypdf2(pdf_bytes)
     return text
+    
+def _safe_extract_pdf_text(pdf_bytes: bytes) -> str:
+    try:
+        txt = _extract_text_from_pdf(pdf_bytes)
+        if isinstance(txt, str) and txt.strip():
+            return txt
+    except Exception:
+        pass
+    return ""
+
 
 def _parse_earnings_metrics(text: str) -> Dict[str, Any]:
     if not text:
@@ -1671,7 +1715,7 @@ def _summarize_one_pdf_row(row: dict) -> dict:
         if not b:
             return row
         try:
-            text = _extract_text_from_pdf(b)
+            text = _safe_extract_pdf_text(b)
         except NameError:
             return row
         if not text:
@@ -1822,7 +1866,7 @@ def main():
 
     # ---- 決算（TDnet）----
     try:
-        tdnet_items = fetch_earnings_tdnet_only(days=3, per_day_limit=300)
+        tdnet_items = fetch_earnings_tdnet_only(days=14, per_day_limit=300)
         print(f"[earnings] raw tdnet items = {len(tdnet_items)}")
 
         earnings_rows = tdnet_items_to_earnings_rows(tdnet_items)
@@ -1833,7 +1877,7 @@ def main():
 
         if not earnings_rows:
             print("[earnings][fallback] 直近7日で再取得します…")
-            tdnet_items_fallback = fetch_earnings_tdnet_only(days=7, per_day_limit=300)
+            tdnet_items_fallback = fetch_earnings_tdnet_only(days=30, per_day_limit=300)
             print(f"[earnings][fallback] raw items = {len(tdnet_items_fallback)}")
             earnings_rows = tdnet_items_to_earnings_rows(tdnet_items_fallback)
             print(f"[earnings][fallback] shaped rows = {len(earnings_rows)}")
