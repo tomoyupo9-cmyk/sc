@@ -48,7 +48,7 @@ def _get_db_conn() -> sqlite3.Connection:
     """必要になった時だけ開いて使い回す（WAL等のPRAGMA付き）"""
     global _DB_SINGLETON
     if _DB_SINGLETON is None:
-        conn = sqlite3.connect(DB_PATH, timeout=60.0, isolation_level=None)
+        conn = _get_db_conn()
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
         cur.execute("PRAGMA synchronous=NORMAL;")
@@ -56,7 +56,6 @@ def _get_db_conn() -> sqlite3.Connection:
         conn.commit()
         _DB_SINGLETON = conn
     return _DB_SINGLETON
-
 
 # === Canonicalize code for DB keys (再発防止の要) ===
 _TOPIX_ALIASES = {'^TOPIX', 'TOPIX', '998405.T', '^TOPX'}
@@ -142,8 +141,6 @@ def resolve_yahoo_symbol(code: str,
 
     # 2-4) それ以外 → そのまま
     return s
-
-
 
 def _ensure_latest_prices_code_col(conn):
     try:
@@ -482,8 +479,6 @@ def _v5_update_latest(conn, latest):
 # [REMOVED by integrator: legacy V5 HTML block]
 # === /V5_ResSup =============================================================
 
-
-
 # === 価格計算の安全ガード（内蔵版） ===
 from zoneinfo import ZoneInfo as _ZJST
 JST = _ZJST("Asia/Tokyo")
@@ -502,9 +497,6 @@ def _is_trading_session_now(now=None):
         return False
     t = now.time()
     return (_dt.time(9,0) <= t <= _dt.time(11,30)) or (_dt.time(12,30) <= t <= _dt.time(15,30))
-
-
-
 
 def _get_last_two_closes(conn, code: str):
     """
@@ -549,9 +541,6 @@ def _get_last_two_closes(conn, code: str):
         df = _pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
         if df.empty:
             print(f"[price-guard][DEBUG] price_history empty for code={code_raw} (db-path={DB_PATH})")
-
-
-
 
             return None, None, None, None
 
@@ -684,15 +673,12 @@ def _fetch_live_price_map(conn,codes):
         return {}
 # === /ライブ価格取得 ===
 
-
-
 # ==== 非同期実行ユーティリティ（投げっぱなし起動） ====
 import os as _os, sys as _sys, tempfile as _tempfile, subprocess as _subprocess, time as _time
 from datetime import datetime as _dt
 
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
-
 
 # --- PATCH: live quote (price/volume/dayHigh/dayLow/marketCap) fetch ---
 def _fetch_live_quote_map(conn,codes4):
@@ -754,7 +740,6 @@ def _fetch_live_quote_map(conn,codes4):
         return {}
 # --- /PATCH live quote fetch ---
 
-
 # --- PATCH: RVOL denominator loader (20-day average turnover in Oku) ---
 def _load_avg_turnover_map(conn, codes4, window: int = 20):
     if not codes4:
@@ -787,7 +772,6 @@ def _load_avg_turnover_map(conn, codes4, window: int = 20):
     _flush(last_code, buf)
     return avg
 # --- /PATCH RVOL denominator ---
-
 
 # --- PATCH: apply live overrides (incl. RVOL turnover) ---
 def _apply_live_overrides(conn,row: dict, q: dict, avg_turn_map: dict):
@@ -829,7 +813,6 @@ def _apply_live_overrides(conn,row: dict, q: dict, avg_turn_map: dict):
     if isinstance(q.get("marketCap"), (int, float)) and q["marketCap"] > 0:
         row["時価総額億円"] = f"{(float(q['marketCap'])/1e8):.2f}"
 # --- /PATCH apply live overrides ---
-
 
 def _ff__log_path_for(script_path: str) -> str:
     base = _os.path.splitext(_os.path.basename(script_path))[0]
@@ -876,8 +859,6 @@ def fire_and_forget_many(scripts, python_exe: str | None = None, max_parallel: i
         procs.append(p)
     return procs
 # ==== /非同期実行ユーティリティ ====
-
-
 
 # ========= bulk utils (v8 additions) =========
 def _chunked(seq, n=500):
@@ -961,8 +942,6 @@ def add_price_features(df):
     return df
 # ========= end price series features =========
 
-
-
 # ===== Constants (centralized) =====
 # --- MISC settings ---
 # eps
@@ -1023,7 +1002,6 @@ OUTPUT_DIR = r"H:\desctop\株攻略\1-スクリーニング自動化プログラ
 # --- EXTRA settings ---
 # ファイル/ディレクトリのパス
 EXTRA_CLOSED_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\market_closed_extra.txt"
-
 
 # --- FUND settings ---
 # fund script
@@ -1116,8 +1094,6 @@ HL_WIN = 5
 # --- THRESH settings ---
 # しきい値
 THRESH_SCORE = 70
-
-
 
 # ==== [Short-term Trading Enhancements] Derived Metrics (schema assumed) ====
 def _calculate_atr_ewm(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -1313,7 +1289,6 @@ def _apply_shortterm_metrics(conn: sqlite3.Connection):
         except Exception:
             pass
 
-
 # ==== 最新行同期（price_history -> latest_prices） ====
 def phase_sync_latest_prices(conn: sqlite3.Connection):
     """
@@ -1348,15 +1323,12 @@ def phase_sync_latest_prices(conn: sqlite3.Connection):
         try: cur.close()
         except Exception: pass
 
-
 def phase_shortterm_enhancements(conn: sqlite3.Connection):
     """
     既存フローの任意の場所（派生値更新の直後など）で呼び出してください。
     - ATR(14) と since-signal を計算して latest_prices に反映（スキーマは既に整備済み前提）
     """
     _apply_shortterm_metrics(conn)
-
-
 
 # ==== Resistance lines (水平/斜め) : price_history → latest_prices ====
 import pandas as _pd
@@ -1573,10 +1545,8 @@ def phase_resistance_update(conn):
         cur.close()
 # ==== /Resistance lines ====
 
-
 # --- DASH settings ---
 # dash template str
-
 
 # === [charts60 flags integration] ============================================
 def _load_flags_map(conn):
@@ -1690,7 +1660,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 <html lang="ja">
 <head>
 
-
 <script id="boot-log">
 (function (g,d) {
   function ts(){ try{ return new Date().toISOString().split('T')[1].replace('Z',''); }catch(e){ return ''; } }
@@ -1801,7 +1770,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   
     padding-right: var(--sticky-left-w);}
 
-
   .tbl th,.tbl td{
     border-bottom:1px solid var(--line);
     padding:2px 4px;
@@ -1860,9 +1828,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     overflow-wrap: normal !important;
   }
 
-
-
-
   /* ヘルプ（小窓＋暗幕） */
   .help-backdrop{
     position:fixed; inset:0; background:rgba(17,24,39,.45);
@@ -1900,7 +1865,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     overflow-wrap:anywhere !important;
   }
 
-
   /* 1行固定したい“短い列”だけ nowrap を適用 */
   #tbl-candidate th[data-col="コード"],
   #tbl-candidate th[data-col="市場"],
@@ -1919,7 +1883,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   /* <br> はヘッダーだけ抑止（本文はそのまま活かす） */
   #tbl-candidate thead br, 
   #tbl-allcols  thead br{ display:none !important; }
-
 
   /* 判定理由は極小で折り返し可 */
   th.reason-col, td.reason-col{ font-size:0.78em; line-height:1.2; white-space:normal !important; word-break:break-word !important; }
@@ -1941,7 +1904,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     max-width:clamp(600px, 60vw, 1200px); vertical-align:bottom;
   }
 
-
   /* ツールチップ/ポップオーバーはクリック貫通 */
   .tooltip, .popover { pointer-events:none; }
   
@@ -1949,7 +1911,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .reason-tags{ display:flex; flex-wrap:wrap; gap:6px; }
   .reason-tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
     background:#eef2ff; border:1px solid #c7d2fe; color:#334155; white-space:nowrap; }
-
 
   /* PATCH: ensure white text for bulk-copy button */
   #copy-page{ color:#fff !important; text-decoration:none; }
@@ -1985,9 +1946,6 @@ th[data-col="コード"], td[data-col="コード"],
 th[data-col="銘柄"], td[data-col="銘柄"]{
   max-width:160px;
 }
-
-
-
 
 /* === injected: freeze columns === */
 /* === freeze columns (列固定) === */
@@ -2047,8 +2005,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
 })();
 </script>
 
-
-
 <!-- injected: freeze columns -->
 <script>
 (function(g,d){
@@ -2089,9 +2045,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
 
   })(window, document);
 </script>
-
-
-
 
 <style>
   /* 数値列 右寄せ */
@@ -2240,7 +2193,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   if (Array.isArray(g.DATA_ALL))  g.DATA_ALL  = g.DATA_ALL.map(mapRow);
 })(window);
 </script>
-
 
 <script>
 // === scroll-pad injector: allows scrolling further right so any column can align next to the fixed columns ===
@@ -2402,7 +2354,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     </div>
     <!-- ▲ 市場フィルタ -->
 
-
     <!-- ▼ 今のページの銘柄コード＆銘柄名を一括コピー（追加） -->
     <button class="btn copylink" id="copy-page">今のページの銘柄をコピー</button>
     <button class="btn" id="download-csv">CSVダウンロード</button>
@@ -2410,7 +2361,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     
 
   </div>
-
 
 <script id="__DATA__" type="application/json">{{ data_json|safe }}</script>
 
@@ -2509,7 +2459,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     return v ? String(v).slice(0,10) : "";
   }
 
-
   // ---- data ----
   const RAW = (()=>{ try{ return JSON.parse(document.getElementById("__DATA__").textContent||"{}"); }catch(_){ return {}; } })();
   const DATA_CAND = Array.isArray(RAW.cand)? RAW.cand: [];
@@ -2569,7 +2518,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       localStorage.setItem(LS_MK, JSON.stringify({keys:[...set]}));
     }catch(_){}
   }
-
 
   // ==== ヘルプ（?）ユーティリティ ====
   document.addEventListener('click', (e)=>{
@@ -2700,7 +2648,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     if(code) openFinanceHtml(code);
   });
 
-
   // ▼▼▼ これを「finance modal」セクションの直後に追加 ▼▼▼
   document.addEventListener("click", (e)=>{
     const a = e.target.closest && e.target.closest("a.chartlink");
@@ -2733,8 +2680,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       if (u) window.open(u, "_blank", "noopener");
     }
   });
-
-
 
   // DOM sort (generic)
   function wireDomSort(tableSelector){
@@ -2840,8 +2785,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   // 起動時に描画
   renderMarketCheckboxes();
 
-
-
 // === Resistance helpers ===
 function computeNearestResistance(row, priceNow, nearPct){
   const cand = [];
@@ -2892,8 +2835,6 @@ document.addEventListener('change', e=>{
     if (window.renderAllRows) window.renderAllRows();
   }
 });
-
-
 
   const DEFAULTS = { rate:3, turn:5, rvol:2 };
   function applyDefaults(on){
@@ -2984,7 +2925,6 @@ document.addEventListener('change', e=>{
       if(ts!=null && !(score>=ts)) return false;
       // 市場フィルタ：選択外は弾く
       if (MK_LIST.length && !mkSet.has(String(r["市場"]||"").trim())) return false;
-
 
       if(q){
         const keys=["コード","銘柄名","判定理由","右肩早期種別","初動フラグ","底打ちフラグ","右肩上がりフラグ","右肩早期フラグ","推奨アクション"];
@@ -3685,7 +3625,6 @@ document.addEventListener('change', e=>{
     const S   = pad(dt.getSeconds());
     const filename = `screen_current_${y}${m}${d}_${H}${M}${S}.csv`;
 
-
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -3694,7 +3633,6 @@ document.addEventListener('change', e=>{
     a.remove();
     setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
   });
-
 
   $("#btn-stats")?.addEventListener("click",openStatsChart);
   $("#btn-ts")?.addEventListener("click",openTrendChart);
@@ -3783,16 +3721,7 @@ document.addEventListener('change', e=>{
 
 })();
 
-
-
-
-
-
-
-
 </script>
-
-
 
   <section id="tab-candidate" class="tab">
     <div class="tbl-wrap">
@@ -3957,14 +3886,8 @@ document.addEventListener('change', e=>{
   </section>
   {% endif %}
 
-
-
-
 </body>
 </html>"""
-
-
-
 
 # ---  settings ---
 # “決算系”だけを抽出するゆるいフィルタ
@@ -4054,7 +3977,6 @@ def run_karauri_script():
     except Exception as e:
         print(f"[karauri][WARN] 起動に失敗しました: {e}")
 
-
 # --- EDINET 取得で使う ---
 
 # =====================================
@@ -4092,7 +4014,6 @@ def today_str():
     return dtm.datetime.now().strftime("%Y-%m-%d")
     
 # ================== 表示整形ヘルパ ==================
-
 
 def _trade_date_from_quote(q, extra_closed_path=EXTRA_CLOSED_PATH):
     """
@@ -4185,32 +4106,9 @@ def prev_business_day_jp(d: dtm.date, extra_closed: set = None) -> dtm.date:
             return cur
 
 # ===== DB =====
-def open_conn(db_path: str):
-    import sqlite3
-    conn = sqlite3.connect(
-        db_path,
-        timeout=60.0,
-        isolation_level=None,         # autocommit
-        check_same_thread=False,
-        detect_types=sqlite3.PARSE_DECLTYPES
-    )
-    cur = conn.cursor()
-    try:
-        cur.execute("PRAGMA journal_mode=WAL;")
-        cur.execute("PRAGMA synchronous=NORMAL;")
-        cur.execute("PRAGMA busy_timeout=60000;")   # 60s
-        cur.execute("PRAGMA temp_store=MEMORY;")
-        cur.execute("PRAGMA mmap_size=134217728;")  # 128MB
-        cur.execute("PRAGMA cache_size=-200000;")   # ~200MB
-        cur.execute("PRAGMA foreign_keys=ON;")
-    finally:
-        try: cur.close()
-        except Exception: pass
-    return conn
 def add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, decl: str):
     """Schema fixed: no-op."""
     return
-
 
 import re
 import pandas as pd
@@ -4282,7 +4180,6 @@ def phase_csv_import(conn, csv_path=None, overwrite_registered_date=None, **_ign
     cur.close()
 
     print(f"[csv-import] 取り込み完了: {len(rows)}件（登録日はINSERT時のみ {today_str}）")
-
 
 def phase_delist_cleanup(conn: sqlite3.Connection,
                          master_csv_path: str = MASTER_CODES_PATH,
@@ -4376,7 +4273,6 @@ def phase_delist_cleanup(conn: sqlite3.Connection,
     conn.commit()
     cur.close()
 
-
 # ===== 任意：空売り無し反映 =====
 def phase_mark_karauri_nashi(conn: sqlite3.Connection):
     if not os.path.isfile(KARA_URI_NASHI_PATH):
@@ -4388,7 +4284,7 @@ def phase_mark_karauri_nashi(conn: sqlite3.Connection):
         exec_many(conn, 'UPDATE screener SET 空売り機関="なし" WHERE コード=?', rows, chunk=500)
     except NameError:
         import sqlite3
-        _tmp_conn = open_conn(DB_PATH)
+        _tmp_conn = _get_db_conn()
         try:
             exec_many(_tmp_conn, 'UPDATE screener SET 空売り機関="なし" WHERE コード=?', rows, chunk=500)
         finally:
@@ -4401,7 +4297,6 @@ def phase_mark_karauri_nashi(conn: sqlite3.Connection):
         phase_resistance_update(conn)
     except Exception as _e:
         print('[resistance][WARN]', _e)
-
 
 def _latest2_ok(conn: sqlite3.Connection, code: str) -> bool:
     """
@@ -4626,7 +4521,6 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
 # ==== 時価総額取得
 
 # ===== 全銘柄の時価総額を一括更新 =====
-
 
 def _normalize_map(obj):
     """
@@ -6208,7 +6102,6 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             print(f"[patch][WARN] _hilo_ma_from_db({code}) failed: {_e}")
             return None, None, None, None, None
 
-
     def _apply_price_fields_from_db_local(conn: sqlite3.Connection, rows):
         if not rows: return rows
         for r in rows:
@@ -6338,7 +6231,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
 
     # --- 14) 予測タブ（preearn） ---
     try:
-        with open_conn(DB_PATH) as _c:
+        with _get_db_conn() as _c:
             tbl = build_earnings_tables(_c)
             if isinstance(tbl, tuple): _, pre_df = tbl
             elif isinstance(tbl, dict): pre_df = tbl.get("pre")
@@ -6408,7 +6301,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             try: phase_sync_latest_prices(conn_)
             except Exception: pass
 
-        _conn_pg = open_conn(DB_PATH)
+        _conn_pg = _get_db_conn()
         try:
             if _hist_ref is not None:
                 _run_eod_overwrite_pipeline(_hist_ref, _scr_from_hist, _sync_latest, conn=_conn_pg)
@@ -6430,7 +6323,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         import datetime as _dt
         _is_holiday = not _is_jp_business_day(_dt.datetime.now(JST).date())
         if _is_holiday:
-            _conn_h = open_conn(DB_PATH)
+            _conn_h = _get_db_conn()
             try:
                 def _fix_rows(_rows):
                     if not isinstance(_rows, list): return 0
@@ -6490,7 +6383,6 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     with open(html_path, "w", encoding="utf-8", newline="") as f:
         f.write(html)
     print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
-
 
 # ========== /Template exporter ==========
 
@@ -8284,7 +8176,7 @@ def load_recent_earnings_from_db(db_path: str, days: int = 7, limit: int = 300):
         print(f"[earnings][WARN] DB not found: {db_path} → []")
         return []
 
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn()
     try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
@@ -8896,7 +8788,6 @@ def _run_charts60(py_path: str):
     subprocess.run(["python", str(py)], check=True)
     
 
-
 def _timed(label, func, *args, **kwargs):
     """関数の処理時間を計測してログ出力するラッパー"""
     t0 = time.time()
@@ -8980,12 +8871,11 @@ def main():
         print(f"[fetch_all][WARN] {e}")
 
     # (1) DB open & スキーマ保証
-    conn = open_conn(DB_PATH)
+    conn = _get_db_conn()
     ensure_runlog_schema(conn)
             # 基礎データ（日次更新）【同日スキップ】
     _timed_daily_once("run_fundamental_daily", run_fundamental_daily, conn)
     # [v12] removed: lib.parse import quote as _q
-
 
     extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
     # if is_jp_market_holiday(dtm.date.today(), extra_closed):
@@ -9091,7 +8981,6 @@ def main():
                 # シグナル緩和・再判定【毎回】
                 _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
         # 19時にだけEODバッチ（必要なら中身もdaily化可能）
-
 
         # ===== ここから追記：JST 19時だけ EODバッチを実行 =====
         try:
@@ -9264,8 +9153,6 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
         print("[LightEOD] eod_refresh_recent_3days ERROR:", e)
         return 0
 
-
-
 def fallback_fill_today_from_quotes(conn):
     """15:30以降に price_history の当日欠損を quotes で補完（存在すれば）。
     - quotes テーブルのカラムは柔軟に検出（終値/現在値/close/last/price、出来高/volume）。
@@ -9367,8 +9254,6 @@ def fallback_fill_today_from_quotes(conn):
         pass
     print(f"[LightEOD] fallback_fill_today_from_quotes +{added}")
     return added
-
-
 
 def gap_patrol_recent_15(conn, batch_size: int = 60):
     """直近15営業日で price_history 欠損のみを補完（yfinance）。"""
@@ -9477,14 +9362,12 @@ def v5_collect_data(conn, latest_table=_V5_LATEST_TABLE):
         out.append(d)
     return out
 
-
 if __name__ == "__main__":
     main()
 
 # === Light EOD Addons (3 functions) ===
 
 # == Unified V5 data collector (HTML-free) ===
-
 
 # ===== Moved Single-Writer block to module bottom =====
 # === Single-Writer Process (Pattern A) =======================================
@@ -9494,7 +9377,7 @@ _write_q = None
 _writer_proc = None
 
 def _writer_loop(q):
-    conn = open_conn(DB_PATH)
+    conn = _get_db_conn()
     import sqlite3
     while True:
         job = q.get()
