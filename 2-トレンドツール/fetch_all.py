@@ -8,60 +8,33 @@
 #  - JSON以外(text/html等)の場合は静かに再試行/最終試行のみログ
 # 2025-10-17: ★TOB専用レーン追加（tob_events）、ダッシュボードに「TOB(TDNET)」タブを追加
 # 2025-10-17: ★TOB(掲示板)タブに TDNET決定済み除外フィルタを適用
+# 2025-11-06: ★DB接続を common.py のシングルトンに統一（PRAGMAチューンは common 側）
 
-import json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 
-# === Unified SQLite connection helper ===
-try:
-    import sqlite3  # ensure available
-    def _get_db_conn(db_path: str, *, timeout: float = 30.0):
-        """
-        Open a tuned SQLite connection.
-        - WAL journaling, NORMAL sync (fast, durable enough)
-        - temp_store=MEMORY, mmap_size ~128MB
-        - cache_size ~256MB (negative => size in KiB)
-        """
-        conn = _get_db_conn(db_path, timeout=timeout)
-        try:
-            cur = conn.cursor()
-            for pragma in [
-                "PRAGMA journal_mode=WAL;",
-                "PRAGMA synchronous=NORMAL;",
-                "PRAGMA temp_store=MEMORY;",
-                "PRAGMA mmap_size=134217728;",
-                "PRAGMA cache_size=-262144;"
-            ]:
-                try:
-                    cur.execute(pragma)
-                except Exception:
-                    pass
-            conn.commit()
-        except Exception:
-            # even if pragmas fail, return a usable connection
-            pass
-        return conn
-except Exception:
-    # Fallback stub to avoid import errors in limited environments
-    def _get_db_conn(db_path: str, *, timeout: float = 30.0):
-        raise RuntimeError("sqlite3 not available in this environment")
-# === end helper ===
-
-
+import io
+import re
+import html
+import json
+import time
+import requests
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 try:
     from urllib3.util.retry import Retry
 except Exception:
-    from requests.packages.urllib3.util.retry import Retry
+    from requests.packages.urllib3.util.retry import Retry  # type: ignore
 
-import io
-import re
-import html
-import requests
-import sqlite3
+# === DB接続は common.py に一本化 ===
+try:
+    from common import _get_db_conn, _close_db_conn, set_db_path  # set_db_path が無い環境も想定
+except Exception:
+    from common import _get_db_conn, _close_db_conn  # type: ignore
+    def set_db_path(*args, **kwargs):
+        pass
 
 # --- 既存モジュール（環境のまま） ---
 from src.trends import fetch_trends
@@ -75,7 +48,13 @@ OUT_DIR = ROOT / "out"
 OUT_BBS_DIR = ROOT / "out_bbs"
 DASH_DIR = ROOT / "dashboard"
 JST = timezone(timedelta(hours=9))
+
+# あなたの実環境の DB を指定（common 側にも伝播させる）
 DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
+try:
+    set_db_path(DB_PATH)
+except Exception:
+    pass
 
 # ------------------ 簡易センチメント ------------------
 POS_KW = ["上方修正","増益","最高益","過去最高","増配","黒字転換","上振れ","好調","好決算","上乗せ","大幅増","公開買付け","公開買い付け","TOB","ＴＯＢ"]
@@ -90,8 +69,6 @@ def _judge_sentiment(title: str) -> (str, int, str):
     return ("neutral", 0, "")
 
 # ---- title summarizer (backward-compat) ------------------------------------
-import re  # 既にimport済みなら重複可
-
 def _normalize_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
@@ -113,15 +90,11 @@ def _summarize_title_simple(title: str):
     """
     旧コード互換の戻り値（三つ組）を返す:
       (summary:str, sentiment_label:str, hit_keyword:str)
-    既存の upsert_offerings_events 等で
-      '_, label, _ = _summarize_title_simple(title)'
-    と受ける想定に合わせる。
     """
     summary = summarize_title_simple(title)
     label, score, hit_kw = _judge_sentiment(title)  # label: "positive"/"neutral"/"negative"
     return summary, label, hit_kw
 # ---------------------------------------------------------------------------
-
 
 # ------------------ TDnet: 取得 ------------------
 TDNET_LIST_JSON = "https://webapi.yanoshin.jp/webapi/tdnet/list/{date_from}-{date_to}.json"
@@ -143,16 +116,12 @@ def _unescape_text(s: str) -> str:
     except Exception: pass
     return html.unescape(s).strip()
 
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List
-import time
-
 from urllib.parse import quote
 def _http_get_json(url: str, retries: int = 3, sleep_sec: float = 0.8):
     """HTTP GET JSON with pooled session + retry."""
     global _HTTP
     try:
-        _HTTP
+        _HTTP  # type: ignore
     except NameError:
         _HTTP = requests.Session()
         try:
@@ -172,7 +141,7 @@ def _http_get_json(url: str, retries: int = 3, sleep_sec: float = 0.8):
                 if i == retries - 1:
                     print(f"[_http_get_json] non-json {ctype or '(unknown)'} url={url}")
                 else:
-                    import time; time.sleep(sleep_sec)
+                    time.sleep(sleep_sec)
                 continue
             return r.json()
         except Exception as e:
@@ -180,7 +149,7 @@ def _http_get_json(url: str, retries: int = 3, sleep_sec: float = 0.8):
                 msg = str(e).splitlines()[0]
                 print(f"[_http_get_json] error: {msg} url={url}")
                 return None
-            import time; time.sleep(sleep_sec)
+            time.sleep(sleep_sec)
     return None
 
 def fetch_earnings_tdnet_only(days: int = 90, per_day_limit: int = 300,
@@ -193,7 +162,7 @@ def fetch_earnings_tdnet_only(days: int = 90, per_day_limit: int = 300,
         slice_escalation=slice_escalation
     )
 
-def ensure_earnings_schema(conn):
+def ensure_earnings_schema(conn: sqlite3.Connection):
     """
     earnings_events を日本語カラムのみのスキーマに統一。
     主キーは持たず、UNIQUE(コード, 提出時刻) をインデックスで保証。
@@ -286,14 +255,13 @@ def ensure_offerings_schema(conn: sqlite3.Connection):
     cur.execute("""CREATE INDEX IF NOT EXISTS idx_offerings_code_date ON offerings_events(コード, substr(提出時刻,1,10));""")
     conn.commit()
 
-def load_offerings_recent_map(db_path: str, days: int = 365*3) -> dict[str, bool]:
+def load_offerings_recent_map(days: int = 365*3) -> dict[str, bool]:
     out: dict[str, bool] = {}
     try:
-        conn = _get_db_conn(db_path)
+        conn = _get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='offerings_events'")
         if not cur.fetchone():
-            conn.close()
             return out
         rows = cur.execute("""
             SELECT DISTINCT
@@ -305,7 +273,6 @@ def load_offerings_recent_map(db_path: str, days: int = 365*3) -> dict[str, bool
             FROM offerings_events
             WHERE date(提出時刻) >= date('now', ?)
         """, (f"-{days} day",)).fetchall()
-        conn.close()
         for (c,) in rows:
             if c:
                 out[str(c).zfill(4)] = True
@@ -494,9 +461,9 @@ def upsert_tob_events(conn: sqlite3.Connection, rows: List[dict]) -> int:
     print(f"[TOB] upsert rows: {len(rows)}")
     return len(rows)
 
-def load_tob_for_dashboard_from_db(db_path: str, days: int = 120) -> list[dict]:
+def load_tob_for_dashboard_from_db(days: int = 120) -> list[dict]:
     """ダッシュボード用にtob_eventsを読み出し"""
-    conn = _get_db_conn(db_path)
+    conn = _get_db_conn()
     cur = conn.cursor()
     rows = cur.execute(
         """
@@ -508,7 +475,6 @@ def load_tob_for_dashboard_from_db(db_path: str, days: int = 120) -> list[dict]:
         """,
         (f"-{days} day",)
     ).fetchall()
-    conn.close()
     out = []
     for r in rows:
         out.append({
@@ -528,19 +494,18 @@ def load_tob_for_dashboard_from_db(db_path: str, days: int = 120) -> list[dict]:
     return out
 
 # ========= ★掲示板TOBタブの除外に使う：TDNET決定済みコード集合 =========
-def load_tob_codes_recent(db_path: str, days: int = 180) -> set[str]:
+def load_tob_codes_recent(days: int = 180) -> set[str]:
     """
     tob_events に登録済み（＝TDNETでTOBが公表済み）の銘柄コード（4桁）を直近days日分だけ返す。
     掲示板TOBタブでの除外に利用。
     """
     out: set[str] = set()
     try:
-        conn = _get_db_conn(db_path)
+        conn = _get_db_conn()
         cur = conn.cursor()
         # テーブル存在確認
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tob_events'")
         if not cur.fetchone():
-            conn.close()
             return out
         cur.execute("""
             SELECT DISTINCT
@@ -555,7 +520,6 @@ def load_tob_codes_recent(db_path: str, days: int = 180) -> set[str]:
         for (c,) in cur.fetchall():
             if c:
                 out.add(str(c).zfill(4))
-        conn.close()
     except Exception as e:
         print("[TOB] load_tob_codes_recent error:", e)
     return out
@@ -637,9 +601,9 @@ def upsert_earnings_rows(conn: sqlite3.Connection, rows: list[dict]):
 
     conn.commit()
 
-def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mode: str = "nonnegative") -> list[dict]:
+def load_earnings_for_dashboard_from_db(days: int = 30, filter_mode: str = "nonnegative") -> list[dict]:
     import json as _json
-    conn = _get_db_conn(db_path)
+    conn = _get_db_conn()
     cur = conn.cursor()
     rows = cur.execute(
         """
@@ -695,10 +659,7 @@ def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mod
     except Exception as e:
         print("[earnings] quotes attach error:", e)
 
-    conn.close()
-
     def _ts(s: str) -> float:
-        from datetime import datetime
         try:
             return datetime.strptime((s or "").replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
         except Exception:
@@ -708,7 +669,6 @@ def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mod
 
 # ------------------ HTML生成（日別タブ込み + ★TOB(TDNET)タブ） ------------------
 def render_dashboard_html(payload: dict, api_base: str = "") -> str:
-    import json
     data_json = json.dumps(payload, ensure_ascii=False)
 
     tpl = r"""<!doctype html>
@@ -1041,12 +1001,7 @@ function render(j){
 
     return tpl.replace("__DATA_JSON__", data_json)
 
-import io, re, time, requests
-from typing import Dict, Any, List
-
-# 一度の実行で要約する最大件数（負荷対策）
-EARNINGS_SUMMARY_MAX = 40
-
+# -------- PDF ユーティリティ --------
 def _download_pdf_bytes(url: str, timeout: int = 25) -> bytes:
     try:
         r = requests.get(url, timeout=timeout, headers={"User-Agent":"Mozilla/5.0"}, allow_redirects=True)
@@ -1058,10 +1013,10 @@ def _download_pdf_bytes(url: str, timeout: int = 25) -> bytes:
 
 def _extract_text_pdfminer(pdf_bytes: bytes) -> str:
     try:
-        from pdfminer_high_level import extract_text
+        from pdfminer_high_level import extract_text  # type: ignore
     except Exception:
         try:
-            from pdfminer.high_level import extract_text
+            from pdfminer.high_level import extract_text  # type: ignore
         except Exception:
             extract_text = None
     if extract_text is None:
@@ -1075,7 +1030,7 @@ def _extract_text_pdfminer(pdf_bytes: bytes) -> str:
 
 def _extract_text_pypdf2(pdf_bytes: bytes) -> str:
     try:
-        import PyPDF2
+        import PyPDF2  # type: ignore
         out = []
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
         for page in reader.pages:
@@ -1106,7 +1061,7 @@ def _safe_extract_pdf_text(pdf_bytes: bytes) -> str:
         pass
     return ""
 
-
+# -------- 決算テキストの解析/採点 --------
 def _parse_earnings_metrics(text: str) -> Dict[str, Any]:
     if not text:
         return {"metrics": {}, "progress": None}
@@ -1269,22 +1224,18 @@ def _grade_earnings(title: str, text: str, parsed: Dict[str, Any]) -> Dict[str, 
     verdict = "good" if score >= 1.5 else ("bad" if score <= -1.5 else "neutral")
     return {"verdict": verdict, "score": score, "reasons": reasons}
 
-# ========= ここまでヘルパー =========
+# ========= TDNET取得の核 =========
 def fetch_tdnet_by_keywords(
     days: int = 90,
     keywords: list[str] | None = None,
     per_day_limit: int = 300,
     slice_escalation=(12, 6, 3, 1, 0.5)
 ) -> List[Dict[str, Any]]:
-    import time
-    from datetime import datetime, timedelta
-
     time_capable = False
     KEY_RE_LOCAL = re.compile("|".join(map(re.escape, keywords or []))) if (keywords and len(keywords) > 0) else None
 
     def _fetch_tdnet_by_range(dt_from: datetime, dt_to: datetime) -> list[dict]:
         nonlocal time_capable
-        from urllib.parse import quote
 
         s_day  = dt_from.strftime("%Y%m%d"); e_day  = dt_to.strftime("%Y%m%d")
         s_isoT = dt_from.strftime("%Y-%m-%dT%H:%M:%S"); e_isoT = dt_to.strftime("%Y-%m-%dT%H:%M:%S")
@@ -1536,8 +1487,110 @@ def build_bbs_scores(rows):
         out.append(b24 / max(1, b72))
     return out
 
-# ------------------ main ------------------
+# === Parallel PDF summarization for earnings rows ===
+EARNINGS_SUMMARY_MAX = 40
 
+def _summarize_one_pdf_row(row: dict) -> dict:
+    link = (row or {}).get("link") or (row or {}).get("pdf") or ""
+    if not link:
+        return row
+    try:
+        b = _download_pdf_bytes(link)
+        if not b:
+            return row
+        try:
+            text = _safe_extract_pdf_text(b)
+        except NameError:
+            return row
+        if not text:
+            return row
+
+        parsed = {}
+        if "_parse_earnings_metrics" in globals():
+            try:
+                parsed = _parse_earnings_metrics(text) or {}
+            except Exception as e:
+                print("[earnings] _parse_earnings_metrics err:", e)
+
+        sum2 = None
+        if "_summarize_earnings_text" in globals():
+            try:
+                sum2 = _summarize_earnings_text(text)
+            except Exception as e:
+                print("[earnings] _summarize_earnings_text err:", e)
+
+        judge = {"verdict": None, "score": None, "reasons": []}
+        if "_grade_earnings" in globals():
+            try:
+                judge = _grade_earnings(row.get("title",""), text, parsed)
+            except Exception as e:
+                print("[earnings] _grade_earnings err:", e)
+
+        out = dict(row)
+        if sum2: out["summary"] = sum2
+        if isinstance(parsed, dict):
+            out["metrics"]  = parsed.get("metrics", parsed)
+            out["progress"] = parsed.get("progress", out.get("progress"))
+        if isinstance(judge, dict):
+            out["verdict"]     = judge.get("verdict", out.get("verdict"))
+            out["score_judge"] = judge.get("score", out.get("score_judge"))
+            out["reasons"]     = judge.get("reasons", out.get("reasons", []))
+            if out.get("verdict") == "good":
+                out["sentiment"] = "positive"
+            elif out.get("verdict") == "bad":
+                out["sentiment"] = "negative"
+        return out
+    except Exception as e:
+        print(f"[earnings] summarize error: {e} url={link}")
+        return row
+
+def summarize_earnings_rows_parallel(rows: list, max_items: int = None, max_workers: int = 8):
+    if not isinstance(rows, list) or not rows:
+        return rows
+    try:
+        N = int(EARNINGS_SUMMARY_MAX)
+    except Exception:
+        N = 20
+    if isinstance(max_items, int) and max_items > 0:
+        N = max_items
+
+    targets = [(i, r) for i, r in enumerate(rows[:N]) if isinstance(r, dict) and (r.get("link") or r.get("pdf"))]
+    if not targets:
+        return rows
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            fut2idx = {ex.submit(_summarize_one_pdf_row, r): i for i, r in targets}
+            for fut in as_completed(fut2idx):
+                i = fut2idx[fut]
+                try:
+                    rows[i] = fut.result()
+                except Exception as e:
+                    print("[earnings] future err:", e)
+    except Exception as e:
+        print("[earnings] parallel block err:", e)
+    return rows
+
+def upsert_earnings_rows_fast(conn, rows):
+    """Fast path: WAL + single transaction. PRAGMAは common 側で設定済みだが念のため軽い設定のみ。"""
+    cur = conn.cursor()
+    try:
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA temp_store=MEMORY;")
+    except Exception:
+        pass
+    conn.commit()
+
+    conn.execute("BEGIN IMMEDIATE;")
+    try:
+        upsert_earnings_rows(conn, rows)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return None
+
+# ========= 追加インデックス / ビュー / ヘルスチェック =========
 def _table_exists(conn, name: str) -> bool:
     try:
         cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (name,))
@@ -1659,7 +1712,6 @@ def run_light_healthcheck(conn):
 
     if _table_exists(conn, "signals_log"):
         try:
-            from datetime import datetime
             conn.execute(
                 "INSERT INTO signals_log(コード, 種別, 日時, 詳細) VALUES(?, ?, ?, ?)",
                 ("", "healthcheck",
@@ -1741,111 +1793,7 @@ def load_quotes_from_price_history(conn: sqlite3.Connection, codes: list[str]) -
         }
     return out
 
-# === Parallel PDF summarization for earnings rows ===
-def _summarize_one_pdf_row(row: dict) -> dict:
-    link = (row or {}).get("link") or (row or {}).get("pdf") or ""
-    if not link:
-        return row
-    try:
-        b = _download_pdf_bytes(link)
-        if not b:
-            return row
-        try:
-            text = _safe_extract_pdf_text(b)
-        except NameError:
-            return row
-        if not text:
-            return row
-
-        parsed = {}
-        if "_parse_earnings_metrics" in globals():
-            try:
-                parsed = _parse_earnings_metrics(text) or {}
-            except Exception as e:
-                print("[earnings] _parse_earnings_metrics err:", e)
-
-        sum2 = None
-        if "_summarize_earnings_text" in globals():
-            try:
-                sum2 = _summarize_earnings_text(text)
-            except Exception as e:
-                print("[earnings] _summarize_earnings_text err:", e)
-
-        judge = {"verdict": None, "score": None, "reasons": []}
-        if "_grade_earnings" in globals():
-            try:
-                judge = _grade_earnings(row.get("title",""), text, parsed)
-            except Exception as e:
-                print("[earnings] _grade_earnings err:", e)
-
-        out = dict(row)
-        if sum2: out["summary"] = sum2
-        if isinstance(parsed, dict):
-            out["metrics"]  = parsed.get("metrics", parsed)
-            out["progress"] = parsed.get("progress", out.get("progress"))
-        if isinstance(judge, dict):
-            out["verdict"]     = judge.get("verdict", out.get("verdict"))
-            out["score_judge"] = judge.get("score", out.get("score_judge"))
-            out["reasons"]     = judge.get("reasons", out.get("reasons", []))
-            if out.get("verdict") == "good":
-                out["sentiment"] = "positive"
-            elif out.get("verdict") == "bad":
-                out["sentiment"] = "negative"
-        return out
-    except Exception as e:
-        print(f"[earnings] summarize error: {e} url={link}")
-        return row
-
-def summarize_earnings_rows_parallel(rows: list, max_items: int = None, max_workers: int = 8):
-    if not isinstance(rows, list) or not rows:
-        return rows
-    try:
-        N = int(EARNINGS_SUMMARY_MAX)
-    except Exception:
-        N = 20
-    if isinstance(max_items, int) and max_items > 0:
-        N = max_items
-
-    targets = [(i, r) for i, r in enumerate(rows[:N]) if isinstance(r, dict) and (r.get("link") or r.get("pdf"))]
-    if not targets:
-        return rows
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            fut2idx = {ex.submit(_summarize_one_pdf_row, r): i for i, r in targets}
-            for fut in as_completed(fut2idx):
-                i = fut2idx[fut]
-                try:
-                    rows[i] = fut.result()
-                except Exception as e:
-                    print("[earnings] future err:", e)
-    except Exception as e:
-        print("[earnings] parallel block err:", e)
-    return rows
-
-def upsert_earnings_rows_fast(conn, rows):
-    """Fast path: WAL + single transaction. Call original upsert_earnings_rows()."""
-    cur = conn.cursor()
-    try:
-        cur.execute("PRAGMA journal_mode=WAL;")
-    except Exception:
-        pass
-    try:
-        cur.execute("PRAGMA synchronous=NORMAL;")
-        cur.execute("PRAGMA temp_store=MEMORY;")
-        cur.execute("PRAGMA mmap_size=134217728;")
-    except Exception:
-        pass
-    conn.commit()
-
-    conn.execute("BEGIN IMMEDIATE;")
-    try:
-        upsert_earnings_rows(conn, rows)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return None
-
+# ------------------ main ------------------
 def main():
     cfg = load_config(str(ROOT / "config.yaml"))
 
@@ -1944,7 +1892,7 @@ def main():
         print("[TOB] fetch error:", e)
 
     # ---- DB保存 ----
-    conn = _get_db_conn(DB_PATH)
+    conn = _get_db_conn()
     ensure_earnings_schema(conn)
     ensure_offerings_schema(conn)
     ensure_tob_schema(conn)         # ★TOBスキーマ
@@ -1961,14 +1909,13 @@ def main():
 
     upsert_earnings_rows_fast(conn, earnings_rows)
     run_light_healthcheck(conn)
-    conn.close()
 
     # ---- 出力（JSON/HTML）----
-    earnings_for_dash = load_earnings_for_dashboard_from_db(DB_PATH, days=30, filter_mode="nonnegative")
+    earnings_for_dash = load_earnings_for_dashboard_from_db(days=30, filter_mode="nonnegative")
 
     # --- 増資経歴フラグ付与（直近3年） ---
     try:
-        offerings_map = load_offerings_recent_map(DB_PATH, days=365*3)
+        offerings_map = load_offerings_recent_map(days=365*3)
     except Exception as e:
         print("[offerings] map build error:", e)
         offerings_map = {}
@@ -2002,7 +1949,7 @@ def main():
 
     # ▼▼ 追加：TDNETで既にTOBが決まっている銘柄を掲示板TOBタブから除外 ▼▼
     try:
-        decided_codes = load_tob_codes_recent(DB_PATH, days=180)  # 期間は必要に応じて
+        decided_codes = load_tob_codes_recent(days=180)  # 期間は必要に応じて
         if isinstance(tob_bbs, dict) and "rows" in tob_bbs and isinstance(tob_bbs["rows"], list):
             before = len(tob_bbs["rows"])
             tob_bbs["rows"] = [
@@ -2019,7 +1966,7 @@ def main():
     # --- ★TDNET TOBのダッシュボード用データ ---
     tob_for_dash = []
     try:
-        tob_for_dash = load_tob_for_dashboard_from_db(DB_PATH, days=120)
+        tob_for_dash = load_tob_for_dashboard_from_db(days=120)
     except Exception as e:
         print("[TOB] load dash error:", e)
 
@@ -2048,4 +1995,10 @@ def main():
     print(f"[OK] {len(rows)} symbols + earnings {len(earnings_for_dash)} (filtered) + TOB(TDNET) {len(tob_for_dash)} → data.json / index.html 更新完了")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        try:
+            _close_db_conn()
+        except Exception:
+            pass
