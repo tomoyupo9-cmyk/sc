@@ -12,8 +12,8 @@ common.py — 共通ユーティリティ & SQLite 接続（WAL + 高速チュ�
     COMMON_DB_PATH
     COMMON_SQLITE_MMAP_SIZE_BYTES   (例: "536870912")
     COMMON_SQLITE_CACHE_SIZE_KIB    (KiBで負数指定: 例 "-400000")
-    COMMON_SQLITE_WAL_AUTOCHECKPT   (例: "2000")
-- BEGIN IMMEDIATE 用のヘルパー begin_immediate を追加（任意）
+    COMMON_SQLITE_WAL_AUTOCHECKPT   (例: "3000")
+- 大量書き込み用 begin_immediate() を追加
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 # ===== SQLite 接続（シングルトン） =====
-_DB_SINGLETON: sqlite3.Connection | None = None
-_DB_PATH: str | None = None  # set_db_path() で設定／未設定なら既定 or 環境変数
+_DB_SINGLETON: Optional[sqlite3.Connection] = None
+_DB_PATH: Optional[str] = None  # set_db_path() で設定／未設定なら既定 or 環境変数
 
 def set_db_path(path: str):
     """実行時にDBパスを切り替えたい場合に使用。初回接続前に呼んでください。"""
@@ -71,7 +71,7 @@ def _detect_ram_and_sizes() -> Tuple[int, int, int]:
         try:
             mmap_bytes = int(env_mmap)
             cache_kib  = int(env_cache)  # KiB（負数指定で実サイズ）
-            wal_auto   = int(env_wal_auto) if env_wal_auto else 2000
+            wal_auto   = int(env_wal_auto) if env_wal_auto else 3000
             return mmap_bytes, cache_kib, wal_auto
         except Exception:
             pass  # フォールバックで決め直す
@@ -84,18 +84,21 @@ def _detect_ram_and_sizes() -> Tuple[int, int, int]:
     except Exception:
         gb = 16  # 取得不可時の想定
 
-    # ざっくり安全側
+    # ざっくり安全側（あなたの 64GB なら 1GB / ~800MB まで広げる）
     if gb <= 16:
         mmap_bytes = 128 * 1024 * 1024      # 128MB
         cache_kib  = -200_000               # ≈ 200MB
     elif gb <= 32:
         mmap_bytes = 256 * 1024 * 1024      # 256MB
         cache_kib  = -300_000               # ≈ 300MB
+    elif gb <= 64:
+        mmap_bytes = 1_073_741_824          # 1GB
+        cache_kib  = -800_000               # ≈ 781MB
     else:
-        mmap_bytes = 512 * 1024 * 1024      # 512MB
-        cache_kib  = -400_000               # ≈ 391MB
+        mmap_bytes = 1_610_612_736          # ~1.5GB
+        cache_kib  = -1_000_000             # ~976MB
 
-    wal_auto = 2000
+    wal_auto = 3000
     return mmap_bytes, cache_kib, wal_auto
 
 def _apply_pragmas(conn: sqlite3.Connection) -> None:
