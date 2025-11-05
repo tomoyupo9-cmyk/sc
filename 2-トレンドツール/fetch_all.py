@@ -9,7 +9,7 @@
 # 2025-10-17: ★TOB専用レーン追加（tob_events）、ダッシュボードに「TOB(TDNET)」タブを追加
 # 2025-10-17: ★TOB(掲示板)タブに TDNET決定済み除外フィルタを適用
 # 2025-11-06: ★DB接続を common.py のシングルトンに統一（PRAGMAチューンは common 側）
-
+# 2025-11-06: ★★★ 増分取得対応（earnings/offerings/tob の提出時刻MAX以降だけ取得）
 
 # --- add local src/ to import path ---
 import sys
@@ -26,7 +26,6 @@ except Exception:
     from common import _get_db_conn, _close_db_conn  # type: ignore
     set_db_path = None  # type: ignore
 # --- end ---
-
 
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -1811,6 +1810,42 @@ def load_quotes_from_price_history(conn: sqlite3.Connection, codes: list[str]) -
         }
     return out
 
+# ======== ★★★ 増分取得ユーティリティ（ここだけ追加） ========
+def _parse_ts_str(s: Optional[str]) -> Optional[datetime]:
+    if not s:
+        return None
+    s2 = s.replace("T"," ").replace("+09:00","").replace("/","-").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s2, fmt).replace(tzinfo=JST)
+        except Exception:
+            continue
+    return None
+
+def _latest_teishutsu_ts(conn: sqlite3.Connection) -> Optional[datetime]:
+    """3テーブルの提出時刻の最新（最大）を返す。テーブルが無くても安全。"""
+    cur = conn.cursor()
+    latest: Optional[datetime] = None
+    for tbl in ("earnings_events", "offerings_events", "tob_events"):
+        try:
+            if not _table_exists(conn, tbl):
+                continue
+            ts = cur.execute(f"SELECT MAX(提出時刻) FROM {tbl}").fetchone()[0]
+            dt = _parse_ts_str(ts)
+            if dt and (latest is None or dt > latest):
+                latest = dt
+        except Exception:
+            continue
+    return latest
+
+def _tdnet_item_pub_dt(it: dict) -> Optional[datetime]:
+    td = it.get("Tdnet") or it
+    s = (td.get("pubdate") or td.get("publish_datetime") or td.get("time") or "")
+    return _parse_ts_str(s)
+
+def _earn_row_dt(row: dict) -> Optional[datetime]:
+    return _parse_ts_str(row.get("time") or "")
+
 # ------------------ main ------------------
 def main():
     cfg = load_config(str(ROOT / "config.yaml"))
@@ -1866,13 +1901,45 @@ def main():
     for i, s in enumerate(bbs_scores):
         rows[i]["score_bbs"] = s
 
+    # ---- ★★★ 増分のチェックポイントを決定 ----
+    conn = _get_db_conn()
+    ensure_earnings_schema(conn)
+    ensure_offerings_schema(conn)
+    ensure_tob_schema(conn)
+    ensure_misc_objects(conn)
+
+    since_dt = _latest_teishutsu_ts(conn)  # Noneならフル取得
+    now_jst = datetime.now(JST).replace(microsecond=0)
+
+    # days の見積り（上限を決めて取り過ぎない）
+    def span_days(max_cap: int) -> int:
+        if not since_dt:
+            return max_cap
+        delta = now_jst - since_dt
+        # 端数切上げ + バッファ2日
+        days_est = max(1, int(delta.total_seconds() // 86400) + 2)
+        return min(days_est, max_cap)
+
     # ---- 決算（TDnet）----
     try:
-        tdnet_items = fetch_earnings_tdnet_only(days=14, per_day_limit=300)
+        earn_days = span_days(90) if since_dt else 14  # 既存挙動：初回は14日、増分時は最大90日まで動的
+        tdnet_items = fetch_earnings_tdnet_only(days=earn_days, per_day_limit=300)
         print(f"[earnings] raw tdnet items = {len(tdnet_items)}")
+
+        # since 以降だけ残す（> since：同一秒は除外）
+        if since_dt:
+            before = len(tdnet_items)
+            tdnet_items = [it for it in tdnet_items if (_tdnet_item_pub_dt(it) or now_jst) > since_dt]
+            print(f"[earnings] filter by since ({since_dt}): {before} -> {len(tdnet_items)}")
 
         earnings_rows = tdnet_items_to_earnings_rows(tdnet_items)
         print(f"[earnings] rows after shaping = {len(earnings_rows)}")
+
+        # rows 側でも二重防御
+        if since_dt:
+            b2 = len(earnings_rows)
+            earnings_rows = [r for r in earnings_rows if (_earn_row_dt(r) or now_jst) > since_dt]
+            print(f"[earnings] shaped filter by since: {b2} -> {len(earnings_rows)}")
 
         for it in earnings_rows[:10]:
             print("  -", it.get("time",""), it.get("ticker",""), it.get("title","")[:60])
@@ -1881,7 +1948,11 @@ def main():
             print("[earnings][fallback] 直近7日で再取得します…")
             tdnet_items_fallback = fetch_earnings_tdnet_only(days=30, per_day_limit=300)
             print(f"[earnings][fallback] raw items = {len(tdnet_items_fallback)}")
+            if since_dt:
+                tdnet_items_fallback = [it for it in tdnet_items_fallback if (_tdnet_item_pub_dt(it) or now_jst) > since_dt]
             earnings_rows = tdnet_items_to_earnings_rows(tdnet_items_fallback)
+            if since_dt:
+                earnings_rows = [r for r in earnings_rows if (_earn_row_dt(r) or now_jst) > since_dt]
             print(f"[earnings][fallback] shaped rows = {len(earnings_rows)}")
 
         if not earnings_rows:
@@ -1896,25 +1967,33 @@ def main():
     # ---- 増資レーン ----
     offer_items = []
     try:
-        offer_items = fetch_tdnet_by_keywords(days=3, keywords=OFFERING_KW, per_day_limit=300)
+        offer_days = span_days(30) if since_dt else 3
+        offer_items = fetch_tdnet_by_keywords(days=offer_days, keywords=OFFERING_KW, per_day_limit=300)
         print(f"[offerings] raw tdnet items (by KW) = {len(offer_items)}")
+        if since_dt:
+            b = len(offer_items)
+            offer_items = [it for it in offer_items if (_tdnet_item_pub_dt(it) or now_jst) > since_dt]
+            print(f"[offerings] filter by since ({since_dt}): {b} -> {len(offer_items)}")
     except Exception as e:
         print("[offerings] fetch error:", e)
 
     # ---- ★TOBレーン（TDNET）----
     tob_rows = []
     try:
-        tob_rows = fetch_tdnet_tob(days=3, per_day_limit=300)
+        tob_days = span_days(30) if since_dt else 3
+        tob_src = fetch_tdnet_tob(days=tob_days, per_day_limit=300)
+        if since_dt:
+            b = len(tob_src)
+            def _row_dt(r):
+                return _parse_ts_str(r.get("提出時刻") or r.get("発表日時") or "")
+            tob_src = [r for r in tob_src if (_row_dt(r) or now_jst) > since_dt]
+            print(f"[TOB] filter by since ({since_dt}): {b} -> {len(tob_src)}")
+        tob_rows = tob_src
         print(f"[TOB] tdnet rows (by KW) = {len(tob_rows)}")
     except Exception as e:
         print("[TOB] fetch error:", e)
 
     # ---- DB保存 ----
-    conn = _get_db_conn()
-    ensure_earnings_schema(conn)
-    ensure_offerings_schema(conn)
-    ensure_tob_schema(conn)         # ★TOBスキーマ
-    ensure_misc_objects(conn)
     try:
         upsert_offerings_events(conn, offer_items)
     except Exception as e:

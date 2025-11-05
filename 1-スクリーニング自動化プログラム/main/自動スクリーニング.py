@@ -2558,23 +2558,73 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     });
   }
 
-  function attachQHelpsToToolbar(){
-    const pairs = [
-      ['#f_defaultset','規定'],
-      ['#th_rate','前日終値比率（％）'],
-      ['#th_turn','売買代金(億)'],
-      ['#th_rvol','RVOL代金'],
-      ['#th_progress','進捗率'],
-      ['#th_score','スコア'],
-      ['#th_pmin','現在値'],  // 追加
-      ['#th_pmax','現在値']   // 追加
-    ];
-    pairs.forEach(([sel, key])=>{
-      const inp = document.querySelector(sel);
-      const label = inp?.closest('label') || inp?.parentElement;
-      if (label) makeQ(label, key);
+
+function attachQHelpsToToolbar(){
+  // ▼ ラベル要素を頑強に見つけるヘルパー
+  const resolveLabel = (inp) => {
+    if (!inp) return null;
+    // 1) ラップされている<label>
+    let lb = inp.closest && inp.closest('label');
+    if (lb) return lb;
+    // 2) HTML の関連付け labels[] / for=ID
+    if (inp.labels && inp.labels.length) return inp.labels[0];
+    if (inp.id) {
+      lb = document.querySelector(`label[for="${inp.id}"]`);
+      if (lb) return lb;
+    }
+    // 3) 近傍の<label>（前の兄弟など数個だけ探索）
+    let p = inp.previousElementSibling;
+    for (let i=0; i<3 && p; i++, p=p.previousElementSibling) {
+      if (p.tagName === 'LABEL') return p;
+    }
+    // 4) 親要素にフォールバック
+    return inp.parentElement || null;
+  };
+
+  // ▼ 既存の固定ペア（キー付き）
+  const pairs = [
+    ['#f_defaultset','規定'],
+    ['#th_rate','前日終値比率（％）'],
+    ['#th_turn','売買代金(億)'],
+    ['#th_rvol','RVOL代金'],
+    ['#th_progress','進捗率'],
+    ['#th_score','スコア'],
+    ['#th_pmin','現在値'],
+    ['#th_pmax','現在値'],
+  ];
+  pairs.forEach(([sel, key])=>{
+    const inp = document.querySelector(sel);
+    const lb  = resolveLabel(inp);
+    if (lb) makeQ(lb, key);
+  });
+
+  // ▼ 追加①：早期フィルタ（ブレイク/ポケット/20MAリバ/200MAリクレイム）
+  //   ラベル文字列が HELP_TEXT のキーにあるものだけ自動付与
+  if (window.HELP_TEXT) {
+    document.querySelectorAll('#toolbar .early-filter label').forEach(lb=>{
+      const key = (lb.textContent || '').trim();
+      if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) {
+        if (!lb.querySelector('.qhelp')) makeQ(lb, key);
+      }
     });
   }
+
+  // ▼ 追加②：将来の取りこぼし防止（任意・安全）
+  //   #toolbar 配下の<label>全走査で、HELP_TEXTキー一致かつ未付与のものに「？」を付ける
+  if (window.HELP_TEXT) {
+    document.querySelectorAll('#toolbar label').forEach(lb=>{
+      if (lb.querySelector('.qhelp')) return;
+      const key = (lb.textContent || '').trim();
+      if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) {
+        makeQ(lb, key);
+      }
+    });
+  }
+}
+
+
+
+
   // ==== ヘルプユーティリティここまで ====
 
   // copy link（単一コード）
