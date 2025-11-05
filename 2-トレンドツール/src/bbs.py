@@ -17,6 +17,42 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# === Unified SQLite connection helper ===
+try:
+    import sqlite3  # ensure available
+    def _get_db_conn(db_path: str, *, timeout: float = 30.0):
+        """
+        Open a tuned SQLite connection.
+        - WAL journaling, NORMAL sync (fast, durable enough)
+        - temp_store=MEMORY, mmap_size ~128MB
+        - cache_size ~256MB (negative => size in KiB)
+        """
+        conn = _get_db_conn(db_path, timeout=timeout)
+        try:
+            cur = conn.cursor()
+            for pragma in [
+                "PRAGMA journal_mode=WAL;",
+                "PRAGMA synchronous=NORMAL;",
+                "PRAGMA temp_store=MEMORY;",
+                "PRAGMA mmap_size=134217728;",
+                "PRAGMA cache_size=-262144;"
+            ]:
+                try:
+                    cur.execute(pragma)
+                except Exception:
+                    pass
+            conn.commit()
+        except Exception:
+            # even if pragmas fail, return a usable connection
+            pass
+        return conn
+except Exception:
+    # Fallback stub to avoid import errors in limited environments
+    def _get_db_conn(db_path: str, *, timeout: float = 30.0):
+        raise RuntimeError("sqlite3 not available in this environment")
+# === end helper ===
+
+
 import requests
 from requests.adapters import HTTPAdapter
 try:
@@ -60,7 +96,7 @@ def _get_table_name(query_key: str) -> str:
 
 def _ensure_db_schema_for_query(db_path: str, query_key: str) -> None:
     table = _get_table_name(query_key)
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn(db_path)
     try:
         cur = conn.cursor()
         cur.execute(
@@ -86,7 +122,7 @@ def _ensure_db_schema_for_query(db_path: str, query_key: str) -> None:
 def _get_existing_links(db_path: str, query_key: str) -> Set[str]:
     table = _get_table_name(query_key)
     links: Set[str] = set()
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn(db_path)
     try:
         cur = conn.cursor()
         cur.execute(f"SELECT link FROM {table}")
@@ -100,7 +136,7 @@ def _get_existing_links(db_path: str, query_key: str) -> Set[str]:
 def _save_comments_to_db_bulk(db_path: str, query_key: str, comments: List[Dict[str, Any]]) -> None:
     if not comments: return
     table = _get_table_name(query_key)
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn(db_path)
     try:
         cur = conn.cursor()
         try:
@@ -281,7 +317,7 @@ def fetch_search_comments(db_path: str, query: str, query_key: str,
     _save_comments_to_db_bulk(db_path, query_key, all_comments)
 
     table = _get_table_name(query_key)
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn(db_path)
     try:
         cur = conn.cursor()
         # 集計
@@ -371,7 +407,7 @@ def fetch_search_comments(db_path: str, query: str, query_key: str,
     _save_comments_to_db_bulk(db_path, query_key, all_comments)
 
     table = _get_table_name(query_key)
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn(db_path)
     try:
         cur = conn.cursor()
         cur.execute(

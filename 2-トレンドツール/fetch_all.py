@@ -14,6 +14,42 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 
+# === Unified SQLite connection helper ===
+try:
+    import sqlite3  # ensure available
+    def _get_db_conn(db_path: str, *, timeout: float = 30.0):
+        """
+        Open a tuned SQLite connection.
+        - WAL journaling, NORMAL sync (fast, durable enough)
+        - temp_store=MEMORY, mmap_size ~128MB
+        - cache_size ~256MB (negative => size in KiB)
+        """
+        conn = _get_db_conn(db_path, timeout=timeout)
+        try:
+            cur = conn.cursor()
+            for pragma in [
+                "PRAGMA journal_mode=WAL;",
+                "PRAGMA synchronous=NORMAL;",
+                "PRAGMA temp_store=MEMORY;",
+                "PRAGMA mmap_size=134217728;",
+                "PRAGMA cache_size=-262144;"
+            ]:
+                try:
+                    cur.execute(pragma)
+                except Exception:
+                    pass
+            conn.commit()
+        except Exception:
+            # even if pragmas fail, return a usable connection
+            pass
+        return conn
+except Exception:
+    # Fallback stub to avoid import errors in limited environments
+    def _get_db_conn(db_path: str, *, timeout: float = 30.0):
+        raise RuntimeError("sqlite3 not available in this environment")
+# === end helper ===
+
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 try:
@@ -253,7 +289,7 @@ def ensure_offerings_schema(conn: sqlite3.Connection):
 def load_offerings_recent_map(db_path: str, days: int = 365*3) -> dict[str, bool]:
     out: dict[str, bool] = {}
     try:
-        conn = sqlite3.connect(db_path)
+        conn = _get_db_conn(db_path)
         cur = conn.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='offerings_events'")
         if not cur.fetchone():
@@ -460,7 +496,7 @@ def upsert_tob_events(conn: sqlite3.Connection, rows: List[dict]) -> int:
 
 def load_tob_for_dashboard_from_db(db_path: str, days: int = 120) -> list[dict]:
     """ダッシュボード用にtob_eventsを読み出し"""
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn(db_path)
     cur = conn.cursor()
     rows = cur.execute(
         """
@@ -499,7 +535,7 @@ def load_tob_codes_recent(db_path: str, days: int = 180) -> set[str]:
     """
     out: set[str] = set()
     try:
-        conn = sqlite3.connect(db_path)
+        conn = _get_db_conn(db_path)
         cur = conn.cursor()
         # テーブル存在確認
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tob_events'")
@@ -603,7 +639,7 @@ def upsert_earnings_rows(conn: sqlite3.Connection, rows: list[dict]):
 
 def load_earnings_for_dashboard_from_db(db_path: str, days: int = 30, filter_mode: str = "nonnegative") -> list[dict]:
     import json as _json
-    conn = sqlite3.connect(db_path)
+    conn = _get_db_conn(db_path)
     cur = conn.cursor()
     rows = cur.execute(
         """
@@ -1908,7 +1944,7 @@ def main():
         print("[TOB] fetch error:", e)
 
     # ---- DB保存 ----
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_db_conn(DB_PATH)
     ensure_earnings_schema(conn)
     ensure_offerings_schema(conn)
     ensure_tob_schema(conn)         # ★TOBスキーマ
