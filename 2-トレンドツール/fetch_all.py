@@ -10,6 +10,24 @@
 # 2025-10-17: ★TOB(掲示板)タブに TDNET決定済み除外フィルタを適用
 # 2025-11-06: ★DB接続を common.py のシングルトンに統一（PRAGMAチューンは common 側）
 
+
+# --- add local src/ to import path ---
+import sys
+from pathlib import Path
+HERE = Path(__file__).resolve().parent
+SRC_DIR = HERE / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+# set_db_path が無い版でも動くように try/except
+try:
+    from common import _get_db_conn, _close_db_conn, set_db_path  # type: ignore
+except Exception:
+    from common import _get_db_conn, _close_db_conn  # type: ignore
+    set_db_path = None  # type: ignore
+# --- end ---
+
+
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
