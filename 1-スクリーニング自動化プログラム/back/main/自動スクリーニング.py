@@ -18,23 +18,177 @@
 
 前提: Python 3.11 / pip install yahooquery pandas jpholiday
 """
-
+# --- Standard library
 from email.message import EmailMessage
-from jinja2 import Environment, FileSystemLoader, select_autoescape
 from logging.handlers import RotatingFileHandler
-from markupsafe import Markup, escape
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import quote as _q
 from zoneinfo import ZoneInfo
 import datetime as dtm
-import jpholiday
 import json
 import logging
 import math
-import numpy as np
 import os
+import re
+import sqlite3
+import threading
+
+# --- Third-party
+import jpholiday
+import numpy as np
 import pandas as pd
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup, escape
+
+
+# 既存の宣言を上書きしてOK
+_DB_SINGLETON: sqlite3.Connection | None = None
+_DB_LOCK = threading.RLock()
+
+# DBパス解決（common > 環境変数 > スクリプト相対）
+try:
+    from common import DB_PATH as _COMMON_DB_PATH
+except Exception:
+    _COMMON_DB_PATH = None
+
+_ENV_DB_PATH = os.environ.get("KANI2_DB_PATH") or os.environ.get("DB_PATH")
+_DEFAULT_DB_PATH = str((Path(__file__).parent / "db" / "kani2.db").resolve())
+_DB_PATH = _COMMON_DB_PATH or _ENV_DB_PATH or _DEFAULT_DB_PATH
+
+def _open_db(path: str) -> sqlite3.Connection:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(
+        path,
+        timeout=30.0,
+        detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+        check_same_thread=False,   # 必要に応じて True へ
+        isolation_level=None       # autocommit（必要なら変更）
+    )
+    # PRAGMA 初期化
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA temp_store=MEMORY;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA busy_timeout=60000;")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def _get_db_conn() -> sqlite3.Connection:
+    """必要になった時だけ開いて使い回す（再帰なし・スレッド安全）"""
+    global _DB_SINGLETON
+    with _DB_LOCK:
+        if _DB_SINGLETON is not None:
+            # コネクション健全性チェック
+            try:
+                _DB_SINGLETON.execute("SELECT 1;")
+                return _DB_SINGLETON
+            except Exception:
+                try:
+                    _DB_SINGLETON.close()
+                except Exception:
+                    pass
+                _DB_SINGLETON = None
+        # 新規オープン
+        _DB_SINGLETON = _open_db(_DB_PATH)
+        return _DB_SINGLETON
+
+def _close_db_conn_safely():
+    """任意：終了処理などで明示クローズしたい場合のみ使用"""
+    global _DB_SINGLETON
+    with _DB_LOCK:
+        if _DB_SINGLETON is not None:
+            try:
+                _DB_SINGLETON.close()
+            finally:
+                _DB_SINGLETON = None
+
+
+
+# === Canonicalize code for DB keys (再発防止の要) ===
+_TOPIX_ALIASES = {'^TOPIX', 'TOPIX', '998405.T', '^TOPX'}
+
+def canonical_code_for_db(code: str) -> str:
+    s = (code or "").strip()
+    u = s.upper()
+    if u in {a.upper() for a in _TOPIX_ALIASES}:
+        return '^TOPX'
+    return s
+
+def resolve_yahoo_symbol(code: str,
+                         conn: Optional[sqlite3.Connection] = None,
+                         try_online: bool = False) -> str:
+    """
+    screenerの 'コード' を Yahoo Finance 問い合わせ用シンボルに解決する。
+
+    優先順位:
+      1) DB上書きテーブル yahoo_symbol_override に一致があればそれを最優先で採用
+      2) 規則で解決
+         - '^'で始まる指数 or 既に'.T'付き   → そのまま
+         - 4桁の純数字（例: 7203）          → 'XXXX.T'
+         - 3桁数字+英字/4桁英数字ミックス   → 候補 ['CODE.T','CODE'] を順に採用
+           （try_online=Trueならyfinanceで実在チェック、Falseなら'.T'優先）
+         - それ以外                           → そのまま
+
+    注意:
+      - price_history へ保存する「コード」は問い合わせシンボルではなく
+        *元の code（screenerのコード文字列）* を使ってください（JOINのキー保持）。
+    """
+    s = (code or "").strip()
+    if not s:
+        return s
+    S = s.upper()  # 判定用（戻り値は元の表記を優先）
+
+    # 1) 明示オーバーライド（最優先）
+    if conn is not None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS yahoo_symbol_override (
+              コード TEXT PRIMARY KEY,
+              問い合わせシンボル TEXT NOT NULL
+            )
+        """)
+        row = conn.execute(
+            "SELECT 問い合わせシンボル FROM yahoo_symbol_override WHERE コード=?",
+            (s,)
+        ).fetchone()
+        if row:
+            return row[0]
+            
+    # === 追加ここから：TOPIXの素朴な別名吸収（DBに無いときの保険） ===
+    alias = {'^TOPIX': '^TOPX', 'TOPIX': '^TOPX', '998405.T': '^TOPX'}
+    if S in alias:
+        return alias[S]
+    # === 追加ここまで ===
+
+    # 2) 規則解決
+    # 2-1) 指数 or 既に .T 付き
+    if S.startswith("^") or S.endswith(".T"):
+        return s  # 元の表記で返す（大文字化しない）
+
+    # 2-2) 4桁の純数字 → .T
+    if len(S) == 4 and S.isdigit():
+        return s + ".T"
+
+    # 2-3) 3桁数字+英字 or 4桁英数字ミックス
+    pat_3d1a    = re.compile(r"^\d{3}[A-Z]$")   # 例: 130A
+    pat_4_alnum = re.compile(r"^[A-Z0-9]{4}$")  # 例: 1A3B, A130, 13AB など
+
+    if pat_3d1a.match(S) or (len(S) == 4 and pat_4_alnum.match(S) and not S.isdigit()):
+        if try_online:
+            # .T → 生 の順で“取れた方”を採用
+            try:
+                import yfinance as yf  # 局所import
+                for cand in (s + ".T", s):
+                    df = yf.download(cand, period="5d", interval="1d", progress=False)
+                    if not df.empty:
+                        return cand
+            except Exception:
+                pass  # 失敗時はオフラインフォールバック
+        # オフライン or チェック失敗 → .T を優先
+        return s + ".T"
+
+    # 2-4) それ以外 → そのまま
+    return s
 
 def _ensure_latest_prices_code_col(conn):
     try:
@@ -63,15 +217,84 @@ import ssl
 import subprocess
 import sys
 import time
+# ===== 日次実行ログユーティリティ（同日スキップ） =====
+def ensure_runlog_schema(conn):
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS run_log (
+      phase       TEXT NOT NULL,
+      run_date    TEXT NOT NULL,   -- 'YYYY-MM-DD' JST
+      status      TEXT,            -- 'ok' | 'error' | 'running'
+      started_at  TEXT,
+      finished_at TEXT,
+      info_json   TEXT,
+      PRIMARY KEY (phase, run_date)
+    );
+    """)
+    conn.commit()
+
+from datetime import datetime as __dt
+try:
+    from zoneinfo import ZoneInfo as __Z
+    __JST = __Z("Asia/Tokyo")
+except Exception:
+    __JST = None
+
+def _today_jst():
+    now = __dt.now(__JST) if __JST else __dt.now()
+    return now.strftime("%Y-%m-%d")
+
+def _should_skip_today(conn, phase, force=False):
+    if force: return False
+    row = conn.execute(
+        "SELECT status FROM run_log WHERE phase=? AND run_date=?",
+        (phase, _today_jst())
+    ).fetchone()
+    return bool(row and row[0] == "ok")
+
+def _mark_start(conn, phase):
+    conn.execute(
+        "INSERT INTO run_log(phase, run_date, status, started_at) VALUES(?,?, 'running', datetime('now')) "
+        "ON CONFLICT(phase, run_date) DO UPDATE SET status='running', started_at=datetime('now'), finished_at=NULL",
+        (phase, _today_jst()))
+    conn.commit()
+
+def _mark_done(conn, phase, ok=True, info_json=None):
+    conn.execute(
+        "INSERT INTO run_log(phase, run_date, status, started_at, finished_at, info_json) "
+        "VALUES(?,?,?,?, datetime('now'), ?) "
+        "ON CONFLICT(phase, run_date) DO UPDATE SET status=?, finished_at=datetime('now'), info_json=COALESCE(?, info_json)",
+        (phase, _today_jst(), 'ok' if ok else 'error', None, info_json, 'ok' if ok else 'error', info_json)
+    )
+    conn.commit()
+
+def _timed_daily_once(phase_name, fn, conn, *args, force=False, **kwargs):
+    if _should_skip_today(conn, phase_name, force=force):
+        print(f"[SKIP daily] {phase_name} (already ok for {_today_jst()})")
+        return None
+    print(f"[RUN daily]  {phase_name}")
+    _mark_start(conn, phase_name)
+    t0 = time.time()
+    try:
+        out = fn(conn, *args, **kwargs)
+        _mark_done(conn, phase_name, ok=True)
+        print(f"[OK] {phase_name} {time.time()-t0:.2f}s")
+        return out
+    except Exception as e:
+        _mark_done(conn, phase_name, ok=False, info_json=str(e))
+        print(f"[ERR] {phase_name}: {e}")
+        raise
+# ===== /日次実行ログユーティリティ =====
+
 import warnings
 import webbrowser
-import yfinance as yf
+
 import zipfile
 from yahooquery import Ticker as YQ
 # === V5_ResSup: 抵抗/支持 計算＋HTML出力（静的UI・自然統合） ===============
 import sqlite3 as _v5_sqlite3, math as _v5_math
 from pathlib import Path as _v5_Path
 from html import escape as _v5_escape
+
 _V5_N_DAYS = 90
 _V5_TOUCH_PCT = 0.005
 _V5_TOUCH_MIN = 3
@@ -80,58 +303,113 @@ _V5_SWING_LOOKBACK = 60
 _V5_HISTORY_TABLE = "price_history"
 _V5_LATEST_TABLE  = "latest_prices"
 _V5_COLS = {
- "Res_HH":"REAL","Res_Zone":"REAL","Res_Zone_Touches":"INTEGER","Res_Zone_Last":"TEXT",
- "Res_Round":"REAL","Res_Round_Step":"INTEGER","Res_Round_Near":"INTEGER",
- "Res_Line_Today":"REAL","Res_Line_R2":"REAL","Res_Nearest":"REAL",
- "Sup_LL":"REAL","Sup_Zone":"REAL","Sup_Zone_Touches":"INTEGER","Sup_Zone_Last":"TEXT",
- "Sup_Round":"REAL","Sup_Round_Step":"INTEGER","Sup_Round_Near":"INTEGER",
- "Sup_Line_Today":"REAL","Sup_Line_R2":"REAL","Sup_Nearest":"REAL",
+    "Res_HH":"REAL","Res_Zone":"REAL","Res_Zone_Touches":"INTEGER","Res_Zone_Last":"TEXT",
+    "Res_Round":"REAL","Res_Round_Step":"INTEGER","Res_Round_Near":"INTEGER",
+    "Res_Line_Today":"REAL","Res_Line_R2":"REAL","Res_Nearest":"REAL",
+    "Sup_LL":"REAL","Sup_Zone":"REAL","Sup_Zone_Touches":"INTEGER","Sup_Zone_Last":"TEXT",
+    "Sup_Round":"REAL","Sup_Round_Step":"INTEGER","Sup_Round_Near":"INTEGER",
+    "Sup_Line_Today":"REAL","Sup_Line_R2":"REAL","Sup_Nearest":"REAL",
 }
-def _v5_q(conn, sql, params=()): return list(conn.execute(sql, params))
+
+def _v5_q(conn, sql, params=()):
+    return list(conn.execute(sql, params))
+
 def _v5_ensure_cols(conn, latest):
     cur = conn.cursor()
     existing = {r[1] for r in cur.execute(f"PRAGMA table_info({latest})")}
-    for k,decl in _V5_COLS.items():
-        if k not in existing: cur.execute(f"ALTER TABLE {latest} ADD COLUMN {k} {decl}")
+    for k, decl in _V5_COLS.items():
+        if k not in existing:
+            cur.execute(f"ALTER TABLE {latest} ADD COLUMN {k} {decl}")
     conn.commit()
+
 def _v5_unify_code(conn, latest):
     cols = [r[1] for r in _v5_q(conn, f"PRAGMA table_info({latest})")]
-    if "コード" in cols: return "コード"
+    if "コード" in cols:
+        return "コード"
     if "code" in cols:
         cur = conn.cursor()
-        try: cur.execute(f"ALTER TABLE {latest} ADD COLUMN コード TEXT")
-        except Exception: pass
-        cur.execute(f"UPDATE {latest} SET コード = CAST(code AS TEXT) WHERE コード IS NULL"); conn.commit(); return "コード"
+        try:
+            cur.execute(f"ALTER TABLE {latest} ADD COLUMN コード TEXT")
+        except Exception:
+            pass
+        cur.execute(f"UPDATE {latest} SET コード = CAST(code AS TEXT) WHERE コード IS NULL")
+        conn.commit()
+        return "コード"
     return cols[0] if cols else "コード"
+
+# --- 安全変換ユーティリティ（None/空/NaN→default） ---
+def _v5_num(x, default=None):
+    try:
+        if x is None:
+            return default
+        v = float(x)
+        if v != v:  # NaN
+            return default
+        return v
+    except Exception:
+        return default
+
 def _v5_round_levels(p: float):
-    out=[]; 
+    pval = _v5_num(p, None)
+    if pval is None:
+        return [(0, None, None)]
+    out = []
     for step in _V5_ROUND_STEPS:
-        if step<=0: continue
-        nearest=round(p/step)*step; out.append((step,float(nearest),abs(float(nearest)-p)))
-    out.sort(key=lambda x:(-x[0],x[2])); return out
+        if step <= 0:
+            continue
+        nearest = round(pval / step) * step
+        diff = abs(float(nearest) - pval)
+        out.append((step, float(nearest), diff))
+    out.sort(key=lambda x: (-x[0], x[2]))
+    return out
+
 def _v5_hist_zone(values, band_ratio, touch_min):
-    vals=[float(v) for v in values if v is not None and _v5_math.isfinite(float(v))]
-    if not vals: return None
-    vals.sort(); best_center=None; best_cnt=0
-    for i,v in enumerate(vals):
-        hi=v*(1+band_ratio); j=i
-        while j+1<len(vals) and vals[j+1]<=hi: j+=1
-        cnt=j-i+1
-        if cnt>best_cnt: best_cnt=cnt; best_center=sum(vals[i:j+1])/cnt
-    return (best_center,best_cnt) if best_cnt>=touch_min else None
+    vals = []
+    for v in values:
+        vv = _v5_num(v, None)
+        if vv is not None:
+            vals.append(vv)
+    if not vals:
+        return None
+    vals.sort()
+    best_center = None
+    best_cnt = 0
+    for i, v in enumerate(vals):
+        hi = v * (1 + band_ratio)
+        j = i
+        while j + 1 < len(vals) and vals[j + 1] <= hi:
+            j += 1
+        cnt = j - i + 1
+        if cnt > best_cnt:
+            best_cnt = cnt
+            best_center = sum(vals[i:j+1]) / cnt
+    return (best_center, best_cnt) if best_cnt >= touch_min else None
+
 def _v5_linreg_today(xs, ys):
-    n=len(xs)
-    if n<5: return (None,None)
-    mx=sum(xs)/n; my=sum(ys)/n
-    sxx=sum((x-mx)**2 for x in xs)
-    if sxx==0: return (None,None)
-    sxy=sum((x-mx)*(y-my) for x,y in zip(xs,ys))
-    a=sxy/sxx; b=my-a*mx
-    yhat=[a*x+b for x in xs]
-    sst=sum((y-my)**2 for y in ys); ssr=sum((yh-my)**2 for yh in yhat)
-    r2=(ssr/sst) if sst else None
-    y_today=a*(xs[-1]+1)+b
-    return (float(y_today),(float(r2) if r2 is not None else None))
+    xs2, ys2 = [], []
+    for x, y in zip(xs, ys):
+        yy = _v5_num(y, None)
+        if yy is not None:
+            xs2.append(float(x))
+            ys2.append(yy)
+    n = len(xs2)
+    if n < 5:
+        return (None, None)
+    mx = sum(xs2) / n
+    my = sum(ys2) / n
+    sxx = sum((x - mx) ** 2 for x in xs2)
+    if sxx == 0:
+        return (None, None)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs2, ys2))
+    a = sxy / sxx
+    b = my - a * mx
+    yhat = [a * x + b for x in xs2]
+    sst = sum((y - my) ** 2 for y in ys2)
+    ssr = sum((yh - my) ** 2 for yh in yhat)
+    r2 = (ssr / sst) if sst else None
+    y_today = a * (xs2[-1] + 1) + b
+    return (float(y_today), (float(r2) if r2 is not None else None))
+
 def _v5_fetch_ohlcv(conn, code):
     return _v5_q(conn, f"""
         SELECT 日付, 始値, 高値, 安値, 終値
@@ -139,55 +417,115 @@ def _v5_fetch_ohlcv(conn, code):
         WHERE コード = ?
         ORDER BY 日付 ASC
     """, (str(code),))
+
 def _v5_calc(rows):
-    keys=list(_V5_COLS.keys())
-    if not rows: return {k:None for k in keys}
-    rows=rows[-_V5_N_DAYS:]
-    dates=[r[0] for r in rows]; highs=[float(r[2]) for r in rows]; lows=[float(r[3]) for r in rows]
-    close_today=float(rows[-1][4])
-    res_hh=max(highs) if highs else None; sup_ll=min(lows) if lows else None
-    zr=_v5_hist_zone(highs,_V5_TOUCH_PCT,_V5_TOUCH_MIN); zs=_v5_hist_zone(lows,_V5_TOUCH_PCT,_V5_TOUCH_MIN)
-    res_zone,res_touch=(zr[0],zr[1]) if zr else (None,None); sup_zone,sup_touch=(zs[0],zs[1]) if zs else (None,None)
-    res_last=None; sup_last=None
+    keys = list(_V5_COLS.keys())
+    if not rows:
+        return {k: None for k in keys}
+
+    rows = rows[-_V5_N_DAYS:]
+    dates = [r[0] for r in rows]
+    highs = [_v5_num(r[2], None) for r in rows]
+    lows  = [_v5_num(r[3], None) for r in rows]
+    close_today = _v5_num(rows[-1][4], None)
+
+    res_hh = max([v for v in highs if v is not None], default=None)
+    sup_ll = min([v for v in lows  if v is not None], default=None)
+
+    zr = _v5_hist_zone(highs, _V5_TOUCH_PCT, _V5_TOUCH_MIN)
+    zs = _v5_hist_zone(lows,  _V5_TOUCH_PCT, _V5_TOUCH_MIN)
+    res_zone, res_touch = (zr[0], zr[1]) if zr else (None, None)
+    sup_zone, sup_touch = (zs[0], zs[1]) if zs else (None, None)
+
+    res_last = None
+    sup_last = None
     if res_zone is not None:
-        for i in range(len(rows)-1,-1,-1):
-            if abs(highs[i]-res_zone)<=res_zone*_V5_TOUCH_PCT: res_last=dates[i]; break
+        for i in range(len(rows) - 1, -1, -1):
+            hi = highs[i]
+            if hi is None:
+                continue
+            if abs(hi - res_zone) <= res_zone * _V5_TOUCH_PCT:
+                res_last = dates[i]
+                break
     if sup_zone is not None:
-        for i in range(len(rows)-1,-1,-1):
-            if abs(lows[i]-sup_zone)<=sup_zone*_V5_TOUCH_PCT: sup_last=dates[i]; break
-    step,nearest,_=_v5_round_levels(close_today)[0]
-    res_round_step=sup_round_step=step; res_round=sup_round=nearest
-    near_flag=1 if abs(close_today-res_round)<=close_today*_V5_TOUCH_PCT else 0
-    sw=rows[-_V5_SWING_LOOKBACK:]; xs=list(range(len(sw)))
-    rh=[float(r[2]) for r in sw]; rl=[float(r[3]) for r in sw]
-    res_line_today,res_r2=_v5_linreg_today(xs,rh); sup_line_today,sup_r2=_v5_linreg_today(xs,rl)
-    up=[v for v in [res_hh,res_zone,res_round,res_line_today] if v is not None and v>=close_today]
-    dn=[v for v in [sup_ll,sup_zone,sup_round,sup_line_today] if v is not None and v<=close_today]
-    res_near=min(up) if up else None; sup_near=max(dn) if dn else None
+        for i in range(len(rows) - 1, -1, -1):
+            lo = lows[i]
+            if lo is None:
+                continue
+            if abs(lo - sup_zone) <= sup_zone * _V5_TOUCH_PCT:
+                sup_last = dates[i]
+                break
+
+    rl = _v5_round_levels(close_today)
+    step, nearest, _ = rl[0] if rl and rl[0][1] is not None else (None, None, None)
+    res_round_step = sup_round_step = step
+    res_round = sup_round = nearest
+
+    if close_today is None or nearest is None:
+        near_flag = None
+    else:
+        near_flag = 1 if abs(close_today - nearest) <= close_today * _V5_TOUCH_PCT else 0
+
+    sw = rows[-_V5_SWING_LOOKBACK:]
+    xs = list(range(len(sw)))
+    rh = [_v5_num(r[2], None) for r in sw]
+    rl_ = [_v5_num(r[3], None) for r in sw]
+    res_line_today, res_r2 = _v5_linreg_today(xs, rh)
+    sup_line_today, sup_r2 = _v5_linreg_today(xs, rl_)
+
+    if close_today is None:
+        res_near = None
+        sup_near = None
+    else:
+        up = [v for v in (res_hh, res_zone, res_round, res_line_today) if v is not None and v >= close_today]
+        dn = [v for v in (sup_ll, sup_zone, sup_round, sup_line_today) if v is not None and v <= close_today]
+        res_near = min(up) if up else None
+        sup_near = max(dn) if dn else None
+
     return {
-        "Res_HH":res_hh,"Res_Zone":res_zone,"Res_Zone_Touches":res_touch,"Res_Zone_Last":res_last,
-        "Res_Round":res_round,"Res_Round_Step":res_round_step,"Res_Round_Near":near_flag,
-        "Res_Line_Today":res_line_today,"Res_Line_R2":res_r2,"Res_Nearest":res_near,
-        "Sup_LL":sup_ll,"Sup_Zone":sup_zone,"Sup_Zone_Touches":sup_touch,"Sup_Zone_Last":sup_last,
-        "Sup_Round":res_round,"Sup_Round_Step":res_round_step,"Sup_Round_Near":near_flag,
-        "Sup_Line_Today":sup_line_today,"Sup_Line_R2":sup_r2,"Sup_Nearest":sup_near,
+        "Res_HH": res_hh,
+        "Res_Zone": res_zone,
+        "Res_Zone_Touches": res_touch,
+        "Res_Zone_Last": res_last,
+        "Res_Round": res_round,
+        "Res_Round_Step": res_round_step,
+        "Res_Round_Near": near_flag,
+        "Res_Line_Today": res_line_today,
+        "Res_Line_R2": res_r2,
+        "Res_Nearest": res_near,
+        "Sup_LL": sup_ll,
+        "Sup_Zone": sup_zone,
+        "Sup_Zone_Touches": sup_touch,
+        "Sup_Zone_Last": sup_last,
+        "Sup_Round": res_round,            # 丸めは上下同一ベース
+        "Sup_Round_Step": res_round_step,
+        "Sup_Round_Near": near_flag,
+        "Sup_Line_Today": sup_line_today,
+        "Sup_Line_R2": sup_r2,
+        "Sup_Nearest": sup_near,
     }
+
 def _v5_update_latest(conn, latest):
-    _v5_ensure_cols(conn, latest); code_col=_v5_unify_code(conn, latest)
-    codes=[r[0] for r in _v5_q(conn, f"SELECT {code_col} FROM {latest}")]
-    if not codes: return 0
-    set_clause=",".join([f"{k}=?" for k in _V5_COLS.keys()])
-    sql=f"UPDATE {latest} SET {set_clause} WHERE {code_col}=?"
-    cur=conn.cursor(); n=0
+    _v5_ensure_cols(conn, latest)
+    code_col = _v5_unify_code(conn, latest)
+    codes = [r[0] for r in _v5_q(conn, f"SELECT {code_col} FROM {latest}")]
+    if not codes:
+        return 0
+    set_clause = ",".join([f"{k}=?" for k in _V5_COLS.keys()])
+    sql = f"UPDATE {latest} SET {set_clause} WHERE {code_col}=?"
+    cur = conn.cursor()
+    n = 0
     for code in codes:
-        vals=_v5_calc(_v5_fetch_ohlcv(conn, code)); params=[vals[k] for k in _V5_COLS.keys()]+[code]
-        cur.execute(sql, params); n+=1
-    conn.commit(); return n
+        vals = _v5_calc(_v5_fetch_ohlcv(conn, code))
+        params = [vals[k] for k in _V5_COLS.keys()] + [code]
+        cur.execute(sql, params)
+        n += 1
+    conn.commit()
+    return n
 
 # [REMOVED by integrator: legacy V5 HTML block]
 # [REMOVED by integrator: legacy V5 HTML block]
 # === /V5_ResSup =============================================================
-
 
 # === 価格計算の安全ガード（内蔵版） ===
 from zoneinfo import ZoneInfo as _ZJST
@@ -207,9 +545,6 @@ def _is_trading_session_now(now=None):
         return False
     t = now.time()
     return (_dt.time(9,0) <= t <= _dt.time(11,30)) or (_dt.time(12,30) <= t <= _dt.time(15,30))
-
-
-
 
 def _get_last_two_closes(conn, code: str):
     """
@@ -254,6 +589,7 @@ def _get_last_two_closes(conn, code: str):
         df = _pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
         if df.empty:
             print(f"[price-guard][DEBUG] price_history empty for code={code_raw} (db-path={DB_PATH})")
+
             return None, None, None, None
 
         # 安全な数値化
@@ -327,19 +663,21 @@ def _run_eod_overwrite_pipeline(
     sync_latest_prices=None,    # Optional[callable(conn)]
     conn=None,
 ):
+    """単一ライターに作業を順番投入（history → screener → latest）。
+    conn は使用せず、writer 側が保持する接続で実行する。
     """
-    「history更新 → screener上書き → latest_prices同期」の順序を厳守して実行する。
-    休日/非営業時もこの順でEOD上書きを最後に通せば「前日＝現在」問題を抑止できる。
-    """
-    if conn is None:
-        raise ValueError("_run_eod_overwrite_pipeline: conn を渡してください")
-    history_refresher(conn)
-    screener_from_history(conn)
+    if history_refresher is None or screener_from_history is None:
+        raise ValueError("_run_eod_overwrite_pipeline: 関数を渡してください")
+    # enqueue in order
+    enqueue_call(history_refresher.__name__)
+    enqueue_call(screener_from_history.__name__)
     if sync_latest_prices is not None:
-        sync_latest_prices(conn)
+        enqueue_call(sync_latest_prices.__name__)
+    # wait until finished
+    wait_writes()
 # === /価格計算の安全ガード ===
 # === ライブ価格取得（場中のみ自動） ===
-def _fetch_live_price_map(codes):
+def _fetch_live_price_map(conn,codes):
     """
     yahooquery で regularMarketPrice をまとめ取得して {コード4桁: 価格(float)} を返す。
     失敗時は空 dict。
@@ -352,7 +690,7 @@ def _fetch_live_price_map(codes):
         except Exception as _e:
             print(f"[live][WARN] yahooquery import failed: {_e}")
             return {}
-        syms = [f"{str(c).zfill(4)}.T" for c in codes]
+        syms = [resolve_yahoo_symbol(str(c), conn) for c in codes]
         yq = _YQ(syms, validate=True)
         price = yq.price  # dict or dataframe-like
         out = {}
@@ -383,8 +721,6 @@ def _fetch_live_price_map(codes):
         return {}
 # === /ライブ価格取得 ===
 
-
-
 # ==== 非同期実行ユーティリティ（投げっぱなし起動） ====
 import os as _os, sys as _sys, tempfile as _tempfile, subprocess as _subprocess, time as _time
 from datetime import datetime as _dt
@@ -392,9 +728,8 @@ from datetime import datetime as _dt
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
-
 # --- PATCH: live quote (price/volume/dayHigh/dayLow/marketCap) fetch ---
-def _fetch_live_quote_map(codes4):
+def _fetch_live_quote_map(conn,codes4):
     """
     yahooquery.price から 価格/出来高/日中高値/安値/時価総額/prevClose をまとめ取得。
     戻り値: { "1234": {"price":.., "volume":.., "dayHigh":.., "dayLow":.., "marketCap":.., "prevClose":..}, ... }
@@ -407,7 +742,8 @@ def _fetch_live_quote_map(codes4):
         except Exception as _e:
             print(f"[live][WARN] yahooquery import failed: {_e}")
             return {}
-        syms = [f"{str(c).zfill(4)}.T" for c in codes4]
+        #syms = [f"{str(c).zfill(4)}.T" for c in codes4]
+        syms = [resolve_yahoo_symbol(str(c), conn) for c in codes4]
         yq = _YQ(syms, validate=True)
         price = yq.price  # dict or DataFrame
         out = {}
@@ -452,7 +788,6 @@ def _fetch_live_quote_map(codes4):
         return {}
 # --- /PATCH live quote fetch ---
 
-
 # --- PATCH: RVOL denominator loader (20-day average turnover in Oku) ---
 def _load_avg_turnover_map(conn, codes4, window: int = 20):
     if not codes4:
@@ -486,14 +821,13 @@ def _load_avg_turnover_map(conn, codes4, window: int = 20):
     return avg
 # --- /PATCH RVOL denominator ---
 
-
 # --- PATCH: apply live overrides (incl. RVOL turnover) ---
-def _apply_live_overrides(row: dict, q: dict, avg_turn_map: dict):
+def _apply_live_overrides(conn,row: dict, q: dict, avg_turn_map: dict):
     code4 = str(row.get("コード") or "").zfill(4)
     px = q.get("price")
     if isinstance(px, (int, float)):
         try:
-            _apply_price_fields(row, live_price=px)
+            _apply_price_fields(conn, row, code=str(row.get("コード") or ""), live_price=px)
         except NameError:
             row["現在値_raw"] = float(px); row["現在値"] = f"{px:.2f}"
             try:
@@ -527,7 +861,6 @@ def _apply_live_overrides(row: dict, q: dict, avg_turn_map: dict):
     if isinstance(q.get("marketCap"), (int, float)) and q["marketCap"] > 0:
         row["時価総額億円"] = f"{(float(q['marketCap'])/1e8):.2f}"
 # --- /PATCH apply live overrides ---
-
 
 def _ff__log_path_for(script_path: str) -> str:
     base = _os.path.splitext(_os.path.basename(script_path))[0]
@@ -574,8 +907,6 @@ def fire_and_forget_many(scripts, python_exe: str | None = None, max_parallel: i
         procs.append(p)
     return procs
 # ==== /非同期実行ユーティリティ ====
-
-
 
 # ========= bulk utils (v8 additions) =========
 def _chunked(seq, n=500):
@@ -659,8 +990,6 @@ def add_price_features(df):
     return df
 # ========= end price series features =========
 
-
-
 # ===== Constants (centralized) =====
 # --- MISC settings ---
 # eps
@@ -721,7 +1050,6 @@ OUTPUT_DIR = r"H:\desctop\株攻略\1-スクリーニング自動化プログラ
 # --- EXTRA settings ---
 # ファイル/ディレクトリのパス
 EXTRA_CLOSED_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\market_closed_extra.txt"
-
 
 # --- FUND settings ---
 # fund script
@@ -815,8 +1143,6 @@ HL_WIN = 5
 # しきい値
 THRESH_SCORE = 70
 
-
-
 # ==== [Short-term Trading Enhancements] Derived Metrics (schema assumed) ====
 def _calculate_atr_ewm(df: pd.DataFrame, period: int = 14) -> pd.Series:
     # df: 必須列 ['高値','安値','終値'] を想定。index は日付順。
@@ -836,10 +1162,17 @@ def _calculate_atr_ewm(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 def _apply_shortterm_metrics(conn: sqlite3.Connection):
     """
-    スキーマ/テーブルは既に拡張済みで存在する前提:
-      - latest_prices(コード, 日付, 終値|現在値, ..., ATR_14, Rate_Since_Signal_High, Days_Since_Signal_High)
-      - price_history(コード, 日付, 始値, 高値, 安値, 終値, 出来高)
+    latest_prices … (コード, 日付, 終値|現在値, ..., ATR_14, Rate_Since_Signal_High, Days_Since_Signal_High)
+    price_history … (コード, 日付, 始値, 高値, 安値, 終値, 出来高)
+
+    ・signal_date/シグナル更新日 が無い銘柄（指数など）でも安全に更新
+      - ATR_14 は履歴があれば通常計算
+      - Rate_Since_Signal_High / Days_Since_Signal_High は
+        シグナル日が無い場合、直近60日（営業日相当）で代替計算
     """
+    import pandas as pd
+    import numpy as _np
+
     cur = conn.cursor()
     try:
         hist_tbl = "price_history"
@@ -849,8 +1182,10 @@ def _apply_shortterm_metrics(conn: sqlite3.Connection):
         col_names = [d[0] for d in cur.description]
 
         def idx(name, default=-1):
-            try: return col_names.index(name)
-            except ValueError: return default
+            try:
+                return col_names.index(name)
+            except ValueError:
+                return default
 
         i_code = idx("コード")
         i_date = idx("日付")
@@ -866,37 +1201,141 @@ def _apply_shortterm_metrics(conn: sqlite3.Connection):
             ldate = r[i_date]
             close_v = r[i_close]
 
-            # ATR(14)
-            q_hist = f"SELECT 日付, 高値, 安値, 終値 FROM {hist_tbl} WHERE コード = ? ORDER BY 日付"
+            # ===== 履歴取得 =====
+            q_hist = f"""
+                SELECT 日付, 高値, 安値, 終値
+                FROM {hist_tbl}
+                WHERE コード = ?
+                ORDER BY 日付
+            """
             hdf = pd.read_sql_query(q_hist, conn, params=[code], parse_dates=["日付"])
-            hdf = hdf.set_index("日付").sort_index()
-            atr14 = float(_calculate_atr_ewm(hdf, 14).iloc[-1])
 
-            # シグナル後モメンタム
-            sig_val = r[i_sig]
-            signal_date = pd.to_datetime(str(sig_val), errors="coerce")
+            # ===== ATR(14) =====
+            if hdf.empty:
+                atr14 = None
+            else:
+                hdf = hdf.set_index("日付").sort_index()
+                # 数値化
+                for c in ("高値", "安値", "終値"):
+                    if c in hdf:
+                        hdf[c] = pd.to_numeric(hdf[c], errors="coerce")
 
-            q2 = f"SELECT 日付, 高値, 終値 FROM {hist_tbl} WHERE コード = ? AND 日付 >= ? ORDER BY 日付"
-            h2 = pd.read_sql_query(q2, conn, params=[code, str(signal_date.date())], parse_dates=["日付"])
-            max_high = float(pd.to_numeric(h2["高値"], errors="coerce").max())
-            idx_max = h2.loc[pd.to_numeric(h2["高値"], errors="coerce").idxmax(), "日付"]
+                # 既存の _calculate_atr_ewm があれば利用、無ければフォールバック
+                atr14 = None
+                try:
+                    atr_series = _calculate_atr_ewm(hdf, 14)  # 既存関数想定
+                    if len(atr_series):
+                        atr14 = float(atr_series.iloc[-1])
+                except Exception:
+                    pass
 
-            cur_close = float(close_v) if close_v is not None else float(pd.to_numeric(h2["終値"].iloc[-1], errors="coerce"))
-            rate_since = (cur_close / max_high - 1.0) * 100.0
-            base_date = pd.to_datetime(ldate)
-            days_since = int((base_date - idx_max).days)
+                if atr14 is None:
+                    # フォールバックATR（TRのEWMA）
+                    try:
+                        hi = hdf["高値"]
+                        lo = hdf["安値"]
+                        cl = hdf["終値"]
+                        prev_cl = cl.shift(1)
+                        tr = _np.nanmax(
+                            _np.vstack([
+                                (hi - lo).to_numpy(_np.float64),
+                                (hi - prev_cl).abs().to_numpy(_np.float64),
+                                (lo - prev_cl).abs().to_numpy(_np.float64),
+                            ]),
+                            axis=0
+                        )
+                        tr = pd.Series(tr, index=hdf.index)
+                        atr_series = tr.ewm(span=14, adjust=False, min_periods=1).mean()
+                        atr14 = float(atr_series.iloc[-1]) if len(atr_series) else None
+                    except Exception:
+                        atr14 = None
+
+            # ===== シグナル後モメンタム =====
+            # signal_date（またはシグナル更新日）
+            sig_val = r[i_sig] if i_sig != -1 else None
+            signal_date = pd.to_datetime(str(sig_val), errors="coerce") if sig_val is not None else pd.NaT
+
+            # どこから比較するか：シグナル日が無ければ直近60日
+            if pd.isna(signal_date):
+                q2 = f"""
+                    SELECT 日付, 高値, 終値
+                    FROM {hist_tbl}
+                    WHERE コード = ?
+                      AND 日付 >= date((SELECT MAX(日付) FROM {hist_tbl} WHERE コード = ?), '-60 days')
+                    ORDER BY 日付
+                """
+                h2 = pd.read_sql_query(q2, conn, params=[code, code], parse_dates=["日付"])
+            else:
+                q2 = f"""
+                    SELECT 日付, 高値, 終値
+                    FROM {hist_tbl}
+                    WHERE コード = ?
+                      AND 日付 >= ?
+                    ORDER BY 日付
+                """
+                h2 = pd.read_sql_query(q2, conn, params=[code, str(pd.to_datetime(signal_date).date())], parse_dates=["日付"])
+
+            # max_high / idx_max（高値の最大とその日付）
+            if h2.empty:
+                max_high = _np.nan
+                idx_max_dt = pd.to_datetime(ldate, errors="coerce")
+            else:
+                hi_num = pd.to_numeric(h2["高値"], errors="coerce")
+                if hi_num.dropna().empty:
+                    max_high = _np.nan
+                    idx_max_dt = pd.to_datetime(ldate, errors="coerce")
+                else:
+                    max_high = float(hi_num.max())
+                    # idxmax は Series のindex（行ラベル）。locで日付取得
+                    idx_max_row = hi_num.idxmax()
+                    idx_max_dt = pd.to_datetime(h2.loc[idx_max_row, "日付"], errors="coerce")
+
+            # 現在値の決定：latestの値が無ければ、比較区間 or 全履歴の最終終値を使用
+            if close_v is not None:
+                try:
+                    cur_close = float(close_v)
+                except Exception:
+                    cur_close = _np.nan
+            else:
+                if not h2.empty and pd.to_numeric(h2["終値"], errors="coerce").dropna().size > 0:
+                    cur_close = float(pd.to_numeric(h2["終値"], errors="coerce").dropna().iloc[-1])
+                elif not hdf.empty and pd.to_numeric(hdf["終値"], errors="coerce").dropna().size > 0:
+                    cur_close = float(pd.to_numeric(hdf["終値"], errors="coerce").dropna().iloc[-1])
+                else:
+                    cur_close = _np.nan
+
+            # 騰落率・経過日数（NaNはNoneへ）
+            if not _np.isfinite(cur_close) or not _np.isfinite(max_high) or max_high == 0.0:
+                rate_since = None
+            else:
+                rate_since = (cur_close / max_high - 1.0) * 100.0
+
+            base_date = pd.to_datetime(ldate, errors="coerce")
+            if pd.isna(base_date) or pd.isna(idx_max_dt):
+                days_since = None
+            else:
+                try:
+                    days_since = int((base_date - idx_max_dt).days)
+                except Exception:
+                    days_since = None
 
             updates.append((atr14, rate_since, days_since, r[0]))
 
+        # 一括更新
         cur.executemany(
-            "UPDATE latest_prices SET ATR_14 = ?, Rate_Since_Signal_High = ?, Days_Since_Signal_High = ? WHERE rowid = ?",
+            "UPDATE latest_prices "
+            "SET ATR_14 = ?, Rate_Since_Signal_High = ?, Days_Since_Signal_High = ? "
+            "WHERE rowid = ?",
             updates
         )
         conn.commit()
         print(f"[derive-update] ATR_14/Rate/Days updated: {len(updates)} rows")
+
     finally:
-        try: cur.close()
-        except Exception: pass
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 # ==== 最新行同期（price_history -> latest_prices） ====
 def phase_sync_latest_prices(conn: sqlite3.Connection):
@@ -932,15 +1371,12 @@ def phase_sync_latest_prices(conn: sqlite3.Connection):
         try: cur.close()
         except Exception: pass
 
-
 def phase_shortterm_enhancements(conn: sqlite3.Connection):
     """
     既存フローの任意の場所（派生値更新の直後など）で呼び出してください。
     - ATR(14) と since-signal を計算して latest_prices に反映（スキーマは既に整備済み前提）
     """
     _apply_shortterm_metrics(conn)
-
-
 
 # ==== Resistance lines (水平/斜め) : price_history → latest_prices ====
 import pandas as _pd
@@ -1157,10 +1593,8 @@ def phase_resistance_update(conn):
         cur.close()
 # ==== /Resistance lines ====
 
-
 # --- DASH settings ---
 # dash template str
-
 
 # === [charts60 flags integration] ============================================
 def _load_flags_map(conn):
@@ -1274,7 +1708,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 <html lang="ja">
 <head>
 
-
 <script id="boot-log">
 (function (g,d) {
   function ts(){ try{ return new Date().toISOString().split('T')[1].replace('Z',''); }catch(e){ return ''; } }
@@ -1330,9 +1763,14 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 <title>スクリーニング ダッシュボード</title>
 <style>
   :root{
+    --sticky-left-w: 0px;
     --ink:#1f2937; --muted:#6b7280; --bg:#f9fafb; --line:#e5e7eb;
     --blue:#0d3b66; --green:#15803d; --orange:#b45309; --yellow:#a16207;
     --hit:#ffe6ef; --rowhover:#f6faff;
+    /* scroll-pad 用（ここに統合） */
+    --railW: 520px;
+    --padFactor: 1.05;
+    --padGutter: 16px;
   }
 
   /* 全体 */
@@ -1346,7 +1784,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   nav a.active{background:var(--blue);color:#fff}
 
   .toolbar{display:flex;gap:14px;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
-  .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #ccd;border-radius:8px;background:#fff}
+  .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #CCD;border-radius:8px;background:#fff}
   .toolbar input[type="number"]{width:80px}
   .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
 
@@ -1360,8 +1798,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     max-height:70vh;
   }
 
-  /* テーブル共通（コンパクト化） */
-  
   /* 市場・Yahoo・X 列だけ更にタイトに（候補テーブル） */
   #tbl-candidate th:nth-child(3),
   #tbl-candidate th:nth-child(4),
@@ -1369,21 +1805,16 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   #tbl-candidate td:nth-child(3),
   #tbl-candidate td:nth-child(4),
   #tbl-candidate td:nth-child(5){
-    padding-left: 2px;
-    padding-right: 2px;
-    text-align: center;
-    white-space: nowrap;
+    padding-left:2px; padding-right:2px; text-align:center; white-space:nowrap;
   }
 
   .tbl{
     border-collapse:collapse;
-    /* 画面幅に合わせて縮ませない */
     width:max-content;
     background:#fff;
-    /* 列幅を固定 → 省略記号や data-col ごとの幅が効く */
     table-layout:fixed;
+    padding-right:var(--sticky-left-w);
   }
-
 
   .tbl th,.tbl td{
     border-bottom:1px solid var(--line);
@@ -1391,11 +1822,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     font-size:0.78em;
     vertical-align:top;
     box-sizing:border-box;
-
-    /* 既定＝折り返し禁止・省略記号で表示崩れを防ぐ */
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     line-height:1.25;
   }
 
@@ -1428,84 +1855,31 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   /* ヘッダー固定（候補一覧 / 全カラム） */
   #tbl-candidate thead th,
   #tbl-allcols  thead th{
-    position:sticky;
-    position:-webkit-sticky;
-    top:0;
-    background:#fff;
-    z-index:2;
+    position:sticky; top:0; background:#fff; z-index:2;
     border-bottom:2px solid #ccc;
-    font-size:0.75em;   /* 見出しを小さく */
-    padding:3px 4px;    /* 上下の余白を圧縮 */
-
-    /* ▼ 追加：ヘッダーは1行固定（改行なし） */
-    white-space: nowrap !important;
-    word-break: keep-all !important;
-    overflow-wrap: normal !important;
+    font-size:0.75em; padding:3px 4px;
+    white-space:nowrap !important; word-break:keep-all !important; overflow-wrap:normal !important;
   }
-
-
-
 
   /* ヘルプ（小窓＋暗幕） */
-  .help-backdrop{
-    position:fixed; inset:0; background:rgba(17,24,39,.45);
-    z-index:9998; display:none;
-  }
-  .help-pop{
-    position:absolute; z-index:9999; background:#fff; border:1px solid #e5e7eb;
-    border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.18);
-    padding:12px 14px 14px; font-size:13px; line-height:1.55;
-    display:none; width:clamp(720px, 90vw, 1200px);
-  }
+  .help-backdrop{ position:fixed; inset:0; background:rgba(17,24,39,.45); z-index:9998; display:none; }
+  .help-pop{ position:absolute; z-index:9999; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.18); padding:12px 14px 14px; font-size:13px; line-height:1.55; display:none; width:clamp(720px, 90vw, 1200px); }
   .help-pop .help-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; font-weight:700;}
   .help-pop .help-close{ display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:6px; cursor:pointer; user-select:none; font-weight:700;}
   .help-pop .help-close:hover{ background:#f3f4f6; }
 
-  /* ？アイコン（テーブル/ツールバー共通） */
-  .qhelp{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; margin-left:6px;
-    border-radius:50%; border:1px solid #cbd5e1; font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;}
+  .qhelp{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; margin-left:6px; border-radius:50%; border:1px solid #cbd5e1; font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;}
   .qhelp:hover{ background:#e0e7ff; }
 
-  /* 既定＝折り返し禁止（1行表示） */
+  /* 既定＝1行 */
   #tbl-candidate td, #tbl-candidate th,
-  #tbl-allcols  td, #tbl-allcols  th{
-    white-space:nowrap;
-    word-break:keep-all;
-    overflow-wrap:normal;
-  }
+  #tbl-allcols  td, #tbl-allcols  th{ white-space:nowrap; word-break:keep-all; overflow-wrap:normal; }
 
-  /* 理由/ヒント/注記など“長文だけ”は折り返し許可 */
+  /* 長文だけ折返し許可 */
   th.reason-col, td.reason-col,
-  .hint-col,
-  .fn-note {
-    white-space:normal !important;
-    word-break:break-word !important;
-    overflow-wrap:anywhere !important;
-  }
+  .hint-col, .fn-note { white-space:normal !important; word-break:break-word !important; overflow-wrap:anywhere !important; }
 
-
-  /* 1行固定したい“短い列”だけ nowrap を適用 */
-  #tbl-candidate th[data-col="コード"],
-  #tbl-candidate th[data-col="市場"],
-  #tbl-candidate th:nth-child(4), /* Yahoo */
-  #tbl-candidate th:nth-child(5), /* X */
-  #tbl-candidate td:nth-child(1),
-  #tbl-candidate td:nth-child(3),
-  #tbl-candidate td:nth-child(4),
-  #tbl-candidate td:nth-child(5),
-  #tbl-candidate td.num {             /* 数値列は基本1行 */
-    white-space:nowrap;
-    word-break:keep-all;
-    overflow-wrap:normal;
-  }
-
-  /* <br> はヘッダーだけ抑止（本文はそのまま活かす） */
-  #tbl-candidate thead br, 
-  #tbl-allcols  thead br{ display:none !important; }
-
-
-  /* 判定理由は極小で折り返し可 */
-  th.reason-col, td.reason-col{ font-size:0.78em; line-height:1.2; white-space:normal !important; word-break:break-word !important; }
+  th.reason-col, td.reason-col{ font-size:0.78em; line-height:1.2; }
 
   .mini{ font-size:10px; color:var(--muted); }
 
@@ -1513,151 +1887,85 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .copylink{ color:var(--blue); text-decoration:underline; cursor:pointer; }
   .copylink.ok{ color:var(--green); text-decoration:none; font-weight:700; }
 
-  /* 予測タブ：理由/ヒントの強調 */
+  /* 予測タブ：理由/ヒント強調 */
   .reason-col,.hint-col {vertical-align: top;}
   .reason-box{ display:inline-block; padding:6px 8px; border-radius:10px; background:#fff9db; line-height:1.4; white-space: pre-wrap; }
 
-  /* 財務コメント（財務リンク右） */
-  .fn-note{
-    color:#b91c1c; font-weight:700; font-size:0.78em; margin-left:8px;
-    white-space:pre-wrap; overflow:visible; text-overflow:clip; display:inline-block;
-    max-width:clamp(600px, 60vw, 1200px); vertical-align:bottom;
-  }
+  /* 財務コメント */
+  .fn-note{ color:#b91c1c; font-weight:700; font-size:0.78em; margin-left:8px; white-space:pre-wrap; overflow:visible; text-overflow:clip; display:inline-block; max-width:clamp(600px, 60vw, 1200px); vertical-align:bottom; }
 
-
-  /* ツールチップ/ポップオーバーはクリック貫通 */
   .tooltip, .popover { pointer-events:none; }
-  
-  /* 決算タブ：判定理由をタグ風に表示 */
   .reason-tags{ display:flex; flex-wrap:wrap; gap:6px; }
-  .reason-tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
-    background:#eef2ff; border:1px solid #c7d2fe; color:#334155; white-space:nowrap; }
+  .reason-tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#eef2ff; border:1px solid #c7d2fe; color:#334155; white-space:nowrap; }
 
-
-  /* PATCH: ensure white text for bulk-copy button */
+  /* ボタンの色補正 */
   #copy-page{ color:#fff !important; text-decoration:none; }
-  
+
   /* 市場フィルタ */
   #market-filter label{ display:inline-flex; gap:6px; align-items:center; padding:2px 6px; border:1px solid var(--line); border-radius:8px; }
   #market-filter input[type="checkbox"]{ transform: translateY(0.5px); }
 
   /* ===== Column fold (fixed width via <col>) ===== */
-
-  /* 列幅は <col> で決める */
   #tbl-candidate{ table-layout: fixed; }
-
-  /* 通常時は自動幅、畳んだ列は22px（調整可） */
   #tbl-candidate col{ width:auto; }
   #tbl-candidate col.col-collapsed{ width:22px !important; }
 
-  /* 長文列（財務/理由/注記/ニュース 等）だけは広め＋折り返し許可 */
-th[data-col="財務"], td[data-col="財務"],
-th[data-col="理由"], td[data-col="理由"],
-th[data-col="判定理由"], td[data-col="判定理由"],
-th[data-col="注記"], td[data-col="注記"],
-th[data-col="ニュース"], td[data-col="ニュース"]{
-  /* 列幅を広げる（必要なら数値調整） */
-  max-width:360px;
-  white-space:normal;
-  overflow-wrap:anywhere;
-  word-break:break-word;
-}
+  /* 長文列は広め */
+  th[data-col="財務"], td[data-col="財務"],
+  th[data-col="理由"], td[data-col="理由"],
+  th[data-col="判定理由"], td[data-col="判定理由"],
+  th[data-col="注記"], td[data-col="注記"],
+  th[data-col="ニュース"], td[data-col="ニュース"]{
+    max-width:360px; white-space:normal; overflow-wrap:anywhere; word-break:break-word;
+  }
 
-/* コード/銘柄はやや広め（任意） */
-th[data-col="コード"], td[data-col="コード"],
-th[data-col="銘柄"], td[data-col="銘柄"]{
-  max-width:160px;
-}
+  /* コード/銘柄はやや広め */
+  th[data-col="コード"], td[data-col="コード"],
+  th[data-col="銘柄"], td[data-col="銘柄"]{ max-width:160px; }
 
-
-
-
-/* === injected: freeze columns === */
-/* === freeze columns (列固定) === */
-.tbl .frozen-cell{
-  position: sticky;
-  background:#fff;
-  z-index: 2;
-  will-change: left;
-}
-.tbl thead th.frozen-cell{ z-index: 3; }
-.tbl .frozen-edge::after{
-  content:"";
-  position:absolute; top:0; bottom:0; right:-1px;
-  width:0; box-shadow: 6px 0 8px -6px rgba(0,0,0,.25);
-  pointer-events:none;
-}
-.tbl-wrap{ overflow:auto; }
+  /* === scroll-pad (extend horizontal scroll) === */
+  .scroll-pad{
+    min-width: calc(var(--railW) * var(--padFactor) + var(--padGutter));
+    width:     calc(var(--railW) * var(--padFactor) + var(--padGutter));
+    border:none !important; background:transparent !important; pointer-events:none; padding:0 !important;
+  }
 </style>
 
-
-<!-- injected: freeze columns -->
 <script>
-(function(g,d){
-  function getCandTable(){ return d.getElementById('tbl-candidate'); }
-  function px(n){ return (Math.round(n)||0) + 'px'; }
-
-  function freezeColumns(table, n){
-    if(!table) return;
-    const thead = table.tHead, tbody = table.tBodies && table.tBodies[0];
-    if(!thead || !tbody) return;
-    for(const th of thead.rows[0].cells){ th.classList.remove('frozen-cell','frozen-edge'); th.style.left=''; }
-    for(const tr of tbody.rows){
-      for(const td of tr.cells){ td.classList.remove('frozen-cell','frozen-edge'); td.style.left=''; }
+(function(){
+  function measureStickyWidth(){
+    var tbl = document.getElementById('tbl-candidate');
+    if(!tbl) return;
+    var hdr = tbl.querySelector('thead tr');
+    if(!hdr) return;
+    var cells = hdr.querySelectorAll('.sticky, [data-sticky="1"], [data-sticky="true"], .sticky-0, .sticky-1, .sticky-2, .sticky-3');
+    var w = 0;
+    if(cells.length){
+      cells.forEach(function(td){ try{ w += td.getBoundingClientRect().width; }catch(e){} });
+    } else {
+      var ths = hdr.querySelectorAll('th');
+      ths.forEach(function(th){
+        var left = parseFloat(getComputedStyle(th).left || '0');
+        if(left > 0){ w = Math.max(w, left + th.getBoundingClientRect().width); }
+      });
     }
-    if(!n || n<=0) return;
-
-    const ths = Array.from(thead.rows[0].cells);
-    const lefts = []; let acc = 0;
-    for(let i=0;i<ths.length;i++){ const w = ths[i].getBoundingClientRect().width; lefts[i]=acc; acc+=w; }
-    const clamp = Math.min(n, ths.length);
-
-    for(let i=0;i<clamp;i++){ const th = ths[i]; th.classList.add('frozen-cell'); th.style.left = px(lefts[i]); }
-    if(clamp>0) ths[clamp-1].classList.add('frozen-edge');
-
-    for(const tr of tbody.rows){
-      for(let i=0;i<clamp;i++){ const td = tr.cells[i]; if(!td) continue; td.classList.add('frozen-cell'); td.style.left = px(lefts[i]); }
-      const edge = tr.cells[clamp-1]; if(edge) edge.classList.add('frozen-edge');
-    }
+    document.documentElement.style.setProperty('--sticky-left-w', (Math.round(w) || 0) + 'px');
   }
-
-  function resolveIndexFromSelect(sel, table){
-    if(!sel || !table) return 0;
-    const val = String(sel.value||'').trim();
-    const ths = Array.from(table.tHead?.rows?.[0]?.cells || []);
-    if(/^-?\d+$/.test(val)){ const num = parseInt(val,10); if(num<=0) return 0; return Math.min(num, ths.length); }
-    const byDataCol = ths.findIndex(th => (th.getAttribute('data-col')||'').trim() === val);
-    if(byDataCol >= 0) return byDataCol+1;
-    const norm = (s)=>String(s||'').replace(/\s+/g,' ').trim();
-    const byText = ths.findIndex(th => norm(th.innerText) === norm(val));
-    if(byText >= 0) return byText+1;
-    return 0;
-  }
-
-  function hookupFreezeUI(){
-    const table = getCandTable();
-    if(!table) return;
-    const sel = d.querySelector('[data-role="freeze-select"]')
-              || d.getElementById('freeze-select')
-              || d.querySelector('select[name="列固定選択"]');
-    const btn = d.querySelector('[data-role="freeze-apply"]')
-              || d.getElementById('freeze-apply')
-              || Array.from(d.querySelectorAll('button, input[type="button"]'))
-                   .find(el => /列固定/.test(el.textContent||el.value||''));
-    if(!sel || !btn) return;
-    const apply = ()=> freezeColumns(table, resolveIndexFromSelect(sel, table));
-    btn.addEventListener('click', apply);
-    g.addEventListener('resize', apply);
-    apply();
-  }
-
-  if(document.readyState === 'loading'){
-    d.addEventListener('DOMContentLoaded', hookupFreezeUI);
-  }else{
-    hookupFreezeUI();
-  }
-})(window, document);
+  window.addEventListener('load', measureStickyWidth);
+  window.addEventListener('resize', measureStickyWidth);
+  document.addEventListener('readystatechange', function(){ if(document.readyState === 'complete'){ measureStickyWidth(); }});
+})();
 </script>
+
+<!-- ※ 壊れていた「injected: freeze columns」は削除し、安定版のみ残す -->
+
+<style>
+  /* 数値列 右寄せ（抵抗/支持） */
+  th[data-col="抵抗帯中心"], th[data-col="最寄り抵抗"],
+  th[data-col="支持帯中心"], th[data-col="最寄り支持"],
+  td[data-col="抵抗帯中心"], td[data-col="最寄り抵抗"],
+  td[data-col="支持帯中心"], td[data-col="最寄り支持"] { text-align:right; }
+</style>
 
 <script id="freeze-cols">
 (function(){
@@ -1667,7 +1975,7 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   function createFreezeUI(tableId, label){
     var tbl = document.getElementById(tableId);
     if (!tbl) return null;
-    if (document.getElementById(tableId + "-freeze-ui")) return null; // already
+    if (document.getElementById(tableId + "-freeze-ui")) return null;
 
     var wrap = tbl.closest(".tbl-wrap") || tbl.parentElement;
     var ui = document.createElement("div");
@@ -1692,7 +2000,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     ui.appendChild(lab);
     ui.appendChild(sel);
 
-    // insert before table wrapper or table
     if (wrap && wrap.parentNode) {
       wrap.parentNode.insertBefore(ui, wrap);
     } else if (tbl.parentNode) {
@@ -1701,20 +2008,15 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       document.body.insertBefore(ui, document.body.firstChild);
     }
 
-    // Build options from header th[data-col]
     var ths = tbl.querySelectorAll("thead th");
-    var headerNames = [];
     ths.forEach(function(th, i){
-      var nm = (th.textContent || "").trim();
-      if (!nm) nm = th.getAttribute("data-col") || ("列" + (i+1));
-      headerNames.push(nm);
+      var nm = (th.textContent || "").trim() || th.getAttribute("data-col") || ("列" + (i+1));
       var opt = document.createElement("option");
       opt.value = String(i);
       opt.textContent = nm;
       sel.appendChild(opt);
     });
 
-    // apply stored
     try {
       var key = "freezeIdx:" + tableId;
       var saved = localStorage.getItem(key);
@@ -1747,7 +2049,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     clearFreeze(tableId);
     if (uptoIdx === null || isNaN(uptoIdx)) return;
 
-    // compute cumulative left offsets from header widths
     var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
     var lefts = [];
     var sum = 0;
@@ -1756,10 +2057,8 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
     }
 
-    // apply sticky to each column up to uptoIdx
     for (var col=0; col<=uptoIdx && col<ths.length; col++){
       var left = lefts[col] + "px";
-      // headers
       tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
         th.style.position = "sticky";
         th.style.left = left;
@@ -1767,7 +2066,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
         th.style.background = "#fff";
         th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
       });
-      // cells
       tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
         td.style.position = "sticky";
         td.style.left = left;
@@ -1779,13 +2077,110 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   }
 
   document.addEventListener("DOMContentLoaded", function(){
-    // Auto-create UIs for both tables if present
     createFreezeUI("tbl-candidate", "固定列（候補一覧）：");
     createFreezeUI("tbl-allcols", "固定列（全カラム）：");
   });
 })();
 </script>
 
+<script id="res-map">
+(function(g){
+  if (g.__RES_MAP_INSTALLED__) return; g.__RES_MAP_INSTALLED__ = true;
+  function fmt(v){
+    if (v===null || v===undefined || v==='') return '';
+    var n = Number(v); if (!isFinite(n)) return '';
+    return n.toLocaleString('ja-JP');
+  }
+  function mapRow(row){
+    try{
+      if (row.Res_Zone !== undefined)      row["抵抗帯中心"] = fmt(row.Res_Zone);
+      if (row.Res_Zone_Last !== undefined) row["抵抗最終日"] = row.Res_Zone_Last || "";
+      if (row.Res_Nearest !== undefined)   row["最寄り抵抗"] = fmt(row.Res_Nearest);
+      if (row.Sup_Zone !== undefined)      row["支持帯中心"] = fmt(row.Sup_Zone);
+      if (row.Sup_Zone_Last !== undefined) row["支持最終日"] = row.Sup_Zone_Last || "";
+      if (row.Sup_Nearest !== undefined)   row["最寄り支持"] = fmt(row.Sup_Nearest);
+    }catch(_){}
+    return row;
+  }
+  if (Array.isArray(g.DATA_CAND)) g.DATA_CAND = g.DATA_CAND.map(mapRow);
+  if (Array.isArray(g.DATA_ALL))  g.DATA_ALL  = g.DATA_ALL.map(mapRow);
+})(window);
+</script>
+
+<script>
+// === scroll-pad injector: allows scrolling further right so any column can align next to the fixed columns ===
+(function(g,d){
+  function measureRailRight(table){
+    try{
+      var ths = Array.prototype.slice.call(table.querySelectorAll('thead th'));
+      var edge = 0;
+      ths.forEach(function(th){
+        var cs = g.getComputedStyle(th);
+        if (cs.position === 'sticky' && cs.left !== 'auto'){
+          var right = th.offsetLeft + th.offsetWidth;
+          if (right > edge) edge = right;
+        }
+      });
+      if (edge === 0 && ths.length){
+        var limit = Math.min(5, ths.length);
+        for (var i=0;i<limit;i++){
+          var th = ths[i];
+          var right = th.offsetLeft + th.offsetWidth;
+          if (right > edge) edge = right;
+        }
+      }
+      return edge;
+    }catch(e){ return 0; }
+  }
+
+  function ensurePadColumn(table){
+    try{
+      var theadTr = table.querySelector('thead tr');
+      var hasPad  = !!table.querySelector('thead th[data-col="__PAD__"]');
+      if (!hasPad && theadTr){
+        var th = d.createElement('th');
+        th.className = 'scroll-pad';
+        th.setAttribute('data-col','__PAD__');
+        theadTr.appendChild(th);
+      }
+      var rows = table.querySelectorAll('tbody tr');
+      for (var i=0;i<rows.length;i++){
+        var tr = rows[i];
+        if (!tr.querySelector('td[data-col="__PAD__"]')){
+          var td = d.createElement('td');
+          td.className = 'scroll-pad';
+          td.setAttribute('data-col','__PAD__');
+          tr.appendChild(td);
+        }
+      }
+    }catch(e){}
+  }
+
+  function update(){
+    var table = d.getElementById('tbl-candidate');
+    if (!table) return;
+    ensurePadColumn(table);
+    var w = measureRailRight(table);
+    if (w && w>0){
+      d.documentElement.style.setProperty('--railW', w + 'px');
+    }
+  }
+
+  d.addEventListener('DOMContentLoaded', function(){
+    try{
+      update();
+      g.addEventListener('resize', update);
+      try{
+        var table = d.getElementById('tbl-candidate');
+        if (table && g.MutationObserver){
+          var obs = new MutationObserver(function(){ update(); });
+          obs.observe(table.querySelector('thead'), {childList:true, attributes:true, subtree:true});
+        }
+      }catch(_){}
+    }catch(e){ console.warn('[scroll-pad]', e); }
+  });
+})(window, document);
+</script>
 </head>
 
 <body>
@@ -1797,17 +2192,11 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     <a href="#" id="lnk-preearn">決算(予測)</a>
     {% if include_log %}<a href="#" id="lnk-log">signals_log</a>{% endif %}
     <span class="mini" style="margin-left:auto">build: {{ build_id }}</span>
-    <!-- ナビ全体に「まとめ（優先度順）」の?を付けるためのアンカー -->
     <span id="nav-summary-anchor"></span></nav>
 
   <div id="toolbar" class="toolbar">
-    <!-- 抵抗フィルタ -->
     <div class="res-filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 4px">
       <span class="muted" style="font-size:12px">抵抗の表示:</span>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_HH" checked> 最高値</label>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_Zone" checked> ゾーン</label>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_Round" checked> キリ番</label>
-      <label class="chip"><input type="checkbox" class="res-tog" data-key="Res_Line_Today" checked> 斜め</label>
       <span class="muted" style="font-size:12px">近接ハイライト±</span>
       <input id="resNearPct" type="number" min="0" step="0.1" value="0.5" style="width:60px">% 
     </div>
@@ -1833,15 +2222,11 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     <label>売買代金≥ <input type="number" id="th_turn" placeholder="10" step="0.1" inputmode="decimal" autocomplete="off"></label>
     <label>RVOL代金≥ <input type="number" id="th_rvol" placeholder="3.0" step="0.1" inputmode="decimal" autocomplete="off"></label>
 
-    <!-- ▼ 進捗率 / スコア（最小値フィルタ） -->
     <label>進捗率≥ <input type="number" id="th_progress" placeholder="80" step="1" inputmode="decimal" autocomplete="off"></label>
     <label>スコア≥ <input type="number" id="th_score" placeholder="0" step="1" inputmode="decimal" autocomplete="off"></label>
-    <!-- ▲ ここまで -->
 
-    <!-- ▼ 価格フィルタ（追加） -->
     <label>株価≥ <input type="number" id="th_pmin" placeholder="下限" step="1" inputmode="decimal" autocomplete="off"></label>
     <label>～ ≤ <input type="number" id="th_pmax" placeholder="上限" step="1" inputmode="decimal" autocomplete="off"></label>
-    <!-- ▲ 価格フィルタ -->
 
     <label><input type="checkbox" id="f_defaultset"> 規定</label>
 
@@ -1862,121 +2247,69 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     </span>
     <span class="count">件数: <b id="count">-</b></span>
     
-    <!-- ▼ 市場フィルタ（動的生成：東P/東S/…を自動抽出） -->
     <div class="toolbar" id="market-filter" style="gap:8px; align-items:center;">
       <span class="muted">市場:</span>
       <label class="mk-all"><input type="checkbox" id="mk_all" checked> 全て</label>
       <span id="mk_host" style="display:inline-flex; gap:8px; flex-wrap:wrap;"></span>
     </div>
-    <!-- ▲ 市場フィルタ -->
 
-
-    <!-- ▼ 今のページの銘柄コード＆銘柄名を一括コピー（追加） -->
     <button class="btn copylink" id="copy-page">今のページの銘柄をコピー</button>
     <button class="btn" id="download-csv">CSVダウンロード</button>
-    <!-- ▲ 追加 -->
-    
-
   </div>
-
 
 <script id="__DATA__" type="application/json">{{ data_json|safe }}</script>
 
-<!-- ヘルプ文言（キーはヘッダー/ラベルと完全一致） -->
+<!-- ヘルプ定義＆マップ -->
 <script>
   window.HELP_TEXT = {
-  "抵抗帯中心":"過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
-  "抵抗最終日":"直近で抵抗帯に触れた日。",
-  "最寄り抵抗":"現在値以上で最も近い抵抗。",
-  "支持帯中心":"過去データからタッチ回数が最も多い価格帯の中心（支持）。",
-  "支持最終日":"直近で支持帯に触れた日。",
-  "最寄り支持":"現在値以下で最も近い支持。",
-    "規定": "既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
-    "コード": "東証の銘柄コード（4桁、ETF等は例外あり）。",
-    "銘柄": "銘柄名。",
-    "現在値": "最新の株価（終値/スナップショット）。",
-    "前日終値": "その銘柄の前日の終値。基準価格となる。",
-    "高値": "当日の高値。",
-    "安値": "当日の安値。",
-    "5日": "単純移動平均（5日）。終値ベース。",
-    "25日": "単純移動平均（25日）。終値ベース。",
-      "75日": "単純移動平均（75日）。終値ベース。",
-    "抵抗HH": "過去N日(設定値)の最高値。",
-    "抵抗ゾーン": "タッチ回数最大の水平帯の中心値（ヒゲ/終値が帯に入った回数）。",
-    "タッチ": "抵抗ゾーンへの到達回数。",
-    "最終": "抵抗ゾーンの最終タッチ日。",
-    "キリ番": "最高値に最も近い丸め値（100/1000/…）。",
-    "刻": "キリ番の刻み（100/1000/…）。",
-    "近": "最高値がキリ番に十分近いか（±閾値）。",
-    "斜め": "ピボット高値回帰の本日外挿値。",
-    "R²": "トレンドライン回帰の決定係数。",
-    "最近接抵抗": "現在値より上の候補で最も近い抵抗（種別つき）。",
-    "前日比(円)": "当日の株価が前日終値から何円動いたか。",
-    "前日終値比率（％）": "【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
-    "出来高": "売買された株数。売買代金やRVOLと併用が望ましい。",
-    "売買代金(億)": "【流動性】最重要。デイトレ狙いなら最低 5–10 億以上が目安。",
-    "RVOL代金": "Relative Volume × 売買代金。直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
-    "初動": "【シグナル】資金流入の初動。短期資金の動きの兆候。",
-    "底打ち": "【シグナル】安値圏からの反転兆候。リバ狙いの候補。",
-    "右肩": "【シグナル】右肩上がりスコアに基づくトレンド持続性の判定。",
-    "早期": "【シグナル】右肩の“早期”局面。詳細は『早期種別』参照。",
-    "早期S": "【勢い+シグナル】RVOL/代金/値動きの合成スコア。80+ 強い、90+ 主役級。",
-    "スコア": "総合スコア（アルゴによる合成指標）。しきい値の目安は用途に応じて調整。",
-    "進捗率": "着手済み作業/想定全体の比率（%）。",
-    "早期種別": "当日最有力のエントリー種別（ブレイク(今買い)>ポケット(仕込み)>20MAリバ(少な目)>200MAリクレイム等(少な目)）。",
-    "判定": "最終判定（候補/監視/非該当など）。",
-    "判定理由": "アルゴが候補にした根拠の要約。",
-    "推奨": "自動分類の推奨ラベル（有力/小口/監視など）。",
-    "推奨比率%": "推奨の強さ（%）。",
-    "更新": "シグナル最終更新日。",
-
-    /* 行内の値ヘルプ */
-    "ブレイク": "過去高値更新＋出来高伴う上抜け。",
-    "ポケット": "10MA上で直近の下げ日最大出来高を上回るなどの“押し目買い”有利域。",
-    "20MAリバ": "20MAを下から上へ再突入。出来高は20日平均以上が望ましい。",
-    "200MAリクレイム": "200MAを回復し上で維持。50MA上向き/100MA横ばい以上が理想。",
-
-    /* まとめ */
-    "まとめ（優先度順）": "・売買代金 × RVOL（まず流動性）\n・前日比％ と 合成S（勢い）\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%（許容リスク）\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」を優先。"
+    "抵抗帯中心":"過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
+    "抵抗最終日":"直近で抵抗帯に触れた日。",
+    "最寄り抵抗":"現在値以上で最も近い抵抗。",
+    "支持帯中心":"過去データからタッチ回数が最も多い価格帯の中心（支持）。",
+    "支持最終日":"直近で支持帯に触れた日。",
+    "最寄り支持":"現在値以下で最も近い支持。",
+    "規定":"既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
+    "コード":"東証の銘柄コード（4桁、ETF等は例外あり）。",
+    "銘柄":"銘柄名。","現在値":"最新の株価（終値/スナップショット）。","前日終値":"その銘柄の前日の終値。基準価格となる。",
+    "高値":"当日の高値。","安値":"当日の安値。","5日":"単純移動平均（5日）。","25日":"単純移動平均（25日）。","75日":"単純移動平均（75日）。",
+    "抵抗HH":"過去N日(設定値)の最高値。","抵抗ゾーン":"タッチ回数最大の水平帯の中心値。","タッチ":"抵抗ゾーンへの到達回数。","最終":"抵抗ゾーンの最終タッチ日。",
+    "キリ番":"最高値に最も近い丸め値。","刻":"キリ番の刻み。","近":"最高値がキリ番に十分近いか。","斜め":"ピボット高値回帰の本日外挿値。","R²":"決定係数。",
+    "最近接抵抗":"現在値より上で最も近い抵抗。",
+    "前日比(円)":"当日の株価が前日終値から何円動いたか。",
+    "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
+    "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
+    "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
+    "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
+    "スコア":"総合スコア。","進捗率":"着手済み作業/想定全体の比率（%）。","早期種別":"ブレイク/ポケット/20MAリバ/200MAリクレイム。",
+    "判定":"最終判定。","判定理由":"候補にした根拠の要約。","推奨":"推奨ラベル。","推奨比率%":"推奨の強さ（%）。","更新":"シグナル最終更新日。",
+    "ブレイク":"高値更新＋出来高伴う上抜け。","ポケット":"押し目買い有利域。","20MAリバ":"20MA再突入。","200MAリクレイム":"200MAを回復し維持。",
+    "まとめ（優先度順）":"・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。"
   };
 
-  // data-col → HELP_TEXT マップ（ヘッダーの data-col 用）
   window.DATACOL_TO_HELPKEY = {
-    "コード":"コード","銘柄名":"銘柄","現在値":"現在値",
-    "前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
+    "コード":"コード","銘柄名":"銘柄","現在値":"現在値","前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
     "出来高":"出来高","売買代金(億)":"売買代金(億)",
-    "初動フラグ":"初動","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期",
-    "右肩早期スコア":"早期S","右肩早期種別":"早期種別",
-    "判定":"判定","判定理由":"判定理由",
-    "推奨アクション":"推奨","推奨比率":"推奨比率%",
-    "シグナル更新日":"更新",
-    "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日"
+    "初動フラグ":"初動","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
+    "判定":"判定","判定理由":"判定理由","推奨アクション":"推奨","推奨比率":"推奨比率%","シグナル更新日":"更新",
+    "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日",
+    "抵抗帯中心":"抵抗帯中心","抵抗最終日":"抵抗最終日","最寄り抵抗":"最寄り抵抗","支持帯中心":"支持帯中心","支持最終日":"支持最終日","最寄り支持":"最寄り支持",
+    "抵抗HH":"抵抗HH","抵抗ゾーン":"抵抗ゾーン","タッチ":"タッチ","最終":"最終","キリ番":"キリ番","刻":"刻","近":"近","斜め":"斜め","R²":"R²","最近接抵抗":"最近接抵抗"
   };
 </script>
 
 <script>
-
 (function(){
   "use strict";
 
-  // ---- numeric/date helpers (IIFE内で1本化) ----
+  // ---- numeric/date helpers ----
   function _toNumRaw(v){
     const s = String(v ?? "").replace(/[,\s円％%]/g, "");
     const n = parseFloat(s);
     return Number.isFinite(n) ? n : NaN;
   }
-  function fint(v){                           // 整数（株価など）
-    const n = _toNumRaw(v);
-    return Number.isFinite(n) ? String(Math.round(n)) : "";
-  }
-  function f2(v){                             // 小数2桁
-    const n = _toNumRaw(v);
-    return Number.isFinite(n) ? n.toFixed(2) : "";
-  }
-  function fd(v){                             // 日付(YYYY-MM-DD)
-    return v ? String(v).slice(0,10) : "";
-  }
-
+  function fint(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? String(Math.round(n)) : ""; }
+  function f2(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? n.toFixed(2) : ""; }
+  function fd(v){ return v ? String(v).slice(0,10) : ""; }
 
   // ---- data ----
   const RAW = (()=>{ try{ return JSON.parse(document.getElementById("__DATA__").textContent||"{}"); }catch(_){ return {}; } })();
@@ -1990,19 +2323,17 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   // ---- utils ----
   const $  = (s,r=document)=>r.querySelector(s);
   const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
-  const num = (v)=>{ const s=String(v??"").replace(/[,\s円％%]/g,""); const n=parseFloat(s); return Number.isFinite(n)?n:NaN; };
+  const num = (v)=>_toNumRaw(v);
   const cmp = (a,b)=>{ if(a==null&&b==null) return 0; if(a==null) return -1; if(b==null) return 1;
     const na=+a, nb=+b, da=new Date(a), db=new Date(b);
     if(!Number.isNaN(na)&&!Number.isNaN(nb)) return na-nb;
     if(!Number.isNaN(da)&&!Number.isNaN(db)) return da-db;
     return String(a).localeCompare(String(b),"ja"); };
   const hasKouho = (v)=> String(v||"").includes("候補");
-
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
 
-  // === 市場フィルタ ===
+  // 市場フィルタ
   const LS_MK = "mk_filters_v1";
-
   function collectMarkets(){
     const srcs = [DATA_CAND, DATA_ALL, DATA_EARN, DATA_PREEARN];
     const set = new Set();
@@ -2012,34 +2343,23 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
         if (v) set.add(v);
       }
     }
-    // 一般的な並びを優先し、未知は後ろへ
     const order = ["東P","東S","東G","東M","札証","名証","福証","北証","他"];
     const known = [], unknown = [];
     [...set].forEach(s => (order.includes(s) ? known.push(s) : unknown.push(s)));
-    // 既知順→未知は辞書順
     unknown.sort((a,b)=>a.localeCompare(b,"ja"));
     return [...known, ...unknown];
   }
-
   function loadMkState(allKeys){
     try{
       const raw = JSON.parse(localStorage.getItem(LS_MK)||"{}");
-      // 保存が無ければ「全てON」
       if (!raw || !raw.keys) return new Set(allKeys);
       const on = new Set(raw.keys.filter(k => allKeys.includes(k)));
-      // 1つも残らなければ安全のため全てON
       return on.size? on : new Set(allKeys);
     }catch(_){ return new Set(allKeys); }
   }
+  function saveMkState(set){ try{ localStorage.setItem(LS_MK, JSON.stringify({keys:[...set]})); }catch(_){} }
 
-  function saveMkState(set){
-    try{
-      localStorage.setItem(LS_MK, JSON.stringify({keys:[...set]}));
-    }catch(_){}
-  }
-
-
-  // ==== ヘルプ（?）ユーティリティ ====
+  // ヘルプ（?）
   document.addEventListener('click', (e)=>{
     const q = e.target.closest && e.target.closest('.qhelp');
     if(!q) return;
@@ -2049,7 +2369,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     const html = htmlRaw.replace(/\n/g,'<br>');
     openHelp(`<div style="max-width:1000px">${html}</div>`);
   });
-
   function makeQ(el, helpKey){
     if(!el || !helpKey) return;
     if(el.querySelector && el.querySelector(`.qhelp[data-key="${helpKey}"]`)) return;
@@ -2059,7 +2378,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     s.textContent = '?';
     el.appendChild(s);
   }
-
   function attachQHelpsToHead(tableSelector){
     const map = window.DATACOL_TO_HELPKEY || {};
     const root = document.querySelector(tableSelector);
@@ -2070,15 +2388,25 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       let key = (col && map[col]) || null;
       if(!key){
         const label = (th.textContent || '').trim();
-        if (window.HELP_TEXT && Object.prototype.hasOwnProperty.call(window.HELP_TEXT, label)){
-          key = label;
-        }
+        if (window.HELP_TEXT && Object.prototype.hasOwnProperty.call(window.HELP_TEXT, label)){ key = label; }
       }
       if(key) makeQ(th, key);
     });
   }
-
   function attachQHelpsToToolbar(){
+    const resolveLabel = (inp) => {
+      if (!inp) return null;
+      let lb = inp.closest && inp.closest('label');
+      if (lb) return lb;
+      if (inp.labels && inp.labels.length) return inp.labels[0];
+      if (inp.id) {
+        lb = document.querySelector(`label[for="${inp.id}"]`);
+        if (lb) return lb;
+      }
+      let p = inp.previousElementSibling;
+      for (let i=0; i<3 && p; i++, p=p.previousElementSibling) { if (p.tagName === 'LABEL') return p; }
+      return inp.parentElement || null;
+    };
     const pairs = [
       ['#f_defaultset','規定'],
       ['#th_rate','前日終値比率（％）'],
@@ -2086,16 +2414,26 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       ['#th_rvol','RVOL代金'],
       ['#th_progress','進捗率'],
       ['#th_score','スコア'],
-      ['#th_pmin','現在値'],  // 追加
-      ['#th_pmax','現在値']   // 追加
+      ['#th_pmin','現在値'],
+      ['#th_pmax','現在値'],
     ];
     pairs.forEach(([sel, key])=>{
       const inp = document.querySelector(sel);
-      const label = inp?.closest('label') || inp?.parentElement;
-      if (label) makeQ(label, key);
+      const lb  = resolveLabel(inp);
+      if (lb) makeQ(lb, key);
     });
+    if (window.HELP_TEXT) {
+      document.querySelectorAll('#toolbar .early-filter label').forEach(lb=>{
+        const key = (lb.textContent || '').trim();
+        if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) { if (!lb.querySelector('.qhelp')) makeQ(lb, key); }
+      });
+      document.querySelectorAll('#toolbar label').forEach(lb=>{
+        if (lb.querySelector('.qhelp')) return;
+        const key = (lb.textContent || '').trim();
+        if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) { makeQ(lb, key); }
+      });
+    }
   }
-  // ==== ヘルプユーティリティここまで ====
 
   // copy link（単一コード）
   function codeLink(code){
@@ -2105,7 +2443,7 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   }
   document.addEventListener("click", async (e)=>{
     const a = e.target.closest && e.target.closest("a.copylink");
-    if (!a || a.id === "copy-page") return; // ページコピーは別ハンドラ
+    if (!a || a.id === "copy-page") return;
     e.preventDefault();
     const text = a.dataset.copy || "";
     try{
@@ -2168,8 +2506,7 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
     if(code) openFinanceHtml(code);
   });
 
-
-  // ▼▼▼ これを「finance modal」セクションの直後に追加 ▼▼▼
+  // 任意グラフリンク
   document.addEventListener("click", (e)=>{
     const a = e.target.closest && e.target.closest("a.chartlink");
     if (!a) return;
@@ -2180,7 +2517,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       const body = document.getElementById("__chart_body__");
 
       let url = a.getAttribute("data-href") || a.getAttribute("href") || "";
-      // Windows の \ を / に正規化（相対の頑健性UP）
       url = url.replace(/\\/g, "/");
 
       const box = document.getElementById("__chart_box__");
@@ -2193,18 +2529,15 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       box.style.display  = "block";
       const sx = window.scrollX||0, sy = window.scrollY||0;
       box.style.top = `${sy+60}px`;
-      requestAnimationFrame(()=>{ box.style.left = `${sx + Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+      requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
     }catch(err){
       console.error("[chartlink open error]", err);
-      // フォールバック：新規タブ
       const u = a.getAttribute("data-href") || a.getAttribute("href");
       if (u) window.open(u, "_blank", "noopener");
     }
   });
 
-
-
-  // DOM sort (generic)
+  // DOM sort
   function wireDomSort(tableSelector){
     const table = document.querySelector(tableSelector); if(!table) return;
     const ths = Array.from(table.querySelectorAll('thead th.sortable'));
@@ -2259,10 +2592,10 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
   // state
   const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), q:"", data: DATA_CAND.slice() };
   window.state = state;
-  
-  // 市場リストと状態
+
+  // 市場
   const MK_LIST = collectMarkets();
-  const mkSet   = loadMkState(MK_LIST); // 表示許可済みの市場セット
+  const mkSet   = loadMkState(MK_LIST);
 
   function renderMarketCheckboxes(){
     const host = $("#mk_host"); if(!host) return;
@@ -2277,7 +2610,6 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       cb.checked = mkSet.has(mk);
       cb.addEventListener("change", ()=>{
         if (cb.checked) mkSet.add(mk); else mkSet.delete(mk);
-        // 「全て」チェックの同期
         const allOn = MK_LIST.every(x => mkSet.has(x));
         const mkAll = $("#mk_all"); if (mkAll) mkAll.checked = allOn;
         saveMkState(mkSet);
@@ -2285,15 +2617,12 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
         render();
       });
     });
-
-    // 「全て」の状態反映とハンドラ
     const mkAll = $("#mk_all");
     if (mkAll){
       mkAll.checked = MK_LIST.every(x => mkSet.has(x));
       mkAll.addEventListener("change", ()=>{
         if (mkAll.checked) MK_LIST.forEach(x => mkSet.add(x));
         else               MK_LIST.forEach(x => mkSet.delete(x));
-        // 個別チェックを同期
         MK_LIST.forEach(mk=>{
           const cb = document.getElementById("mk_"+mk);
           if (cb) cb.checked = mkAll.checked;
@@ -2304,64 +2633,12 @@ th[data-col="銘柄"], td[data-col="銘柄"]{
       });
     }
   }
-
-  // 起動時に描画
   renderMarketCheckboxes();
 
-
-
-// === Resistance helpers ===
-function computeNearestResistance(row, priceNow, nearPct){
-  const cand = [];
-  const push = (v, label) => { if (v!=null && isFinite(v) && v > priceNow) cand.push({v:+v, label}); };
-  push(row.Res_Zone, 'ゾーン');
-  push(row.Res_Round, 'キリ番');
-  push(row.Res_Line_Today, '斜め');
-  push(row.Res_HH, '最高値');
-  cand.sort((a,b)=>a.v-b.v);
-  const nearest = cand.length ? cand[0] : null;
-  function flag(v){
-    if (v==null || !priceNow) return {cls:''};
-    const diff = Math.abs(v - priceNow)/priceNow*100;
-    if (diff <= nearPct) return {cls:'near', diff};
-    return {cls:'', diff};
-  }
-  return {nearest, flags:{
-    Res_Zone: flag(row.Res_Zone),
-    Res_Round: flag(row.Res_Round),
-    Res_Line_Today: flag(row.Res_Line_Today),
-    Res_HH: flag(row.Res_HH)
-  }};
-}
-function fmtNum(x){ return (x==null||!isFinite(x))? '': Number(x).toLocaleString(undefined,{maximumFractionDigits:2}); }
-function fmtInt(x){ return (x==null||!isFinite(x))? '': Math.round(x).toLocaleString(); }
-function renderResCells(row, priceNow){
-  const nearPct = parseFloat(document.getElementById('resNearPct')?.value||'0.5');
-  const toggles = [...document.querySelectorAll('.res-tog')].reduce((m,el)=>{m[el.dataset.key]=el.checked;return m;},{});
-  const {nearest, flags} = computeNearestResistance(row, priceNow, nearPct);
-  const cells = [];
-  const push = (key, html) => { if (toggles[key]===false) cells.push(`<td class="res-cell muted"></td>`); else cells.push(html); };
-  push('Res_HH', `<td class="res-cell ${flags.Res_HH.cls}" data-col="Res_HH">${fmtNum(row.Res_HH)}</td>`);
-  const zoneMeta = (row.Res_Zone_Touches?`<span class="muted">(${fmtInt(row.Res_Zone_Touches)}回/${row.Res_Zone_Last||''})</span>`:''); 
-  push('Res_Zone', `<td class="res-cell ${flags.Res_Zone.cls}" data-col="Res_Zone">${fmtNum(row.Res_Zone)} ${zoneMeta}</td>`);
-  cells.push(`<td data-col="Res_Zone_Touches">${fmtInt(row.Res_Zone_Touches)}</td>`);
-  cells.push(`<td data-col="Res_Zone_Last">${row.Res_Zone_Last||''}</td>`);
-  push('Res_Round', `<td class="res-cell ${flags.Res_Round.cls}" data-col="Res_Round">${fmtNum(row.Res_Round)}</td>`);
-  cells.push(`<td data-col="Res_Round_Step">${fmtInt(row.Res_Round_Step)}</td>`);
-  cells.push(`<td data-col="Res_Round_Near">${row.Res_Round_Near? '1':'0'}</td>`);
-  push('Res_Line_Today', `<td class="res-cell ${flags.Res_Line_Today.cls}" data-col="Res_Line_Today">${fmtNum(row.Res_Line_Today)}</td>`);
-  cells.push(`<td data-col="Res_Line_R2">${(row.Res_Line_R2==null?'':(+row.Res_Line_R2).toFixed(2))}</td>`);
-  const last = nearest? `<span class="res-badge warn"><strong>${nearest.label}</strong> ${fmtNum(nearest.v)}</span>` : '';
-  cells.push(`<td data-col="Res_Nearest">${last}</td>`);
-  return cells.join('\\n');
-}
-document.addEventListener('change', e=>{
-  if (e.target.matches('.res-tog, #resNearPct')) {
-    if (window.renderAllRows) window.renderAllRows();
-  }
-});
-
-
+  // 抵抗/支持トグル（未実装時でも安全）
+  document.addEventListener('change', e=>{
+    if (e.target.matches('.res-tog, #resNearPct')) { render(); }
+  });
 
   const DEFAULTS = { rate:3, turn:5, rvol:2 };
   function applyDefaults(on){
@@ -2381,8 +2658,8 @@ document.addEventListener('change', e=>{
   function thRvol(){ const v=num($("#th_rvol")?.value); return Number.isNaN(v)?null:v; }
   function thProg(){ const v=num($("#th_progress")?.value); return Number.isNaN(v)?null:v; }
   function thScore(){ const v=num($("#th_score")?.value); return Number.isNaN(v)?null:v; }
-  function thPmin(){ const v=num($("#th_pmin")?.value); return Number.isNaN(v)?null:v; } // 追加
-  function thPmax(){ const v=num($("#th_pmax")?.value); return Number.isNaN(v)?null:v; } // 追加
+  function thPmin(){ const v=num($("#th_pmin")?.value); return Number.isNaN(v)?null:v; }
+  function thPmax(){ const v=num($("#th_pmax")?.value); return Number.isNaN(v)?null:v; }
 
   function getSelectedTypes(){
     const box = document.querySelector(".early-filter");
@@ -2442,17 +2719,16 @@ document.addEventListener('change', e=>{
       const tr = thRate(), tt = thTurn(), tv = thRvol(), tp = thProg(), ts = thScore();
       const pmin = thPmin(), pmax = thPmax();
 
-      if(pmin!=null && !(price>=pmin)) return false; // ★価格下限
-      if(pmax!=null && !(price<=pmax)) return false; // ★価格上限
+      if(pmin!=null && !(price>=pmin)) return false;
+      if(pmax!=null && !(price<=pmax)) return false;
 
       if(tr!=null && !(rate>=tr)) return false;
       if(tt!=null && !(turn>=tt)) return false;
       if(tv!=null && !(rvol>=tv)) return false;
       if(tp!=null && !(prog>=tp)) return false;
       if(ts!=null && !(score>=ts)) return false;
-      // 市場フィルタ：選択外は弾く
-      if (MK_LIST.length && !mkSet.has(String(r["市場"]||"").trim())) return false;
 
+      if (MK_LIST.length && !mkSet.has(String(r["市場"]||"").trim())) return false;
 
       if(q){
         const keys=["コード","銘柄名","判定理由","右肩早期種別","初動フラグ","底打ちフラグ","右肩上がりフラグ","右肩早期フラグ","推奨アクション"];
@@ -2462,9 +2738,7 @@ document.addEventListener('change', e=>{
     });
   }
 
-  function formatJudgeLabel(r){
-    return isHitRow(r) ? "当たり！(1)" : "外れ！(1)";
-  }
+  function formatJudgeLabel(r){ return isHitRow(r) ? "当たり！(1)" : "外れ！(1)"; }
 
   // render: candidate
   function renderCand(){
@@ -2489,21 +2763,19 @@ document.addEventListener('change', e=>{
       let recBadge = "";
       if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
       else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
-      else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+      else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
 
       const isHitTr = isHitRow(r);
-      // ★ data-code / data-name を tr に持たせてページコピーで使う
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
-        <td>${r["銘柄名"] ?? ""}</td>
-        <td>${r["市場"] || "-"}</td>
+        <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
+        <td>${escapeHtml(r["市場"] || "-")}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
         <td class="num">${r["前日円差"] ?? ""}</td>
         <td class="num">${r["前日終値比率"] ?? ""}</td>
-        <!-- ★ 高値・安値・5日・25日の後ろに 出来高・売買代金 を移動 -->
         <td class="num">${r["高値"] ?? ""}</td>
         <td class="num">${r["安値"] ?? ""}</td>
         <td class="num">${r["MA5"] ?? r["5日"] ?? r["５日"] ?? ""}</td>
@@ -2515,20 +2787,19 @@ document.addEventListener('change', e=>{
         <td>${escapeHtml(r["overall_alpha"] ?? "")}</td>
         <td class="num">${r["スコア"] ?? ""}</td>
         <td class="num">${r["進捗率"] ?? ""}</td>
-        <td>${r["増資リスク"] ?? ""}</td>
+        <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
         <td class="num">${r["増資スコア"] ?? ""}</td>
-        <td class="reason-col">${r["増資理由"] || ""}</td>
-        <td>${r["初動フラグ"] || ""}</td>
-        <td>${r["底打ちフラグ"] || ""}</td>
-        <td>${r["右肩上がりフラグ"] || ""}</td>
-        <td>${r["右肩早期フラグ"] || ""}</td>
+        <td class="reason-col">${escapeHtml(r["増資理由"] || "")}</td>
+        <td>${escapeHtml(r["初動フラグ"] || "")}</td>
+        <td>${escapeHtml(r["底打ちフラグ"] || "")}</td>
+        <td>${escapeHtml(r["右肩上がりフラグ"] || "")}</td>
+        <td>${escapeHtml(r["右肩早期フラグ"] || "")}</td>
         <td class="num">${r["右肩早期スコア"] ?? ""}</td>
-        <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
+        <td>${etBadge}${escapeHtml(r["右肩早期種別_mini"] || "")}</td>
         <td>${formatJudgeLabel(r)}</td>
-        <td class="reason-col">${r["判定理由"] || ""}</td>
+        <td class="reason-col">${escapeHtml(r["判定理由"] || "")}</td>
         <td>${recBadge}</td>
         <td class="num">${r["推奨比率"] ?? ""}</td>
-        <!-- ▼ ここから：theadの「更新」＋ 抵抗/支持6列に対応させる -->
         <td>${r["シグナル更新日"] || ""}</td>
         <td class="num">${fint(r["抵抗帯中心"])}</td>
         <td>${r["抵抗最終日"] ?? ""}</td>
@@ -2536,29 +2807,22 @@ document.addEventListener('change', e=>{
         <td class="num">${fint(r["支持帯中心"])}</td>
         <td>${r["支持最終日"] ?? ""}</td>
         <td class="num">${fint(r["最寄り支持"])}</td>
-        <!-- ▲ 追加ここまで -->
-
-        <!-- ▼ charts60 5列 -->
         <td>${r["chart"] || ""}</td>
         <td>${r["移動平均"] || ""}</td>
         <td>${r["ボリバン"] || ""}</td>
         <td>${r["GC"] || ""}</td>
         <td>${r["三役"] || ""}</td>
-        </tr>
-
-        </tr>`;
+      </tr>`;
     }
     body.innerHTML = html;
     document.querySelector("#count").textContent = String(total);
     document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
     wireDomSort("#tbl-candidate");
     attachQHelpsToHead('#tbl-candidate');
-    installCandidateFolds();   // ★ 追加：描画のたびに開閉状態/ボタンを復元
-
+    if (typeof installCandidateFolds === 'function') { try{ installCandidateFolds(); }catch(_){ } }
   }
 
-  // === Tomorrow logic START =====================================
-
+  // === Tomorrow logic START ===
   function toKey(x){
     if (x instanceof Date) {
       const y=x.getFullYear(), m=('0'+(x.getMonth()+1)).slice(-2), d=('0'+x.getDate()).slice(-2);
@@ -2572,34 +2836,22 @@ document.addEventListener('change', e=>{
     const yy=dt.getFullYear(), mm=('0'+(dt.getMonth()+1)).slice(-2), dd=('0'+dt.getDate()).slice(-2);
     return `${yy}-${mm}-${dd}`;
   }
-
   function latestUpdateDate(rows){
     const ds = (rows||[]).map(r=>toKey(r?.["シグナル更新日"])).filter(Boolean);
     return ds.sort().pop() || null;
   }
-
-  function localDateStr(d){
-    const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2);
-    return `${y}-${m}-${da}`;
-  }
-  function prevBusinessDay(d){
-    const dt=new Date(d); do{ dt.setDate(dt.getDate()-1);}while([0,6].includes(dt.getDay())); return dt;
-  }
-  function nextBusinessDay(d){
-    const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt;
-  }
-
+  function localDateStr(d){ const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2); return `${y}-${m}-${da}`; }
+  function prevBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()-1);}while([0,6].includes(dt.getDay())); return dt; }
+  function nextBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt; }
   function _hasCandidateFlag(r){
     return String(r?.["初動フラグ"]||"").includes("候補")
         || String(r?.["右肩上がりフラグ"]||"").includes("候補")
         || String(r?.["右肩早期フラグ"]||"").includes("候補");
   }
-
   function _pickTomorrowRows(src, baseKey){
     if(!Array.isArray(src) || !baseKey) return [];
     return src.filter(r => toKey(r?.["シグナル更新日"])===baseKey && _hasCandidateFlag(r));
   }
-
   function _computeBaseAndTargetFromLocalNow(){
     const now = new Date();
     const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
@@ -2608,7 +2860,6 @@ document.addEventListener('change', e=>{
     const targetDate = nextBusinessDay(baseDate);
     return { inFreeze, baseDate, targetDate };
   }
-
   function renderTomorrow(rows){
     const body = document.querySelector("#tbl-tmr tbody");
     if (!body) return;
@@ -2618,23 +2869,23 @@ document.addEventListener('change', e=>{
       let recBadge = "";
       if (rec === "エントリー有力") recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
       else if (rec === "小口提案")   recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
-      else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${rec}</span>`;
+      else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
       const isHit = isHitRow(r);
       html += `<tr${isHit ? " class='hit'" : ""}>
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
-        <td>${r["銘柄名"] ?? ""}</td>
-        <td>${r["市場"] || "-"}</td>
+        <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
+        <td>${escapeHtml(r["市場"] || "-")}</td>
         <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
         <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
         <td class="num">${r["売買代金(億)"]??""}</td>
         <td>${financeLink(r["コード"])}${financeNote(r)}</td>
-        <td>${r["増資リスク"] ?? ""}</td>
+        <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
         <td class="num">${r["増資スコア"] ?? ""}</td>
-        <td class="reason-col">${r["増資理由"] || ""}</td>
+        <td class="reason-col">${escapeHtml(r["増資理由"] || "")}</td>
         <td class="num">${r["右肩早期スコア"]??""}</td>
-        <td>${(r["右肩早期種別"]||"").trim()}</td>
+        <td>${escapeHtml((r["右肩早期種別"]||"").trim())}</td>
         <td>${isHit ? "当たり！(1)" : "外れ！(1)"}</td>
         <td>${recBadge}</td>
       </tr>`;
@@ -2643,7 +2894,6 @@ document.addEventListener('change', e=>{
     wireDomSort("#tbl-tmr");
     attachQHelpsToHead('#tbl-tmr');
   }
-
   function _sortTomorrow(rows){
     return rows.slice().sort((a,b)=>{
       const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
@@ -2654,7 +2904,6 @@ document.addEventListener('change', e=>{
       return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
     });
   }
-
   function renderTomorrowWrapper(){
     const { inFreeze, baseDate, targetDate } = _computeBaseAndTargetFromLocalNow();
     const baseKey = toKey(baseDate);
@@ -2693,8 +2942,7 @@ document.addEventListener('change', e=>{
     window.DATA_TMR = rows;
     renderTomorrow(rows);
   }
-
-  // === Tomorrow logic END =====================================
+  // === Tomorrow logic END ===
 
   // all
   function renderAll(){
@@ -2713,21 +2961,16 @@ document.addEventListener('change', e=>{
         let v = (c === "判定") ? formatJudgeLabel(r) : (r[c] ?? "");
         if (c === "コード") v = codeLink(v);
         const isNum = ['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率','前日終値比率','前日終値比率（％）','抵抗帯中心','最寄り抵抗','支持帯中心','最寄り支持'].includes(c);
-        return `<td class="${isNum?'num':''}">${v}</td>`;
+        return `<td class="${isNum?'num':''}">${escapeHtml(String(v))}</td>`;
       }).join("")
     }</tr>`).join("");
     wireDomSort("#tbl-allcols");
     attachQHelpsToHead('#tbl-allcols');
   }
   
-  // タブ共通レンダラー
-  function render(){
-    if (state.tab === "all") { renderAll(); return; }
-    if (state.tab === "tmr") { renderTomorrowWrapper(); return; }
-    renderCand();
-  }
+  // タブ
+  function render(){ if (state.tab === "all") { renderAll(); return; } if (state.tab === "tmr") { renderTomorrowWrapper(); return; } renderCand(); }
 
-  // earn
   function fmtTime(ts){
     try{
       const d = new Date(ts);
@@ -2747,16 +2990,13 @@ document.addEventListener('change', e=>{
       if (!name) name = String(rawName ?? "").trim();
       let code = (rawCode ?? "").toString();
       if (!/^\d{4}$/.test(code)){
-        const m1 = html.match(/\((\d{4})\)/);
-        if (m1) code = m1[1];
+        const m1 = html.match(/\((\d{4})\)/); if (m1) code = m1[1];
       }
       if (!/^\d{4}$/.test(code)){
-        const m2 = html.match(/quote\/(\d{4})\.T/i);
-        if (m2) code = m2[1];
+        const m2 = html.match(/quote\/(\d{4})\.T/i); if (m2) code = m2[1];
       }
       return { name, code: /^\d{4}$/.test(code) ? code : "" };
     }
-
     const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
     const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
 
@@ -2788,7 +3028,7 @@ document.addEventListener('change', e=>{
       const sRaw = (r.sentiment ?? "").toString().toLowerCase();
       const cls  = sRaw.includes("pos")||sRaw.includes("良") ? "b-green"
                  : sRaw.includes("neg")||sRaw.includes("悪") ? "b-orange" : "b-yellow";
-      const pill = `<span class="badge ${cls}">● ${r.sentiment ?? "neutral"}</span>`;
+      const pill = `<span class="badge ${cls}">● ${escapeHtml(r.sentiment ?? "neutral")}</span>`;
 
       const title = r.title ? esc(r.title) : "";
       const link  = r.link  ? String(r.link) : "";
@@ -2818,7 +3058,6 @@ document.addEventListener('change', e=>{
     attachQHelpsToHead('#tbl-earn');
   }
 
-  // pre-earn
   function _fmt2num(x){
     if (x === null || x === undefined) return "";
     const n = parseFloat(String(x).replace(/[,％%]/g,""));
@@ -2864,8 +3103,7 @@ document.addEventListener('change', e=>{
       }
       return { name, code: /^\d{4}$/.test(code) ? code : "" };
     }
-
-    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;"," >":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
     const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
 
     const tbl   = document.getElementById("tbl-preearn");
@@ -2907,11 +3145,11 @@ document.addEventListener('change', e=>{
         <td class="num">${_fmt2num(r.pre_score)}</td>
         <td class="num">${_fmt2num(r.edge_score)}</td>
         <td class="num">${_fmt2num(r.momentum_score)}</td>
-        <td class="reason-col"><div class="reason-box">${(r["スコア理由"] ?? "根拠薄め（暫定）")}</div></td>
-        <td class="hint-col"><div class="reason-box">${(r["予測ヒント"] ?? "（準備中）")}</div></td>
+        <td class="reason-col"><div class="reason-box">${escapeHtml(r["スコア理由"] ?? "根拠薄め（暫定）")}</div></td>
+        <td class="hint-col"><div class="reason-box">${escapeHtml(r["予測ヒント"] ?? "（準備中）")}</div></td>
         <td class="num">${_fmt2num(r["期待株価"]) || (_fmt2num(r.現在値) || "")}</td>
-        <td>${r["修正見通し"] ?? "中立"}</td>
-        <td>${r["過熱度"] ?? "中立"}</td>
+        <td>${escapeHtml(r["修正見通し"] ?? "中立")}</td>
+        <td>${escapeHtml(r["過熱度"] ?? "中立")}</td>
       </tr>`;
     }).join("");
 
@@ -2954,7 +3192,7 @@ document.addEventListener('change', e=>{
     return bd;
   }
 
-  // charts (simple canvas)
+  // charts (簡易)
   function drawBar(canvas, labels, values, title){
     const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
     ctx.clearRect(0,0,W,H);
@@ -3074,7 +3312,7 @@ document.addEventListener('change', e=>{
     requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
 
-  // events（各種フィルタ・入力）
+  // events
   $("#perpage")?.addEventListener("change",(e)=>{ const v=parseInt(e.target.value,10); state.per=Number.isFinite(v)?v:500; state.page=1; render(); });
   $("#prev")?.addEventListener("click",()=>{ if(state.page>1){state.page--; render();} });
   $("#next")?.addEventListener("click",()=>{ state.page++; render(); });
@@ -3092,7 +3330,7 @@ document.addEventListener('change', e=>{
     el.addEventListener("change", ()=>{ state.page=1; render(); });
   });
 
-  // ★ 今のページに出ている銘柄（コード[TAB]銘柄名）をコピー
+  // ページ銘柄コピー
   $("#copy-page")?.addEventListener("click", async (e)=>{
     e.preventDefault();
     const rows = Array.from(document.querySelectorAll("#tbl-candidate tbody tr"));
@@ -3100,10 +3338,8 @@ document.addEventListener('change', e=>{
       const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
       const name = tr.getAttribute("data-name") ?? "";
       if (!code || !name) return "";
-      // 目的の形式: "コード","銘柄",TKY,,,,,,
       return `"${code}","${name}",TKY,,,,,,`;
     }).filter(x => x);
-
     const text = lines.join("\n");
     try{
       if (navigator.clipboard && window.isSecureContext !== false) {
@@ -3117,58 +3353,40 @@ document.addEventListener('change', e=>{
       btn?.classList.add("ok"); const old = btn?.textContent || "";
       if (btn) btn.textContent = "コピーしました";
       setTimeout(()=>{ if(btn){ btn.classList.remove("ok"); btn.textContent = old || "今のページの銘柄をコピー"; } }, 1500);
-    }catch(_){
-      alert("コピーに失敗しました");
-    }
+    }catch(_){ alert("コピーに失敗しました"); }
   });
-  // ★ 今のページに出ている銘柄を CSV でダウンロード
+
+  // CSVダウンロード
   $("#download-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
     const rows = Array.from(document.querySelectorAll("#tbl-candidate tbody tr"));
-
     const lines = rows.map(tr => {
       const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
       const nameRaw = tr.getAttribute("data-name") ?? "";
       if (!code || !nameRaw) return "";
-      // CSVルール：ダブルクォートは2重にエスケープ
       const name = nameRaw.replace(/"/g, '""');
-      // 望みの形式 → "コード","銘柄",TKY,,,,,,
       return `"${code}","${name}",TKY,,,,,,`;
     }).filter(Boolean);
-
     const csv = lines.join("\n");
-
-    // Excel互換のため BOM 付き UTF-8 にする
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
     const blob = new Blob([bom, csv], { type: "text/csv" });
 
-    // ファイル名（例：screen_current_20251021_083421.csv）
     const pad = n => String(n).padStart(2, "0");
-    const dt  = new Date(); // ローカル時刻（JST）
-    const y   = dt.getFullYear();
-    const m   = pad(dt.getMonth() + 1);
-    const d   = pad(dt.getDate());
-    const H   = pad(dt.getHours());
-    const M   = pad(dt.getMinutes());
-    const S   = pad(dt.getSeconds());
+    const dt  = new Date();
+    const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
     const filename = `screen_current_${y}${m}${d}_${H}${M}${S}.csv`;
 
-
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
   });
-
 
   $("#btn-stats")?.addEventListener("click",openStatsChart);
   $("#btn-ts")?.addEventListener("click",openTrendChart);
   $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
-  // tabs
+  // タブ切替
   function switchTab(to){
     state.tab = to;
     $$(".tab").forEach(el=>el.classList.add("hidden"));
@@ -3179,14 +3397,14 @@ document.addEventListener('change', e=>{
       state.data = DATA_CAND.slice();
       state.page = 1;
       render();
-      installFoldsFor('tbl-candidate'); // ★ 追加
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-candidate'); }catch(_){ } }
       return;
     }
     if (to === "tmr"){
       $("#tab-tmr")?.classList.remove("hidden");
       $("#lnk-tmr")?.classList.add("active");
       renderTomorrowWrapper();
-      installFoldsFor('tbl-tmr'); // ★ 追加
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-tmr'); }catch(_){ } }
       return;
     }
     if (to === "all"){
@@ -3194,7 +3412,7 @@ document.addEventListener('change', e=>{
       $("#lnk-all")?.classList.add("active");
       state.page = 1;
       render();
-      installFoldsFor('tbl-allcols'); // ★ 追加
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-allcols'); }catch(_){ } }
       return;
     }
     if (to === "log"){
@@ -3202,25 +3420,25 @@ document.addEventListener('change', e=>{
       $("#lnk-log")?.classList.add("active");
       const lb = $("#log-body");
       if (lb && !lb.getAttribute("data-inited")){
-        lb.innerHTML = (DATA_LOG||[]).map(r=> `<tr><td>${r["日時"]||""}</td><td>${r["コード"]||""}</td><td>${r["種別"]||""}</td><td>${r["詳細"]||""}</td></tr>`).join("");
+        lb.innerHTML = (DATA_LOG||[]).map(r=> `<tr><td>${r["日時"]||""}</td><td>${r["コード"]||""}</td><td>${r["種別"]||""}</td><td>${escapeHtml(r["詳細"]||"")}</td></tr>`).join("");
         lb.setAttribute("data-inited","1");
       }
       attachQHelpsToHead('#tbl-log');
-      installFoldsFor('tbl-log'); // ★ 追加
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-log'); }catch(_){ } }
       return;
     }
     if (to === "earn"){
       $("#tab-earn")?.classList.remove("hidden");
       $("#lnk-earn")?.classList.add("active");
       renderEarnings(DATA_EARN);
-      installFoldsFor('tbl-earn'); // ★ 追加
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-earn'); }catch(_){ } }
       return;
     }
     if (to === "preearn"){
       $("#tab-preearn")?.classList.remove("hidden");
       $("#lnk-preearn")?.classList.add("active");
       renderPreEarnings(DATA_PREEARN);
-      installFoldsFor('tbl-preearn'); // ★ 追加
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-preearn'); }catch(_){ } }
       return;
     }
   }
@@ -3235,6 +3453,10 @@ document.addEventListener('change', e=>{
   })();
 
   // initial
+  // 存在しない fold 関数の安全化
+  if (typeof window.installCandidateFolds !== 'function') window.installCandidateFolds = function(){};
+  if (typeof window.installFoldsFor !== 'function') window.installFoldsFor = function(){};
+
   window.addEventListener("DOMContentLoaded", () => {
     switchTab("cand");
     forceClearThresholds();
@@ -3250,17 +3472,7 @@ document.addEventListener('change', e=>{
   });
 
 })();
-
-
-
-
-
-
-
-
 </script>
-
-
 
   <section id="tab-candidate" class="tab">
     <div class="tbl-wrap">
@@ -3276,7 +3488,6 @@ document.addEventListener('change', e=>{
             <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
-            <!-- ★ 高値・安値・5日・25日の後ろに 出来高・売買代金 を移動 -->
             <th class="num sortable" data-col="高値" data-type="num">高値<span class="arrow"></span></th>
             <th class="num sortable" data-col="安値" data-type="num">安値<span class="arrow"></span></th>
             <th class="num sortable" data-col="5日" data-type="num">5日<span class="arrow"></span></th>
@@ -3302,20 +3513,18 @@ document.addEventListener('change', e=>{
             <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
             <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
             <th class="sortable" data-col="シグナル更新日" data-type="date">シグナル更新日<span class="arrow"></span></th>
-          
             <th class="num sortable" data-col="抵抗帯中心" data-type="num">抵抗帯中心<span class="arrow"></span></th>
             <th class="sortable" data-col="抵抗最終日" data-type="text">抵抗最終日<span class="arrow"></span></th>
             <th class="num sortable" data-col="最寄り抵抗" data-type="num">最寄り抵抗<span class="arrow"></span></th>
             <th class="num sortable" data-col="支持帯中心" data-type="num">支持帯中心<span class="arrow"></span></th>
             <th class="sortable" data-col="支持最終日" data-type="text">支持最終日<span class="arrow"></span></th>
             <th class="num sortable" data-col="最寄り支持" data-type="num">最寄り支持<span class="arrow"></span></th>
-
-<th class="sortable" data-col="chart">chart</th>
-<th class="sortable" data-col="移動平均">移動平均</th>
-<th class="sortable" data-col="ボリバン">ボリバン</th>
-<th class="sortable" data-col="GC">GC</th>
-<th class="sortable" data-col="三役">三役</th>
-</tr>
+            <th class="sortable" data-col="chart">chart</th>
+            <th class="sortable" data-col="移動平均">移動平均</th>
+            <th class="sortable" data-col="ボリバン">ボリバン</th>
+            <th class="sortable" data-col="GC">GC</th>
+            <th class="sortable" data-col="三役">三役</th>
+          </tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -3354,7 +3563,14 @@ document.addEventListener('change', e=>{
   <section id="tab-all" class="tab hidden">
     <div class="tbl-wrap">
       <table id="tbl-allcols" class="tbl">
-        <thead><tr id="all-head"></tr></thead>
+        <thead><tr id="all-head">
+          <th data-col="抵抗帯中心" class="num">抵抗帯中心</th>
+          <th data-col="抵抗最終日">抵抗最終日</th>
+          <th data-col="最寄り抵抗" class="num">最寄り抵抗</th>
+          <th data-col="支持帯中心" class="num">支持帯中心</th>
+          <th data-col="支持最終日">支持最終日</th>
+          <th data-col="最寄り支持" class="num">最寄り支持</th>
+        </tr></thead>
         <tbody id="all-body"></tbody>
       </table>
     </div>
@@ -3418,13 +3634,8 @@ document.addEventListener('change', e=>{
   </section>
   {% endif %}
 
-
-
-
 </body>
 </html>"""
-
-
 
 
 # ---  settings ---
@@ -3515,7 +3726,6 @@ def run_karauri_script():
     except Exception as e:
         print(f"[karauri][WARN] 起動に失敗しました: {e}")
 
-
 # --- EDINET 取得で使う ---
 
 # =====================================
@@ -3553,7 +3763,6 @@ def today_str():
     return dtm.datetime.now().strftime("%Y-%m-%d")
     
 # ================== 表示整形ヘルパ ==================
-
 
 def _trade_date_from_quote(q, extra_closed_path=EXTRA_CLOSED_PATH):
     """
@@ -3646,72 +3855,87 @@ def prev_business_day_jp(d: dtm.date, extra_closed: set = None) -> dtm.date:
             return cur
 
 # ===== DB =====
-def open_conn(db_path: str):
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA cache_size=-200000;")
-    return conn
-
 def add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, decl: str):
     """Schema fixed: no-op."""
     return
 
-def phase_csv_import(conn, csv_path=None, overwrite_registered_date=False):
+import re
+import pandas as pd
+import os
+import sqlite3
 
+# 4桁純数字 or 3桁数字+英字 or 4桁英数字 を受け入れ、
+# それ以外（指数 ^N225 / 998405.T 等）はそのまま大文字化だけして返す
+_CODE_4DIGIT   = re.compile(r"^\d{4}$")
+_CODE_3D1A     = re.compile(r"^\d{3}[A-Za-z]$")
+_CODE_4ALNUM   = re.compile(r"^[A-Za-z0-9]{4}$")
+
+def _normalize_code_for_insert(s: str) -> str | None:
+    if s is None:
+        return None
+    t = str(s).strip()
+    if not t:
+        return None
+    T = t.upper()
+    # 国内コード系はそのまま（表記統一のみ）
+    if _CODE_4DIGIT.fullmatch(T) or _CODE_3D1A.fullmatch(T) or _CODE_4ALNUM.fullmatch(T):
+        return T
+    # それ以外（指数/ETFの ^ や .T 付きなど）も“そのまま採用”
+    return T
+
+def phase_csv_import(conn, csv_path=None, overwrite_registered_date=None, **_ignored):
     """
-    CSV から「コード・銘柄名・市場・登録日」のみを取り込む固定スキーマ実装。
-    - スキーマ操作（PRAGMA/ALTER/CREATE）は一切行わない
-    - overwrite_registered_date=False の場合、既存登録日が空/NULLのときのみ上書き
+    CSVの「コード, 銘柄名, 市場」だけ取り込み。
+    登録日は INSERT 時のみ（JSTの今日）セット。UPDATEでは変更しない。
+    値の正規化はしない（CSVの表記を優先）。
     """
+    import os, pandas as pd
+    from datetime import datetime, timezone, timedelta
+
     path = csv_path or CSV_INPUT_PATH
     if not os.path.isfile(path):
         print("CSVがないのでスキップ:", path)
         return
 
-    df = pd.read_csv(path, encoding="utf8", sep=",", engine="python").astype(str)
-    needed = ["コード", "銘柄名", "市場", "登録日"]
+    JST = timezone(timedelta(hours=9))
+    today_str = datetime.now(JST).strftime("%Y-%m-%d")
+
+    # ← ここが重要：区切り/エンコーディング自動吸収
+    df = pd.read_csv(path, sep=None, engine="python", dtype=str, encoding="utf-8-sig")
+
+    needed = ["コード", "銘柄名", "市場"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError(f"[csv-import] CSVに必須列がありません: {missing}")
 
     df = df[needed].copy()
-    df["コード"] = df["コード"].astype(str).str.strip().str.zfill(4)
-    df["銘柄名"] = df["銘柄名"].astype(str).str.strip()
-    df["市場"]   = df["市場"].astype(str).str.strip()
-    df["登録日"] = df["登録日"].where(df["登録日"].notna() & (df["登録日"].str.strip() != ""), None)
+    for c in needed:
+        df[c] = df[c].astype(str).map(lambda x: x.strip() if x is not None else x)
 
-    cur = conn.cursor()
-    if overwrite_registered_date:
-        sql = """
-        INSERT INTO screener(コード, 銘柄名, 市場, 登録日)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(コード) DO UPDATE SET
-          銘柄名 = excluded.銘柄名,
-          市場   = excluded.市場,
-          登録日 = excluded.登録日
-        """
-    else:
-        sql = """
-        INSERT INTO screener(コード, 銘柄名, 市場, 登録日)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(コード) DO UPDATE SET
-          銘柄名 = excluded.銘柄名,
-          市場   = excluded.市場,
-          登録日 = CASE
-                     WHEN screener.登録日 IS NULL OR screener.登録日 = '' THEN excluded.登録日
-                     ELSE screener.登録日
-                   END
-        """
+    df["登録日"] = today_str  # INSERT時だけ使われる
+
+    sql = """
+    INSERT INTO screener(コード, 銘柄名, 市場, 登録日)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(コード) DO UPDATE SET
+      銘柄名 = excluded.銘柄名,
+      市場   = excluded.市場
+      -- 登録日は更新しない（INSERT時のみ設定）
+    """
     rows = list(df.itertuples(index=False, name=None))
+    cur = conn.cursor()
     cur.executemany(sql, rows)
     conn.commit()
     cur.close()
 
-    print(f"[csv-import] 取り込み完了: {len(rows)}件（コード/銘柄名/市場/登録日のみ反映, overwrite_registered_date={overwrite_registered_date})")
+    print(f"[csv-import] 取り込み完了: {len(rows)}件（登録日はINSERT時のみ {today_str}）")
+
 def phase_delist_cleanup(conn: sqlite3.Connection,
                          master_csv_path: str = MASTER_CODES_PATH,
                          also_clean_notes: bool = False) -> None:
     """
     マスタCSV(列名: コード)に存在しない銘柄コードを screener から削除する。
+    ただし screener_protect に登録されたコードは CSV に無くても削除対象外。
     also_clean_notes=True の場合は finance_notes も同様に削除する。
     """
 
@@ -3719,40 +3943,79 @@ def phase_delist_cleanup(conn: sqlite3.Connection,
         print("上場廃止の基準CSVが見つからないためスキップ:", master_csv_path)
         return
 
-    def _norm(code) -> str | None:
-        try:
-            return f"{int(str(code).strip()):04d}"
-        except Exception:
-            return None
+    import re
+    _re_num4      = re.compile(r"^\s*(\d{4})\s*$")            # 4桁数字（例: 7203）
+    _re_num3alpha = re.compile(r"^\s*(\d{3})([A-Za-z])\s*$")  # 3桁+英字（例: 330A）
 
-    # マスタ側の有効コード集合（4桁ゼロ埋めで正規化）
+    def _norm_domestic(code: object) -> str | None:
+        """
+        国内コードの正規化：
+        - 4桁数字       -> 'dddd'
+        - 3桁+英字      -> 'dddX'（英字は大文字化）
+        - それ以外      -> None（国内コード比較の対象外）
+        """
+        if code is None:
+            return None
+        s = str(code).strip()
+        m = _re_num4.match(s)
+        if m:
+            return m.group(1)
+        m = _re_num3alpha.match(s)
+        if m:
+            return f"{m.group(1)}{m.group(2).upper()}"
+        return None
+
+    # マスタ側の有効コード集合（国内コードのみ対象）
     master = pd.read_csv(master_csv_path, encoding="utf8", sep=",", engine="python")
-    valid = {c for c in ( _norm(x) for x in master["コード"] ) if c is not None}
+    if "コード" not in master.columns:
+        print("CSVに列 'コード' が見つからないためスキップ:", master_csv_path)
+        return
+    valid = {c for c in (_norm_domestic(x) for x in master["コード"]) if c is not None}
     if not valid:
         print("マスタ側の有効コードが0件のためスキップ:", master_csv_path)
         return
 
     cur = conn.cursor()
 
-    # DB内コードを取得して正規化
+    # 保護テーブル（大文字化で比較を統一）
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screener_protect'")
+    has_protect = cur.fetchone() is not None
+    protect_set: set[str] = set()
+    if has_protect:
+        cur.execute("SELECT コード FROM screener_protect")
+        protect_set = {str(row[0]).strip().upper() for row in cur.fetchall()}
+
+    # DB内コードを走査。protectは無条件除外。
     cur.execute("SELECT コード FROM screener")
     rows = cur.fetchall()
     targets = []
+    skipped_by_protect = 0
     for (db_code,) in rows:
-        n = _norm(db_code)
-        if n is None or n not in valid:
-            targets.append((db_code,))
+        raw = str(db_code).strip()
+        raw_u = raw.upper()
+        if raw_u in protect_set:
+            skipped_by_protect += 1
+            continue
+
+        nd = _norm_domestic(raw_u)
+        if nd is None:
+            # 国内コード形式でないもの（例: ^N225, 998405.T）は
+            # マスタCSVの対象外なので削除判定しない
+            continue
+        if nd not in valid:
+            targets.append((raw,))  # 保存時は原文でOK
 
     if not targets:
-        print("上場廃止による削除対象はありません。")
+        msg = "上場廃止による削除対象はありません。"
+        if skipped_by_protect:
+            msg += f"（保護:{skipped_by_protect} 件）"
+        print(msg)
         cur.close()
         return
 
-    # 削除（まずは screener）
-    print(f"上場廃止による削除: {len(targets)} 件")
+    print(f"上場廃止による削除: {len(targets)} 件" + (f"（保護:{skipped_by_protect} 件）" if skipped_by_protect else ""))
     cur.executemany("DELETE FROM screener WHERE コード = ?", targets)
 
-    # オプション: finance_notes も掃除
     if also_clean_notes:
         cur.executemany("DELETE FROM finance_notes WHERE コード = ?", targets)
 
@@ -3761,29 +4024,49 @@ def phase_delist_cleanup(conn: sqlite3.Connection,
 
 # ===== 任意：空売り無し反映 =====
 def phase_mark_karauri_nashi(conn: sqlite3.Connection):
+    # 入力CSVの存在確認
     if not os.path.isfile(KARA_URI_NASHI_PATH):
         print("空売り無しリストが見つからないためスキップ:", KARA_URI_NASHI_PATH)
         return
-    df = pd.read_csv(KARA_URI_NASHI_PATH, encoding="utf8", sep=",", engine="python")
-    rows = [(getattr(row, 'コード'),) for row in df.itertuples()]
-    try:
-        exec_many(conn, 'UPDATE screener SET 空売り機関="なし" WHERE コード=?', rows, chunk=500)
-    except NameError:
-        import sqlite3
-        _tmp_conn = sqlite3.connect(DB_PATH)
-        try:
-            exec_many(_tmp_conn, 'UPDATE screener SET 空売り機関="なし" WHERE コード=?', rows, chunk=500)
-        finally:
-            _tmp_conn.close()
 
-    # 派生指標更新を実行
+    # CSV読み込み（基本はこれでOK、不要なら engine 指定は外しても良い）
+    df = pd.read_csv(KARA_URI_NASHI_PATH, encoding="utf8", sep=",", engine="python")
+
+    # コード一覧の正規化（欠損除外）
+    if "コード" not in df.columns:
+        print("CSVに 'コード' 列が無いためスキップ:", KARA_URI_NASHI_PATH)
+        return
+    codes = [str(c) for c in df["コード"].dropna().astype(str)]
+    rows = [(c,) for c in codes]
+    if not rows:
+        print("空売り無しリストが空のためスキップ:", KARA_URI_NASHI_PATH)
+        return
+
+    # exec_many が未定義でも動くようフォールバックを用意
+    try:
+        _exec_many = exec_many  # 既存ユーティリティがあれば使う
+    except NameError:
+        def _exec_many(_conn: sqlite3.Connection, sql: str, _rows, chunk: int = 1000):
+            cur = _conn.cursor()
+            try:
+                for i in range(0, len(_rows), chunk):
+                    cur.executemany(sql, _rows[i:i+chunk])
+            finally:
+                cur.close()
+
+    # 受け取った conn をそのまま使用（ここで new/open/close はしない）
+    _exec_many(conn, 'UPDATE screener SET 空売り機関="なし" WHERE コード=?', rows, chunk=500)
+
+    # 派生指標の更新（引数の conn をそのまま渡す。close しない）
     phase_shortterm_enhancements(conn)
-    # 抵抗系の計算（水平/斜め）
+
+    # 抵抗系の計算（失敗は警告のみ）
     try:
         phase_resistance_update(conn)
     except Exception as _e:
         print('[resistance][WARN]', _e)
-# 必要: pip install yfinance pandas
+
+
 
 def _latest2_ok(conn: sqlite3.Connection, code: str) -> bool:
     """
@@ -3838,7 +4121,8 @@ def refresh_full_history_for_insufficient(conn: sqlite3.Connection, universe_cod
     # 2) yfinance で 12mo を取得して price_history に upsert
     for i in range(0, len(targets), batch_size):
         chunk = targets[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}   # 日本株想定
+        #tickers_map = {c: f"{c}.T" for c in chunk}   # 日本株想定
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         try:
             df_wide = yf.download(
                 list(tickers_map.values()),
@@ -3971,6 +4255,7 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
       - screener は price_history の直近2日から 前日終値比率/出来高/現在値 を更新
       - 時価総額は速度優先で更新しない（必要なら別フェーズで）
     """
+    import yfinance as yf
     codes = [str(c) for c in codes]
     have = _codes_with_data(conn)
     exist_codes = [c for c in codes if c in have]
@@ -3981,7 +4266,8 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
     # 1) 既存銘柄: 2日分だけ一括取得（バッチ分割）
     for i in range(0, len(exist_codes), batch_size):
         chunk = exist_codes[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}  # 日本株前提
+        #tickers_map = {c: f"{c}.T" for c in chunk}  # 日本株前提
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         df_wide = yf.download(list(tickers_map.values()), period="2d", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
         df_add = _to_long_history(df_wide, tickers_map)
         total_added += _upsert_price_history(conn, df_add)
@@ -3990,7 +4276,8 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
     # 2) 新規銘柄: 12ヶ月ぶんを一括取得（バッチ分割）
     for i in range(0, len(new_codes), batch_size):
         chunk = new_codes[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}
+        #tickers_map = {c: f"{c}.T" for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         df_wide = yf.download(list(tickers_map.values()), period="12mo", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
         df_add = _to_long_history(df_wide, tickers_map)
         total_added += _upsert_price_history(conn, df_add)
@@ -4005,10 +4292,6 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
 # ==== 時価総額取得
 
 # ===== 全銘柄の時価総額を一括更新 =====
-
-def _to_symbol(c: str) -> str:
-    s = str(c).strip()
-    return s if "." in s else s + ".T"   # 4桁数字コード想定：.T 付与
 
 def _normalize_map(obj):
     """
@@ -4070,7 +4353,8 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
     try:
         for i in range(0, len(codes), batch_size):
             chunk = codes[i:i+batch_size]
-            symbols = [_to_symbol(c) for c in chunk]
+            #symbols = [_to_symbol(c) for c in chunk]
+            symbols = [resolve_yahoo_symbol(c,conn) for c in chunk]
 
             tq = YQ(symbols, asynchronous=True, max_workers=max_workers)
             sd = _normalize_map(tq.summary_detail)
@@ -4104,7 +4388,8 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
         rows = []
         for c in codes:
             try:
-                fi = yf.YQ(_to_symbol(c)).fast_info
+                #fi = yf.YQ(_to_symbol(c)).fast_info
+                fi = yf.YQ(resolve_yahoo_symbol(c,conn)).fast_info
                 mc = getattr(fi, "market_cap", None)
                 if mc:
                     rows.append((float(mc)/1e8, c))
@@ -4146,7 +4431,7 @@ LEFT JOIN latest_prices lp
         codes = codes[:TEST_LIMIT]
         print(f"[TEST] {len(codes)}銘柄(MIDDAY)に絞って実行")
 
-    symbols_all = [f"{c}.T" for c in codes]
+    symbols_all = [resolve_yahoo_symbol(c, conn) for c in codes]
     print(f"[MIDDAY] quotes取得: {len(symbols_all)}銘柄")
     trade_date = None  # per-symbol from quote
 
@@ -4159,7 +4444,7 @@ LEFT JOIN latest_prices lp
 
         for sym in symbols:
             q = quotes.get(sym) or {}
-            code = sym.replace(".T", "")
+            code = sym.split('.', 1)[0]
             trade_date = _trade_date_from_quote(q)
 
             last = ffloat(q.get("regularMarketPrice"), None)
@@ -4178,7 +4463,8 @@ LEFT JOIN latest_prices lp
             zika_oku = None if not mcap else round(mcap / 100_000_000.0, 2)
 
             # ← tupleの順序を変更：前日終値・前日円差・前日終値比率を全部入れる
-            # これに置換
+            # ここでDB側の正規コードに寄せる（^TOPIX → ^TOPX など）
+            code = canonical_code_for_db(code)
             up_screener.append((
                 None if last is None else round(float(last), 2),   # 現在値 2桁
                 None if prev is None else round(float(prev), 2),   # 前日終値 2桁
@@ -4194,7 +4480,8 @@ LEFT JOIN latest_prices lp
             h1 = ffloat(q.get("regularMarketDayHigh"), None)
             l1 = ffloat(q.get("regularMarketDayLow"), None)
             c1 = last
-            # これに置換
+            # ここでDB側の正規コードに寄せる（^TOPIX → ^TOPX など）
+            code = canonical_code_for_db(code)
             up_hist.append((
                 code, trade_date,
                 None if o1 is None else round(float(o1), 2),
@@ -5252,62 +5539,69 @@ def _derive_opratio_flag(d, threshold_pct: float = 10.0) -> str:
 # =======================================================================
 
 # ---------- 行整形（欠損安全 & 外部列に依存しない） ----------
-def _prepare_rows(df: pd.DataFrame):
-    rows = []
+def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
+    rows: list[dict] = []
+
+    # JST/休日判定はループ外で1回だけ
+    import datetime as _dt
+    today_jst = _dt.datetime.now(JST).date()
+    is_holiday = not _is_jp_business_day(today_jst)
+
+    # ここでは “最初から” 接続を取らない（必要になった瞬間にだけ遅延で取る）
+    _conn: sqlite3.Connection | None = conn
+
+    # NaN 判定は pandas.isna を使うと型に強い
+    def _clean(val):
+        return None if pd.isna(val) else val
+
     for _, r in df.iterrows():
-        d = {k: (None if (isinstance(r.get(k), float) and math.isnan(r.get(k))) else r.get(k)) for k in df.columns}
+        d = {k: _clean(r.get(k)) for k in df.columns}
 
         # コード/銘柄
-        if "コード" in d: d["コード"] = str(d.get("コード") or "").zfill(4)
-        if "銘柄名" in d: d["銘柄名"] = str(d.get("銘柄名") or "")
+        if "コード" in d:
+            d["コード"] = str(d.get("コード") or "").zfill(4)
+        if "銘柄名" in d:
+            d["銘柄名"] = str(d.get("銘柄名") or "")
 
         # Yahoo / X
         code4 = (d.get("コード") or "").zfill(4)
         d["yahoo_url"] = f"https://finance.yahoo.co.jp/quote/{code4}.T" if code4 else ""
-        d["x_url"]  = f"https://x.com/search?q={_q(d.get('銘柄名') or '')}" if d.get("銘柄名") else ""
+        d["x_url"] = f"https://x.com/search?q={_q(d.get('銘柄名') or '')}" if d.get("銘柄名") else ""
 
-        # ---- 価格フィールド（現在値/前日終値/前日比）の安全埋め込み ----
-        try:
-            import sqlite3 as _sqlite3
-            _conn = _sqlite3.connect(DB_PATH)
+        # ---- 価格フィールド（休日のみEODで安全埋め）----
+        if code4 and is_holiday:
             try:
-                code4 = (d.get("コード") or "").zfill(4)
-                if code4:
-                    # live（場中スナップショット）を使わない場合は引数省略でEOD固定
-                    import datetime as _dt
-                    if not _is_jp_business_day(_dt.datetime.now(JST).date()):
-                        _apply_price_fields(_conn, d, code4)  # 休日のみEODで安全埋め
-                    # 平日は既存ロジックのまま（ここでは触らない）
-            finally:
-                _conn.close()
-        except Exception as _e:
-            # 価格埋め込みで失敗してもダッシュボード生成は続行
-            print(f"[price-guard][WARN] {d.get('コード')} fill failed: {_e}")
+                # ここで初めて接続が必要 → 遅延で取得
+                if _conn is None:
+                    _conn = _get_db_conn()
+                _apply_price_fields(_conn, d, code4)  # ※ここでは close しない
+            except Exception as _e:
+                print(f"[price-guard][WARN] {code4} fill failed: {_e}")
 
         # 売買代金(億) 補完
         if d.get("売買代金(億)") is None:
-            fv=_to_float(d.get("現在値")); fvol=_to_float(d.get("出来高"))
+            fv = _to_float(d.get("現在値")); fvol = _to_float(d.get("出来高"))
             if fv is not None and fvol is not None:
                 d["売買代金(億)"] = fv * fvol / 1e8
 
         # RVOL代金 補完
-        fturn=_to_float(d.get("売買代金(億)"))
-        favg20=_to_float(d.get("売買代金20日平均億"))
-        if d.get("RVOL代金") is None and (fturn is not None) and (favg20 and favg20!=0):
+        fturn = _to_float(d.get("売買代金(億)"))
+        favg20 = _to_float(d.get("売買代金20日平均億"))
+        if d.get("RVOL代金") is None and (fturn is not None) and (favg20 and favg20 != 0):
             d["RVOL代金"] = fturn / favg20
 
         # 前日比 補完
-        now_=_to_float(d.get("現在値")); prev_=_to_float(d.get("前日終値"))
+        now_ = _to_float(d.get("現在値")); prev_ = _to_float(d.get("前日終値"))
         if d.get("前日円差") is None and (now_ is not None and prev_ is not None):
             d["前日円差"] = now_ - prev_
-        if d.get("前日終値比率") is None and (now_ is not None and prev_ not in (None,0)):
-            d["前日終値比率"] = (now_/prev_ - 1.0) * 100.0
+        if d.get("前日終値比率") is None and (now_ is not None and prev_ not in (None, 0)):
+            d["前日終値比率"] = (now_ / prev_ - 1.0) * 100.0
 
         # 現在値 raw
         cv = _to_float(d.get("現在値"))
         d["現在値_raw"] = cv if cv is not None else ""
 
-        # 前日終値比率 raw（「前日終値比率（％）」という列名の揺れにも対応）
+        # 前日終値比率 raw（「前日終値比率（％）」にも対応）
         pct_val = d.get("前日終値比率")
         if pct_val is None:
             pct_val = d.get("前日終値比率（％）")
@@ -5318,33 +5612,22 @@ def _prepare_rows(df: pd.DataFrame):
         if pctf is not None:
             d["前日終値比率"] = f"{round(float(pctf), 2)}%"
 
-        # 付加フラグ
+        # 付加フラグ群
         d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
-        d["営利対時価_flag"]     = _op_ratio_flag(d)  # ← チェックボックス用（割安）
+        d["営利対時価_flag"]     = _op_ratio_flag(d)
 
         # 判定/理由
         pct = _to_float(d.get("前日終値比率"))
         d["判定"] = "当たり！" if (pct is not None and pct > 0) else ""
         d["判定理由"] = _build_reason(d)
-        
-        # --- 推奨アクション／推奨比率（連続＆バンド） ---
+
+        # 推奨ロジック
         rec, ratio_band, ratio_raw = _derive_recommendation(d)
-
-        # 表示列：％は見た目、raw は後続のヒステリシス維持に使える
-        if rec:
-            d["推奨アクション"] = rec
-        else:
-            d["推奨アクション"] = d.get("推奨アクション", "") or ""
-
+        d["推奨アクション"] = rec or (d.get("推奨アクション", "") or "")
         d["推奨比率_raw"] = ratio_raw if ratio_raw is not None else d.get("推奨比率_raw", "")
+        d["推奨比率"] = "" if ratio_band is None else f"{int(round(float(ratio_band) * 100))}%"
 
-        # UI表示はバンド値を％に（None は空白）
-        if ratio_band is None:
-            d["推奨比率"] = ""
-        else:
-            d["推奨比率"] = f"{int(round(float(ratio_band)*100))}%"
-
-        # --- 営利対時価_flag（DB列が無い/空なら導出） ---
+        # 営利対時価_flag（DB列が無い/空なら導出）
         if not (d.get("営利対時価_flag") or "").strip():
             d["営利対時価_flag"] = _derive_opratio_flag(d)
 
@@ -5352,6 +5635,8 @@ def _prepare_rows(df: pd.DataFrame):
         d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
 
         rows.append(d)
+
+    # ここでは `_conn` を閉じない（呼び出し側 or シングルトン管理側の責務）
     return rows
 
 # =================== HTMLテンプレ ===================
@@ -5545,10 +5830,10 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         return out
 
     # --- 8) cand/allの行化とURL等の補完 ---
-    cand_rows = _prepare_rows(df_cand) if not df_cand.empty else []
+    cand_rows = _prepare_rows(df_cand, conn=conn) if not df_cand.empty else []
 
     cand_rows = enhance_with_chart_flags(conn, cand_rows)
-    all_rows  = _prepare_rows(df_all)  if not df_all.empty  else []
+    all_rows  = _prepare_rows(df_all, conn=conn)  if not df_all.empty  else []
     n_strong = sum(1 for r in cand_rows if r.get("推奨アクション") == "エントリー有力")
     n_small  = sum(1 for r in cand_rows if r.get("推奨アクション") == "小口提案")
     print(f"[recommend] 有力:{n_strong} / 小口:{n_small}")
@@ -5557,7 +5842,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     all_rows  = _records_safe(pd.DataFrame(all_rows))  if all_rows  else []
     log_rows  = _records_safe(df_log)                 if include_log else []
 
-    # --- 9) 高値/安値/MA5/25 を price_history から補完 ---
+    # --- 9) 高値/安値/MA5/25/75 を price_history から補完 ---
     def _hilo_ma_from_db(conn: sqlite3.Connection, code: str):
         try:
             q = """
@@ -5569,22 +5854,35 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             """
             df = pd.read_sql_query(q, conn, params=[str(code)], parse_dates=["日付"])
             if df.empty:
-                return None, None, None, None
+                # hi, lo, ma5, ma25, ma75
+                return None, None, None, None, None
+
             d = df.sort_values("日付")
-            d["終値"] = pd.to_numeric(d["終値"], errors="coerce")
-            d["高値"] = pd.to_numeric(d["高値"], errors="coerce")
-            d["安値"] = pd.to_numeric(d["安値"], errors="coerce")
+            # 数値化（NaNは許容）
+            for c in ("終値", "高値", "安値"):
+                if c in d:
+                    d[c] = pd.to_numeric(d[c], errors="coerce")
+
+            # 移動平均（データ不足でも min_periods=1 で安全）
             ma5  = d["終値"].rolling(5,  min_periods=1).mean().iloc[-1]
             ma25 = d["終値"].rolling(25, min_periods=1).mean().iloc[-1]
             ma75 = d["終値"].rolling(75, min_periods=1).mean().iloc[-1]
+
             last = d.iloc[-1]
-            return (None if pd.isna(last["高値"]) else float(last["高値"])), \
-                   (None if pd.isna(last["安値"]) else float(last["安値"])), \
-                   (None if pd.isna(ma5) else float(ma5)), \
-                   (None if pd.isna(ma25) else float(ma25))
+            hi = None if pd.isna(last.get("高値")) else float(last["高値"])
+            lo = None if pd.isna(last.get("安値")) else float(last["安値"])
+
+            # ★ 5要素（ma75 を含む）で返す
+            return (
+                hi,
+                lo,
+                None if pd.isna(ma5)  else float(ma5),
+                None if pd.isna(ma25) else float(ma25),
+                None if pd.isna(ma75) else float(ma75),
+            )
         except Exception as _e:
             print(f"[patch][WARN] _hilo_ma_from_db({code}) failed: {_e}")
-            return None, None, None, None
+            return None, None, None, None, None
 
     def _apply_price_fields_from_db_local(conn: sqlite3.Connection, rows):
         if not rows: return rows
@@ -5618,7 +5916,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             try:
                 if cand_rows: codes_union.update([str(r.get("コード") or "").zfill(4) for r in cand_rows if r.get("コード")])
             except Exception: pass
-            live_quote_map = _fetch_live_quote_map(sorted(codes_union))
+            live_quote_map = _fetch_live_quote_map(conn, sorted(codes_union))
             if live_quote_map:
                 try:
                     avg_turn = _load_avg_turnover_map(conn, sorted(codes_union), window=20)
@@ -5628,11 +5926,11 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
                 for __r in cand_rows:
                     c4 = str(__r.get("コード") or "").zfill(4)
                     q = live_quote_map.get(c4) or {}
-                    if q: _apply_live_overrides(__r, q, avg_turn)
+                    if q: _apply_live_overrides(conn, __r, q, avg_turn)
                 for __r in all_rows:
                     c4 = str(__r.get("コード") or "").zfill(4)
                     q = live_quote_map.get(c4) or {}
-                    if q: _apply_live_overrides(__r, q, avg_turn)
+                    if q: _apply_live_overrides(conn, __r, q, avg_turn)
     except Exception as _e:
         print(f"[live][WARN] apply-live failed: {_e}")
 
@@ -5708,49 +6006,49 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
 
     # --- 13) 決算データ ---
     try:
-        earnings_rows = load_recent_earnings_from_db(DB_PATH, days=45, limit=300)
+        earnings_rows = load_recent_earnings_from_db(conn, days=45, limit=300)
     except Exception as e:
         print(f"[earnings][WARN] failed to load: {e}")
         earnings_rows = []
 
-    # --- 14) 予測タブ（preearn） ---
+    # --- 14) 予測タブ（preearn） ---  ※ conn をそのまま使う
+    _c = conn
     try:
-        with open_conn(DB_PATH) as _c:
-            tbl = build_earnings_tables(_c)
-            if isinstance(tbl, tuple): _, pre_df = tbl
-            elif isinstance(tbl, dict): pre_df = tbl.get("pre")
-            else: pre_df = None
-            if pre_df is not None and not pre_df.empty:
-                px = pd.read_sql_query("SELECT コード, 現在値 FROM screener", _c)
-                df = pre_df.merge(px, on="コード", how="left")
-                def _row_apply(r):
-                    code = str(r.get("コード") or "")
-                    last = float(r.get("現在値") or np.nan)
-                    mom  = float(r.get("momentum_score") or 0.0)
-                    edge = float(r.get("edge_score") or 0.0)
-                    return pd.Series({
-                        "期待株価":   calc_expected_price(_c, code, last, mom, edge),
-                        "修正見通し": classify_revision_bias(edge, mom),
-                        "過熱度":     judge_overheat(_c, code, mom),
-                        "スコア理由": _mk_score_reason(r.to_dict()),
-                        "予測ヒント": _mk_hint(r.to_dict())
-                    })
-                extra = df.apply(_row_apply, axis=1)
-                df = pd.concat([df, extra], axis=1)
-                df["スコア理由"] = df["スコア理由"].fillna("根拠薄め（暫定）")
-                df["予測ヒント"] = df["予測ヒント"].fillna("（準備中）")
-                df["修正見通し"] = df["修正見通し"].fillna("中立")
-                df["過熱度"]     = df["過熱度"].fillna("中立")
-                df["期待株価"]   = pd.to_numeric(df["期待株価"], errors="coerce")
-                if "現在値" in df.columns:
-                    df.loc[df["期待株価"].isna(), "期待株価"] = pd.to_numeric(df["現在値"], errors="coerce")
-                if "銘柄" not in df.columns:
-                    names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", _c)
-                    df = df.merge(names, on="コード", how="left")
-                    df["銘柄"] = df["銘柄名"].fillna(df["コード"])
-                preearn_rows = [{k: _safe_jsonable(v) for k, v in rec.items()} for rec in df.to_dict("records")]
-            else:
-                preearn_rows = []
+        tbl = build_earnings_tables(_c)
+        if isinstance(tbl, tuple): _, pre_df = tbl
+        elif isinstance(tbl, dict): pre_df = tbl.get("pre")
+        else: pre_df = None
+        if pre_df is not None and not pre_df.empty:
+            px = pd.read_sql_query("SELECT コード, 現在値 FROM screener", _c)
+            df = pre_df.merge(px, on="コード", how="left")
+            def _row_apply(r):
+                code = str(r.get("コード") or "")
+                last = float(r.get("現在値") or np.nan)
+                mom  = float(r.get("momentum_score") or 0.0)
+                edge = float(r.get("edge_score") or 0.0)
+                return pd.Series({
+                    "期待株価":   calc_expected_price(_c, code, last, mom, edge),
+                    "修正見通し": classify_revision_bias(edge, mom),
+                    "過熱度":     judge_overheat(_c, code, mom),
+                    "スコア理由": _mk_score_reason(r.to_dict()),
+                    "予測ヒント": _mk_hint(r.to_dict())
+                })
+            extra = df.apply(_row_apply, axis=1)
+            df = pd.concat([df, extra], axis=1)
+            df["スコア理由"] = df["スコア理由"].fillna("根拠薄め（暫定）")
+            df["予測ヒント"] = df["予測ヒント"].fillna("（準備中）")
+            df["修正見通し"] = df["修正見通し"].fillna("中立")
+            df["過熱度"]     = df["過熱度"].fillna("中立")
+            df["期待株価"]   = pd.to_numeric(df["期待株価"], errors="coerce")
+            if "現在値" in df.columns:
+                df.loc[df["期待株価"].isna(), "期待株価"] = pd.to_numeric(df["現在値"], errors="coerce")
+            if "銘柄" not in df.columns:
+                names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", _c)
+                df = df.merge(names, on="コード", how="left")
+                df["銘柄"] = df["銘柄名"].fillna(df["コード"])
+            preearn_rows = [{k: _safe_jsonable(v) for k, v in rec.items()} for rec in df.to_dict("records")]
+        else:
+            preearn_rows = []
     except Exception as e:
         print(f"[preearn][WARN] failed to build pre-earnings: {e}")
         preearn_rows = []
@@ -5761,7 +6059,7 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         except Exception as _e:
             print(f"[preearn][fallback][WARN] {_e}")
 
-    # --- 15) 休日のみEODパイプライン（既存維持） ---
+    # --- 15) 休日のみEODパイプライン（既存維持） ---  ※ conn をそのまま使う
     try:
         import datetime as _dt
         _today_is_holiday = not _is_jp_business_day(_dt.datetime.now(JST).date())
@@ -5785,47 +6083,41 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             try: phase_sync_latest_prices(conn_)
             except Exception: pass
 
-        _conn_pg = sqlite3.connect(DB_PATH)
-        try:
-            if _hist_ref is not None:
-                _run_eod_overwrite_pipeline(_hist_ref, _scr_from_hist, _sync_latest, conn=_conn_pg)
-            try: eod_refresh_recent_3days(_conn_pg)
-            except Exception as _e: print('[LightEOD] recent_3days WARN:', _e)
-            try: fallback_fill_today_from_quotes(_conn_pg)
-            except Exception as _e: print('[LightEOD] fallback WARN:', _e)
-            try: gap_patrol_recent_15(_conn_pg)
-            except Exception as _e: print('[LightEOD] gap15 WARN:', _e)
-            if _hist_ref is None:
-                _scr_from_hist(_conn_pg); _sync_latest(_conn_pg)
-        finally:
-            _conn_pg.close()
+        _conn_pg = conn
+        if _hist_ref is not None:
+            _run_eod_overwrite_pipeline(_hist_ref, _scr_from_hist, _sync_latest, conn=_conn_pg)
+        try: eod_refresh_recent_3days(_conn_pg)
+        except Exception as _e: print('[LightEOD] recent_3days WARN:', _e)
+        try: fallback_fill_today_from_quotes(_conn_pg)
+        except Exception as _e: print('[LightEOD] fallback WARN:', _e)
+        try: gap_patrol_recent_15(_conn_pg)
+        except Exception as _e: print('[LightEOD] gap15 WARN:', _e)
+        if _hist_ref is None:
+            _scr_from_hist(_conn_pg); _sync_latest(_conn_pg)
     except Exception as _e:
         print(f"[EOD-overwrite][WARN] {str(_e)}")
 
-    # --- 16) 休日最終オーバーライド（必要なら） ---
+    # --- 16) 休日最終オーバーライド（必要なら） ---  ※ conn をそのまま使う
     try:
         import datetime as _dt
         _is_holiday = not _is_jp_business_day(_dt.datetime.now(JST).date())
         if _is_holiday:
-            _conn_h = sqlite3.connect(DB_PATH)
-            try:
-                def _fix_rows(_rows):
-                    if not isinstance(_rows, list): return 0
-                    n=0
-                    for d in _rows:
-                        try:
-                            code4 = str(d.get("コード") or "").strip()
-                            if not code4: continue
-                            _apply_price_fields(_conn_h, d, code4, force_eod=True)
-                            n += 1
-                        except Exception as _e:
-                            print(f"[holiday-fix][WARN] row fix failed for {d.get('コード')}: {_e}")
-                    return n
-                _n1 = _fix_rows(cand_rows); _n2 = _fix_rows(all_rows)
-                _n3 = _fix_rows(earnings_rows); _n4 = _fix_rows(preearn_rows)
-                print(f"[holiday-fix] applied to cand:{_n1} all:{_n2} earn:{_n3} pre:{_n4}")
-            finally:
-                _conn_h.close()
+            _conn_h = conn
+            def _fix_rows(_rows):
+                if not isinstance(_rows, list): return 0
+                n=0
+                for d in _rows:
+                    try:
+                        code4 = str(d.get("コード") or "").strip()
+                        if not code4: continue
+                        _apply_price_fields(_conn_h, d, code4, force_eod=True)
+                        n += 1
+                    except Exception as _e:
+                        print(f"[holiday-fix][WARN] row fix failed for {d.get('コード')}: {_e}")
+                return n
+            _n1 = _fix_rows(cand_rows); _n2 = _fix_rows(all_rows)
+            _n3 = _fix_rows(earnings_rows); _n4 = _fix_rows(preearn_rows)
+            print(f"[holiday-fix] applied to cand:{_n1} all:{_n2} earn:{_n3} pre:{_n4}")
     except Exception as _e:
         print(f"[holiday-fix][WARN] final override failed: {_e}")
 
@@ -5867,7 +6159,6 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     with open(html_path, "w", encoding="utf-8", newline="") as f:
         f.write(html)
     print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
-
 
 # ========== /Template exporter ==========
 
@@ -6991,7 +7282,7 @@ def batch_update_all_financials(conn,
     # --------------------------
     for i in range(0, total, chunk_size):
         chunk = codes[i:i+chunk_size]
-        syms = [c if c.endswith(".T") else f"{c}.T" for c in chunk]
+        syms = [resolve_yahoo_symbol(str(c), conn) for c in chunk]
         log.info(f"[batch.chunk] {i}-{i+len(chunk)-1} ({len(chunk)})")
 
         # 取得要否判定
@@ -7537,6 +7828,7 @@ def build_earnings_tables(conn):
 
     # ========== 実績（列の存在を動的に確認してSELECT） ==========
     # 1) 実テーブルの列名を取得
+    cols_df = pd.read_sql_query("PRAGMA table_info(earnings_events)", conn)
     have = set(cols_df["name"].astype(str))
 
     base_cols = ["コード", "提出時刻", "タイトル", "センチメント"]  # 必須候補
@@ -7651,29 +7943,46 @@ def _x_search_url(code4: str) -> str:
 # ================= 安全版：直近決算読み込み（完全置き換え） =================
 
 # ===== TDnet決算(earnings)の直近N日をDBから読む =====
-def load_recent_earnings_from_db(db_path: str, days: int = 7, limit: int = 300):
+
+# ===== TDnet決算(earnings)の直近N日をDBから読む =====
+def load_recent_earnings_from_db(db_or_conn, days: int = 7, limit: int = 300):
     """
-    earnings_events を“日本語カラムのみ”で読む（DBパス指定版）
+    earnings_events を“日本語カラムのみ”で読む。
+    - 第一引数は sqlite3.Connection でも DBパス(str) でも可（後方互換）
+    - 共有接続は閉じない。パスから開いた場合のみ close する
     """
+    import sqlite3, datetime as _dt
+    from zoneinfo import ZoneInfo
 
-    if not os.path.exists(db_path):
-        print(f"[earnings][WARN] DB not found: {db_path} → []")
-        return []
-
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-
-        # テーブル存在チェック
-        cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='earnings_events'")
-        if not cur.fetchone():
-            print("[earnings][WARN] table earnings_events not found → []")
+    # conn の判定（後方互換：パスでもOK）
+    owns_conn = False
+    if isinstance(db_or_conn, sqlite3.Connection):
+        conn = db_or_conn
+    else:
+        db_path = str(db_or_conn)
+        if not os.path.exists(db_path):
+            print(f"[earnings][WARN] DB not found: {db_path} → []")
             return []
+        conn = sqlite3.connect(db_path, timeout=30.0, isolation_level=None)
+        owns_conn = True
 
-        since = (dtm.datetime.now() - dtm.timedelta(days=int(days))).strftime("%Y-%m-%d 00:00:00")
+    try:
+        # テーブル存在チェック（row_factory をいじらない）
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='earnings_events'")
+            if not cur.fetchone():
+                print("[earnings][WARN] table earnings_events not found → []")
+                return []
+        finally:
+            cur.close()
 
-        cur.execute("""
+        # 期間
+        now_jst = _dt.datetime.now(ZoneInfo("Asia/Tokyo"))
+        since   = (now_jst - _dt.timedelta(days=int(days))).strftime("%Y-%m-%d 00:00:00")
+
+        # 取得
+        sql = """
             SELECT
               コード,
               銘柄名,
@@ -7692,35 +8001,51 @@ def load_recent_earnings_from_db(db_path: str, days: int = 7, limit: int = 300):
             WHERE COALESCE(発表日時, 提出時刻) >= ?
             ORDER BY COALESCE(発表日時, 提出時刻) DESC
             LIMIT ?
-        """, (since, int(limit)))
+        """
+        df = pd.read_sql_query(sql, conn, params=[since, int(limit)])
 
-        rows = []
-        for row in cur.fetchall():
-            d = dict(row)
-            for k in ("理由JSON", "指標JSON"):
-                if k in d and isinstance(d[k], str):
-                    try:
-                        d[k] = json.loads(d[k])
-                    except Exception:
-                        d[k] = [] if k == "理由JSON" else {}
-            rows.append({
-                "ticker":   str(d.get("コード") or "").zfill(4),
-                "name":     d.get("銘柄名") or "",
-                "title":    d.get("タイトル") or "",
-                "link":     d.get("リンク") or "",
-                "time":     d.get("ts") or "",
-                "summary":  d.get("要約") or "",
-                "verdict":  d.get("判定") or "",
-                "score_judge": int(d.get("判定スコア") or 0),
-                "reasons":  d.get("理由JSON") or [],
-                "metrics":  d.get("指標JSON") or {},
-                "progress": d.get("進捗率"),
-                "sentiment": d.get("センチメント") or "",
-                "score":     int(d.get("素点") or 0),
+        if df.empty:
+            return []
+
+        # JSON列のデコード
+        def _loads_or(default):
+            def _f(x):
+                if isinstance(x, (dict, list)): return x
+                if isinstance(x, str):
+                    try: return json.loads(x)
+                    except Exception: return default
+                return default
+            return _f
+
+        df["理由JSON"] = df.get("理由JSON", []).apply(_loads_or([])) if "理由JSON" in df.columns else []
+        df["指標JSON"] = df.get("指標JSON", []).apply(_loads_or({})) if "指標JSON" in df.columns else {}
+
+        # 出力整形
+        out = []
+        for rec in df.to_dict("records"):
+            out.append({
+                "ticker":     str(rec.get("コード") or "").zfill(4),
+                "name":       rec.get("銘柄名") or "",
+                "title":      rec.get("タイトル") or "",
+                "link":       rec.get("リンク") or "",
+                "time":       rec.get("ts") or "",
+                "summary":    rec.get("要約") or "",
+                "verdict":    rec.get("判定") or "",
+                "score_judge": int(rec.get("判定スコア") or 0),
+                "reasons":    rec.get("理由JSON") or [],
+                "metrics":    rec.get("指標JSON") or {},
+                "progress":   rec.get("進捗率"),
+                "sentiment":  rec.get("センチメント") or "",
+                "score":      int(rec.get("素点") or 0),
             })
-        return rows
+        return out
+
     finally:
-        conn.close()
+        # ここで開いたときだけ閉じる（共有接続は閉じない）
+        if owns_conn:
+            try: conn.close()
+            except Exception: pass
+
 
 # ===== 予測タブの付加情報（列）を作るユーティリティ =====
 
@@ -8270,6 +8595,7 @@ def _run_charts60(py_path: str):
         raise FileNotFoundError(f"charts60_make.py が見つかりません: {py}")
     # そのまま実行（DBパスはスクリプト内に埋め込み済み）
     subprocess.run(["python", str(py)], check=True)
+    
 
 def _timed(label, func, *args, **kwargs):
     """関数の処理時間を計測してログ出力するラッパー"""
@@ -8296,23 +8622,51 @@ def _auto_run_mode():
 
 # ===== メイン処理 =====
 def main():
+
+    # ---------------------------------------------------------------------
+    # 実行方針（同日スキップと毎回実行）
+    #   ■ 同日スキップ（日次で1回だけ実行：_timed_daily_once）
+    #     - run_fundamental_daily：基礎データ（日次で十分）
+    #     - phase_csv_import：CSVマスタ取り込み
+    #     - phase_delist_cleanup：上場廃止の整理
+    #     - phase_mark_karauri_nashi：空売り無しフラグ付け
+    #     - yahoo_bulk_refresh：EOD一括更新
+    #     - refresh_full_history_for_insufficient：履歴不足の補完
+    #     - compute_right_up_persistent：右肩継続の重計算
+    #     - compute_right_up_early_triggers：右肩早期トリガー抽出
+    #     - update_market_cap_all：時価総額更新（12:30以前）
+    #     - update_operating_income_and_ratio：営業利益等の更新
+    #     - validate_prev_business_day：営業日整合チェック
+    #     - phase_sync_finance_comments：財務コメント同期
+    #
+    #   ■ 毎回実行（_timed）
+    #     - run_karauri_script：付帯スクレイプ（DB非依存）
+    #     - fetch_all：各種ソースからの直近収集
+    #     - MIDDAY：yahoo_intraday_snapshot / snapshot_shodou_baseline
+    #               / update_shodou_multipliers / derive_update
+    #               / signal_detection / update_since_dates
+    #     - relax_rejudge_signals：シグナル再判定（緩和）
+    #     - resistance_update：抵抗/支持をHTML直前で確定
+    #     - charts60_make：チャート再生成
+    #     - export_html_dashboard：HTML出力
+    #     - open_html_locally：ローカル表示
+    # ---------------------------------------------------------------------
     t0 = time.time()
     print("=== 開始 ===")
 
     # (0) 付帯処理：空売り機関リストの更新
     try:
         #ここだけDB絡まないから別プロセスの非同期実行。他のスクリプトはダッシュボードに影響するのでやめておく。
+        # 付帯スクレイプ（DB非依存）【毎回】
         _timed("run_karauri_script", run_karauri_script)
     except Exception as e:
         print("[karauri][WARN]", e)
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # ダッシュボード生成前などに
-    run_fundamental_daily()
-    
     # ▼ ここを追加：起動時にまず fetch_all を実行（DBに収集・保存させる）
     try:
+        # 最新データの収集・保存【毎回】
         _timed("fetch_all", _run_fetch_all,
                # fetch_path=None → 自動解決。固定したければ絶対パスを渡す
                FETCH_PATH,
@@ -8325,167 +8679,169 @@ def main():
         print(f"[fetch_all][WARN] {e}")
 
     # (1) DB open & スキーマ保証
-    conn = open_conn(DB_PATH)
-    # [v12] removed: lib.parse import quote as _q
-
-
-    extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
-    # if is_jp_market_holiday(dtm.date.today(), extra_closed):
-    #     print(f"日本の休場日（{dtm.date.today()}）のためスキップします。")
-    #     print("=== 終了 ==="); return
-
-    # (3) CSV取り込み（コード・銘柄名・市場・登録日のみ）
-    if USE_CSV:
-        try:
-            _timed("phase_csv_import", phase_csv_import, conn, overwrite_registered_date=False)
-        except Exception as e:
-            print("[csv-import][WARN]", e)
-
-    # (4) 上場廃止/空売り無しの反映
+    conn = _get_db_conn()
     try:
-       _timed("phase_delist_cleanup", phase_delist_cleanup, conn, also_clean_notes=True)
-    except Exception as e:
-        print("[delist][WARN]", e)
+        ensure_runlog_schema(conn)
+        # 基礎データ（日次更新）【同日スキップ】
+        _timed_daily_once("run_fundamental_daily", run_fundamental_daily, conn)
+        # [v12] removed: lib.parse import quote as _q
 
-    try:
-        _timed("phase_mark_karauri_nashi", phase_mark_karauri_nashi, conn)
-    except Exception as e:
-        print("[karauri-flag][WARN]", e)
+        extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
 
-    # (5) 実行モード決定
-    RUN = _auto_run_mode()
-    print(f"[AUTO_MODE={AUTO_MODE}] mode={RUN}")
-
-    # (6) 処理対象銘柄
-    codes = [str(r[0]) for r in conn.execute("SELECT コード FROM screener").fetchall()]
-    if TEST_MODE:
-        codes = codes[:TEST_LIMIT]
-        print(f"[TEST] 対象 {len(codes)} 銘柄に制限")
-
-    try:
-        if RUN == "MIDDAY":
-            # ===== MIDDAYモード =====
-            _timed("yahoo_intraday_snapshot", phase_yahoo_intraday_snapshot, conn)
-            _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
-            _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
-            _timed("compute_right_up_persistent", compute_right_up_persistent, conn)
-            _timed("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
-            _timed("derive_update", phase_derive_update, conn)
-            _timed("signal_detection", phase_signal_detection, conn)
-            _timed("update_since_dates", phase_update_since_dates, conn)
-
-        else:
-            # ===== EODモード =====
-            _timed("yahoo_bulk_refresh", phase_yahoo_bulk_refresh, conn, codes, batch_size=200)
-            _timed("refresh_full_history_for_insufficient", refresh_full_history_for_insufficient,conn, codes, batch_size=200)
-            _timed("compute_right_up_persistent", compute_right_up_persistent, conn)
-            _timed("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
-
-            # 現在時刻が12:30以前なら「重い処理」も実行する
-            now = dtm.datetime.now().time()
-            if now < dtm.time(12,30):
-                _timed("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
-                try:
-                    _timed("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
-                except Exception as e:
-                    print("[operating-income][WARN]", e)
-            else:
-                print("[SKIP] 営業利益・時価総額の更新（12:30以降のためスキップ）")
-
-            _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
-            _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
-            _timed("derive_update", phase_derive_update, conn)
-            _timed("signal_detection", phase_signal_detection, conn)
-            _timed("update_since_dates", phase_update_since_dates, conn)
-
+        # (3) CSV取り込み（コード・銘柄名・市場・登録日のみ）
+        if USE_CSV:
             try:
-                _timed("validate_prev_business_day", phase_validate_prev_business_day, conn)
+                # CSVマスタ取り込み【同日スキップ】
+                _timed_daily_once("phase_csv_import", phase_csv_import, conn)
             except Exception as e:
-                print("[validate-prev][WARN]", e)
-                
-        
-        # 最後に build_earnings_tables(conn) を呼んで HTML にタブを追加
+                print("[csv-import][WARN]", e)
 
-        # (6.5)
-        _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
-
-        # ===== ここから追記：JST 19時だけ EODバッチを実行 =====
+        # (4) 上場廃止/空売り無しの反映
         try:
-            try:
-                from zoneinfo import ZoneInfo
-                JST = ZoneInfo("Asia/Tokyo")
-                _now = dtm.datetime.now(JST)
-            except Exception:
-                JST = None
-                _now = dtm.datetime.now()  # フォールバック（ローカル時刻）
+            # 上場廃止や不要レコードの整理【同日スキップ】
+            _timed_daily_once("phase_delist_cleanup", phase_delist_cleanup, conn, also_clean_notes=True)
+        except Exception as e:
+            print("[delist][WARN]", e)
 
-            # 19時のみ実行（ちょうど19:00限定にしたければ minute 条件を追加）
-            if _now.hour == 19:  # and _now.minute == 0
-                print(f"[EOD@{_now}] run screener EOD batch")
+        try:
+            # 空売り無しフラグ付与【同日スキップ】
+            _timed_daily_once("phase_mark_karauri_nashi", phase_mark_karauri_nashi, conn)
+        except Exception as e:
+            print("[karauri-flag][WARN]", e)
 
-                # 直近2営業日のEODデータで screener の価格系を再更新
-                _timed("EOD:_update_screener_from_history",
-                       _update_screener_from_history, conn, [str(c).zfill(4) for c in codes])
+        # (5) 実行モード決定
+        RUN = _auto_run_mode()
+        print(f"[AUTO_MODE={AUTO_MODE}] mode={RUN}")
 
-                # 財務・配当・自社株買い等を一括更新（yahooquery → 抽出 → UPDATE）
-                _timed("EOD:batch_update_all_financials",
-                       batch_update_all_financials, conn,
-                       200,      # chunk_size
-                       False,    # force_refresh
-                       True)     # verbose
+        # (6) 処理対象銘柄
+        codes = [str(r[0]) for r in conn.execute("SELECT コード FROM screener").fetchall()]
+        if TEST_MODE:
+            codes = codes[:TEST_LIMIT]
+            print(f"[TEST] 対象 {len(codes)} 銘柄に制限")
 
-                # （任意）EOD更新の結果を軽く再導出したい場合は、以下を必要に応じてON
-                # _timed("compute_right_up_persistent", compute_right_up_persistent, conn)
-                # _timed("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
-                # _timed("derive_update", phase_derive_update, conn)
-                # _timed("signal_detection", phase_signal_detection, conn)
-                # _timed("update_since_dates", phase_update_since_dates, conn)
+        try:
+            if RUN == "MIDDAY":
+                # ===== MIDDAYモード =====
+                _timed("yahoo_intraday_snapshot", phase_yahoo_intraday_snapshot, conn)
+                _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
+                _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
+                _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
+                _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                _timed("derive_update", phase_derive_update, conn)
+                _timed("signal_detection", phase_signal_detection, conn)
+                _timed("update_since_dates", phase_update_since_dates, conn)
 
             else:
-                print(f"[EOD] skip (current time = {_now})")
-        except Exception as e:
-            print("[EOD][WARN]", e)
-        # ===== 追記ここまで =====
+                # ===== EODモード =====
+                _timed_daily_once("yahoo_bulk_refresh", phase_yahoo_bulk_refresh, conn, codes, batch_size=200)
+                _timed_daily_once("refresh_full_history_for_insufficient", refresh_full_history_for_insufficient, conn, codes, batch_size=200)
+                _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
+                _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
 
+                now = dtm.datetime.now().time()
+                if now < dtm.time(12,30):
+                    _timed_daily_once("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
+                    try:
+                        _timed_daily_once("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
+                    except Exception as e:
+                        print("[operating-income][WARN]", e)
+                else:
+                    print("[SKIP] 営業利益・時価総額の更新（12:30以降のためスキップ）")
+
+                _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
+                _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
+                _timed("derive_update", phase_derive_update, conn)
+                _timed("signal_detection", phase_signal_detection, conn)
+                _timed("update_since_dates", phase_update_since_dates, conn)
+
+                try:
+                    _timed_daily_once("validate_prev_business_day", phase_validate_prev_business_day, conn)
+                except Exception as e:
+                    print("[validate-prev][WARN]", e)
+                
+            # (6.5) シグナル緩和・再判定【毎回】
+            _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
+
+            # ===== JST 19時だけ EODバッチを実行 =====
+            try:
+                try:
+                    from zoneinfo import ZoneInfo
+                    JST = ZoneInfo("Asia/Tokyo")
+                    _now = dtm.datetime.now(JST)
+                except Exception:
+                    JST = None
+                    _now = dtm.datetime.now()  # フォールバック（ローカル時刻）
+
+                if _now.hour == 19:  # and _now.minute == 0
+                    print(f"[EOD@{_now}] run screener EOD batch")
+
+                    _timed("EOD:_update_screener_from_history",
+                           _update_screener_from_history, conn, [str(c).zfill(4) for c in codes])
+
+                    _timed("EOD:batch_update_all_financials",
+                           batch_update_all_financials, conn,
+                           200,      # chunk_size
+                           False,    # force_refresh
+                           True)     # verbose
+
+                    _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
+                    _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                    _timed("derive_update", phase_derive_update, conn)
+                    _timed("signal_detection", phase_signal_detection, conn)
+                    _timed("update_since_dates", phase_update_since_dates, conn)
+
+                else:
+                    print(f"[EOD] skip (current time = {_now})")
+            except Exception as e:
+                print("[EOD][WARN]", e)
+            # ===== 追記ここまで =====
+            
+            # ★ 抵抗/支持を最終更新（ここで1回だけ確実に走らせる）
+            _timed("resistance_update", phase_resistance_update, conn)
         
-        # (7.1) 財務コメント追加
-        phase_sync_finance_comments(conn)
+            # (7.1) 財務コメント追加
+            phase_sync_finance_comments(conn)
         
-        # (7.2) チャート生成
-        try:
-          _run_charts60(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\charts60_make.py")
-        except Exception as e:
-          print(f"[charts60][WARN] {e}")  # エラーでも本体処理は続行したい場合
+            # (7.2) チャート生成
+            try:
+                _run_charts60(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\charts60_make.py")
+            except Exception as e:
+                print(f"[charts60][WARN] {e}")  # エラーでも本体処理は続行したい場合
 
-        # (8) ダッシュボード出力
-        html_path = os.path.join(OUTPUT_DIR, "index.html")
-        try:
-            # _timedの呼び出しをtryブロックで囲む
-            _timed("export_html_dashboard", phase_export_html_dashboard_offline, conn, html_path)
-        except Exception as e:
-            # HTML生成の失敗を捕捉し、ログに出力してから処理を停止させる
-            print(f"[HTML-EXPORT][FATAL] HTML生成中に致命的なエラーが発生しました: {e}")
-            raise # 再スローしてプログラムを強制終了させ、原因を特定する
+            # (8) ダッシュボード出力
+            html_path = os.path.join(OUTPUT_DIR, "index.html")
+            try:
+                _timed("export_html_dashboard", phase_export_html_dashboard_offline, conn, html_path)
+            except Exception as e:
+                print(f"[HTML-EXPORT][FATAL] HTML生成中に致命的なエラーが発生しました: {e}")
+                raise
 
-        # (9) メール送信（任意）
-        #try:
-        #    _timed("send_index_html_via_gmail", send_index_html_via_gmail, html_path)
-        # クールダウンなしで強制オープン
-        ok = open_html_locally(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\index.html", cool_min=0, force=True)
-        print("opened:", ok)
-        #
-        #except Exception as e:
-        #    print("[gmail][WARN]", e)
-        #    
-        #
+            # (9) ローカル表示
+            ok = False
+            try:
+                ok = open_html_locally(
+                    r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\index.html",
+                    cool_min=0,
+                    force=True
+                )
+            except Exception as e:
+                print("[open-html][WARN]", e)
+
+            print("opened:", ok)
+
+        finally:
+            # サブ後片付けが必要ならここ（今回は pass）
+            pass
 
     finally:
-        conn.close()
+        # ← ここでの wait/stop/close はやらない（エントリポイントで1回だけ実行）
+        pass
+
     print(f"実行時間： {time.time() - t0:.2f}s")
     print("=== 終了 ===")
 
-# ===== エントリーポイント =====
 
+# ===== エントリーポイント =====
 
 def eod_refresh_recent_3days(conn, batch_size: int = 60):
     """直近3営業日のみ price_history を補強（yfinance）。
@@ -8532,7 +8888,8 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
         total = 0
         for i in range(0, len(codes), batch_size):
             chunk = codes[i:i+batch_size]
-            tickers_map = {c: f"{c}.T" for c in chunk}
+            tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
+            
             try:
                 df_wide = yf.download(list(tickers_map.values()), period="10d", interval="1d",
                                       group_by="ticker", threads=True, auto_adjust=False)
@@ -8559,13 +8916,8 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
         print("[LightEOD] eod_refresh_recent_3days ERROR:", e)
         return 0
 
-
-
 def fallback_fill_today_from_quotes(conn):
-    """15:30以降に price_history の当日欠損を quotes で補完（存在すれば）。
-    - quotes テーブルのカラムは柔軟に検出（終値/現在値/close/last/price、出来高/volume）。
-    - 無ければスキップ。祝日ならスキップ。
-    """
+    """15:30以降に price_history の当日欠損を quotes で補完（存在すれば）。"""
     import datetime as dt
     import pandas as pd
     # 15:30 以降のみ
@@ -8663,8 +9015,6 @@ def fallback_fill_today_from_quotes(conn):
     print(f"[LightEOD] fallback_fill_today_from_quotes +{added}")
     return added
 
-
-
 def gap_patrol_recent_15(conn, batch_size: int = 60):
     """直近15営業日で price_history 欠損のみを補完（yfinance）。"""
     import pandas as pd
@@ -8680,7 +9030,6 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
             return d.weekday() >= 5
     days = []
     cur = dt.date.today()
-    # build 15 business days back incl. today if business
     if not is_holiday(cur):
         days.append(cur)
     while len(days) < 15:
@@ -8718,7 +9067,7 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
     total = 0
     for i in range(0, len(codes), batch_size):
         chunk = codes[i:i+batch_size]
-        tickers_map = {c: f"{c}.T" for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
         try:
             df_wide = yf.download(list(tickers_map.values()), period="30d", interval="1d",
                                   group_by="ticker", threads=True, auto_adjust=False)
@@ -8772,9 +9121,137 @@ def v5_collect_data(conn, latest_table=_V5_LATEST_TABLE):
     return out
 
 
-if __name__ == "__main__":
-    main()
-
 # === Light EOD Addons (3 functions) ===
 
 # == Unified V5 data collector (HTML-free) ===
+
+# ===== Moved Single-Writer block to module bottom =====
+# === Single-Writer Process (Pattern A) =======================================
+from multiprocessing import Process, JoinableQueue
+
+_write_q = None
+_writer_proc = None
+
+def _writer_loop(q):
+    conn = _get_db_conn()
+    import sqlite3
+    while True:
+        job = q.get()
+        if job is None:
+            q.task_done()
+            break
+        try:
+            kind = job.get("kind")
+            if kind == "sql":
+                sql = job["sql"]
+                params = job.get("params") or []
+                if isinstance(params, (list, tuple)):
+                    conn.execute(sql, params)
+                else:
+                    conn.execute(sql)
+                conn.commit()
+            elif kind == "execmany":
+                sql = job["sql"]
+                rows = job.get("rows") or []
+                chunk = int(job.get("chunk") or 500)
+                cur = conn.cursor()
+                try:
+                    if rows:
+                        # chunked executemany
+                        for i in range(0, len(rows), chunk):
+                            cur.executemany(sql, rows[i:i+chunk])
+                    conn.commit()
+                finally:
+                    cur.close()
+            elif kind == "call":
+                name = job["name"]
+                fn = globals().get(name)
+                if fn is None:
+                    print(f"[writer][WARN] function not found: {name}")
+                else:
+                    # call with writer-owned connection
+                    fn(conn)
+            else:
+                print(f"[writer][WARN] unknown job kind: {kind}")
+        except Exception as e:
+            print("[writer][ERROR]", e)
+        finally:
+            q.task_done()
+
+def start_writer():
+    global _write_q, _writer_proc
+    if _write_q is not None:
+        return
+    _write_q = JoinableQueue()
+    _writer_proc = Process(target=_writer_loop, args=(_write_q,), daemon=True)
+    _writer_proc.start()
+    print("[writer] started")
+
+def stop_writer():
+    global _write_q, _writer_proc
+    if _write_q is None:
+        return
+    # sentinel投入 & キュー完了待ち
+    try:
+        _write_q.put(None)
+        _write_q.join()
+    except Exception as e:
+        print("[writer][WARN] join:", e)
+    # プロセス終了待ち（フォールバック付き）
+    try:
+        if _writer_proc is not None:
+            _writer_proc.join(timeout=5.0)
+            if hasattr(_writer_proc, "is_alive") and _writer_proc.is_alive():
+                print("[writer][WARN] still alive → terminate")
+                _writer_proc.terminate()
+                _writer_proc.join(timeout=2.0)
+    except Exception as e:
+        print("[writer][WARN] proc join/term:", e)
+    finally:
+        _write_q = None
+        _writer_proc = None
+    print("[writer] stopped")
+
+def enqueue_sql(sql, params=None):
+    start_writer()
+    _write_q.put({"kind": "sql", "sql": sql, "params": params or []})
+
+def enqueue_execmany(sql, rows, chunk=500):
+    start_writer()
+    _write_q.put({"kind": "execmany", "sql": sql, "rows": rows, "chunk": chunk})
+
+def enqueue_call(func_name: str):
+    start_writer()
+    _write_q.put({"kind": "call", "name": func_name})
+
+def wait_writes():
+    if _write_q is not None:
+        _write_q.join()
+# === /Single-Writer ==========================================================
+
+# （削除）import時の自動起動は行わない
+# try:
+#     start_writer()
+# except Exception as _e:
+#     print("[writer][WARN] failed to start at import:", _e)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        # ❶ ライターキューの全書き込みを待機
+        try:
+            wait_writes()
+        except Exception as _e:
+            print("[writer][WARN] wait_writes:", _e)
+        # ❷ ライタープロセスを停止（強化版）
+        try:
+            stop_writer()
+        except Exception as _e:
+            print("[writer][WARN] stop_writer:", _e)
+        # ❸ 共有DBコネクションを安全にクローズ（直接 close() はしない）
+        try:
+            _close_db_conn_safely()
+        except Exception as _e:
+            print("[db][WARN] _close_db_conn_safely:", _e)
