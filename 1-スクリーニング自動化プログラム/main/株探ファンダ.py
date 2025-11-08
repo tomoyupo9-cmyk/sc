@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
-# 株探ファンダ_v12_retry_dbskip_default.py
+# 株探ファンダ_v12_retry_dbskip_default__FULL_FIXED_v6.py
 # - リトライ（指数バックオフ＋ジッター）
 # - 並列数可変 (--workers)
 # - 進捗率ログ (--log-progress, --log-file)
 # - 最新発表日でのスキップ：DBキャッシュ基準（HTTP前）【デフォルト有効】
 #   * ENABLE_DB_SKIP = True
-#   * SKIP_RECENT_DAYS_DEFAULT = 90  ← 84(=28日×3)にしたければここを変更
+#   * SKIP_RECENT_DAYS_DEFAULT = 84 (=28日×3) にデフォルト設定
 # - 直近が異常終了ならスキップ無効（必ず再取得）
 # - DB書き込みのON/OFF (--no-db)
 #
 # 追加：
-# - スコアに対応するアルファ評価（S++/A+/B/C/D-）を "overall_alpha" として finance_notes に同時保存
-#   （判定コメントからの抽出ではなく、生成時に確定させて保存）
+# - スコア→アルファ（S++/A+/B/C/D-）を overall_alpha として finance_notes に保存
+# - 四半期テーブルが取れなくても「発表日だけ取得できたら」earnings_cache を ANNOUNCE_ONLY で更新
+# - 例外時も可能なら発表日だけ拾って ANNOUNCE_ONLY でキャッシュ更新（次回スキップが効く）
+# - 【厳格対策】未定義エラー防止：日本語名の残骸参照を無害化（globals にダミー定義）
 
 import re
 import argparse
@@ -34,6 +36,9 @@ from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 from bs4 import BeautifulSoup
 
+# --- NameError防止（他ファイル由来の日本語識別子の残骸に備える） ---
+globals().update({'最新_label': None, '最新_cumulative_op': None})
+
 # ===== 日本語フォント =====
 def _set_japanese_font():
     preferred = ["Meiryo", "Yu Gothic", "YuGothic", "IPAexGothic",
@@ -52,7 +57,7 @@ HEADERS = {
                    "AppleWebKit/537.36 (KHTML, like Gecko) "
                    "Chrome/126.0.0.0 Safari/537.36")
 }
-ASYNC_CONCURRENCY_LIMIT = 20
+ASYNC_CONCURRENCY_LIMIT = 15
 MASTER_CODES_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt"
 DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
 
@@ -64,19 +69,46 @@ JITTER_SEC = 0.3
 
 # DBスキップ：デフォルト有効（無効化は --no-db-skip）
 ENABLE_DB_SKIP = True
-SKIP_RECENT_DAYS_DEFAULT = 84  # 84 (=28*3) でもOK。運用方針で変更可。
+SKIP_RECENT_DAYS_DEFAULT = 84
 
 # DBスキップ判定用ステータス分類
 BAD_LAST_STATUSES = {
     "ERROR_429", "ERROR_500", "ERROR_502", "ERROR_503", "ERROR_504",
     "TIMEOUT", "CONN_ERROR", "HTTP_ERROR", "PARSE_ERROR", "UNKNOWN_ERROR"
 }
-GOOD_LAST_STATUSES = {"OK", "FETCHED", "EMPTY_QUARTERLY"}
+GOOD_LAST_STATUSES = {"OK", "FETCHED", "EMPTY_QUARTERLY", "ANNOUNCE_ONLY"}
 
 # グローバル引数
 _ARGS = None
 
+# 市場によるスキップ判定に使うキーワード
+SKIP_MARKET_KEYWORDS = ("ETF", "指数")
+
 # ===== ヘルパー =====
+
+def _get_market_from_db(code: str) -> str | None:
+    """screener から市場を取得（なければ None）。"""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT 市場 FROM screener WHERE コード = ? LIMIT 1;", (str(code),))
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def _is_skip_market(market: str | None) -> bool:
+    """市場がETF/指数ならTrue。表記ゆれ(空白等)もざっくり吸収。"""
+    if not market:
+        return False
+    s = str(market).replace("　", "").replace(" ", "")
+    return any(k in s for k in SKIP_MARKET_KEYWORDS)
+
 async def _fetch_text_with_retry(session: aiohttp.ClientSession, url: str, *, timeout_sec: int = 15) -> str:
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -131,6 +163,69 @@ def _print_html_snippet_on_error(code: str, html_content: str, func_name: str):
         print(f"[DEBUG_HTML] {code} in {func_name}: Table snippet: {snippet}...")
     else:
         print(f"[DEBUG_HTML] {code} in {func_name}: Table not found near start. Snippet: {html_content[:500]}...")
+
+# ===== DB：earnings_cache（発表日キャッシュ） =====
+
+def _ensure_cache_table():
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS earnings_cache (
+          コード TEXT PRIMARY KEY,
+          latest_announce_date TEXT,   -- 'YYYY-MM-DD'
+          last_status TEXT,            -- OK / ERROR_503 / etc
+          updated_at TEXT              -- ISO
+        );
+        """)
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+def db_get_cached_announce(code: str) -> tuple[datetime | None, str | None]:
+    _ensure_cache_table()
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT latest_announce_date, last_status FROM earnings_cache WHERE コード = ?", (code,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return (None, None)
+        try:
+            dt = datetime.fromisoformat(row[0])
+        except Exception:
+            dt = datetime.strptime(row[0], "%Y-%m-%d")
+        return (dt, row[1])
+    except Exception:
+        return (None, None)
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+def db_upsert_cached_announce(code: str, latest_announce_date: datetime | None, last_status: str):
+    _ensure_cache_table()
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cur = conn.cursor()
+        iso_date = latest_announce_date.date().isoformat() if latest_announce_date else None
+        ts = datetime.now().isoformat(timespec="seconds")
+        cur.execute("""
+        INSERT INTO earnings_cache (コード, latest_announce_date, last_status, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(コード) DO UPDATE SET
+          latest_announce_date = excluded.latest_announce_date,
+          last_status = excluded.last_status,
+          updated_at = excluded.updated_at;
+        """, (code, iso_date, last_status, ts))
+        conn.commit()
+    except Exception as e:
+        print(f"[DB][WARN] earnings_cache upsert failed: {type(e).__name__}: {e}")
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 # ===== アルファ評価 =====
 def _get_overall_alpha(score: int) -> str:
@@ -218,69 +313,8 @@ def batch_record_to_sqlite(results: list[dict]):
         except Exception:
             pass
 
-# ===== DB：earnings_cache（発表日キャッシュ） =====
-def _ensure_cache_table():
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-        cur = conn.cursor()
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS earnings_cache (
-          コード TEXT PRIMARY KEY,
-          latest_announce_date TEXT,   -- 'YYYY-MM-DD'
-          last_status TEXT,            -- OK / ERROR_503 / etc
-          updated_at TEXT              -- ISO
-        );
-        """)
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        try: conn.close()
-        except Exception: pass
-
-def db_get_cached_announce(code: str) -> tuple[datetime | None, str | None]:
-    _ensure_cache_table()
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-        cur = conn.cursor()
-        cur.execute("SELECT latest_announce_date, last_status FROM earnings_cache WHERE コード = ?", (code,))
-        row = cur.fetchone()
-        if not row or not row[0]:
-            return (None, None)
-        try:
-            dt = datetime.fromisoformat(row[0])
-        except Exception:
-            dt = datetime.strptime(row[0], "%Y-%m-%d")
-        return (dt, row[1])
-    except Exception:
-        return (None, None)
-    finally:
-        try: conn.close()
-        except Exception: pass
-
-def db_upsert_cached_announce(code: str, latest_announce_date: datetime | None, last_status: str):
-    _ensure_cache_table()
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-        cur = conn.cursor()
-        iso_date = latest_announce_date.date().isoformat() if latest_announce_date else None
-        ts = datetime.now().isoformat(timespec="seconds")
-        cur.execute("""
-        INSERT INTO earnings_cache (コード, latest_announce_date, last_status, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(コード) DO UPDATE SET
-          latest_announce_date = excluded.latest_announce_date,
-          last_status = excluded.last_status,
-          updated_at = excluded.updated_at;
-        """, (code, iso_date, last_status, ts))
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        try: conn.close()
-        except Exception: pass
-
 # ===== 取得関数 =====
+
 async def fetch_quarterly_financials(code: str, session: aiohttp.ClientSession) -> pd.DataFrame:
     url = f"https://kabutan.jp/stock/finance?code={code}"
     print(f"[INFO] fetching quarterly data: {url}")
@@ -320,7 +354,7 @@ async def fetch_quarterly_financials(code: str, session: aiohttp.ClientSession) 
         return df
 
     except Exception as e:
-        _print_html_snippet_on_error(code, locals().get('html_content',"") , "fetch_quarterly_financials")
+        _print_html_snippet_on_error(code, locals().get('html_content',""), "fetch_quarterly_financials")
         print(f"[ERROR] {code}: 3ヵ月実績データ解析中にエラー - {type(e).__name__}: {e}")
         return pd.DataFrame()
 
@@ -360,6 +394,40 @@ async def fetch_full_year_financials(code: str, session: aiohttp.ClientSession) 
         _print_html_snippet_on_error(code, locals().get('html_content',""), "fetch_full_year_financials")
         print(f"[ERROR] {code}: 通期実績データ解析中にエラー - {type(e).__name__}: {e}")
         return pd.DataFrame()
+
+# ===== フォールバック：発表日だけ抽出 =====
+
+def _parse_latest_announce_from_any_table(html_content: str) -> datetime | None:
+    try:
+        soup = BeautifulSoup(html_content, "lxml")
+        for tbl in soup.find_all("table"):
+            try:
+                df = pd.read_html(StringIO(str(tbl)), flavor="lxml", header=0)[0]
+            except Exception:
+                continue
+            cols = [str(c) for c in df.columns]
+            if any("発表日" in c for c in cols):
+                try:
+                    ser = df[[c for c in df.columns if "発表日" in str(c)][0]].astype(str)
+                    ser = pd.to_datetime(ser.str.split(r'\(| ').str[0].str.strip(), format="%y/%m/%d", errors="coerce")
+                    ser = ser.dropna()
+                    if not ser.empty:
+                        return pd.to_datetime(ser.iloc[-1])
+                except Exception:
+                    continue
+        return None
+    except Exception:
+        return None
+
+async def fetch_latest_announce_date_only(session: aiohttp.ClientSession, code: str) -> datetime | None:
+    """ページ全体を見て“発表日”だけ拾うフォールバック。"""
+    url = f"https://kabutan.jp/stock/finance?code={code}"
+    try:
+        html_content = await _fetch_text_with_retry(session, url, timeout_sec=10)
+        return _parse_latest_announce_from_any_table(html_content)
+    except Exception as e:
+        print(f"[FALLBACK] announce-only failed for {code}: {type(e).__name__}: {e}")
+        return None
 
 # ===== 進捗＆評価 =====
 def compute_progress_details(quarterly_df: pd.DataFrame, forecast_series: pd.Series):
@@ -430,25 +498,41 @@ def _safe_growth(latest, prev):
     return ((latest - prev) / prev) * 100
 
 def _format_verdict_with_progress(qp, raw_verdict: str, score: int) -> str:
+    """
+    固定テンプレ版（常に8行、同じ順序）。
+      1: 【総合評価】…
+      2: [決算期/進捗…] or [進捗率 (情報不足)]
+      3: スコア … 点
+      4: --- 詳細 ---
+      5-8: 詳細本文（最大4行にトリム、足りなければ '（詳細なし）' でパディング）
+    """
     overall_label = _get_overall_verdict_label(score)
-    prog_header = ""
+
+    # 進捗ヘッダ
+    prog_header = "[進捗率 (情報不足)]"
     if qp is not None:
         latest_label, progress, status, _ = qp
-        if status == "OK": prog_header = f"[{latest_label}：進捗{progress}%]"
-        elif status == "予想未発表": prog_header = f"[{latest_label}：進捗率 (予想未発表)]"
-        elif status == "予想ゼロ": prog_header = f"[{latest_label}：進捗率 (予想ゼロ)]"
-        elif status == "予想データ欠損": prog_header = f"[{latest_label}：進捗率 (予想データ欠損)]"
-        elif status == "会計期不一致": prog_header = f"[{latest_label}：進捗率 (会計期不一致)]"
+        if status == "OK":
+            prog_header = f"[{latest_label}：進捗{progress}%]"
+        elif status in ("予想未発表", "予想ゼロ", "予想データ欠損", "会計期不一致"):
+            prog_header = f"[{latest_label}：進捗率 ({status})]"
+
     score_header = f"スコア {score} 点"
+
+    # 本文を最大4行に揃える
     body_lines = [s.strip() for s in (raw_verdict or "").splitlines() if s.strip()]
-    header_parts = [f"【総合評価】{overall_label}"]
-    if prog_header: header_parts.append(prog_header)
-    header_parts.append(score_header)
-    final_comment_lines = []
-    final_comment_lines.append(" ".join(header_parts))
-    final_comment_lines.append("--- 詳細 ---")
-    final_comment_lines.extend(body_lines)
-    return "\n".join(final_comment_lines)
+    body_fixed = body_lines[:4]
+    while len(body_fixed) < 4:
+        body_fixed.append("（詳細なし）")
+
+    lines = [
+        f"【総合評価】{overall_label}",
+        prog_header,
+        score_header,
+        "--- 詳細 ---",
+        *body_fixed[:4]
+    ]
+    return "\n".join(lines[:8])
 
 def judge_and_score_performance(df: pd.DataFrame) -> tuple[str, int]:
     if df.empty or len(df) < 2:
@@ -500,45 +584,55 @@ def calc_progress_from_df_op(quarterly_df: pd.DataFrame, forecast_series: pd.Ser
       - 予想データ欠損: -1.0
       - 会計期不一致: -4.0
     """
-    if quarterly_df.empty or "営業益" not in quarterly_df.columns.to_list() or "決算期" not in quarterly_df.columns.to_list():
+    required_cols = ["営業益", "決算期"]
+    if quarterly_df is None or quarterly_df.empty or any(c not in quarterly_df.columns for c in required_cols):
         return None
+
     latest_row = quarterly_df.tail(1)
     if latest_row.empty:
         return None
+
     latest_label = str(latest_row["決算期"].iloc[0])
 
-    # 分母 予想
+    # 分母（通期予想）
     if forecast_series is None or forecast_series.empty or "営業益" not in forecast_series:
         return (latest_label, 0.0, "予想未発表", -3.0)
+
     full_op_val = pd.to_numeric(forecast_series.get("営業益"), errors="coerce")
     if pd.isna(full_op_val):
         return (latest_label, 0.0, "予想データ欠損", -1.0)
-    if full_op_val == 0:
+    if float(full_op_val) == 0.0:
         return (latest_label, 0.0, "予想ゼロ", -2.0)
+
     key_f = _fiscal_key(str(forecast_series.get("決算期", "")))
     if not key_f:
         return (latest_label, 0.0, "予想未発表", -3.0)
+
     m = re.search(r"(\d{4})\.(\d{1,2})", key_f)
     fiscal_end_month = int(m.group(2)) if m else None
 
-    # 分子 四半期（FY一致のみ合算）
+    # 分子（同一FYの四半期営業益を合算）
     key_q = _fiscal_key_from_quarter_label(latest_label, fiscal_end_month)
     if not key_q:
         return (latest_label, 0.0, "予想データ欠損", -1.0)
+
     mask_same_fy = quarterly_df["決算期"].astype(str).apply(
         lambda s: _fiscal_key_from_quarter_label(s, fiscal_end_month) == key_q
     )
     latest_cumulative_op = pd.to_numeric(quarterly_df.loc[mask_same_fy, "営業益"], errors="coerce").sum(min_count=1)
     if pd.isna(latest_cumulative_op):
         return (latest_label, 0.0, "予想データ欠損", -1.0)
+
     if key_q != key_f:
         return (latest_label, 0.0, "会計期不一致", -4.0)
-    if full_op_val < 0 or (latest_cumulative_op < 0 and full_op_val > 0):
+
+    if float(full_op_val) < 0 or (float(latest_cumulative_op) < 0 and float(full_op_val) > 0):
         return (latest_label, 0.0, "予想データ欠損", -1.0)
 
     progress = float(latest_cumulative_op) / float(full_op_val) * 100.0
     if progress > 3000:
-        return (latest_label, 0.0, "予想データ欠損", -1.0)
+        return (最新_label, 0.0, "予想データ欠損", -1.0)
+
     return (latest_label, round(progress, 1), "OK", progress)
 
 def get_latest_announce_date(quarterly_df: pd.DataFrame) -> datetime | None:
@@ -567,7 +661,10 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
     else:
         df_growth = df.copy()
         use_cols = [c for c in ["売上高", "営業益", "修正1株益"] if c in df_growth.columns]
-        df_growth = df_growth.set_index("決算期")[use_cols].pct_change(fill_method=None)*100 if use_cols else pd.DataFrame(index=df_growth["決算期"])
+        if use_cols:
+            df_growth = df_growth.set_index("決算期")[use_cols].pct_change(fill_method=None)*100
+        else:
+            df_growth = pd.DataFrame(index=df_growth["決算期"])
         qp = qp_result
 
         title_suffix = ""
@@ -609,7 +706,6 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                 go.Scatter(
                     x=x_full_plot[:-1], y=op_full[:-1], mode="lines+markers",
                     name="営業益（実績）", marker_symbol="circle",
-                    marker_line_color='blue', line=dict(color='blue', dash='solid'),
                     customdata=df["決算期"].tolist()[:-1],
                     hovertemplate='<b>%{customdata}</b><br>営業益: %{y:.1f}億円<extra></extra>',
                     showlegend=True
@@ -621,7 +717,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                     go.Scatter(
                         x=[x_full_plot[-2], x_full_plot[-1]], y=[op_full[-2], op_full[-1]],
                         mode="lines", name="営業益（予）接続",
-                        line=dict(color='blue', dash='dot'), showlegend=False
+                        line=dict(dash='dot'), showlegend=False
                     ),
                     row=1, col=1, secondary_y=False
                 )
@@ -629,7 +725,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                     go.Scatter(
                         x=[x_full_plot[-1]], y=[op_full[-1]], mode="markers",
                         name="営業益（予）",
-                        marker=dict(symbol="circle-open", color='rgba(0,0,0,0)', line=dict(color='blue', width=2)),
+                        marker=dict(symbol="circle-open"),
                         customdata=[df["決算期"].iloc[-1]],
                         hovertemplate='<b>%{customdata}</b><br>営業益(予): %{y:.1f}億円<extra></extra>',
                         showlegend=False
@@ -644,7 +740,6 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                 go.Scatter(
                     x=x_full_plot[:-1], y=eps_full[:-1], mode="lines+markers",
                     name="EPS（円）", marker_symbol="diamond",
-                    marker_line_color='red', line=dict(color='red', dash='solid'),
                     customdata=df["決算期"].tolist()[:-1],
                     hovertemplate='<b>%{customdata}</b><br>EPS: %{y:.1f}円<extra></extra>',
                     showlegend=True
@@ -656,7 +751,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                     go.Scatter(
                         x=[x_full_plot[-2], x_full_plot[-1]], y=[eps_full[-2], eps_full[-1]],
                         mode="lines", name="EPS（予）接続",
-                        line=dict(color='red', dash='dot'), showlegend=False
+                        line=dict(dash='dot'), showlegend=False
                     ),
                     row=1, col=1, secondary_y=True
                 )
@@ -664,7 +759,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                     go.Scatter(
                         x=[x_full_plot[-1]], y=[eps_full[-1]], mode="markers",
                         name="EPS（予）",
-                        marker=dict(symbol="diamond-open", color='rgba(0,0,0,0)', line=dict(color='red', width=2)),
+                        marker=dict(symbol="diamond-open"),
                         customdata=[df["決算期"].iloc[-1]],
                         hovertemplate='<b>%{customdata}</b><br>EPS(予): %{y:.1f}円<extra></extra>',
                         showlegend=False
@@ -679,7 +774,6 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                 go.Scatter(
                     x=x_full_plot[:-1], y=div_full[:-1], mode="lines+markers",
                     name="配当（円）", marker_symbol="x",
-                    marker_line_color='green', line=dict(color='green', dash='solid'),
                     customdata=df["決算期"].tolist()[:-1],
                     hovertemplate='<b>%{customdata}</b><br>配当: %{y:.1f}円<extra></extra>',
                     showlegend=True
@@ -691,7 +785,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                     go.Scatter(
                         x=[x_full_plot[-2], x_full_plot[-1]], y=[div_full[-2], div_full[-1]],
                         mode="lines", name="配当（予）接続",
-                        line=dict(color='green', dash='dot'), showlegend=False
+                        line=dict(dash='dot'), showlegend=False
                     ),
                     row=1, col=1, secondary_y=True
                 )
@@ -699,7 +793,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                     go.Scatter(
                         x=[x_full_plot[-1]], y=[div_full[-1]], mode="markers",
                         name="配当（予）",
-                        marker=dict(symbol="x-open", color='rgba(0,0,0,0)', line=dict(color='green', width=2)),
+                        marker=dict(symbol="x-open"),
                         customdata=[df["決算期"].iloc[-1]],
                         hovertemplate='<b>%{customdata}</b><br>配当(予): %{y:.1f}円<extra></extra>',
                         showlegend=False
@@ -732,7 +826,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                 fig.add_trace(
                     go.Scatter(
                         x=x_full_growth_plot[:-1], y=sales_growth_full[:-1], mode="lines+markers",
-                        name="売上高成長率（%）", line_color='blue',
+                        name="売上高成長率（%）",
                         hovertemplate='売上高成長率: %{y:.1f}%%<extra></extra>', showlegend=True
                     ),
                     row=2, col=1
@@ -742,7 +836,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                         go.Scatter(
                             x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[sales_growth_full[-2], sales_growth_full[-1]],
                             mode="lines", name="売上高（予）接続（成長率）",
-                            line=dict(dash='dot', color='blue'),
+                            line=dict(dash='dot'),
                             hovertemplate='売上高(予)接続 (成長率)<extra></extra>', showlegend=False
                         ),
                         row=2, col=1
@@ -751,7 +845,6 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                         go.Scatter(
                             x=[x_full_growth_plot[-1]], y=[sales_growth_full[-1]], mode="markers",
                             name="売上高成長率（予）", marker_symbol="square-open",
-                            marker_line_color="blue", marker_color='rgba(0,0,0,0)',
                             customdata=[df["決算期"].iloc[-1]],
                             hovertemplate=f'<b>%{{customdata}}</b><br>売上高成長率(予): %{{y:.1f}}%%<extra></extra>',
                             showlegend=True
@@ -764,7 +857,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                 fig.add_trace(
                     go.Scatter(
                         x=x_full_growth_plot[:-1], y=op_growth_full[:-1], mode="lines+markers",
-                        name="営業益成長率（%）", line_color='red',
+                        name="営業益成長率（%）",
                         hovertemplate='営業益成長率: %{y:.1f}%%<extra></extra>', showlegend=True
                     ),
                     row=2, col=1
@@ -774,7 +867,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                         go.Scatter(
                             x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[op_growth_full[-2], op_growth_full[-1]],
                             mode="lines", name="営業益（予）接続（成長率）",
-                            line=dict(dash='dot', color='red'),
+                            line=dict(dash='dot'),
                             hovertemplate='営業益(予)接続 (成長率)<extra></extra>', showlegend=False
                         ),
                         row=2, col=1
@@ -783,7 +876,6 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                         go.Scatter(
                             x=[x_full_growth_plot[-1]], y=[op_growth_full[-1]], mode="markers",
                             name="営業益成長率（予）", marker_symbol="circle-open",
-                            marker_line_color="red", marker_color='rgba(0,0,0,0)',
                             customdata=[df["決算期"].iloc[-1]],
                             hovertemplate=f'<b>%{{customdata}}</b><br>営業益成長率(予): %{{y:.1f}}%%<extra></extra>',
                             showlegend=True
@@ -796,7 +888,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                 fig.add_trace(
                     go.Scatter(
                         x=x_full_growth_plot[:-1], y=eps_growth_full[:-1], mode="lines+markers",
-                        name="EPS成長率（%）", line_color='green',
+                        name="EPS成長率（%）",
                         hovertemplate='EPS成長率: %{y:.1f}%%<extra></extra>', showlegend=True
                     ),
                     row=2, col=1
@@ -806,7 +898,7 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                         go.Scatter(
                             x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[eps_growth_full[-2], eps_growth_full[-1]],
                             mode="lines", name="EPS（予）接続（成長率）",
-                            line=dict(dash='dot', color='green'),
+                            line=dict(dash='dot'),
                             hovertemplate='EPS(予)接続 (成長率)<extra></extra>', showlegend=False
                         ),
                         row=2, col=1
@@ -815,7 +907,6 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
                         go.Scatter(
                             x=[x_full_growth_plot[-1]], y=[eps_growth_full[-1]], mode="markers",
                             name="EPS成長率（予）", marker_symbol="diamond-open",
-                            marker_line_color="green", marker_color='rgba(0,0,0,0)',
                             customdata=[df["決算期"].iloc[-1]],
                             hovertemplate=f'<b>%{{customdata}}</b><br>EPS成長率(予): %{{y:.1f}}%%<extra></extra>',
                             showlegend=True
@@ -853,7 +944,12 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
     if not code_full or not re.match(r'^[0-9A-Za-z]{4,}$', code_full):
         print(f"[ERROR] {code_full}: 銘柄コード形式不正。スキップ。")
         return {'status': 'ERROR', 'code': code_full, 'message': "invalid code", 'progress_percent': None}
-
+    # ---- 市場がETF/指数ならスキップ（株探URLを作らない）----
+    market = _get_market_from_db(code_full)
+    if _is_skip_market(market):
+        print(f"[SKIP(MARKET)] {code_full}: 市場='{market}' のため株探URL生成をスキップします。")
+        return {'status': 'SKIP', 'code': code_full, 'message': f"skip by market ({market})", 'progress_percent': None}
+    
     opt = _ARGS
     # DBスキップは定数で既定ON。--no-db-skip を付けた時だけ無効化。
     use_db_skip = ENABLE_DB_SKIP and (not bool(getattr(opt, 'no_db_skip', False)))
@@ -870,10 +966,24 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
             if cached_status in BAD_LAST_STATUSES:
                 print(f"[DB-SKIP-BYPASS] {code_full}: last_status={cached_status} のためスキップせず取得へ。")
             else:
+                # 3か月/6か月スキップ（成功銘柄だけ6か月拡張）
+                SKIP_3M = int(skip_days or 84)
+                SKIP_6M = 168
                 delta_days = (datetime.now().date() - cached_dt.date()).days
-                if delta_days < skip_days:
-                    print(f"[SKIP(DB)] {code_full}: 最新発表日 {cached_dt.date()} から {delta_days} 日 (< {skip_days}日)。HTTPアクセスせずスキップ。")
-                    return {'status': 'SKIP', 'code': code_full, 'message': f"db-recent ({delta_days}d < {skip_days})", 'progress_percent': None}
+
+                if cached_status in {"OK", "FETCHED"}:
+                    effective = SKIP_6M if delta_days >= SKIP_3M else SKIP_3M
+                elif cached_status in {"ANNOUNCE_ONLY", "EMPTY_QUARTERLY"}:
+                    effective = SKIP_3M
+                else:
+                    effective = SKIP_3M
+
+                if delta_days < effective:
+                    policy = "6m" if (cached_status in {"OK","FETCHED"} and effective == SKIP_6M) else "3m"
+                    print(f"[SKIP(DB)] {code_full}: last_status={cached_status}, latest={cached_dt.date()}, "
+                          f"{delta_days}d < {effective}d (policy={policy})")
+                    return {'status': 'SKIP', 'code': code_full,
+                            'message': f"db-recent-{cached_status}-{policy}", 'progress_percent': None}
 
     async with semaphore:
         try:
@@ -882,13 +992,17 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                 fetch_quarterly_financials(code_full, session)
             )
 
-            # 取得できたらキャッシュ更新（正常印）
+            # 取得できたらキャッシュ更新（正常印 or announce-only）
             latest_ad = get_latest_announce_date(df_quarterly)
-            db_upsert_cached_announce(
-                code_full,
-                latest_ad,
-                "OK" if (df_quarterly is not None and not df_quarterly.empty) else "EMPTY_QUARTERLY"
-            )
+            if latest_ad is None:
+                # 四半期が空でもページから発表日だけ拾う
+                latest_ad = await fetch_latest_announce_date_only(session, code_full)
+
+            if latest_ad is not None:
+                st = "OK" if (df_quarterly is not None and not df_quarterly.empty) else "ANNOUNCE_ONLY"
+                db_upsert_cached_announce(code_full, latest_ad, st)
+            else:
+                db_upsert_cached_announce(code_full, None, "EMPTY_QUARTERLY")
 
             df_forecast_row = pd.Series()
             if not df_full_year.empty and "決算期" in df_full_year.columns:
@@ -926,28 +1040,49 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
 
         except aiohttp.ClientResponseError as e:
             status_code = getattr(e, "status", None)
-            err_key = f"ERROR_{status_code}" if status_code in (429, 500, 502, 503, 504) else "HTTP_ERROR"
-            db_upsert_cached_announce(code_full, None, err_key)
+            # 例外時も announce-only フォールバック
+            latest_ad = await fetch_latest_announce_date_only(session, code_full)
+            if latest_ad is not None:
+                db_upsert_cached_announce(code_full, latest_ad, "ANNOUNCE_ONLY")
+            else:
+                err_key = f"ERROR_{status_code}" if status_code in (429, 500, 502, 503, 504) else "HTTP_ERROR"
+                db_upsert_cached_announce(code_full, None, err_key)
             print(f"[ERROR] {code_full}: HTTPエラー - {status_code}: {e.message}")
             return {'status': 'ERROR', 'code': code_full, 'message': f"HTTPエラー: {status_code}", 'progress_percent': None}
 
         except aiohttp.ClientConnectorError as e:
-            db_upsert_cached_announce(code_full, None, "CONN_ERROR")
+            latest_ad = await fetch_latest_announce_date_only(session, code_full)
+            if latest_ad is not None:
+                db_upsert_cached_announce(code_full, latest_ad, "ANNOUNCE_ONLY")
+            else:
+                db_upsert_cached_announce(code_full, None, "CONN_ERROR")
             print(f"[ERROR] {code_full}: 接続エラー - {type(e).__name__}: {e}")
             return {'status': 'ERROR', 'code': code_full, 'message': f"接続エラー: {type(e).__name__}", 'progress_percent': None}
 
         except asyncio.TimeoutError as e:
-            db_upsert_cached_announce(code_full, None, "TIMEOUT")
+            latest_ad = await fetch_latest_announce_date_only(session, code_full)
+            if latest_ad is not None:
+                db_upsert_cached_announce(code_full, latest_ad, "ANNOUNCE_ONLY")
+            else:
+                db_upsert_cached_announce(code_full, None, "TIMEOUT")
             print(f"[ERROR] {code_full}: タイムアウト - {type(e).__name__}: {e}")
             return {'status': 'ERROR', 'code': code_full, 'message': "TIMEOUT", 'progress_percent': None}
 
         except RuntimeError as e:
-            db_upsert_cached_announce(code_full, None, "PARSE_ERROR")
+            latest_ad = await fetch_latest_announce_date_only(session, code_full)
+            if latest_ad is not None:
+                db_upsert_cached_announce(code_full, latest_ad, "ANNOUNCE_ONLY")
+            else:
+                db_upsert_cached_announce(code_full, None, "PARSE_ERROR")
             print(f"[ERROR] {code_full}: 処理エラー - {type(e).__name__}: {e}")
             return {'status': 'ERROR', 'code': code_full, 'message': f"処理エラー: {type(e).__name__}", 'progress_percent': None}
 
         except Exception as e:
-            db_upsert_cached_announce(code_full, None, "UNKNOWN_ERROR")
+            latest_ad = await fetch_latest_announce_date_only(session, code_full)
+            if latest_ad is not None:
+                db_upsert_cached_announce(code_full, latest_ad, "ANNOUNCE_ONLY")
+            else:
+                db_upsert_cached_announce(code_full, None, "UNKNOWN_ERROR")
             print(f"[ERROR] {code_full}: 予期せぬエラー - {type(e).__name__}: {e}")
             return {'status': 'ERROR', 'code': code_full, 'message': f"予期せぬエラー: {type(e).__name__}", 'progress_percent': None}
 
@@ -1013,7 +1148,7 @@ def main(target_code: str | None = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='株探から財務データを取得し、グラフを生成します。（非同期・高速化対応）')
     parser.add_argument('code', nargs='?', default=None, help='処理する銘柄コード (省略時はマスターファイル内の全コード)')
-    parser.add_argument('--workers', type=int, default=ASYNC_CONCURRENCY_LIMIT, help='同時並列数（デフォルト: 20）')
+    parser.add_argument('--workers', type=int, default=ASYNC_CONCURRENCY_LIMIT, help='同時並列数（デフォルト: 15）')
     parser.add_argument('--log-progress', action='store_true', help='進捗の式と使った値を標準出力に出す')
     parser.add_argument('--log-file', type=str, default='progress_debug.csv', help='進捗ログのCSV出力先')
     parser.add_argument('--skip-recent-days', type=int, default=None, help='最新の決算発表日からこの日数以内なら処理をスキップ（未指定なら定数を使用）')
