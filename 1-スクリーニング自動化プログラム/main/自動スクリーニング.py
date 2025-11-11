@@ -1,3 +1,31 @@
+
+SINGLE_FILE_MODE = True
+
+def __inject_inline_data_json(html: str, data_obj) -> str:
+    """<body>直後に JSON タグ(__DATA__) と window.__DATA__ を挿入。fallback: 文末追加。"""
+    try:
+        import json as _json
+        dj = _json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        dj = "{}"
+    json_tag   = '<script id="__DATA__" type="application/json">' + dj + '</script>'
+    inline_tag = '<script id="data_inline">window.__DATA__=' + dj + ';window.DATA=window.__DATA__;</script>'
+    import re as _re
+    m = _re.search(r'<body[^>]*>', html, _re.IGNORECASE)
+    if m:
+        i = m.end()
+        return html[:i] + json_tag + inline_tag + html[i:]
+    return html + json_tag + inline_tag
+
+# --- [ENCODING GUARD | Windows cp932 safe] ---
+try:
+    import sys
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='backslashreplace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='backslashreplace')
+except Exception:
+    pass
+# --- [END ENCODING GUARD] ---
 # === [MERGE-LIGHT-EOD] ANCHOR ===
 # -*- coding: utf-8 -*-
 """
@@ -19,6 +47,40 @@
 前提: Python 3.11 / pip install yahooquery pandas jpholiday
 """
 # --- Standard library
+
+# === [QUIET MODE PATCH v8] ================================================
+# Verbosity switch (default: QUIET). Set PRICEGUARD_VERBOSE=1 or pass --verbose to enable noisy logs.
+import os as __os_patch_v8, logging as __lg_patch_v8, warnings as __wn_patch_v8, sys as __sys_patch_v8
+
+# CLI flag check (very lightweight and safe)
+__argv_v8 = list(__sys_patch_v8.argv)
+__CLI_VERBOSE = ("--verbose" in __argv_v8) or ("-v" in __argv_v8)
+__CLI_QUIET   = ("--quiet" in __argv_v8) or ("-q" in __argv_v8)
+if __CLI_VERBOSE and __CLI_QUIET:
+    __CLI_QUIET = False  # verbose wins
+
+# Env check
+__ENV_VERBOSE = str(__os_patch_v8.environ.get("PRICEGUARD_VERBOSE", "0")).lower() not in ("", "0", "false", "no")
+
+VERBOSE = bool(__CLI_VERBOSE or __ENV_VERBOSE)
+if __CLI_QUIET:
+    VERBOSE = False
+QUIET = not VERBOSE
+
+# PDF/Parser noisy libs → silence (ERROR only)
+for __name in ("pdfminer", "pdfminer.layout", "pdfminer.pdfinterp", "pdfplumber", "fitz", "pymupdf"):
+    try:
+        __lg_patch_v8.getLogger(__name).setLevel(__lg_patch_v8.ERROR)
+    except Exception:
+        pass
+
+# Optionally drop super-noisy warnings
+try:
+    __wn_patch_v8.filterwarnings("ignore", message=r".*invalid float.*")
+    __wn_patch_v8.filterwarnings("ignore", message=r".*non-stroke color.*")
+except Exception:
+    pass
+# === [/QUIET MODE PATCH v8] ===============================================
 from email.message import EmailMessage
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -34,6 +96,565 @@ import re
 import sqlite3
 import threading
 
+# === JSON sanitize helpers (NaN/Infinity -> None) ===
+import math as _math, json as _json
+
+# ==== [INJECTED] Lightweight Profiling & data.js normalizer ====
+import time as _prof_time
+
+# === [INJECTED: Heartbeat logger] ===
+# 定期的に「生存」ログを出す。_HB_PHASE は現在のフェーズ名。
+_HB_PHASE = "boot"
+def start_heartbeat(phase_name: str = "startup", interval: int = 30):
+    global _HB_PHASE
+    _HB_PHASE = phase_name
+    def _hb():
+        while True:
+            try:
+                print(f"[HB] alive phase={_HB_PHASE}", flush=True) if VERBOSE else None
+            except Exception:
+                pass
+            try:
+                _prof_time.sleep(interval)
+            except Exception:
+                # 万一 _prof_time が無ければ time を探す
+                import time as __t
+                __t.sleep(interval)
+    import threading as __th
+    __th.Thread(target=_hb, daemon=True).start()
+
+def set_heartbeat_phase(phase_name: str):
+    global _HB_PHASE
+    _HB_PHASE = phase_name
+# === [/INJECTED: Heartbeat logger] ===
+
+# ==== [INJECTED: Export Phase Watchdog] ====
+_EXPORT_STEP = "start"
+
+class _ExportWatchdog:
+    def __init__(self, phase="phase_export_html_dashboard_offline", interval=10):
+        self.phase = phase
+        self.interval = interval
+        self._stop = False
+    def start(self):
+        import threading, time as _t
+        def _loop():
+            t = 0
+            while not self._stop:
+                try:
+                    print(f"[export][HB] step={globals() if VERBOSE else None.get('_EXPORT_STEP','?')} t={t}s", flush=True)
+                    # also update heartbeat phase to include step (cheap)
+                    try:
+                        globals()['_HB_PHASE'] = f"{self.phase}:{globals().get('_EXPORT_STEP','?')}"
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                _t.sleep(self.interval)
+                t += self.interval
+        self._thr = threading.Thread(target=_loop, daemon=True)
+        self._thr.start()
+        return self
+    def stop(self):
+        self._stop = True
+
+# ==== [/INJECTED: Export Phase Watchdog] ====
+
+# ==== [INJECTED: Per-line tracer for export phase] ====
+if VERBOSE:
+    def _make_line_traced(func, phase_name="phase_export_html_dashboard_offline"):
+        import sys, inspect, linecache, threading
+        _func_code = func.__code__
+        _main_thread = threading.current_thread()
+
+        def _trace(frame, event, arg):
+            if event == "line" and frame.f_code is _func_code and threading.current_thread() is _main_thread:
+                lineno = frame.f_lineno
+                try:
+                    filename = frame.f_code.co_filename
+                    src_line = (linecache.getline(filename, lineno) or "").rstrip("\n")
+                    if len(src_line) > 140:
+                        src_line = src_line[:100] + " ... " + src_line[-30:]
+                    print(f"[export][LINE] {lineno}: {src_line}", flush=True)
+                    try:
+                        globals()['_HB_PHASE'] = f"{phase_name}:L{lineno}"
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            return _trace
+
+        def _wrapped(*a, **kw):
+            try:
+                print(f"[export][TRACE] enabled for {phase_name}", flush=True) if VERBOSE else None
+            except Exception:
+                pass
+            old = sys.gettrace()
+            sys.settrace(_trace)
+            try:
+                return func(*a, **kw)
+            finally:
+                sys.settrace(old)
+                try:
+                    print(f"[export][TRACE] disabled for {phase_name}", flush=True) if VERBOSE else None
+                except Exception:
+                    pass
+        return _wrapped
+
+    # 有効化（存在すれば差し替え）
+    try:
+        phase_export_html_dashboard_offline = _make_line_traced(phase_export_html_dashboard_offline, "phase_export_html_dashboard_offline")
+    except Exception:
+        pass
+    # 代替名でも試す
+    try:
+        phase_export_html = _make_line_traced(phase_export_html, "phase_export_html")
+    except Exception:
+        pass
+else:
+    # tracer disabled in QUIET mode
+    pass
+# ==== [/INJECTED: Per-line tracer] ====
+# ==== [/INJECTED: Per-line tracer] ====
+
+if VERBOSE:
+    start_heartbeat("startup")
+# === _str_series: 安全な文字列Series化（未定義なら必ず定義） ===
+# === injected helpers: _str_series / _norm_code_str / _norm_code_series ===
+# どこかで未定義でも必ずここで供給されるようにする
+
+# _str_series: 任意の配列/Seriesを安全に文字列Series化（NA→""）
+try:
+    _str_series  # type: ignore
+except NameError:
+    def _str_series(x):
+        try:
+            import pandas as pd
+            if isinstance(x, pd.Series):
+                try:
+                    s = x.astype("string")
+                except Exception:
+                    s = x.astype(object).map(lambda v: "" if v is None else str(v))
+                return s.fillna("")
+            vals = ["" if v is None else str(v) for v in (list(x) if not isinstance(x, (str, bytes)) else [x])]
+            s = pd.Series(vals)
+            try:
+                s = s.astype("string")
+            except Exception:
+                pass
+            return s.fillna("")
+        except Exception:
+            try:
+                return ["" if v is None else str(v) for v in x]
+            except Exception:
+                return x
+    print("[preearn] _str_series injected")
+
+# _norm_code_str: 銘柄コードの文字列正規化（末尾の .T/-T 等除去、数字抽出、4桁ゼロ埋め）
+try:
+    _norm_code_str  # type: ignore
+except NameError:
+    def _norm_code_str(code):
+        try:
+            import re
+            s = str(code).strip().upper()
+            # よくあるサフィックスを除去
+            for suf in (".T", "-T", ".JP", "-JP"):
+                if s.endswith(suf):
+                    s = s[: -len(suf)]
+            # 数字以外を除去（例: "3350.T" -> "3350"）
+            s = re.sub(r"[^0-9]", "", s)
+            if not s:
+                return ""
+            # JP銘柄は通常4桁。5桁以上でもそのまま（新証券コード等に対応）
+            if len(s) < 4:
+                s = s.zfill(4)
+            return s
+        except Exception:
+            return "" if code is None else str(code)
+    print("[preearn] _norm_code_str injected")
+
+# _norm_code_series: Series/iterable に対しベクトル適用
+try:
+    _norm_code_series  # type: ignore
+except NameError:
+    def _norm_code_series(arr):
+        try:
+            import pandas as pd
+            return pd.Series(arr, copy=False).map(_norm_code_str)
+        except Exception:
+            return [_norm_code_str(x) for x in arr]
+
+
+# ---- DB global guards (fallback) ----
+try:
+    _DB_LOCK
+except NameError:
+    import threading as _threading
+    _DB_LOCK = _threading.RLock()
+
+try:
+    _DB_SINGLETON
+except NameError:
+    _DB_SINGLETON = None
+# -------------------------------------
+
+# ==== safe compare helpers (pandas object列対策) ====
+import pandas as pd
+import numpy as np
+from typing import Any, Iterable
+
+def _coerce_na_ok(s: pd.Series) -> pd.Series:
+    # 数値/文字列混在でも落ちないように一旦文字列化。ただしNaNは維持
+    if pd.api.types.is_string_dtype(s) or pd.api.types.is_categorical_dtype(s):
+        return s
+    return s.astype("string")
+
+def s_eq(s: pd.Series, other: Any) -> pd.Series:
+    """Series == other を安全・高速に。NaN, mixed dtype, list対応。"""
+    if isinstance(other, (set, list, tuple, np.ndarray, pd.Series)):
+        # membership 比較に変換
+        if isinstance(other, pd.Series):
+            other = other.dropna().unique()
+        return _coerce_na_ok(s).isin(pd.unique(np.array(list(other), dtype=object)))
+    # スカラ
+    if other is None or (isinstance(other, float) and np.isnan(other)):
+        return s.isna()
+    # 文字列/数値混在でも比較可能に（NaNはFalse）
+    left = _coerce_na_ok(s)
+    right = str(other) if not isinstance(other, str) else other
+    return left.fillna(pd.NA).eq(right).fillna(False)
+
+def s_neq(s: pd.Series, other: Any) -> pd.Series:
+    return ~s_eq(s, other)
+
+def s_in(s: pd.Series, candidates: Iterable[Any]) -> pd.Series:
+    return _coerce_na_ok(s).isin(pd.unique(np.array(list(candidates), dtype=object)))
+
+def s_notin(s: pd.Series, candidates: Iterable[Any]) -> pd.Series:
+    return ~s_in(s, candidates)
+
+
+def _profiled(_name, _fn):
+    def _w(*a, **kw):
+        # Update heartbeat phase to current function
+        try:
+            globals()['_HB_PHASE'] = _name
+        except Exception:
+            pass
+        t0 = _prof_time.perf_counter()
+        try:
+            print(f"[PROFILE] {_name} start", flush=True) if VERBOSE else None
+        except Exception:
+            pass
+        try:
+            return _fn(*a, **kw)
+        finally:
+            try:
+                dt = _prof_time.perf_counter() - t0
+                print(f"[PROFILE] {_name} done: {dt:.1f}s", flush=True) if VERBOSE else None
+            except Exception:
+                pass
+    return _w
+
+def _try_profile_wrap(name):
+    g = globals()
+    if name in g and callable(g[name]):
+        g[name] = _profiled(name, g[name])
+        try:
+            print(f"[PROFILE] wrap -> {name}", flush=True) if VERBOSE else None
+        except Exception:
+            pass
+
+
+def _sanitize_numbers(x):
+    if isinstance(x, float):
+        return None if not _math.isfinite(x) else x
+    if isinstance(x, dict):
+        return {k: _sanitize_numbers(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_sanitize_numbers(v) for v in x]
+    return x
+
+# ---- robust JSON dumper: accepts json.dumps kwargs and sanitizes NaN/Inf ----
+import math
+from datetime import date, datetime
+from decimal import Decimal
+
+# === injected: safe link completion ===
+def _get_yahoo_suffix_from_overrides(code4: str) -> str | None:
+    """
+    override系テーブルから Yahooサフィックスを探して返す。
+    返り値例: ".T", ".N", ".S", ".F"（先頭ドット付きで返す）
+    見つからなければ None。
+    対応テーブル候補やカラム名は広めに探索する（存在しない場合は握りつぶして次へ）。
+    """
+    # 4桁だけに正規化
+    import re
+    m = re.search(r"(\d{4})", str(code4))
+    if not m:
+        return None
+    code4 = m.group(1)
+
+    # 既存コード側に _get_db_conn() があれば使う（無ければ諦めて None）
+    try:
+        conn = _get_db_conn()  # noqa: F821  # 存在しない場合は except で握りつぶす
+    except Exception:
+        conn = None
+    if conn is None:
+        return None
+
+    # 探索候補（よくある名前を総当たり）
+    table_candidates = [
+        "symbol_overrides", "overrides_symbol", "overrides", "yahoo_overrides",
+        "symbol_meta", "symbols_override",
+    ]
+    # コード列候補
+    code_cols = ["code", "symbol", "ticker", "stock_code", "銘柄コード"]
+    # サフィックス列候補（ドット有無どちらも想定）
+    suffix_cols = ["yahoo_suffix", "yahoo_market_suffix", "yahoo_market", "yahoo_sfx"]
+
+    cur = conn.cursor()
+    for t in table_candidates:
+        for c_code in code_cols:
+            for c_sfx in suffix_cols:
+                try:
+                    # テーブル/カラム存在チェックを兼ねてクエリを直接投げる
+                    cur.execute(f"SELECT {c_sfx} FROM {t} WHERE {c_code}=?", (code4,))
+                    row = cur.fetchone()
+                except Exception:
+                    row = None
+                if row and row[0]:
+                    sfx = str(row[0]).strip().upper()
+                    # 許容入力: "T" / ".T" / "TSE" など → ".T" に正規化
+                    if sfx.startswith("."):
+                        norm = sfx[:2]  # ".T"など先頭2文字
+                    else:
+                        # 代表的な表記を吸収
+                        if sfx in ("T", "TSE", "TOKYO", "JPX", "PRIME", "STANDARD", "GROWTH", "MOTHERS", "JASDAQ"):
+                            norm = ".T"
+                        elif sfx in ("N", "NSE", "NAGOYA"):
+                            norm = ".N"
+                        elif sfx in ("S", "SSE", "SAPPORO"):
+                            norm = ".S"
+                        elif sfx in ("F", "FSE", "FUKUOKA"):
+                            norm = ".F"
+                        else:
+                            # 1文字ならドット付与、想定外は一旦 ".T"
+                            norm = f".{sfx[0]}" if len(sfx) == 1 else ".T"
+                    return norm
+    return None
+
+
+def _market_to_yahoo_suffix(mkt: str | None) -> str:
+    """
+    市場→Yahooサフィックス推定。override が無い時の補助。既知以外は ".T"。
+    """
+    if not mkt:
+        return ".T"
+    s = str(mkt).upper()
+    tokyo_keys = ("東", "TSE", "TOKYO", "JPX", "PRIME", "STANDARD", "GROWTH", "MOTHERS", "JASDAQ")
+    if any(k in s for k in tokyo_keys):
+        return ".T"
+    if any(k in s for k in ("名", "NSE", "NAGOYA")):
+        return ".N"
+    if any(k in s for k in ("札", "SSE", "SAPPORO")):
+        return ".S"
+    if any(k in s for k in ("福", "FSE", "FUKUOKA")):
+        return ".F"
+    return ".T"
+
+
+def _resolve_yahoo_suffix(code4: str, market: str | None) -> str:
+    """
+    1) overrideテーブル優先
+    2) 市場からの推定
+    3) どちらも無ければ ".T"
+    """
+    sfx = None
+    try:
+        sfx = _get_yahoo_suffix_from_overrides(code4)
+    except Exception:
+        sfx = None
+    if sfx:
+        return sfx
+    return _market_to_yahoo_suffix(market)
+
+
+def _ensure_links(d: dict) -> dict:
+    """
+    各種リンク（Yahoo/Kabutan/TradingView/自前charts/X）を欠損時だけ補完する。
+    既存値は尊重し、欠損のみにセット。Yahooは override サフィックスを最優先。
+    """
+    if not isinstance(d, dict):
+        return d
+
+    # コード抽出
+    code = (
+        d.get("code") or d.get("コード") or d.get("symbol") or d.get("ticker") or
+        d.get("銘柄コード") or d.get("stock_code")
+    )
+    if not code:
+        return d
+
+    # 4桁抽出
+    import re
+    m = re.search(r"(\d{4})", str(code))
+    if not m:
+        return d
+    c4 = m.group(1)
+
+    # 市場情報
+    market = (
+        d.get("market") or d.get("市場") or d.get("exchange") or
+        d.get("市場コード") or d.get("market_raw") or d.get("section")
+    )
+
+    # ここでサフィックス決定（override最優先）
+    suffix = _resolve_yahoo_suffix(c4, market)
+
+    # ===== 補完（既存値が無い場合のみ）=====
+    d.setdefault("yahoo_url",       f"https://finance.yahoo.co.jp/quote/{c4}{suffix}")
+    d.setdefault("kabutan_url",     f"https://kabutan.jp/stock/?code={c4}")
+    d.setdefault("tradingview_url", f"https://jp.tradingview.com/symbols/TSE-{c4}/")
+    d.setdefault("charts60_url",    f"./charts60/{c4}.html")
+    d.setdefault("x_url",           f"https://x.com/search?q=%23{c4}%20OR%20{c4}%20株&f=live")
+    return d
+
+# === end injected ===
+
+
+def _json_sanitize(obj):
+    """Recursively sanitize data for JSON: NaN/Inf -> None, Decimals -> float/str, datetimes -> isoformat."""
+    if obj is None:
+        return None
+    # primitives
+    if isinstance(obj, (str, bool, int)):
+        return obj
+    if isinstance(obj, float):
+        # convert NaN/Inf to None to keep JSON valid
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, Decimal):
+        try:
+            f = float(obj)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return f
+        except Exception:
+            return str(obj)
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+
+    # mappings
+    if isinstance(obj, dict):
+        return {str(k): _json_sanitize(v) for k, v in obj.items()}
+
+    # iterables
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_sanitize(x) for x in obj]
+
+    # last resort
+    try:
+        return str(obj)
+    except Exception:
+        return None
+
+# 依存: import json, math, datetime, decimal はファイルの先頭などで済ませておく
+# from datetime import date, datetime, time
+# from decimal import Decimal
+
+def dumps_json_clean(obj,
+                     ensure_ascii=False,
+                     separators=(",", ":"),
+                     sort_keys=False,
+                     indent=None,
+                     default=None,
+                     allow_nan=False,
+                     **kwargs):
+    """
+    json.dumps 互換の引数を受け取りつつ、事前に
+      - datetime/date/time -> isoformat
+      - Decimal -> float（変換できなければ str）
+      - set/tuple -> list
+      - NaN/Inf/-Inf -> None（allow_nan=False のとき）
+      - bytes -> utf-8 decode（失敗時 ignore）
+    などをクレンジングして安全に JSON 化する。
+    """
+
+    import json, math
+    from datetime import date, datetime, time
+    from decimal import Decimal
+
+    def _is_nan_inf(x: float) -> bool:
+        return (x != x) or (x == float("inf")) or (x == float("-inf"))
+
+    def _convert_scalar(x):
+        # datetime 系
+        if isinstance(x, (datetime, date, time)):
+            try:
+                return x.isoformat()
+            except Exception:
+                return str(x)
+
+        # Decimal
+        if isinstance(x, Decimal):
+            try:
+                # 小数が大きすぎる場合の例外も拾う
+                return float(x)
+            except Exception:
+                return str(x)
+
+        # bytes
+        if isinstance(x, (bytes, bytearray, memoryview)):
+            try:
+                return bytes(x).decode("utf-8", "ignore")
+            except Exception:
+                return str(x)
+
+        # float の NaN/Inf を None に
+        if isinstance(x, float) and not allow_nan and _is_nan_inf(x):
+            return None
+
+        return x
+
+    def _clean(o):
+        # dict
+        if isinstance(o, dict):
+            return {str(_convert_scalar(k)): _clean(_convert_scalar(v)) for k, v in o.items()}
+        # list/tuple/set
+        if isinstance(o, (list, tuple, set)):
+            return [_clean(_convert_scalar(i)) for i in o]
+        # それ以外スカラ
+        return _convert_scalar(o)
+
+    cleaned = _clean(obj)
+
+    # default を渡す/渡さないの両対応
+    if default is None:
+        return json.dumps(
+            cleaned,
+            ensure_ascii=ensure_ascii,
+            separators=separators,
+            sort_keys=sort_keys,
+            indent=indent,
+            allow_nan=allow_nan,
+            **kwargs
+        )
+    else:
+        return json.dumps(
+            cleaned,
+            ensure_ascii=ensure_ascii,
+            separators=separators,
+            sort_keys=sort_keys,
+            indent=indent,
+            allow_nan=allow_nan,
+            default=default,
+            **kwargs
+        )
+
+
 # --- Third-party
 import jpholiday
 import numpy as np
@@ -42,19 +663,117 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup, escape
 
 
-# 既存の宣言を上書きしてOK
-_DB_SINGLETON: sqlite3.Connection | None = None
-_DB_LOCK = threading.RLock()
 
-# DBパス解決（common > 環境変数 > スクリプト相対）
+# === fast json / sanitize helpers (injected) ===
 try:
-    from common import DB_PATH as _COMMON_DB_PATH
+    import orjson  # optional, fastest if available
+    _HAS_ORJSON = True
 except Exception:
-    _COMMON_DB_PATH = None
+    import json as _json_std
+    _HAS_ORJSON = False
 
-_ENV_DB_PATH = os.environ.get("KANI2_DB_PATH") or os.environ.get("DB_PATH")
-_DEFAULT_DB_PATH = str((Path(__file__).parent / "db" / "kani2.db").resolve())
-_DB_PATH = _COMMON_DB_PATH or _ENV_DB_PATH or _DEFAULT_DB_PATH
+import math
+from pathlib import Path as _Path  # ensure Path available locally
+
+def _json_sanitize(obj):
+    """Normalize JSON-unsafe values (NaN/Inf -> None), convert sets, ensure str keys."""
+    if obj is None:
+        return None
+    t = type(obj)
+    if t in (int, str, bool):
+        return obj
+    if t is float:
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            ks = str(k)
+            out[ks] = _json_sanitize(v)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [_json_sanitize(x) for x in obj]
+    if isinstance(obj, set):
+        return [_json_sanitize(x) for x in obj]
+    try:
+        return str(obj)
+    except Exception:
+        return None
+
+
+# === safe JSON dumper (accepts default kwarg) ===
+def dumps_json_clean(obj,
+                     ensure_ascii: bool = False,
+                     separators=None,
+                     default=None,
+                     indent=None):
+    """Safe JSON dump that accepts default=, normalizes numpy/Decimal/datetime/set/Path.
+    Uses orjson when available, otherwise falls back to stdlib json.
+    """
+    import json, math, datetime, decimal, pathlib
+    try:
+        import numpy as _np
+    except Exception:
+        _np = None
+
+    def _coerce(x):
+        if default is not None:
+            try:
+                return default(x)
+            except Exception:
+                pass
+        if _np is not None:
+            if isinstance(x, (_np.generic,)):
+                return x.item()
+            if isinstance(x, (_np.ndarray,)):
+                return x.tolist()
+        if isinstance(x, (set, tuple)):
+            return list(x)
+        if isinstance(x, (pathlib.Path, )):
+            return str(x)
+        if isinstance(x, (datetime.datetime, datetime.date, datetime.time)):
+            try:
+                return x.isoformat()
+            except Exception:
+                return str(x)
+        if isinstance(x, decimal.Decimal):
+            try:
+                f = float(x)
+                if math.isfinite(f):
+                    return f
+            except Exception:
+                pass
+            return str(x)
+        try:
+            return str(x)
+        except Exception:
+            return repr(x)
+
+    try:
+        import orjson as _orjson
+        opt = 0
+        try:
+            opt |= _orjson.OPT_SERIALIZE_NUMPY
+        except Exception:
+            pass
+        bs = _orjson.dumps(obj, default=_coerce, option=opt)
+        s = bs.decode("utf-8")
+        if ensure_ascii:
+            s = s.encode("unicode_escape").decode("ascii")
+        if indent or separators is not None:
+            import json as _json
+            s = _json.dumps(_json.loads(s), ensure_ascii=ensure_ascii, indent=indent, separators=separators)
+        return s
+    except Exception:
+        return json.dumps(
+            obj,
+            ensure_ascii=ensure_ascii,
+            separators=separators,
+            indent=indent,
+            default=_coerce
+        )
+
 
 def _open_db(path: str) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +809,7 @@ def _get_db_conn() -> sqlite3.Connection:
                     pass
                 _DB_SINGLETON = None
         # 新規オープン
-        _DB_SINGLETON = _open_db(_DB_PATH)
+        _DB_SINGLETON = _open_db(DB_PATH)
         return _DB_SINGLETON
 
 def _close_db_conn_safely():
@@ -165,8 +884,17 @@ def resolve_yahoo_symbol(code: str,
     if S.startswith("^") or S.endswith(".T"):
         return s  # 元の表記で返す（大文字化しない）
 
-    # 2-2) 4桁の純数字 → .T
+    # 2-2) 4桁の純数字
     if len(S) == 4 and S.isdigit():
+        if try_online:
+            try:
+                import yfinance as _yf
+                for cand in (s + ".T", s):
+                    _df = _yf.download(cand, period="5d", interval="1d", progress=False, threads=False)
+                    if _df is not None and not _df.empty:
+                        return cand
+            except Exception:
+                pass
         return s + ".T"
 
     # 2-3) 3桁数字+英字 or 4桁英数字ミックス
@@ -217,6 +945,7 @@ import ssl
 import subprocess
 import sys
 import time
+
 # ===== 日次実行ログユーティリティ（同日スキップ） =====
 def ensure_runlog_schema(conn):
     conn.execute("""
@@ -277,7 +1006,7 @@ def _timed_daily_once(phase_name, fn, conn, *args, force=False, **kwargs):
     try:
         out = fn(conn, *args, **kwargs)
         _mark_done(conn, phase_name, ok=True)
-        print(f"[OK] {phase_name} {time.time()-t0:.2f}s")
+        print(f"[OK] {phase_name} {_fmt_hms(time.time()-t0)}")
         return out
     except Exception as e:
         _mark_done(conn, phase_name, ok=False, info_json=str(e))
@@ -527,7 +1256,7 @@ def _v5_update_latest(conn, latest):
 # [REMOVED by integrator: legacy V5 HTML block]
 # === /V5_ResSup =============================================================
 
-# === 価格計算の安全ガード（内蔵版） ===
+# === 価格計算の安全ガード（内蔵版 | 完全版） ===
 from zoneinfo import ZoneInfo as _ZJST
 JST = _ZJST("Asia/Tokyo")
 
@@ -538,6 +1267,17 @@ def _is_jp_business_day(d):
     except Exception:
         return d.weekday() < 5
 
+def _read_yahoo_override(conn, code_str: str):
+    try:
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT 問い合わせシンボル FROM yahoo_symbol_override WHERE コード=? LIMIT 1",
+            (str(code_str).strip(),)
+        ).fetchone()
+        return (row[0].strip() if row and row[0] else None)
+    except Exception:
+        return None
+
 def _is_trading_session_now(now=None):
     import datetime as _dt
     now = now.astimezone(JST) if now else _dt.datetime.now(JST)
@@ -546,61 +1286,275 @@ def _is_trading_session_now(now=None):
     t = now.time()
     return (_dt.time(9,0) <= t <= _dt.time(11,30)) or (_dt.time(12,30) <= t <= _dt.time(15,30))
 
+def _ensure_override_table(conn):
+    try:
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS yahoo_symbol_override (
+            コード TEXT PRIMARY KEY,
+            問い合わせシンボル TEXT NOT NULL
+        )""")
+        conn.commit()
+    except Exception:
+        pass
+
+def _override_set_none(conn, code_str: str):
+    try:
+        _ensure_override_table(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO yahoo_symbol_override(コード, 問い合わせシンボル) VALUES (?, 'NONE') "
+            "ON CONFLICT(コード) DO UPDATE SET 問い合わせシンボル='NONE'",
+            (str(code_str).strip(),)
+        )
+        conn.commit()
+        print(f"[price-guard][INFO] override -> NONE (auto) for {code_str}")
+    except Exception as e:
+        print(f"[price-guard][WARN] override NONE failed for {code_str}: {e}")
+
+def _probe_realtime_quote(sym: str) -> bool:
+    """
+    Try to obtain a current/last price using yfinance.fast_info (and yahooquery if available).
+    Returns True if a plausible numeric price is found.
+    """
+    def _is_ok(val):
+        try:
+            return val is not None and float(val) > 0
+        except Exception:
+            return False
+
+    # yfinance fast_info
+    try:
+        import yfinance as _yf
+        t = _yf.Ticker(sym)
+        fi = getattr(t, "fast_info", None)
+        if fi:
+            for k in ("last_price", "regular_market_price", "last_trade_price"):
+                v = fi.get(k) if hasattr(fi, "get") else None
+                if _is_ok(v):
+                    return True
+    except Exception:
+        pass
+
+    # yahooquery (optional)
+    try:
+        from yahooquery import Ticker as _YQT
+        t = _YQT(sym)
+        qsum = t.summary_detail
+        if isinstance(qsum, dict):
+            d = qsum.get(sym) or next(iter(qsum.values()), {})
+            for k in ("regularMarketPreviousClose", "regularMarketPrice", "ask", "bid"):
+                v = d.get(k)
+                if _is_ok(v):
+                    return True
+    except Exception:
+        pass
+    return False
+
+def _override_set_auto_none_or_history(conn, code_str: str, sym_for_quote: str | None):
+    """
+    If realtime quote is available but history failed, set HISTORY_NONE (skip history only).
+    Otherwise set NONE.
+    """
+    try:
+        if sym_for_quote and _probe_realtime_quote(sym_for_quote):
+            # history NG but realtime OK -> skip history only
+            try:
+                _ensure_override_table(conn)
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO yahoo_symbol_override(コード, 問い合わせシンボル) VALUES (?, 'HISTORY_NONE') "
+                    "ON CONFLICT(コード) DO UPDATE SET 問い合わせシンボル='HISTORY_NONE'",
+                    (str(code_str).strip(),)
+                )
+                conn.commit()
+                print(f"[price-guard][INFO] override -> HISTORY_NONE (auto) for {code_str}")
+            except Exception as e:
+                print(f"[price-guard][WARN] override HISTORY_NONE failed for {code_str}: {e}")
+        else:
+            _override_set_none(conn, code_str)
+    except Exception as e:
+        print(f"[price-guard][WARN] override auto decision failed for {code_str}: {e}")
+
 def _get_last_two_closes(conn, code: str):
     """
     price_history から「最後の二つの“異なる営業日”」の終値を返す。
-    - コードはアルファベット含む文字列も許容（TEXT一致が基本）
-    - 数字のみの場合は追加で INTEGER/ゼロ詰め比較も試みる
-    - 終値がNULLの行は除外
-    戻り値: (cur_date, cur_close, prev_date, prev_close)
+    足りなければ自動で取得してDBにUPSERTしてから再読込。
+      - yahooquery → yfinance → stooq の順にフォールバック
+      - 期間は 6mo → 3mo → 1mo の順に短縮
+      - 取得できなければ yahoo_symbol_override を自動更新（HISTORY_NONE/NONE）
+    戻り値: (cur_date, cur_close, prev_date, prev_close) or (None, None, None, None)
     """
-    import pandas as _pd
-    import math as _math
+    import pandas as _pd, math as _math
+    from datetime import datetime as _dt, timezone as _tz
     try:
-        code_raw = ("" if code is None else str(code)).strip()
-        if code_raw == "":
-            return None, None, None, None
+        from yahooquery import Ticker as _YQ
+    except Exception:
+        _YQ = None
+    try:
+        import yfinance as _yf
+    except Exception:
+        _yf = None
 
+    # --- helpers ---
+    def _num(v):
+        try:
+            if v is None or (isinstance(v, float) and _math.isnan(v)):
+                return None
+            return float(str(v).replace(',', ''))
+        except Exception:
+            return None
+
+    def _build_symbol(_code: str) -> str:
+        # resolve_yahoo_symbol があれば使う。無ければ "<code>.T"
+        try:
+            return resolve_yahoo_symbol(_code, conn, True)  # type: ignore[name-defined]
+        except Exception:
+            return _code if _code.upper().endswith(".T") else f"{_code}.T"
+
+    def _normalize_df(df: _pd.DataFrame) -> _pd.DataFrame:
+        """yahooquery/yfinance/stooq の DataFrame を price_history 形式へ正規化"""
+        if df is None or (hasattr(df, "empty") and df.empty):
+            return _pd.DataFrame()
+        # MultiIndex(symbol,date) をはがす
+        if hasattr(df, "index") and isinstance(df.index, _pd.MultiIndex):
+            names = [n or "" for n in (df.index.names or [])]
+            if "date" in names:
+                df = df.reset_index()
+                if "date" in df.columns:
+                    df = df.set_index("date")
+            else:
+                df = df.reset_index(drop=True)
+        # date 列が残っているなら index にする
+        if hasattr(df, "columns") and "date" in df.columns:
+            try:
+                df = df.set_index("date")
+            except Exception:
+                pass
+        # yfinance 型（列が英語）
+        colmap = {
+            "Open": "始値", "High": "高値", "Low": "安値", "Close": "終値", "Volume": "出来高",
+            "open": "始値", "high": "高値", "low": "安値", "close": "終値", "volume": "出来高",
+        }
+        for k, v in list(colmap.items()):
+            if hasattr(df, "columns") and k in df.columns and v not in df.columns:
+                df[v] = df[k]
+        # yahooquery 型（たまに close / volume のみ）
+        if hasattr(df, "columns"):
+            if "close" in df.columns and "終値" not in df.columns:
+                df["終値"] = df["close"]
+            if "volume" in df.columns and "出来高" not in df.columns:
+                df["出来高"] = df["volume"]
+        # index->日付列
+        if hasattr(df, "index"):
+            try:
+                s = _pd.Series(df.index)
+                s = _pd.to_datetime(s, utc=True, errors="coerce").dt.tz_convert("Asia/Tokyo").dt.date
+                df = df.copy()
+                df["日付"] = s.values
+            except Exception:
+                try:
+                    s = _pd.to_datetime(df.index, errors="coerce").date
+                    df["日付"] = s
+                except Exception:
+                    df["日付"] = _pd.to_datetime(df.index).date
+        # 必須列フィルタ
+        need = ["日付", "終値"]
+        if not all(c in df.columns for c in need):
+            return _pd.DataFrame()
+        out = df[["日付", "終値"] + ([c for c in ("高値", "安値", "出来高") if c in df.columns])].copy()
+        out = out.sort_values("日付", ascending=False)
+        return out
+
+    # DB 読み
+    try:
+        q = "SELECT 日付, 終値 FROM price_history WHERE コード=? ORDER BY 日付 DESC"
+        params = (str(code).strip(),)
+        df = _pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
+        code_raw = str(code).strip()
         is_numeric = code_raw.isdigit()
         code4 = code_raw.zfill(4) if is_numeric else code_raw
-        codei = int(code_raw) if is_numeric else None
 
-        q = """
-        WITH t AS (
-          SELECT 日付, 終値
-            FROM price_history
-           WHERE 終値 IS NOT NULL
-             AND (
-                  コード = :code_raw
-               OR (:is_numeric = 1 AND printf('%04d', CAST(コード AS INTEGER)) = :code4)
-               OR (:is_numeric = 1 AND CAST(コード AS INTEGER) = :code_int)
-             )
-           ORDER BY 日付 DESC
-           LIMIT 12
-        )
-        SELECT 日付, 終値 FROM t ORDER BY 日付 DESC
-        """
-        params = {
-            "code_raw": code_raw,
-            "is_numeric": 1 if is_numeric else 0,
-            "code4": code4 if is_numeric else None,
-            "code_int": codei if is_numeric else None,
-        }
-        df = _pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
         if df.empty:
-            print(f"[price-guard][DEBUG] price_history empty for code={code_raw} (db-path={DB_PATH})")
+            print(f"[price-guard][DEBUG] price_history empty for code={code_raw} → re-fetching ...")
+            sym = _build_symbol(code_raw)
 
+            fetched = False
+            # 1) yahooquery → 6mo/3mo/1mo
+            if _YQ is not None:
+                try:
+                    yq = _YQ(sym, validate=True)
+                    for p in ("6mo", "3mo", "1mo"):
+                        _hist = yq.history(period=p, interval="1d")
+                        _norm = _normalize_df(_hist)
+                        if _norm is not None and not _norm.empty:
+                            # UPSERT into price_history
+                            cur = conn.cursor()
+                            for _, r in _norm.iterrows():
+                                cur.execute(
+                                    "INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
+                                    (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None)
+                                )
+                            conn.commit()
+                            n = len(_norm)
+                            print(f"[price-guard][INFO] yahooquery {p}: inserted {n} rows for {code_raw}")
+                            fetched = n > 0
+                            break
+                except Exception as e:
+                    print(f"[price-guard][WARN] yahooquery failed for {sym}: {e}")
+
+            # 2) yfinance フォールバック
+            if not fetched and _yf is not None:
+                try:
+                    for p in ("6mo", "3mo", "1mo"):
+                        _hist = _yf.download(sym, period=p, interval="1d", auto_adjust=False, progress=False, threads=False)
+                        _norm = _normalize_df(_hist)
+                        if _norm is not None and not _norm.empty:
+                            cur = conn.cursor()
+                            for _, r in _norm.iterrows():
+                                cur.execute(
+                                    "INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
+                                    (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None)
+                                )
+                            conn.commit()
+                            n = len(_norm)
+                            print(f"[price-guard][INFO] yfinance {p}: inserted {n} rows for {code_raw}")
+                            fetched = n > 0
+                            break
+                except Exception as e:
+                    print(f"[price-guard][WARN] yfinance failed for {sym}: {e}")
+
+            # 3) Stooq フォールバック
+            if not fetched:
+                try:
+                    from pandas_datareader import data as _pdr
+                    stq_sym = f"{code4}.jp" if is_numeric else f"{code_raw}.jp"
+                    _st = _pdr.DataReader(stq_sym, "stooq")
+                    _st_norm = _normalize_df(_st)
+                    if _st_norm is not None and not _st_norm.empty:
+                        cur = conn.cursor()
+                        for _, r in _st_norm.iterrows():
+                            cur.execute(
+                                "INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
+                                (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None)
+                            )
+                        conn.commit()
+                        n = len(_st_norm)
+                        print(f"[price-guard][INFO] stooq: inserted {n} rows for {code_raw} ({stq_sym})")
+                        fetched = n > 0
+                except Exception as e:
+                    print(f"[price-guard][WARN] stooq failed for {code_raw}: {e}")
+
+            if not fetched:
+                _override_set_auto_none_or_history(conn, code_raw, sym)
+
+            # 再読込
+            df = _pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
+
+        if df.empty:
+            print(f"[price-guard][ERROR] price_history still empty after re-fetch for {code_raw}")
             return None, None, None, None
 
-        # 安全な数値化
-        def _num(v):
-            try:
-                if v is None or (isinstance(v, float) and _math.isnan(v)):
-                    return None
-                return float(str(v).replace(',', ''))
-            except Exception:
-                return None
-
+        # 直近2営業日の終値
         cur_date = _pd.to_datetime(df.iloc[0]["日付"]).date()
         cur_close = _num(df.iloc[0]["終値"])
 
@@ -616,9 +1570,153 @@ def _get_last_two_closes(conn, code: str):
                 break
 
         return cur_date, cur_close, prev_date, prev_close
+
     except Exception as _e:
         print(f"[price-guard][ERROR] _get_last_two_closes failed for {code}: {_e}")
         return None, None, None, None
+
+import sqlite3
+def _yahoo_quote_url(code: str, market: str | None = None, conn: sqlite3.Connection | None = None) -> str:
+    """
+    Yahoo!ファイナンス（日本）の銘柄ページURLを安全に生成する（クリーン実装）
+    - 1引数呼び出し: _yahoo_quote_url('3350')
+    - 3引数呼び出し: _yahoo_quote_url('3350', '東P', conn)
+    どちらも受け付け、常に "https://finance.yahoo.co.jp/quote/XXXX.SUF" を返す。
+    優先度: 明示 market で推定 → resolve_yahoo_symbol() からサフィックス推定 → '.T' フォールバック
+    """
+    try:
+        raw = ("" if code is None else str(code)).strip()
+        if not raw:
+            return ""
+        c4 = raw.zfill(4) if raw.isdigit() else raw
+
+        # 市場からサフィックス推定
+        def _suffix_from_market(m: str | None) -> str | None:
+            if not m:
+                return None
+            m = str(m)
+            if "名" in m or "NSE" in m or "名証" in m or "NAGOYA" in m: return ".N"
+            if "札" in m or "SSE" in m or "札証" in m or "SAPPORO" in m: return ".S"
+            if "福" in m or "FSE" in m or "福証" in m or "FUKUOKA" in m: return ".F"
+            if "東" in m or "TSE" in m or "東証" in m or "TOKYO" in m: return ".T"
+            return None
+
+        suf = _suffix_from_market(market)
+        if suf is None and conn is not None:
+            try:
+                # resolve_yahoo_symbol で直接推定
+                sym = resolve_yahoo_symbol(c4, conn, True)  # type: ignore[name-defined]
+                if sym and isinstance(sym, str) and sym.upper().endswith(tuple([".T", ".N", ".S", ".F"])):
+                    suf = "." + sym.rsplit(".", 1)[-1]
+            except Exception:
+                pass
+        if suf is None:
+            suf = ".T"
+        return f"https://finance.yahoo.co.jp/quote/{c4}{suf}"
+    except Exception:
+        return ""
+# === 価格計算の安全ガード（ここまで） ===
+
+
+# === [INJECTED] Vectorized minimum fields for DataFrames ===
+def _vectorize_minimum_fields(df):
+    # DataFrameに 'c4' / 'yahoo_url' / 'x_url' / 'chart_url' を付与
+    try:
+        import pandas as _pd
+    except Exception:
+        return df
+    if df is None or getattr(df, "empty", True):
+        return df
+
+    # c4
+    if "コード" in df.columns:
+        try:
+            c4 = _pd.Series(df["コード"], copy=False).astype(str).str.strip().str.zfill(4)
+            df["c4"] = c4
+        except Exception:
+            pass
+    else:
+        return df
+
+    # Yahoo URL（市場優先、無ければ推定）
+    try:
+        market_col = df["市場"] if "市場" in df.columns else None
+        if market_col is not None:
+            df["yahoo_url"] = df.apply(lambda r: _yahoo_quote_url(str(r.get("c4") or ""), str(r.get("市場") or ""), None), axis=1)
+        else:
+            df["yahoo_url"] = df["c4"].map(lambda c: _yahoo_quote_url(str(c or ""), None, None))
+    except Exception:
+        pass
+
+    # X URL
+    if "銘柄名" in df.columns:
+        try:
+            from urllib.parse import quote as __q
+            df["x_url"] = "https://x.com/search?q=" + df["銘柄名"].astype(str).map(lambda s: __q(s))
+        except Exception:
+            try:
+                df["x_url"] = "https://x.com/search?q=" + df["銘柄名"].astype(str)
+            except Exception:
+                pass
+
+    # チャートURL
+    try:
+        df["chart_url"] = "./charts60/" + df["c4"] + ".html"
+    except Exception:
+        pass
+
+    return df
+
+    if df is None or getattr(df, "empty", True):
+        return df
+
+    # コードの4桁化
+    if "コード" in df.columns:
+        try:
+            c4 = _pd.Series(df["コード"], copy=False).astype(str).str.strip().str.zfill(4)
+            df["c4"] = c4
+        except Exception:
+            pass
+    else:
+        return df
+
+    # Yahoo URL
+    try:
+        df["yahoo_url"] = "https://finance.yahoo.co.jp/quote/" + df["c4"] + ".T"
+    except Exception:
+        pass
+
+    # X URL（銘柄名があればそれで検索リンクを作る）
+    if "銘柄名" in df.columns:
+        try:
+            from urllib.parse import quote as __q
+            df["x_url"] = "https://x.com/search?q=" + df["銘柄名"].astype(str).map(lambda s: __q(s))
+        except Exception:
+            try:
+                df["x_url"] = "https://x.com/search?q=" + df["銘柄名"].astype(str)
+            except Exception:
+                pass
+
+    # チャートURL
+    try:
+        df["chart_url"] = "./charts60/" + df["c4"] + ".html"
+    except Exception:
+        pass
+
+    return df
+# === [/INJECTED] ===
+
+def _get_last_two_closes_safe(conn, code):
+    """必ず4要素タプルで返す安全ラッパー。異常時は (None, None, None, None)。"""
+    try:
+        res = _get_last_two_closes(conn, code)
+    except Exception as e:
+        print(f"[live][WARN] _get_last_two_closes_safe: {e}")
+        return (None, None, None, None)
+    if not isinstance(res, tuple) or len(res) != 4:
+        print("[live][WARN] apply-live: _get_last_two_closes returned invalid result")
+        return (None, None, None, None)
+    return res
 
 def _fmt_int(v):
     if v is None: return ""
@@ -795,8 +1893,7 @@ def _load_avg_turnover_map(conn, codes4, window: int = 20):
     ph = ",".join("?"*len(codes4))
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT コード, 日付, 終値, 出来高, COALESCE(売買代金億, 0) AS 代金億
-        FROM price_history
+        SELECT コード, 日付, 終値, 出来高,ROUND( (COALESCE(終値,0) * COALESCE(出来高,0)) / 100000000.0, 2 ) AS 代金億 FROM price_history
         WHERE コード IN ({ph})
         ORDER BY コード, 日付
     """, codes4)
@@ -1708,55 +2805,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 <html lang="ja">
 <head>
 
-<script id="boot-log">
-(function (g,d) {
-  function ts(){ try{ return new Date().toISOString().split('T')[1].replace('Z',''); }catch(e){ return ''; } }
-  function log(){ try{ console.log.apply(console, ['[BOOT '+ts()+']'].concat([].slice.call(arguments))); }catch(e){} }
-  g.__LOG = log;
-  g.addEventListener('error', function(e){
-    try{ console.error('[GLOBAL ERROR]', e.message, e.filename+':'+e.lineno+':'+e.colno, e.error && e.error.stack); }catch(_){}
-  });
-  g.addEventListener('unhandledrejection', function(e){
-    try{ console.error('[UNHANDLED REJECTION]', e.reason && (e.reason.stack || e.reason)); }catch(_){}
-  });
-  log('stage=head-early, typeof map =', typeof g.map);
-
-  function mapFn(coll, iteratee) {
-    if (Array.isArray(coll)) return (coll||[]).map(iteratee);
-    if (coll && typeof coll === 'object') { var out=[], ks=Object.keys(coll); for (var i=0;i<ks.length;i++){ var k=ks[i]; out.push(iteratee(coll[k], k)); } return out; }
-    return [];
-  }
-  function filterFn(coll, pred) {
-    if (Array.isArray(coll)) return (coll||[]).filter(pred);
-    if (coll && typeof coll === 'object') { var out=[], ks=Object.keys(coll); for (var i=0;i<ks.length;i++){ var k=ks[i]; var v=coll[k]; if (pred(v, k)) out.push(v); } return out; }
-    return [];
-  }
-  function reduceFn(coll, iter, init) {
-    if (Array.isArray(coll)) return (coll||[]).reduce(iter, init);
-    if (coll && typeof coll === 'object') { var acc=init, ks=Object.keys(coll); for (var i=0;i<ks.length;i++){ var k=ks[i]; acc = iter(acc, coll[k], k); } return acc; }
-    return init;
-  }
-  if (typeof g.map    !== 'function') g.map    = mapFn;
-  if (typeof g.filter !== 'function') g.filter = filterFn;
-  if (typeof g.reduce !== 'function') g.reduce = reduceFn;
-  try { var map = g.map, filter = g.filter, reduce = g.reduce; } catch(_){}
-  log('shim-installed, typeof map =', typeof g.map);
-
-  d.addEventListener('DOMContentLoaded', function(){
-    try{
-      log('DOMContentLoaded: DATA_CAND length =', (g.DATA_CAND && g.DATA_CAND.length) || 0);
-      var ths = d.querySelectorAll('#tbl-candidate thead [data-col]');
-      var cols = Array.prototype.map.call(ths, function(th){ return th.getAttribute('data-col'); });
-      log('thead data-col count =', cols.length, cols);
-      if (g.DATA_CAND && g.DATA_CAND.length) {
-        var keys = Object.keys(g.DATA_CAND[0] || {});
-        log('first row keys sample:', keys.slice(0, 20));
-      }
-    }catch(e){ console.warn('[BOOT log error]', e); }
-  });
-})(window, document);
-</script>
-
 <meta http-equiv="Cache-Control" content="no-store">
 <meta http-equiv="Pragma" content="no-cache">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1771,6 +2819,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     --railW: 520px;
     --padFactor: 1.05;
     --padGutter: 16px;
+    --toolbarH: 0px;     /* ツールバー実測高（JSで上書き） */
+    --topScrollH: 16px;  /* 上部横スクロールバーの高さ */
   }
 
   /* 全体 */
@@ -1855,7 +2905,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   /* ヘッダー固定（候補一覧 / 全カラム） */
   #tbl-candidate thead th,
   #tbl-allcols  thead th{
-    position:sticky; top:0; background:#fff; z-index:2;
+    position: static !important; top: auto !important; top: 0; background:#fff; z-index:61;
     border-bottom:2px solid #ccc;
     font-size:0.75em; padding:3px 4px;
     white-space:nowrap !important; word-break:keep-all !important; overflow-wrap:normal !important;
@@ -1929,33 +2979,122 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     width:     calc(var(--railW) * var(--padFactor) + var(--padGutter));
     border:none !important; background:transparent !important; pointer-events:none; padding:0 !important;
   }
-</style>
 
-<script>
-(function(){
-  function measureStickyWidth(){
-    var tbl = document.getElementById('tbl-candidate');
-    if(!tbl) return;
-    var hdr = tbl.querySelector('thead tr');
-    if(!hdr) return;
-    var cells = hdr.querySelectorAll('.sticky, [data-sticky="1"], [data-sticky="true"], .sticky-0, .sticky-1, .sticky-2, .sticky-3');
-    var w = 0;
-    if(cells.length){
-      cells.forEach(function(td){ try{ w += td.getBoundingClientRect().width; }catch(e){} });
-    } else {
-      var ths = hdr.querySelectorAll('th');
-      ths.forEach(function(th){
-        var left = parseFloat(getComputedStyle(th).left || '0');
-        if(left > 0){ w = Math.max(w, left + th.getBoundingClientRect().width); }
-      });
-    }
-    document.documentElement.style.setProperty('--sticky-left-w', (Math.round(w) || 0) + 'px');
+  /* === Plan B: セクション・カード + sticky + 区切り線 === */
+  .tabs { position: sticky; top: 0; z-index: 60; background: var(--bg); }
+  .tabs::after { content:""; display:block; height:2px; background: var(--line); opacity:0.9; }
+
+  #toolbar { position: static !important; top: auto !important; z-index: 55; background: var(--bg); }
+  #toolbar .toolbar-card {
+    border:1px solid var(--line); border-radius:12px; padding:10px; 
+    box-shadow:0 1px 4px rgba(0,0,0,.04), 0 0 0 1px var(--line) inset;
+    display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; 
+    margin-bottom:8px;
   }
-  window.addEventListener('load', measureStickyWidth);
-  window.addEventListener('resize', measureStickyWidth);
-  document.addEventListener('readystatechange', function(){ if(document.readyState === 'complete'){ measureStickyWidth(); }});
-})();
-</script>
+  #toolbar .group {
+    border:1px solid var(--line); border-radius:10px; padding:8px; 
+    display:flex; flex-wrap:wrap; gap:6px; align-items:center; background:var(--bg);
+  }
+  #toolbar .group .label { font-size:.78em; opacity:.8; margin-right:6px; }
+  #toolbar { font-size: .9em; line-height: 1.2; }
+
+  /* 配置（左→右：checks, texts, selects, buttons） */
+  /* チェック群：横並び＋綺麗に折返し */
+  #toolbar .group.checks{
+    order: 1;
+    display: flex;              /* ← grid から変更 */
+    flex-wrap: wrap;            /* 要素単位で折返し */
+    gap: 8px 10px;              /* 行間 × 列間 */
+    align-items: center;
+  }
+
+  /* 各ラベルの見た目と改行挙動 */
+  #toolbar .group.checks label{
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    padding: 2px 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg);
+    white-space: nowrap;        /* 文字は折返さず、要素として回り込む */
+  }
+
+  /* チェックボックスの縦位置を微調整（任意） */
+  #toolbar .group.checks input[type="checkbox"]{
+    transform: translateY(0.5px);
+  }
+  
+
+  #toolbar .group.texts   { order: 2; display:flex; gap:6px; }
+  #toolbar .group.selects { order: 3; display:flex; gap:6px; }
+
+  /* ← ラベルには枠を当てない（キャプションをチップ化しない） */
+  #toolbar .group.selects label{
+    display:inline-flex; gap:6px; align-items:center;
+    padding:0; border:0; background:transparent;
+  }
+
+  /* ← select 本体だけを丸枠に */
+  #toolbar .group.selects label > select,
+  #toolbar .group.selects > select{
+    height: 28px;
+    line-height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    padding: 0 24px 0 8px;   /* 右=矢印余白 */
+    vertical-align: middle;
+    appearance: auto;
+  }
+  /* キャプションと select の間を少し空ける */
+  #toolbar .group.selects label > select{ margin-left: 6px; }
+
+  #toolbar .group.buttons { order: 4; margin-left:0; display:flex; gap:8px; align-items:center; }
+
+  /* 列名との区切り線（toolbarカードの下） */
+  #toolbar::after { content:""; display:block; height:1px; background:var(--line); margin:6px 0 4px; }
+
+  /* フッターの左右2カラム（左=市場 / 右=件数+Pager） */
+  #toolbar .group.footer {
+    order: 5;
+    width: 100%;
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    align-items: center;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 8px;
+    flex-wrap: wrap;
+  }
+
+
+  #toolbar .group.footer .footer-left  { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #toolbar .group.footer .footer-ctrls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
+  #toolbar .group.footer .pager { display:flex; gap:8px; align-items:center; }
+
+  /* 市場フィルタ */
+  #market-filter { margin: 0; }
+  #market-filter .muted { margin-right: 6px; }
+
+  table thead th { background: color-mix(in oklab, var(--bg) 94%, black); }
+
+  #toolbar input[type="text"], #toolbar input[type="number"], #toolbar select { height: 28px; }
+  #toolbar .btn { height: 30px; }
+
+
+
+
+/* injected market checkbox fix */
+#mk_host{display:flex;flex-wrap:wrap;gap:8px}
+#mk_host label.mk{display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border-color,#e5e7eb);border-radius:6px}
+#mk_host input[type=checkbox]{margin-right:4px}
+
+/* 上部横スクロールバー（削除） */
+<!-- removed top scrollbar CSS/JS -->
+
 
 <!-- ※ 壊れていた「injected: freeze columns」は削除し、安定版のみ残す -->
 
@@ -1965,6 +3104,215 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   th[data-col="支持帯中心"], th[data-col="最寄り支持"],
   td[data-col="抵抗帯中心"], td[data-col="最寄り抵抗"],
   td[data-col="支持帯中心"], td[data-col="最寄り支持"] { text-align:right; }
+
+  /* === [PATCH] Toolbar font-size unify (11px) === */
+  .toolbar, .toolbar *, #toolbar, #toolbar * { font-size: 11px !important;
+    line-height: 1.6;
+  }
+  /* Ensure selects and inputs inherit correctly (browser defaults can shrink text) */
+  .toolbar select, .toolbar input, .toolbar button, .toolbar label {
+    font-size: inherit !important;
+  }
+
+  /* === [PATCH v15] Top scrollbar right below header (Pattern 1) === */
+  .table-wrap { position: relative; width: 100%; }
+  .thead-only { table-layout: fixed; width: max-content; background:#fff; }
+  .thead-only th { white-space:nowrap; }
+  .xbar-top { overflow-x: auto; height: 16px; }
+  .xbar-top-inner { height: 1px; }
+  .body-scroll { overflow-x: auto; }
+  /* Keep body table styled the same */
+  .body-scroll > table.tbl { table-layout: fixed; width: max-content; }
+
+  /* === [PATCH v16] minimize gap between toolbar footer and header row === */
+  #toolbar { margin-bottom: 0 !important; }
+  #toolbar .toolbar-card { margin-bottom: 2px !important; }
+  .table-wrap { margin-top: 0 !important; }
+  /* Make the top scrollbar as thin as possible cross-browser */
+  .xbar-top { height: 8px !important; }
+  .xbar-top { scrollbar-width: thin; }               /* Firefox */
+  .xbar-top::-webkit-scrollbar { height: 8px; }      /* Chromium/WebKit */
+  /* Optional: reduce header-only table bottom spacing if any */
+  .thead-only { margin-bottom: 0 !important; }
+
+  /* === [PATCH v19] Dropdown group: remove inner frame to keep a single card === */
+  #toolbar .group.selects {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  /* Tighten the label spacing inside selects group */
+  #toolbar .group.selects .label {
+    margin-right: 6px !important;
+    opacity: .8;
+  }
+  /* Keep each select block compact */
+  #toolbar .group.selects .select-block {
+    margin-right: 8px !important;
+  }
+
+  /* === [PATCH v20] Keep OUTER .toolbar-card, remove INNER group frames (selects) === */
+  /* Ensure the OUTER card is visible even if inner is transparent */
+  #toolbar .toolbar-card {
+    background: #fff !important;
+    border: 1px solid var(--line) !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04) !important;
+  }
+  /* Remove inner frame ONLY for the selects groups */
+  #toolbar .toolbar-card .group.selects,
+  /* Fallback: any group that actually contains a <select> (modern Chromium supports :has) */
+  #toolbar .toolbar-card .group:has(select) {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  /* Slight spacing so the two dropdown blocks don't stick together too tightly */
+  #toolbar .toolbar-card .group.selects + .group.selects { margin-left: 8px !important; }
+
+  /* === [PATCH v22] Restore OUTER dropdown frame, remove only INNER group frame === */
+  /* Outer card must be visible */
+  #toolbar .toolbar-card {
+    background: #fff !important;
+    border: 1px solid var(--line) !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,.06) !important;
+    border-radius: 12px !important;
+    padding: 10px 12px !important;
+    margin-bottom: 6px !important;
+  }
+  /* Remove only the inner group box for selects */
+  #toolbar .toolbar-card .group.selects {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  /* Keep spacing between the two select blocks */
+  #toolbar .toolbar-card .group.selects + .group.selects { margin-left: 12px !important; }
+  /* Ensure the label/select controls keep normal borders */
+  #toolbar .toolbar-card .group.selects .select-block select {
+    border: 1px solid var(--line) !important;
+    background: #fff !important;
+  }
+
+  /* === [PATCH v23] Make toolbar <select> look like other pill-framed controls === */
+  #toolbar .group.selects .select-block select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 6px 28px 6px 10px; /* room for arrow */
+    font-size: inherit;
+    line-height: 1.6;
+    min-height: 30px;
+  }
+  /* Add a simple dropdown arrow (pure CSS) */
+  #toolbar .group.selects .select-block {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  #toolbar .group.selects .select-block::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #6b7280; /* muted */
+    pointer-events: none;
+  }
+  /* Focus ring to match inputs */
+  #toolbar .group.selects .select-block select:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(13,59,102,.12);
+    border-color: #c9d2dc;
+  }
+  /* Disabled look */
+  #toolbar .group.selects .select-block select:disabled {
+    background: #f3f4f6;
+    color: #9ca3af;
+    border-color: #e5e7eb;
+  }
+
+  /* === [PATCH v24] Smaller top tabs === */
+  .tabs nav { gap: 6px !important; margin-bottom: 8px !important; }
+  .tabs nav a {
+    font-size: 11px !important;
+    padding: 4px 8px !important;
+    border-radius: 6px !important;
+  }
+
+  /* === [PATCH v25] Top tabs: match toolbar buttons size === */
+  .tabs nav { gap: 6px !important; margin-bottom: 6px !important; }
+  .tabs nav a {
+    display: inline-flex !important;
+    align-items: center !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    padding: 6px 12px !important;
+    height: 30px !important;
+    border-radius: 8px !important;
+  }
+
+  /* === [PATCH v26] Tabs size = .btn (equalize with "傾向グラフ") === */
+  :root{
+    --ctrl-h: 30px;
+    --ctrl-pad-y: 6px;
+    --ctrl-pad-x: 12px;
+    --ctrl-radius: 8px;
+  }
+  #toolbar .btn{
+    height: var(--ctrl-h) !important;
+    padding: var(--ctrl-pad-y) var(--ctrl-pad-x) !important;
+    border-radius: var(--ctrl-radius) !important;
+    font-weight: 600 !important;
+  }
+  /* 切替タブも .btn と同一寸法へ */
+  .tabs nav a{
+    height: var(--ctrl-h) !important;
+    padding: var(--ctrl-pad-y) var(--ctrl-pad-x) !important;
+    border-radius: var(--ctrl-radius) !important;
+    font-weight: 600 !important;
+    font-size: inherit !important; /* ボタンと同じフォントサイズへ（toolbarの .9em を踏襲） */
+    line-height: calc(var(--ctrl-h) - 2px) !important; /* 内側テキストの縦位置安定 */
+  }
+
+
+  /* === [PATCH v27] Compact toolbar footer gap (shrink grey space) === */
+  /* 1) Thin the separator line and margins under the toolbar */
+  #toolbar::after{
+    height: 1px !important;
+    margin: 2px 0 2px !important;
+  }
+  /* 2) Reduce bottom margin of the outer toolbar card */
+  #toolbar .toolbar-card{
+    margin-bottom: 2px !important;
+  }
+  /* 3) Make the top horizontal scroll area slimmer */
+  .xbar-top{
+    height: 8px !important; /* was 16px */
+  }
+  /* 4) Footer group padding/gap slightly smaller */
+  #toolbar .group.footer{
+    gap: 6px !important;
+    padding: 6px !important;   /* was 8px */
+    border-radius: 8px !important;
+  }
+
+
+  /* === [PATCH v28] Smaller tab label font === */
+  .tabs nav a{
+    font-size: 11px !important;   /* was inherit (≈16px) */
+    letter-spacing: 0.1px;        /* 文字詰め微調整 */
+  }
+
 </style>
 
 <script id="freeze-cols">
@@ -2000,13 +3348,29 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     ui.appendChild(lab);
     ui.appendChild(sel);
 
-    if (wrap && wrap.parentNode) {
-      wrap.parentNode.insertBefore(ui, wrap);
-    } else if (tbl.parentNode) {
-      tbl.parentNode.insertBefore(ui, tbl);
-    } else {
-      document.body.insertBefore(ui, document.body.firstChild);
-    }
+
+// --- UI を toolbar の「プルダウン枠」に必ず入れる ---
+function mountIntoToolbar(ui){
+  // ツールバーのグルーピングは別スクリプトで DOMContentLoaded 後に走るため、
+  // まだ .group.selects が無ければ少し待ってから再試行する
+  var target = document.querySelector('#toolbar .group.selects');
+  if (target) {
+    // 枠に合わせるため group コンテナで包む
+    var holder = document.createElement('div');
+    holder.className = 'group';
+    holder.style.display = 'flex';
+    holder.style.gap = '6px';
+    holder.style.alignItems = 'center';
+    holder.appendChild(ui);
+    target.appendChild(holder);
+  } else {
+    // 次フレームで再試行（最大数回でもOK：ここでは簡潔に1回）
+    requestAnimationFrame(function(){ mountIntoToolbar(ui); });
+  }
+}
+mountIntoToolbar(ui);
+
+
 
     var ths = tbl.querySelectorAll("thead th");
     ths.forEach(function(th, i){
@@ -2021,7 +3385,8 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       var key = "freezeIdx:" + tableId;
       var saved = localStorage.getItem(key);
       if (saved !== null && saved !== "") sel.value = saved;
-      applyFreeze(tableId, sel.value === "" ? null : parseInt(sel.value, 10));
+      // 初回は適用しない（ユーザー操作時のみ固定を反映）
+      clearFreeze(tableId);
       sel.addEventListener("change", function(e){
         var v = e.target.value;
         localStorage.setItem(key, v);
@@ -2043,38 +3408,42 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     });
   }
 
-  function applyFreeze(tableId, uptoIdx){
-    var tbl = document.getElementById(tableId);
-    if (!tbl) return;
-    clearFreeze(tableId);
-    if (uptoIdx === null || isNaN(uptoIdx)) return;
+function applyFreeze(tableId, uptoIdx){
+  var tbl = document.getElementById(tableId);
+  if (!tbl) return;
+  clearFreeze(tableId);
+  if (uptoIdx === null || isNaN(uptoIdx)) return;
 
-    var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
-    var lefts = [];
-    var sum = 0;
-    for (var i=0;i<ths.length;i++){
-      lefts[i] = sum;
-      sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
-    }
-
-    for (var col=0; col<=uptoIdx && col<ths.length; col++){
-      var left = lefts[col] + "px";
-      tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
-        th.style.position = "sticky";
-        th.style.left = left;
-        th.style.zIndex = "3";
-        th.style.background = "#fff";
-        th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
-      });
-      tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
-        td.style.position = "sticky";
-        td.style.left = left;
-        td.style.zIndex = "2";
-        td.style.background = "#fff";
-        td.style.boxShadow = "1px 0 0 rgba(0,0,0,0.06)";
-      });
-    }
+  var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
+  var lefts = [];
+  var sum = 0;
+  for (var i=0;i<ths.length;i++){
+    lefts[i] = sum;
+    sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
   }
+
+  for (var col=0; col<=uptoIdx && col<ths.length; col++){
+    var left = lefts[col] + "px";
+    tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
+      th.style.position = "sticky";
+      th.style.left = left;
+      th.style.zIndex = "3";
+      th.style.background = "#fff";
+      th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
+    });
+    tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
+      td.style.position = "sticky";
+      td.style.left = left;
+      td.style.zIndex = "2";
+      td.style.background = "#fff";
+      td.style.boxShadow = "1px 0 0 rgba(0,0,0,0.06)";
+    });
+  }
+
+  // ★ここを追加：固定列数が変わったら、sticky幅とスクロール余白を再計測
+  try { window.dispatchEvent(new Event('resize')); } catch(_) {}
+}
+
 
   document.addEventListener("DOMContentLoaded", function(){
     createFreezeUI("tbl-candidate", "固定列（候補一覧）：");
@@ -2112,39 +3481,27 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 (function(g,d){
   function measureRailRight(table){
     try{
-      var ths = Array.prototype.slice.call(table.querySelectorAll('thead th'));
       var edge = 0;
-      ths.forEach(function(th){
-        var cs = g.getComputedStyle(th);
-        if (cs.position === 'sticky' && cs.left !== 'auto'){
-          var right = th.offsetLeft + th.offsetWidth;
-          if (right > edge) edge = right;
-        }
-      });
-      if (edge === 0 && ths.length){
-        var limit = Math.min(5, ths.length);
-        for (var i=0;i<limit;i++){
-          var th = ths[i];
-          var right = th.offsetLeft + th.offsetWidth;
-          if (right > edge) edge = right;
-        }
+      var ths = table.querySelectorAll('thead th');
+      if (!ths || !ths.length) return 0;
+      // 先頭 5～8列くらいまで見て最大rightを採用（重い計算を避ける）
+      var limit = Math.min(8, ths.length);
+      for (var i=0; i<limit; i++){
+        var th = ths[i];
+        var rect = th.getBoundingClientRect();
+        var left = th.offsetLeft || 0;  // fallback
+        var right = left + (th.offsetWidth || rect.width || 0);
+        if (right > edge) edge = right;
       }
       return edge;
     }catch(e){ return 0; }
   }
 
+
   function ensurePadColumn(table){
     try{
-      var theadTr = table.querySelector('thead tr');
-      var hasPad  = !!table.querySelector('thead th[data-col="__PAD__"]');
-      if (!hasPad && theadTr){
-        var th = d.createElement('th');
-        th.className = 'scroll-pad';
-        th.setAttribute('data-col','__PAD__');
-        theadTr.appendChild(th);
-      }
       var rows = table.querySelectorAll('tbody tr');
-      for (var i=0;i<rows.length;i++){
+      for (var i=0; i<rows.length; i++){
         var tr = rows[i];
         if (!tr.querySelector('td[data-col="__PAD__"]')){
           var td = d.createElement('td');
@@ -2155,6 +3512,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       }
     }catch(e){}
   }
+
 
   function update(){
     var table = d.getElementById('tbl-candidate');
@@ -2170,20 +3528,138 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     try{
       update();
       g.addEventListener('resize', update);
+
       try{
         var table = d.getElementById('tbl-candidate');
         if (table && g.MutationObserver){
-          var obs = new MutationObserver(function(){ update(); });
-          obs.observe(table.querySelector('thead'), {childList:true, attributes:true, subtree:true});
+          // 変化のバーストを1フレームにまとめて update()
+          var ticking = false;
+          function queueUpdate(){
+            if (ticking) return;
+            ticking = true;
+            requestAnimationFrame(function(){
+              try { update(); } finally { ticking = false; }
+            });
+          }
+
+          // thead / tbody を両方監視
+          var obs = new MutationObserver(queueUpdate);
+          var targets = [ table.querySelector('thead'), table.querySelector('tbody') ].filter(Boolean);
+          targets.forEach(function(t){
+            obs.observe(t, {
+              childList: true,
+              attributes: true,
+              characterData: true,
+              subtree: true
+            });
+          });
         }
       }catch(_){}
     }catch(e){ console.warn('[scroll-pad]', e); }
   });
+
 })(window, document);
 </script>
-</head>
 
+
+<script id="top-hscroll">
+(function(){
+  // 1) ツールバー高さをCSS変数へ（sticky用・不要なら残してOK）
+  function setToolbarOffset(){
+    var tb = document.getElementById('toolbar');
+    var h  = tb ? tb.offsetHeight : 0;
+    document.documentElement.style.setProperty('--toolbarH', h + 'px');
+  }
+  window.addEventListener('load', setToolbarOffset);
+  window.addEventListener('resize', setToolbarOffset);
+  requestAnimationFrame(setToolbarOffset);
+
+  // 2) #tbl-candidate を含む横スクロール要素を取得（.tbl-wrap優先）
+  function findScrollerFor(table){
+    if (!table) return null;
+    return table.closest('.tbl-wrap') || table.parentElement || null;
+  }
+
+  // 3) 上部横スクロールバーを設置し、本体と双方向同期
+  function mountTopScrollbar(){
+    var table = document.getElementById('tbl-candidate');
+    if (!table) { requestAnimationFrame(mountTopScrollbar); return; }
+
+    var sc = findScrollerFor(table);
+    if (!sc) { requestAnimationFrame(mountTopScrollbar); return; }
+
+    // 既に設置済みならスキップ
+    if (sc.previousElementSibling && sc.previousElementSibling.classList.contains('xbar-top')) return;
+
+    // 既存CSSに合わせたクラス名で作成
+    var topBar = document.createElement('div');
+    topBar.className = 'xbar-top';
+    var sizer = document.createElement('div');
+    sizer.className = 'xbar-top-inner';
+    topBar.appendChild(sizer);
+
+    // 本体スクローラの直前に設置
+    sc.parentElement.insertBefore(topBar, sc);
+
+    // 総幅をテーブル側に合わせる
+    function syncSize(){
+      var w = table.scrollWidth || sc.scrollWidth || 0;
+      sizer.style.width = w + 'px';
+      topBar.scrollLeft = sc.scrollLeft;
+    }
+
+    // 双方向同期（ループ防止ロック）
+    var lock = false;
+    topBar.addEventListener('scroll', function(){
+      if (lock) return; lock = true; sc.scrollLeft = topBar.scrollLeft; lock = false;
+    });
+    sc.addEventListener('scroll', function(){
+      if (lock) return; lock = true; topBar.scrollLeft = sc.scrollLeft; lock = false;
+    });
+
+    // 初期同期 & サイズ変化追随
+    syncSize();
+    if (window.ResizeObserver){
+      var ro = new ResizeObserver(syncSize);
+      ro.observe(sc);
+      ro.observe(table);
+    }
+    window.addEventListener('resize', syncSize);
+    setTimeout(syncSize, 100); // レイアウト確定後の保険
+  }
+
+  // 初期化
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', mountTopScrollbar);
+  } else {
+    mountTopScrollbar();
+  }
+
+  // 既存 render() 実行後にも軽く再同期（存在すれば）
+  var _render = window.render;
+  if (typeof _render === 'function'){
+    window.render = function(){
+      try { return _render.apply(this, arguments); }
+      finally {
+        try { window.dispatchEvent(new Event('resize')); } catch(_) {}
+      }
+    };
+  }
+})();
+</script>
+
+<!-- ページ全体スクロール無効（削除） -->
+
+</head>
 <body>
+<script id="__DATA__" type="application/json">{}</script>
+<script id="inline-data">
+  (function(){
+    try{ window.__DATA__ = (typeof __DATA__ !== 'undefined' && __DATA__) || window.__DATA__ || {}; }
+    catch(e){ /* keep existing */ }
+  })();
+</script>
+
   <nav>
     <a href="#" id="lnk-cand" class="active">候補一覧</a>
     <a href="#" id="lnk-tmr">明日用</a>
@@ -2257,7 +3733,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     <button class="btn" id="download-csv">CSVダウンロード</button>
   </div>
 
-<script id="__DATA__" type="application/json">{{ data_json|safe }}</script>
+
 
 <!-- ヘルプ定義＆マップ -->
 <script>
@@ -2312,13 +3788,14 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   function fd(v){ return v ? String(v).slice(0,10) : ""; }
 
   // ---- data ----
-  const RAW = (()=>{ try{ return JSON.parse(document.getElementById("__DATA__").textContent||"{}"); }catch(_){ return {}; } })();
-  const DATA_CAND = Array.isArray(RAW.cand)? RAW.cand: [];
-  const DATA_ALL  = Array.isArray(RAW.all) ? RAW.all : [];
-  const DATA_LOG  = Array.isArray(RAW.logs)? RAW.logs: [];
-  const DATA_EARN = Array.isArray(RAW.earnings) ? RAW.earnings : [];
-  const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
-  const DATA_PREEARN = Array.isArray(_preSrc) ? _preSrc : [];
+  let RAW = {};
+  let DATA_CAND = [], DATA_ALL = [], DATA_LOG = [], DATA_EARN = [], DATA_PREEARN = [];
+  function readRAW(){
+    try{
+      const n = document.getElementById("__DATA__");
+      return n ? JSON.parse(n.textContent || "{}") : {};
+    }catch(_){ return {}; }
+  }
 
   // ---- utils ----
   const $  = (s,r=document)=>r.querySelector(s);
@@ -2335,20 +3812,35 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   // 市場フィルタ
   const LS_MK = "mk_filters_v1";
   function collectMarkets(){
-    const srcs = [DATA_CAND, DATA_ALL, DATA_EARN, DATA_PREEARN];
+    // 1) まず JSON 側から収集
+    const srcs = [window.DATA_CAND, window.DATA_ALL, window.DATA_EARN, window.DATA_PREEARN];
     const set = new Set();
     for (const arr of srcs){
-      for (const r of (arr||[])){
+      for (const r of (arr || [])){
         const v = String(r?.["市場"] ?? "").trim();
         if (v) set.add(v);
       }
     }
+
+    // 2) JSONに無ければ DOM 側（候補テーブルの3列目=市場）から推定
+    if (!set.size){
+      document.querySelectorAll('#tbl-candidate tbody tr td:nth-child(3)')
+        .forEach(td => {
+          const v = td.textContent.trim();
+          if (v) set.add(v);
+        });
+    }
+
+    // 表示順：既知→未知の並び（未知は五十音ソート）
     const order = ["東P","東S","東G","東M","札証","名証","福証","北証","他"];
-    const known = [], unknown = [];
-    [...set].forEach(s => (order.includes(s) ? known.push(s) : unknown.push(s)));
+    const known=[], unknown=[];
+    for (const s of set){
+      (order.includes(s) ? known : unknown).push(s);
+    }
     unknown.sort((a,b)=>a.localeCompare(b,"ja"));
     return [...known, ...unknown];
   }
+
   function loadMkState(allKeys){
     try{
       const raw = JSON.parse(localStorage.getItem(LS_MK)||"{}");
@@ -2597,43 +4089,84 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   const MK_LIST = collectMarkets();
   const mkSet   = loadMkState(MK_LIST);
 
+
   function renderMarketCheckboxes(){
-    const host = $("#mk_host"); if(!host) return;
-    host.innerHTML = "";
-    MK_LIST.forEach(mk => {
-      const id = "mk_" + mk;
-      const lab = document.createElement("label");
-      lab.className = "mk";
-      lab.innerHTML = `<input type="checkbox" id="${id}" value="${mk}"> <span>${mk}</span>`;
-      host.appendChild(lab);
-      const cb = lab.querySelector("input");
-      cb.checked = mkSet.has(mk);
-      cb.addEventListener("change", ()=>{
-        if (cb.checked) mkSet.add(mk); else mkSet.delete(mk);
-        const allOn = MK_LIST.every(x => mkSet.has(x));
-        const mkAll = $("#mk_all"); if (mkAll) mkAll.checked = allOn;
-        saveMkState(mkSet);
-        state.page = 1;
+    const host = document.querySelector('#mk_host');
+    const mkAll = document.querySelector('#mk_all');
+    if (!host || !mkAll) return;
+
+    // JSON → 無ければ DOM から市場一覧を収集
+    const MK_LIST = collectMarkets();
+    const FALLBACK = ["東P","東S","東G","東M","札証","名証","福証","北証","他"];
+    const LIST = MK_LIST.length ? MK_LIST : FALLBACK;
+
+    // 直前の選択状態：window.__mkSet があれば最優先、無ければ localStorage、なければ全ON
+    let initialSet;
+    if (window.__mkSet instanceof Set) {
+      initialSet = new Set([...window.__mkSet].filter(k => LIST.includes(k)));
+    } else {
+      let raw = {};
+      try { raw = JSON.parse(localStorage.getItem('mk_filters_v1') || '{}'); } catch(_){}
+      const saved = Array.isArray(raw.keys) ? raw.keys : [];
+      initialSet = new Set(saved.filter(k => LIST.includes(k)));
+      // 空集合のとき：none=true なら全OFF維持、そうでなければ従来どおり全ON
+      if (!initialSet.size && !raw.none) initialSet = new Set(LIST);
+    }
+
+    host.innerHTML = '';
+    LIST.forEach(mk => {
+      const id = 'mk_' + mk;
+      const checkedAttr = initialSet.has(mk) ? 'checked' : '';
+      host.insertAdjacentHTML('beforeend',
+        `<label class="mk" style="margin-right:8px;">
+           <input type="checkbox" id="${id}" data-mk="${mk}" ${checkedAttr}> <span>${mk}</span>
+         </label>`);
+    });
+
+    // 適用関数：DOM表示に触らず「状態→再描画」で件数も同期させる
+    const apply = () => {
+      const onRaw = new Set(LIST.filter(mk => document.getElementById('mk_'+mk)?.checked));
+      mkAll.checked = LIST.every(mk => onRaw.has(mk));
+
+      // 全OFFの場合は "__NONE__" セントネルで「何も通さない」状態を表現し、保存は none:true
+      const on = (onRaw.size === 0) ? new Set(['__NONE__']) : onRaw;
+      try {
+        localStorage.setItem('mk_filters_v1',
+          JSON.stringify({ keys: onRaw.size ? [...onRaw] : [], none: onRaw.size === 0 })
+        );
+      } catch(_){}
+      window.__mkSet = on;
+
+
+      // 2) 再描画（applyFilter が __mkSet を見て絞り込み、#count も更新される）
+      try { if (window.state) window.state.page = 1; } catch(_){}
+      render();   // ← ローカル関数を直接呼ぶ
+    };
+
+
+    // イベント配線
+    LIST.forEach(mk => {
+      document.getElementById('mk_'+mk)?.addEventListener('change', () => {
+        apply();
         render();
       });
     });
-    const mkAll = $("#mk_all");
-    if (mkAll){
-      mkAll.checked = MK_LIST.every(x => mkSet.has(x));
-      mkAll.addEventListener("change", ()=>{
-        if (mkAll.checked) MK_LIST.forEach(x => mkSet.add(x));
-        else               MK_LIST.forEach(x => mkSet.delete(x));
-        MK_LIST.forEach(mk=>{
-          const cb = document.getElementById("mk_"+mk);
-          if (cb) cb.checked = mkAll.checked;
-        });
-        saveMkState(mkSet);
-        state.page = 1;
-        render();
+    mkAll.addEventListener('change', () => {
+      LIST.forEach(mk => {
+        const cb = document.getElementById('mk_'+mk);
+        if (cb) cb.checked = mkAll.checked;
       });
-    }
+      apply();
+      render();
+    });
+
+    // 初期適用
+    apply();
   }
-  renderMarketCheckboxes();
+
+  window.collectMarkets = collectMarkets;
+  window.renderMarketCheckboxes = renderMarketCheckboxes;
+
 
   // 抵抗/支持トグル（未実装時でも安全）
   document.addEventListener('change', e=>{
@@ -2675,9 +4208,19 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   }
 
   function applyFilter(rows){
+
+    // ★ 全OFF（__NONE__）なら即 全除外
+    const ls = (window.__mkSet instanceof Set) ? window.__mkSet : mkSet;
+    if (ls && ls.has('__NONE__')) return [];
+
     const q   = ($("#q")?.value||"").trim();
     const sel = getSelectedTypes();
     const useEarly = sel.length > 0;
+
+    // ★ 市場セットは「現在のUI状態(window.__mkSet)」を最優先で使用
+    const liveSet = ls;
+    const mkList  = collectMarkets(); // 空でなければ市場フィルタ有効
+
     return rows.filter(r=>{
       const sh  = hasKouho(r["初動フラグ"]);
       const te  = hasKouho(r["底打ちフラグ"]);
@@ -2728,7 +4271,13 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       if(tp!=null && !(prog>=tp)) return false;
       if(ts!=null && !(score>=ts)) return false;
 
-      if (MK_LIST.length && !mkSet.has(String(r["市場"]||"").trim())) return false;
+      // ★ 市場フィルタ（現在の選択セットを使用）
+      const mkEmpty = !liveSet || liveSet.size === 0;
+      // 表記ゆらぎ吸収（東Ｇ/東Ｍ/東Ｐ/東Ｓ → 東G/M/P/S）
+      const mk = String(r["市場"]||"").trim()
+        .replace('東Ｇ','東G').replace('東Ｍ','東M')
+        .replace('東Ｐ','東P').replace('東Ｓ','東S');
+      if (mkList.length && !mkEmpty && !liveSet.has(mk)) return false;
 
       if(q){
         const keys=["コード","銘柄名","判定理由","右肩早期種別","初動フラグ","底打ちフラグ","右肩上がりフラグ","右肩早期フラグ","推奨アクション"];
@@ -2737,6 +4286,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       return true;
     });
   }
+
 
   function formatJudgeLabel(r){ return isHitRow(r) ? "当たり！(1)" : "外れ！(1)"; }
 
@@ -3103,7 +4653,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
       }
       return { name, code: /^\d{4}$/.test(code) ? code : "" };
     }
-    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;"," >":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const esc = (s)=>String(s??"").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
     const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
 
     const tbl   = document.getElementById("tbl-preearn");
@@ -3457,19 +5007,40 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   if (typeof window.installCandidateFolds !== 'function') window.installCandidateFolds = function(){};
   if (typeof window.installFoldsFor !== 'function') window.installFoldsFor = function(){};
 
-  window.addEventListener("DOMContentLoaded", () => {
-    switchTab("cand");
-    forceClearThresholds();
 
-    document.querySelectorAll('#tbl-candidate td br, #tbl-allcols td br')
-      .forEach(br => br.replaceWith(' '));
+  function init(){
+    try{
+      // ① RAWを読む（__DATA__ を同期パース）
+      RAW = readRAW();
+      const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
+      DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
+      DATA_ALL     = Array.isArray(RAW.all)      ? RAW.all      : [];
+      DATA_LOG     = Array.isArray(RAW.logs)     ? RAW.logs     : [];
+      DATA_EARN    = Array.isArray(RAW.earnings) ? RAW.earnings : [];
+      DATA_PREEARN = Array.isArray(_preSrc)      ? _preSrc      : [];
 
-    attachQHelpsToToolbar();
-    attachQHelpsToHead('#tbl-candidate');
+      // ② まず候補タブを描画（テーブルがDOMに並ぶ）
+      switchTab("cand");
 
-    const navAnchor = document.getElementById('nav-summary-anchor') || document.querySelector('nav');
-    if (navAnchor) makeQ(navAnchor, 'まとめ（優先度順）');
-  });
+      // ③ テーブル描画後に市場チェックUIを生成（DOMフォールバックが効く）
+      renderMarketCheckboxes();
+
+      // ④ ヘルプや表示微調整
+      forceClearThresholds();
+      document.querySelectorAll('#tbl-candidate td br, #tbl-allcols td br')
+        .forEach(br => br.replaceWith(' '));
+      attachQHelpsToToolbar();
+      attachQHelpsToHead('#tbl-candidate');
+      const navAnchor = document.getElementById('nav-summary-anchor') || document.querySelector('nav');
+      if (navAnchor) makeQ(navAnchor, 'まとめ（優先度順）');
+
+      // ⑤ sticky幅・scroll-pad の再計測
+      try{ if (typeof measureStickyWidth === 'function') measureStickyWidth(); }catch(_){}
+      try{ window.dispatchEvent(new Event('resize')); }catch(_){}
+    }catch(e){ try{ console.error('[init fatal]', e); }catch(_){} }
+  }
+  document.removeEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', init);
 
 })();
 </script>
@@ -3633,6 +5204,118 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     </div>
   </section>
   {% endif %}
+
+
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  const tb = document.getElementById('toolbar');
+  if(!tb) return;
+
+  // ラッパ生成（初回のみ）
+  if(!tb.querySelector('.toolbar-card')){
+    const card = document.createElement('div');
+    card.className = 'toolbar-card';
+    while(tb.firstChild){ card.appendChild(tb.firstChild); }
+    tb.appendChild(card);
+  }
+  const card = tb.querySelector('.toolbar-card');
+
+  // 4グループ + フッター
+  const gChecks  = document.createElement('div'); gChecks.className  = 'group checks';
+  const gTexts   = document.createElement('div'); gTexts.className   = 'group texts';
+  const gSelects = document.createElement('div'); gSelects.className = 'group selects';
+  const gBtns    = document.createElement('div'); gBtns.className    = 'group buttons';
+  const gFooter  = document.createElement('div'); gFooter.className  = 'group footer';
+
+  // ラベル
+  const mkLabel = txt => { const s=document.createElement('span'); s.className='label'; s.textContent=txt; return s; };
+  gChecks.appendChild(mkLabel('チェック'));
+  gTexts.appendChild(mkLabel('テキスト'));
+  gSelects.appendChild(mkLabel('プルダウン'));
+  gBtns.appendChild(mkLabel('ボタン'));
+
+  // 既存直下ノードを分類
+  const nodes = Array.from(card.childNodes);
+  nodes.forEach(n => {
+    if(!(n instanceof HTMLElement)) return;
+
+    // ① 市場フィルタは「必ず」フッター左側へ
+    if (n.id === 'market-filter') { 
+      gFooter.appendChild(n); 
+      return;
+    }
+
+    // 初期チェック群
+    if (n.classList.contains('early-filter')) { gChecks.appendChild(n); return; }
+
+    // 件数バッジ・Pager・表示件数はフッター右側
+    if (n.classList.contains('count'))       { gFooter.appendChild(n); return; }
+    if (n.classList.contains('pager'))       { gFooter.appendChild(n); return; }
+    if (n.tagName==='LABEL' && n.querySelector('#perpage')) { gFooter.appendChild(n); return; }
+    if (n.id === 'perpage')                  { gFooter.appendChild(n); return; }
+
+    // ボタン類
+    if (n.matches('button, .btn, .copylink, [id="copy-page"], [id="download-csv"]')) { gBtns.appendChild(n); return; }
+
+    // プルダウン
+    if (n.tagName==='LABEL' && n.querySelector('select')) { gSelects.appendChild(n); return; }
+    if (n.tagName==='SELECT')                              { gSelects.appendChild(n); return; }
+
+    // テキスト/数字入力
+    if (n.tagName==='LABEL' && n.querySelector('input[type="text"], input[type="number"]')) { gTexts.appendChild(n); return; }
+    if (n.matches('input[type="text"], input[type="number"]'))                                { gTexts.appendChild(n); return; }
+
+    // チェックボックス
+    if (n.tagName==='LABEL' && n.querySelector('input[type="checkbox"]')) { gChecks.appendChild(n); return; }
+    if (n.matches('input[type="checkbox"]'))                               { gChecks.appendChild(n); return; }
+
+    // その他はテキスト群へ
+    gTexts.appendChild(n);
+  });
+
+  // 並べ替え反映（カードを空にしてから希望順で追加）
+  while (card.firstChild) { card.removeChild(card.firstChild); }
+  card.appendChild(gChecks);   // ① checks
+  card.appendChild(gTexts);    // ② texts
+  card.appendChild(gSelects);  // ③ selects
+  card.appendChild(gBtns);     // ④ buttons
+  card.appendChild(gFooter);   // ⑤ footer
+});
+</script>
+
+<script id="footer-reflow">
+document.addEventListener('DOMContentLoaded', function () {
+  const tb = document.getElementById('toolbar');
+  const footer = tb && tb.querySelector('.group.footer');
+  if (!footer) return;
+
+  // 左右ラッパー（重複生成しない）
+  let left = footer.querySelector('.footer-left');
+  let ctrls = footer.querySelector('.footer-ctrls');
+  if (!left)  { left  = document.createElement('div'); left.className  = 'footer-left';  footer.prepend(left); }
+  if (!ctrls) { ctrls = document.createElement('div'); ctrls.className = 'footer-ctrls'; footer.appendChild(ctrls); }
+
+  // 1) 市場チェック群を左端へ（#market-filter を最優先で移動）
+  const market = footer.querySelector('#market-filter');
+  if (market && market.parentElement !== left) left.appendChild(market);
+
+  // 2) 表示件数・前へ/次へ・件数バッジを右側へ集約
+  const moves = [];
+
+  // よくある要素候補（必要に応じて追記OK）
+  footer.querySelectorAll('select#perpage, select[name="perpage"], .pager, .count').forEach(n => moves.push(n));
+
+  // ラベル単体ノード（「表示件数」「前へ」「次へ」「件数」等）も拾う
+  Array.from(footer.children).forEach(el => {
+    if (!(el instanceof HTMLElement)) return;
+    const t = (el.textContent || '').trim();
+    if (/表示件数|前へ|次へ|件数[：:]/.test(t) && !moves.includes(el)) moves.push(el);
+  });
+
+  moves.forEach(el => { if (el && el.parentElement !== ctrls) ctrls.appendChild(el); });
+});
+</script>
+
 
 </body>
 </html>"""
@@ -4122,7 +5805,7 @@ def refresh_full_history_for_insufficient(conn: sqlite3.Connection, universe_cod
     for i in range(0, len(targets), batch_size):
         chunk = targets[i:i+batch_size]
         #tickers_map = {c: f"{c}.T" for c in chunk}   # 日本株想定
-        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         try:
             df_wide = yf.download(
                 list(tickers_map.values()),
@@ -4267,7 +5950,7 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
     for i in range(0, len(exist_codes), batch_size):
         chunk = exist_codes[i:i+batch_size]
         #tickers_map = {c: f"{c}.T" for c in chunk}  # 日本株前提
-        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         df_wide = yf.download(list(tickers_map.values()), period="2d", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
         df_add = _to_long_history(df_wide, tickers_map)
         total_added += _upsert_price_history(conn, df_add)
@@ -4277,7 +5960,7 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
     for i in range(0, len(new_codes), batch_size):
         chunk = new_codes[i:i+batch_size]
         #tickers_map = {c: f"{c}.T" for c in chunk}
-        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         df_wide = yf.download(list(tickers_map.values()), period="12mo", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
         df_add = _to_long_history(df_wide, tickers_map)
         total_added += _upsert_price_history(conn, df_add)
@@ -4354,7 +6037,7 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
         for i in range(0, len(codes), batch_size):
             chunk = codes[i:i+batch_size]
             #symbols = [_to_symbol(c) for c in chunk]
-            symbols = [resolve_yahoo_symbol(c,conn) for c in chunk]
+            symbols = [resolve_yahoo_symbol(c, conn, True) for c in chunk]
 
             tq = YQ(symbols, asynchronous=True, max_workers=max_workers)
             sd = _normalize_map(tq.summary_detail)
@@ -4389,7 +6072,7 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
         for c in codes:
             try:
                 #fi = yf.YQ(_to_symbol(c)).fast_info
-                fi = yf.YQ(resolve_yahoo_symbol(c,conn)).fast_info
+                fi = yf.YQ(resolve_yahoo_symbol(c, conn, True)).fast_info
                 mc = getattr(fi, "market_cap", None)
                 if mc:
                     rows.append((float(mc)/1e8, c))
@@ -5565,7 +7248,7 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
 
         # Yahoo / X
         code4 = (d.get("コード") or "").zfill(4)
-        d["yahoo_url"] = f"https://finance.yahoo.co.jp/quote/{code4}.T" if code4 else ""
+        d["yahoo_url"] = _yahoo_quote_url(code4, d.get("市場"), conn) if code4 else ""
         d["x_url"] = f"https://x.com/search?q={_q(d.get('銘柄名') or '')}" if d.get("銘柄名") else ""
 
         # ---- 価格フィールド（休日のみEODで安全埋め）----
@@ -5633,7 +7316,8 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
 
         # 念のため：空売り機関なし_flag を維持
         d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
-
+        
+        d = _ensure_links(d)
         rows.append(d)
 
     # ここでは `_conn` を閉じない（呼び出し側 or シングルトン管理側の責務）
@@ -5667,22 +7351,248 @@ def _load_offering_codes_from_db(conn, days=400):
     except Exception:
         return set()
 
+# ==== [FAST PATH HELPERS - REAL IMPL] ===================================
+from functools import lru_cache as __lru_cache
+
+def __lru(maxsize=8192):
+    return __lru_cache(maxsize=maxsize)
+
+@__lru()
+def _fmt_code4__fast(code):
+    try:
+        return str(code).zfill(4)
+    except Exception:
+        return str(code)
+
+@__lru()
+def _chart_url__fast(c4):
+    return f"/charts60/{c4}.html"
+    
+def _prepare_rows_fast(df: pd.DataFrame, conn):
+    if df is None or df.empty:
+        return []
+
+    _df = df.copy()
+
+    # c4 / chart_url を先に用意
+    if "c4" not in _df.columns:
+        def _fmt4(x):
+            try:
+                s = str(int(x)).zfill(4)
+            except Exception:
+                s = str(x or "").zfill(4)
+            return s if s.strip() else ""
+        _df["c4"] = _df.get("コード", "").map(_fmt4)
+
+    if "chart_url" not in _df.columns:
+        def _chart_from_c4(c4):
+            return _chart_url__fast(c4) if " _chart_url__fast" in globals() else ""
+        _df["chart_url"] = _df["c4"].map(_chart_url__fast if " _chart_url__fast" in globals() else (lambda _c4: ""))
+
+    rows: list[dict] = []
+
+    # ここに無い列は素通し対象から落ちる（=安全）
+    cols_passthru = [c for c in [
+        "コード","銘柄名","市場","現在値","前日終値","前日円差","前日終値比率",
+        "出来高","時価総額億円","売買代金(億)","売買代金20日平均億",
+        "RVOL代金","合成スコア","ATR14%","初動フラグ","底打ちフラグ",
+        "右肩上がりフラグ","右肩早期フラグ","空売り機関","シグナル更新日",
+        "営業利益","増資リスク","増資スコア","増資理由","財務コメント",
+        "スコア","進捗率","overall_alpha",
+        "抵抗帯中心","抵抗最終日","最寄り抵抗",
+        "支持帯中心","支持最終日","最寄り支持"
+    ] if c in _df.columns]
+
+    # ループ内で必ず yahoo/x を合成して rows に積む
+    for r in _df.itertuples(index=False):
+        d = {}
+
+        # そのまま渡す列
+        for c in cols_passthru:
+            try:
+                d[c] = getattr(r, c)
+            except Exception:
+                pass
+
+        # chart
+        try:
+            d["chart"] = getattr(r, "chart_url")
+        except Exception:
+            d["chart"] = None
+
+        # c4 / name
+        try:
+            c4_val = getattr(r, "c4")
+        except Exception:
+            try:
+                c4_raw = getattr(r, "コード")
+                c4_val = (str(c4_raw).zfill(4) if c4_raw is not None else "")
+            except Exception:
+                c4_val = ""
+
+        try:
+            name_val = getattr(r, "銘柄名")
+        except Exception:
+            name_val = ""
+
+        # --- ここが重要：欠損は None、ある時は完全URL ---
+        d["yahoo_url"] = (f"https://finance.yahoo.co.jp/quote/{c4_val}.T" if c4_val else None)
+
+        try:
+            from urllib.parse import quote as __quote
+            d["x_url"] = (f"https://x.com/search?q={__quote(str(name_val))}" if name_val else None)
+        except Exception:
+            # もし urllib が無くても最低限の動作はさせる
+            d["x_url"] = (f"https://x.com/search?q={name_val}" if name_val else None)
+
+        rows.append(d)
+
+    return rows
+
+
+
+def _prepare_rows_safe(df, conn):
+    try:
+        return _prepare_rows_fast(df, conn)
+    except Exception as __e:
+        try: print(f"[rows][WARN] fast-path failed: {__e}", flush=True)
+        except Exception: pass
+        return _prepare_rows(df, conn)
+# ==== [/FAST PATH HELPERS - REAL IMPL] ==================================
+
+
+# ==== [BULK PRICE SUMMARIES - TOP LEVEL] ================================
+def preload_price_summaries(conn, codes, window_days=220):
+    """対象コードをまとめて読み、直近の終値/高値/安値と MA5/25/75 を返す"""
+    if not codes:
+        return {}
+    codes = [str(c).zfill(4) for c in codes]
+    import datetime as _dt
+    start_date = (_dt.date.today() - _dt.timedelta(days=window_days)).isoformat()
+    out = {}
+    CH = 700
+    for i in range(0, len(codes), CH):
+        part = codes[i:i+CH]
+        ph = ",".join(["?"] * len(part))
+        sql = f"""
+            SELECT コード, 日付, 終値, 高値, 安値
+            FROM price_history
+            WHERE CAST(コード AS TEXT) IN ({ph})
+              AND 日付 >= ?
+            ORDER BY コード, 日付
+        """
+        try:
+            dfp = pd.read_sql_query(sql, conn, params=[*part, start_date], parse_dates=["日付"])
+        except Exception as _e:
+            print(f"[bulkprice][WARN] read_sql failed for chunk {i//CH}: {_e}")
+            dfp = pd.DataFrame(columns=["コード","日付","終値","高値","安値"])
+        if dfp.empty:
+            continue
+        for c in ("終値","高値","安値"):
+            if c in dfp.columns:
+                dfp[c] = pd.to_numeric(dfp[c], errors="coerce")
+        for code, g in dfp.groupby("コード", sort=False):
+            g = g.sort_values("日付")
+            close = g["終値"]
+            ma5  = close.rolling(5,  min_periods=1).mean().iloc[-1] if not close.empty else None
+            ma25 = close.rolling(25, min_periods=1).mean().iloc[-1] if not close.empty else None
+            ma75 = close.rolling(75, min_periods=1).mean().iloc[-1] if not close.empty else None
+            last = g.iloc[-1] if len(g) > 0 else None
+            prev = g.iloc[-2] if len(g) > 1 else None
+            out[str(code).zfill(4)] = {
+                "last_date": None if last is None else str(last["日付"].date()),
+                "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
+                "last_high":  None if last is None or pd.isna(last["高値"]) else float(last["高値"]),
+                "last_low":   None if last is None or pd.isna(last["安値"]) else float(last["安値"]),
+                "prev_date":  None if prev is None else str(prev["日付"].date()),
+                "prev_close": None if prev is None or pd.isna(prev["終値"]) else float(prev["終値"]),
+                "ma5":  None if pd.isna(ma5)  else float(ma5),
+                "ma25": None if pd.isna(ma25) else float(ma25),
+                "ma75": None if pd.isna(ma75) else float(ma75),
+            }
+    return out
+
+def enrich_rows_with_price_summary(rows, summary_map):
+    if not rows:
+        return rows
+    for r in rows:
+        c4 = str(r.get("コード") or "").zfill(4)
+        s = summary_map.get(c4) or {}
+        if s:
+            r["高値"]  = "" if s.get("last_high")  is None else f"{s['last_high']:,.0f}"
+            r["安値"]  = "" if s.get("last_low")   is None else f"{s['last_low']:,.0f}"
+            r["MA5"]   = "" if s.get("ma5")        is None else f"{s['ma5']:,.0f}"
+            r["5日"]   = r.get("MA5","" )
+            r["MA25"]  = "" if s.get("ma25")       is None else f"{s['ma25']:,.0f}"
+            r["25日"]  = r.get("MA25","" )
+            r["MA75"]  = "" if s.get("ma75")       is None else f"{s['ma75']:,.0f}"
+            r["75日"]  = r.get("MA75","" )
+    return rows
+# ==== [/BULK PRICE SUMMARIES - TOP LEVEL] ===============================
+
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
                                         include_log: bool=False, log_limit: int=2000):
-    """HTMLダッシュボード出力（B案=Python側でUI列名に合わせる）。
-    - 無駄削除: __DATA_CAND__置換を廃止 / meta二重計算を統合 / 未使用live_price_map削除
-    - それ以外の挙動は従来を維持
-    """
-    _ensure_latest_prices_code_col(conn)
+    """HTMLダッシュボード出力（1ファイル完結版：__DATA__ を <script type=application/json> と window.__DATA__ で埋め込む）"""
+    import os, time as _t
+    import json as _json
+    import pandas as pd
+    import numpy as np
+    import datetime as dtm
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        ZoneInfo = None
 
-    # --- V5 calc（失敗しても続行） ---
+    def _p(msg): print(f"[exportL] {msg}")
+
+    def dumps_json_clean(obj, **kw):
+        kw.setdefault("ensure_ascii", False)      # 日本語そのまま
+        kw.setdefault("separators", (",", ":"))   # 軽量化
+        kw.setdefault("default", str)             # 日付等を文字列化
+        return _json.dumps(obj, **kw)
+
+    # 0) 事前
+    t0 = _t.perf_counter()
+    _p("enter: phase_export_html_dashboard_offline")
+
+    # === ヘルパ ===
+    def _safe_jsonable(v):
+        if v is None: return None
+        try:
+            if isinstance(v, (dtm.date, dtm.datetime)): return str(v)
+        except Exception:
+            pass
+        try:
+            if isinstance(v, float) and (np.isnan(v) or np.isinf(v)): return None
+        except Exception:
+            pass
+        return v
+
+    def _records_safe(df: pd.DataFrame):
+        if df is None or df.empty: return []
+        out = []
+        for rec in df.to_dict("records"):
+            out.append({k: _safe_jsonable(v) for k, v in rec.items()})
+        return out
+
+    # 1) latest_prices のコード型を安全化
+    _ensure_latest_prices_code_col(conn)
+    _p("done: _ensure_latest_prices_code_col")
+
+    # 2) V5 収集（失敗しても継続）
+    _p("V5: collect start")
+    t = _t.perf_counter()
     try:
         v5_rows = v5_collect_data(conn)
     except Exception as _e:
         print('[V5][WARN] collect failed:', _e)
         v5_rows = []
+    _p(f"V5: collect done rows={len(v5_rows)} dt={( _t.perf_counter()-t):.2f}s")
 
-    # ---------- 1) 候補用（cand）: 必要最小列のみ取得 ----------
+    # 3) 候補・全カラム
+    t = _t.perf_counter()
+    _p("SQL: df_cand start")
     df_cand = pd.read_sql_query("""
 SELECT
   s.コード,
@@ -5692,7 +7602,6 @@ SELECT
   lp.Sup_Zone        AS 支持帯中心,
   lp.Sup_Zone_Last   AS 支持最終日,
   lp.Sup_Nearest     AS 最寄り支持,
-
   s.銘柄名, s.市場,
   s.現在値,
   s."前日終値"       AS 前日終値,
@@ -5726,8 +7635,10 @@ LEFT JOIN latest_prices lp
   ON CAST(lp.コード AS TEXT) = CAST(s.コード AS TEXT)
 ORDER BY COALESCE(s.時価総額億円,0) DESC, COALESCE(s.出来高,0) DESC, s.コード
 """, conn)
+    _p(f"SQL: df_cand done shape={df_cand.shape} dt={( _t.perf_counter()-t):.2f}s")
 
-    # --- 2) 全カラムタブ（all）: s.* + V5一式をJOIN ---
+    t = _t.perf_counter()
+    _p("SQL: df_all start")
     df_all = pd.read_sql_query("""
 SELECT s.*,
        lp.Res_HH   AS 直近高値90日,
@@ -5755,24 +7666,37 @@ LEFT JOIN latest_prices lp
   ON CAST(lp.コード AS TEXT) = CAST(s.コード AS TEXT)
 ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
 """, conn)
+    _p(f"SQL: df_all done shape={df_all.shape} dt={( _t.perf_counter()-t):.2f}s")
+    
+    ######################################################################
+    #制限版
+    ######################################################################
+    # --- ▼ TEMP: 表示件数を最大100件に制限（cand/allを同期） ▼ ---
+    #_LIMIT = 10
+    # cand は並びを維持して先頭だけ
+    #df_cand = df_cand.head(_LIMIT).copy()
 
-    # --- 3) B-only rename（UI列名に合わせる） ---
+    # all は cand に残した銘柄だけへ絞る（コードキーで同期）
+    #_codes = set(df_cand["コード"].astype(str).str.zfill(4))
+    #df_all = df_all[df_all["コード"].astype(str).str.zfill(4).isin(_codes)].copy()
+    # --- ▲ TEMPここまで ▲ ---
+    ######################################################################
+    #制限版
+    ######################################################################
+    # 4) 軽い整形
+    _p("rename/round: start")
+
     try:
-        ren = {
-            "推奨": "推奨アクション",
-            "推奨比率%": "推奨比率",
-        }
+        ren = {"推奨": "推奨アクション", "推奨比率%": "推奨比率"}
         present = {k:v for k,v in ren.items() if k in df_cand.columns}
         if present: df_cand.rename(columns=present, inplace=True)
-        # 補完列
         if "判定" not in df_cand.columns:
             df_cand["判定"] = df_cand["右肩上がりフラグ"] if "右肩上がりフラグ" in df_cand.columns else None
         if "判定理由" not in df_cand.columns:
             df_cand["判定理由"] = None
-    except Exception as _rename_e:
-        print("[rename][WARN-Bonly]", _rename_e)
+    except Exception as _e:
+        print("[rename][WARN-Bonly]", _e)
 
-    # --- 4) 数値丸め（2桁） ---
     def _round2_inplace(df):
         if df is None or df.empty: return
         percent = ["前日終値比率","前日終値比率（％）","フォロー高値pct","最大逆行pct","リターン終値pct","推奨比率","ATR14%","進捗率"]
@@ -5782,10 +7706,11 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         for c in percent+money+price+score:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
-    _round2_inplace(df_cand)
-    _round2_inplace(df_all)
+    _round2_inplace(df_cand); _round2_inplace(df_all)
+    _p("rename/round: done")
 
-    # --- 5) ログ（任意） ---
+    # 5) ログ（省略可）
+    _p(f"log: fetch start include_log={include_log}")
     if include_log:
         try:
             df_log = pd.read_sql_query(
@@ -5796,8 +7721,10 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
     else:
         df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
+    _p(f"log: fetch done shape={df_log.shape}")
 
-    # --- 6) フラグ装飾（candのみ） ---
+    # 6) フラグ装飾（略式）
+    _p("flags: decorate start")
     def _mini(text): return "" if not text else f"&nbsp;<span class='mini'>{text}</span>"
     def _flag_with_since(flag, since):
         flag = (flag or "").strip()
@@ -5807,7 +7734,6 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         if since_kind: extras.append(f"{since_kind}〜")
         if prev_kind:  extras.append(f"prev: {prev_kind}")
         return _mini(" / ".join(extras)) if extras else ""
-
     if not df_cand.empty:
         df_cand["初動フラグ"]       = df_cand.apply(lambda r: _flag_with_since(r.get("初動フラグ"), r.get("初動開始日")), axis=1)
         df_cand["底打ちフラグ"]     = df_cand.apply(lambda r: _flag_with_since(r.get("底打ちフラグ"), r.get("底打ち開始日")), axis=1)
@@ -5819,322 +7745,126 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             axis=1
         )
         for c in ["初動開始日","底打ち開始日","右肩開始日","右肩早期開始日","右肩早期種別開始日","右肩早期前回種別"]:
-            if c in df_cand.columns:
-                df_cand.drop(columns=[c], inplace=True)
+            if c in df_cand.columns: df_cand.drop(columns=[c], inplace=True)
+    _p("flags: decorate done")
+    # 7) レコード化
+    import time as _t
+    _t0 = _t.time()
+    def _tick(msg):
+        print(f"[timer] {msg}: {_t.time()-_t0:.2f}s", flush=True)
 
-    # --- 7) dict化（安全化） ---
-    def _records_safe(df: pd.DataFrame):
-        out = []
-        for rec in df.to_dict("records"):
-            out.append({k: _safe_jsonable(v) for k, v in rec.items()})
-        return out
+    _p("records_safe: start")
+    _tick("enter")
 
-    # --- 8) cand/allの行化とURL等の補完 ---
-    cand_rows = _prepare_rows(df_cand, conn=conn) if not df_cand.empty else []
+    # 7.0) 前処理（ベクトル化は従来通り）
+    df_cand = _vectorize_minimum_fields(df_cand)
+    df_all  = _vectorize_minimum_fields(df_all)
+    _tick("vectorize_minimum_fields")
 
-    cand_rows = enhance_with_chart_flags(conn, cand_rows)
-    all_rows  = _prepare_rows(df_all, conn=conn)  if not df_all.empty  else []
-    n_strong = sum(1 for r in cand_rows if r.get("推奨アクション") == "エントリー有力")
-    n_small  = sum(1 for r in cand_rows if r.get("推奨アクション") == "小口提案")
-    print(f"[recommend] 有力:{n_strong} / 小口:{n_small}")
+    # 7.0) レコード化：all を正として1回だけ計算
+    all_rows = _prepare_rows(df_all, conn)
 
-    cand_rows = _records_safe(pd.DataFrame(cand_rows)) if cand_rows else []
-    all_rows  = _records_safe(pd.DataFrame(all_rows))  if all_rows  else []
-    log_rows  = _records_safe(df_log)                 if include_log else []
-
-    # --- 9) 高値/安値/MA5/25/75 を price_history から補完 ---
-    def _hilo_ma_from_db(conn: sqlite3.Connection, code: str):
+    # all_rows をコードで引けるようにインデックス化（同コード複数行にも対応）
+    from collections import defaultdict
+    def _code4(x):
         try:
-            q = """
-              SELECT 日付, 高値, 安値, 終値
-              FROM price_history
-              WHERE コード = ?
-              ORDER BY 日付 DESC
-              LIMIT 100
-            """
-            df = pd.read_sql_query(q, conn, params=[str(code)], parse_dates=["日付"])
-            if df.empty:
-                # hi, lo, ma5, ma25, ma75
-                return None, None, None, None, None
+            return str(x or "").zfill(4)
+        except Exception:
+            return ""
 
-            d = df.sort_values("日付")
-            # 数値化（NaNは許容）
-            for c in ("終値", "高値", "安値"):
-                if c in d:
-                    d[c] = pd.to_numeric(d[c], errors="coerce")
+    rows_by_code = defaultdict(list)  # type: ignore[var-annotated]
+    for r in all_rows:
+        rows_by_code[_code4(r.get("コード"))].append(r)
 
-            # 移動平均（データ不足でも min_periods=1 で安全）
-            ma5  = d["終値"].rolling(5,  min_periods=1).mean().iloc[-1]
-            ma25 = d["終値"].rolling(25, min_periods=1).mean().iloc[-1]
-            ma75 = d["終値"].rolling(75, min_periods=1).mean().iloc[-1]
+    # cand は df_cand の順番を厳密維持しつつ all_rows から参照（無いものだけ最小限で再計算）
+    cand_rows = []
+    cand_codes_ordered = [ _code4(c) for c in df_cand["コード"].tolist() ] if "コード" in df_cand.columns else []
 
-            last = d.iloc[-1]
-            hi = None if pd.isna(last.get("高値")) else float(last["高値"])
-            lo = None if pd.isna(last.get("安値")) else float(last["安値"])
+    # 欠落コードを特定
+    missing_codes = [c for c in cand_codes_ordered if c and c not in rows_by_code]
 
-            # ★ 5要素（ma75 を含む）で返す
-            return (
-                hi,
-                lo,
-                None if pd.isna(ma5)  else float(ma5),
-                None if pd.isna(ma25) else float(ma25),
-                None if pd.isna(ma75) else float(ma75),
-            )
-        except Exception as _e:
-            print(f"[patch][WARN] _hilo_ma_from_db({code}) failed: {_e}")
-            return None, None, None, None, None
+    # 欠落があれば、その分だけ最小限で _prepare_rows を実行
+    if missing_codes:
+        df_missing = df_cand[df_cand["コード"].astype(str).str.zfill(4).isin(missing_codes)] if "コード" in df_cand.columns else None
+        if df_missing is not None and not df_missing.empty:
+            missing_rows = _prepare_rows(df_missing, conn)
+            for r in missing_rows:
+                rows_by_code[_code4(r.get("コード"))].append(r)
 
-    def _apply_price_fields_from_db_local(conn: sqlite3.Connection, rows):
-        if not rows: return rows
-        for r in rows:
-            code = str(r.get("コード") or r.get("code") or "").strip()
-            if not code: continue
-            hi, lo, ma5, ma25, ma75 = _hilo_ma_from_db(conn, code)
-            r["高値"]  = "" if hi   is None else f"{hi:,.0f}"
-            r["安値"]  = "" if lo   is None else f"{lo:,.0f}"
-            r["MA5"]   = "" if ma5  is None else f"{ma5:,.0f}"
-            r["5日"]   = r["MA5"]
-            r["MA25"]  = "" if ma25 is None else f"{ma25:,.0f}"
-            r["25日"]  = r["MA25"]
-            r["MA75"]  = "" if ma75 is None else f"{ma75:,.0f}"
-            r["75日"]  = r["MA75"]
-        return rows
+    # df_cand の並び通りに cand_rows を構築（同コード複数行もそのまま展開）
+    for c in cand_codes_ordered:
+        cand_rows.extend(rows_by_code.get(c, []))
 
-    try:
-        _apply_price_fields_from_db_local(conn, cand_rows)
-        _apply_price_fields_from_db_local(conn, all_rows)
-    except Exception as _e:
-        print(f"[patch][WARN] apply_price_fields failed: {_e}")
+    # ログ用は従来通り
+    log_rows = _records_safe(df_log)
+    _tick("prepare_rows")
 
-    # --- 10) ライブ上書き（場中のみ・存在すれば） ---
-    try:
-        if _is_trading_session_now():
-            codes_union = set()
-            try:
-                if all_rows:  codes_union.update([str(r.get("コード") or "").zfill(4) for r in all_rows if r.get("コード")])
-            except Exception: pass
-            try:
-                if cand_rows: codes_union.update([str(r.get("コード") or "").zfill(4) for r in cand_rows if r.get("コード")])
-            except Exception: pass
-            live_quote_map = _fetch_live_quote_map(conn, sorted(codes_union))
-            if live_quote_map:
-                try:
-                    avg_turn = _load_avg_turnover_map(conn, sorted(codes_union), window=20)
-                except Exception as _e:
-                    print(f"[live][WARN] avg turnover load failed: {_e}")
-                    avg_turn = {}
-                for __r in cand_rows:
-                    c4 = str(__r.get("コード") or "").zfill(4)
-                    q = live_quote_map.get(c4) or {}
-                    if q: _apply_live_overrides(conn, __r, q, avg_turn)
-                for __r in all_rows:
-                    c4 = str(__r.get("コード") or "").zfill(4)
-                    q = live_quote_map.get(c4) or {}
-                    if q: _apply_live_overrides(conn, __r, q, avg_turn)
-    except Exception as _e:
-        print(f"[live][WARN] apply-live failed: {_e}")
+    # 7.1) 高値/安値/MA(5/25/75) を price_history から一括付与
+    # ※ cand_rows は all_rows の dict を参照しているため、all_rows に付与すれば cand 側にも反映される
+    codes = sorted({ _code4(r.get("コード")) for r in all_rows if r.get("コード") })
+    print(f"[timer] preload_price_summaries: codes={{len(codes)}}", flush=True)
+    summary_map = preload_price_summaries(conn, codes)
+    print(f"[timer] preload_price_summaries: map={{len(summary_map)}}", flush=True)
 
-    # --- 11) meta（翌営業日）※一度だけ計算 ---
+    all_rows  = enrich_rows_with_price_summary(all_rows,  summary_map)
+    # cand_rows への個別呼び出しは不要（同じ dict 参照）。必要なら下行をコメント解除。
+    # cand_rows = enrich_rows_with_price_summary(cand_rows, summary_map)
+    _tick("price_summary_enrich (load+merge)")
+
+    # 7.2) chart / 移動平均 / ボリバン / GC / 三役
+    # こちらも all_rows に対して1回でOK（cand_rows は参照を共有）
+    enhance_with_chart_flags(conn, all_rows)
+    # enhance_with_chart_flags(conn, cand_rows)  # 基本不要。別参照にしているなら有効化。
+    _tick("chart_flags_enhance")
+
+    # 欠損チェック
+    _need = ["高値","安値","5日","25日","75日","chart","移動平均","ボリバン","GC","三役"]
+    print("[debug][cand missing]", {k: sum(1 for r in cand_rows if not r.get(k)) for k in _need}, flush=True)
+    print("[debug][all  missing]", {k: sum(1 for r in all_rows  if not r.get(k)) for k in _need}, flush=True)
+    _tick("debug_missing_done")
+
+
+    # 8) 軽量メタ等
     meta = {"base_day": None, "next_business_day": None}
-    def _to_date(s):
-        if not s: return None
-        s = str(s)[:10]
-        try: return dtm.datetime.strptime(s, "%Y-%m-%d").date()
-        except ValueError: return None
-    def _is_holiday(d: dtm.date) -> bool:
-        try:
-            import jpholiday
-            return (d.weekday() >= 5) or jpholiday.is_holiday(d)
-        except Exception:
-            return d.weekday() >= 5
-    def _next_business_day(d: dtm.date) -> dtm.date:
-        d = d + dtm.timedelta(days=1)
-        while _is_holiday(d): d += dtm.timedelta(days=1)
-        return d
-    if cand_rows:
-        dates = [_to_date(r.get("シグナル更新日")) for r in cand_rows]
-        dates = [d for d in dates if d]
-        if dates:
-            base = max(dates)
-            meta["base_day"] = base.strftime("%Y-%m-%d")
-            meta["next_business_day"] = _next_business_day(base).strftime("%Y-%m-%d")
-
-    # --- 12) hist（直近シグナル） ---
-    def _build_hist_rows():
-        codes = sorted({ r.get("コード") for r in cand_rows if r.get("コード") })
-        if not codes: return []
-        try:
-            last_day = max(pd.to_datetime([r.get("シグナル更新日") for r in cand_rows if r.get("シグナル更新日")])).normalize()
-        except Exception:
-            last_day = pd.Timestamp.today().normalize()
-        start_day = last_day - pd.tseries.offsets.BDay(60)
-        def _fetch_chunk(chunk):
-            qmarks = ",".join("?" * len(chunk))
-            sql = f"""
-                SELECT
-                  コード,
-                  DATE(日時) AS シグナル更新日,
-                  判定,
-                  フォロー高値pct,
-                  最大逆行pct,
-                  リターン終値pct
-                FROM signals_log
-                WHERE DATE(日時) BETWEEN ? AND ?
-                  AND コード IN ({qmarks})
-            """
-            params = [str(start_day.date()), str(last_day.date()), *chunk]
-            return pd.read_sql_query(sql, conn, params=params)
-        dfs = []
-        MAX_VARS = 900
-        for i in range(0, len(codes), MAX_VARS):
-            dfs.append(_fetch_chunk(codes[i:i+MAX_VARS]))
-        df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(columns=["コード","シグナル更新日","判定"])
-        if df.empty: return []
-        def _norm_hit(row):
-            s = str(row.get("判定") or "").strip()
-            if "当たり" in s: return "当たり！"
-            if "外れ" in s:   return "外れ！"
-            try:
-                return "当たり！" if float(row.get("フォロー高値pct") or 0) > 0 else "外れ！"
-            except Exception:
-                return "外れ！"
-        df["判定"] = df.apply(_norm_hit, axis=1)
-        df["シグナル更新日"] = pd.to_datetime(df["シグナル更新日"]).dt.strftime("%Y-%m-%d")
-        hist = df[["コード","シグナル更新日","判定"]].dropna().drop_duplicates()
-        return hist.sort_values(["コード","シグナル更新日"]).to_dict("records")
-    hist_rows = _build_hist_rows()
-
-    # --- 13) 決算データ ---
     try:
-        earnings_rows = load_recent_earnings_from_db(conn, days=45, limit=300)
-    except Exception as e:
-        print(f"[earnings][WARN] failed to load: {e}")
-        earnings_rows = []
-
-    # --- 14) 予測タブ（preearn） ---  ※ conn をそのまま使う
-    _c = conn
-    try:
-        tbl = build_earnings_tables(_c)
-        if isinstance(tbl, tuple): _, pre_df = tbl
-        elif isinstance(tbl, dict): pre_df = tbl.get("pre")
-        else: pre_df = None
-        if pre_df is not None and not pre_df.empty:
-            px = pd.read_sql_query("SELECT コード, 現在値 FROM screener", _c)
-            df = pre_df.merge(px, on="コード", how="left")
-            def _row_apply(r):
-                code = str(r.get("コード") or "")
-                last = float(r.get("現在値") or np.nan)
-                mom  = float(r.get("momentum_score") or 0.0)
-                edge = float(r.get("edge_score") or 0.0)
-                return pd.Series({
-                    "期待株価":   calc_expected_price(_c, code, last, mom, edge),
-                    "修正見通し": classify_revision_bias(edge, mom),
-                    "過熱度":     judge_overheat(_c, code, mom),
-                    "スコア理由": _mk_score_reason(r.to_dict()),
-                    "予測ヒント": _mk_hint(r.to_dict())
-                })
-            extra = df.apply(_row_apply, axis=1)
-            df = pd.concat([df, extra], axis=1)
-            df["スコア理由"] = df["スコア理由"].fillna("根拠薄め（暫定）")
-            df["予測ヒント"] = df["予測ヒント"].fillna("（準備中）")
-            df["修正見通し"] = df["修正見通し"].fillna("中立")
-            df["過熱度"]     = df["過熱度"].fillna("中立")
-            df["期待株価"]   = pd.to_numeric(df["期待株価"], errors="coerce")
-            if "現在値" in df.columns:
-                df.loc[df["期待株価"].isna(), "期待株価"] = pd.to_numeric(df["現在値"], errors="coerce")
-            if "銘柄" not in df.columns:
-                names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", _c)
-                df = df.merge(names, on="コード", how="left")
-                df["銘柄"] = df["銘柄名"].fillna(df["コード"])
-            preearn_rows = [{k: _safe_jsonable(v) for k, v in rec.items()} for rec in df.to_dict("records")]
-        else:
-            preearn_rows = []
-    except Exception as e:
-        print(f"[preearn][WARN] failed to build pre-earnings: {e}")
-        preearn_rows = []
-    if not preearn_rows:
-        try:
-            preearn_rows = _build_preearn_fallback(_c)
-            print(f"[preearn][fallback] generated rows: {len(preearn_rows)}")
-        except Exception as _e:
-            print(f"[preearn][fallback][WARN] {_e}")
-
-    # --- 15) 休日のみEODパイプライン（既存維持） ---  ※ conn をそのまま使う
-    try:
-        import datetime as _dt
-        _today_is_holiday = not _is_jp_business_day(_dt.datetime.now(JST).date())
-        if not _today_is_holiday:
-            raise RuntimeError('skip-eod-overwrite-on-business-day')
-        if 'update_history_from_yq' in globals():
-            def _hist_ref(conn): update_history_from_yq(conn)
-        elif 'phase_yahoo_history_refresh' in globals():
-            def _hist_ref(conn): phase_yahoo_history_refresh(conn)
-        else:
-            _hist_ref = None
-
-        def _scr_from_hist(conn_):
-            cur = conn_.cursor()
-            cur.execute("SELECT コード FROM screener")
-            _codes = [str(r[0]).zfill(4) for r in cur.fetchall()]
-            cur.close()
-            if _codes: _update_screener_from_history(conn_, _codes)
-
-        def _sync_latest(conn_):
-            try: phase_sync_latest_prices(conn_)
-            except Exception: pass
-
-        _conn_pg = conn
-        if _hist_ref is not None:
-            _run_eod_overwrite_pipeline(_hist_ref, _scr_from_hist, _sync_latest, conn=_conn_pg)
-        try: eod_refresh_recent_3days(_conn_pg)
-        except Exception as _e: print('[LightEOD] recent_3days WARN:', _e)
-        try: fallback_fill_today_from_quotes(_conn_pg)
-        except Exception as _e: print('[LightEOD] fallback WARN:', _e)
-        try: gap_patrol_recent_15(_conn_pg)
-        except Exception as _e: print('[LightEOD] gap15 WARN:', _e)
-        if _hist_ref is None:
-            _scr_from_hist(_conn_pg); _sync_latest(_conn_pg)
-    except Exception as _e:
-        print(f"[EOD-overwrite][WARN] {str(_e)}")
-
-    # --- 16) 休日最終オーバーライド（必要なら） ---  ※ conn をそのまま使う
-    try:
-        import datetime as _dt
-        _is_holiday = not _is_jp_business_day(_dt.datetime.now(JST).date())
-        if _is_holiday:
-            _conn_h = conn
-            def _fix_rows(_rows):
-                if not isinstance(_rows, list): return 0
-                n=0
-                for d in _rows:
+        def _to_date(s):
+            if not s: return None
+            s = str(s)[:10]
+            try: return dtm.datetime.strptime(s, "%Y-%m-%d").date()
+            except ValueError: return None
+        if cand_rows:
+            dates = [d for d in (_to_date(r.get("シグナル更新日")) for r in cand_rows) if d]
+            if dates:
+                base = max(dates)
+                def _is_holiday(d):
                     try:
-                        code4 = str(d.get("コード") or "").strip()
-                        if not code4: continue
-                        _apply_price_fields(_conn_h, d, code4, force_eod=True)
-                        n += 1
-                    except Exception as _e:
-                        print(f"[holiday-fix][WARN] row fix failed for {d.get('コード')}: {_e}")
-                return n
-            _n1 = _fix_rows(cand_rows); _n2 = _fix_rows(all_rows)
-            _n3 = _fix_rows(earnings_rows); _n4 = _fix_rows(preearn_rows)
-            print(f"[holiday-fix] applied to cand:{_n1} all:{_n2} earn:{_n3} pre:{_n4}")
-    except Exception as _e:
-        print(f"[holiday-fix][WARN] final override failed: {_e}")
+                        import jpholiday
+                        return (d.weekday() >= 5) or jpholiday.is_holiday(d)
+                    except Exception:
+                        return d.weekday() >= 5
+                def _next_business_day(d):
+                    d = d + dtm.timedelta(days=1)
+                    while _is_holiday(d): d += dtm.timedelta(days=1)
+                    return d
+                meta["base_day"] = base.strftime("%Y-%m-%d")
+                meta["next_business_day"] = _next_business_day(base).strftime("%Y-%m-%d")
+    except Exception:
+        pass
 
-    # --- 17) JSON→テンプレ描画 ---
-    offer_codes = sorted(list(_load_offering_codes_from_db(conn, days=400)))
+    hist_rows = []
+    earnings_rows = []
+    preearn_rows  = []
+
+    # 9) data オブジェクト
     data_obj = {
-        "cand": cand_rows,
-        "all":  all_rows,
-        "logs": log_rows,
-        "hist": hist_rows,
-        "meta": meta,
-        "earnings": earnings_rows,
-        "preearn": preearn_rows,
-        "offer_codes": offer_codes
+        "cand": cand_rows, "all": all_rows, "logs": log_rows,
+        "hist": hist_rows, "meta": meta,
+        "earnings": earnings_rows, "preearn": preearn_rows,
+        "offer_codes": sorted(list(_load_offering_codes_from_db(conn, days=400)))
     }
-    data_json = json.dumps(data_obj, ensure_ascii=False, default=str, separators=(",", ":"))
+    data_json = dumps_json_clean(data_obj)
 
+    # 10) テンプレ描画
     template_dir = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\templates"
     _ensure_template_file(template_dir, overwrite=True)
     env = Environment(loader=FileSystemLoader(template_dir, encoding="utf-8"),
@@ -6142,28 +7872,37 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     env.filters["fmt_cell"] = _fmt_cell
 
     try:
-        _tz = ZoneInfo("Asia/Tokyo")
-        build_id = dtm.datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S")
+        _tz = ZoneInfo("Asia/Tokyo") if ZoneInfo else None
+        build_id = dtm.datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S") if _tz else dtm.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         build_id = dtm.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     tpl = env.get_template("dashboard.html")
     html = tpl.render(
         include_log=include_log,
-        data_json=data_json,
+        data_json=data_json,   # 残っていても無害
         generated_at=build_id,
         build_id=build_id
     )
 
+    # 11) __DATA__ を <body> 直後にインライン注入（+ window.__DATA__）※関数側で両方入れる実装に統一
+    html = __inject_inline_data_json(html, data_obj)
+
+    # 12) 書き出し（PlanA 後処理は存在すれば実行／なければ静かにスキップ）
     os.makedirs(os.path.dirname(html_path), exist_ok=True)
     with open(html_path, "w", encoding="utf-8", newline="") as f:
         f.write(html)
-    print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
+        if '_apply_planA_postprocess' in globals():
+            try:
+                _apply_planA_postprocess(html_path, data_obj)
+            except Exception:
+                pass
 
-# ========== /Template exporter ==========
+    print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
+    _p(f"exit: total dt={( _t.perf_counter()-t0):.2f}s")
+
 
 # ========= 営業利益 
-
 def update_operating_income_and_ratio(conn, batch_size=300, max_workers=12, use_quarterly=False):
     """
     既存カラムに合わせて保存：
@@ -7621,89 +9360,113 @@ def build_earnings_edge_scores(conn, lookback_n=6, follow_days=5, since="2022-01
     各コードの直近N回の“勝率/ギャップ平均/フォロー平均/直近連勝”をオンザフライで算出。
     DBには書き込まない（返り値DFのみ）。
     """
-
-    ev = pd.read_sql_query(f"""
+    ev = pd.read_sql_query(
+        """
         SELECT コード, DATE(提出時刻) AS ev_date
         FROM earnings_events
         WHERE DATE(提出時刻) >= DATE(?)
         ORDER BY コード, 提出時刻 DESC
-    """, conn, params=[since])
+        """,
+        conn, params=[since]
+    )
 
     if ev.empty:
-        return pd.DataFrame(columns=["コード","edge_score"])
+        return pd.DataFrame(columns=["コード", "edge_score"])
 
-    codes = ev["コード"].astype(str).unique().tolist()
-    ph = pd.read_sql_query(f"""
+    # dtype安定化（コードはstring）
+    ev["コード"] = _norm_code_str(ev["コード"])
+    ev["ev_date"] = pd.to_datetime(ev["ev_date"], errors="coerce")
+
+    codes = ev["コード"].dropna().unique().tolist()
+    if not codes:
+        return pd.DataFrame(columns=["コード", "edge_score"])
+
+    ph = pd.read_sql_query(
+        f"""
         SELECT コード, substr(日付,1,10) AS 日付, 始値, 高値, 安値, 終値
         FROM price_history
         WHERE コード IN ({",".join(["?"]*len(codes))})
         ORDER BY コード, 日付
-    """, conn, params=codes)
-
+        """,
+        conn, params=codes
+    )
     if ph.empty:
-        # price_history が無いと計算不可 → エッジ0扱い（空DF）
-        return pd.DataFrame(columns=["コード","edge_score"])
+        return pd.DataFrame(columns=["コード", "edge_score"])
 
+    # dtype安定化
+    ph["コード"] = _norm_code_str(ph["コード"])
     ph["日付"] = pd.to_datetime(ph["日付"], format="%Y-%m-%d", errors="coerce")
-    ev["ev_date"] = pd.to_datetime(ev["ev_date"], errors="coerce")
+    for c in ["始値", "高値", "安値", "終値"]:
+        ph[c] = pd.to_numeric(ph[c], errors="coerce")
 
     outs = []
+    # groupbyキーもstring dtypeで揃っている
     for code, g_ev in ev.groupby("コード", sort=False):
-        g_ph = ph[ph["コード"]==code].dropna(subset=["日付"]).sort_values("日付").reset_index(drop=True)
+        g_ph = ph.loc[s_eq_scalar(ph["コード"], code)].dropna(subset=["日付"]).sort_values("日付").reset_index(drop=True)
         if g_ph.empty:
             continue
-        g_ph["idx"] = range(len(g_ph))
+        g_ph["idx"] = np.arange(len(g_ph), dtype=np.int32)
 
-        # 直近N回のイベントだけ見る
-        g_ev = g_ev.head(max(lookback_n, 6))  # 少し多めに拾っておく
+        # 直近N回＋α
+        g_ev = g_ev.head(max(lookback_n, 6))
         rets, follows, wins = [], [], []
 
         for _, row in g_ev.iterrows():
             d0 = row["ev_date"]
             if pd.isna(d0):
                 continue
-            after = g_ph[g_ph["日付"] > d0]
-            if after.empty:
+            # 事前にboolean mask → idx最小の行を取る（高速）
+            after_mask = g_ph["日付"] > d0
+            if not after_mask.any():
                 continue
-            d1_idx = int(after["idx"].iloc[0])
+            d1_idx = int(g_ph.loc[after_mask, "idx"].iloc[0])
             if d1_idx == 0:
                 continue
             d0_idx = d1_idx - 1
 
-            try:
-                prev_close = float(g_ph.loc[d0_idx, "終値"])
-                next_close = float(g_ph.loc[d1_idx, "終値"])
-            except Exception:
+            prev_close = g_ph.at[d0_idx, "終値"]
+            next_close = g_ph.at[d1_idx, "終値"]
+            if pd.isna(prev_close) or pd.isna(next_close) or prev_close == 0:
                 continue
 
-            ret_close_pct = ((next_close/prev_close) - 1.0) * 100.0
-            hi_window = g_ph.loc[d1_idx : d1_idx + follow_days - 1, "高値"]
-            follow_hi_pct = None if hi_window.empty else ((float(hi_window.max())/next_close) - 1.0) * 100.0
+            prev_close = float(prev_close)
+            next_close = float(next_close)
+
+            ret_close_pct = ((next_close / prev_close) - 1.0) * 100.0
+
+            hi_slice = g_ph.loc[d1_idx: d1_idx + max(1, follow_days) - 1, "高値"]
+            hi_val = None if hi_slice.empty else float(pd.to_numeric(hi_slice, errors="coerce").max())
+            follow_hi_pct = None if (hi_val is None or np.isnan(hi_val) or next_close == 0) else ((hi_val / next_close) - 1.0) * 100.0
 
             rets.append(ret_close_pct)
             follows.append(follow_hi_pct)
-            win = (ret_close_pct is not None and ret_close_pct >= 3.0) or\
+
+            win = (ret_close_pct is not None and ret_close_pct >= 3.0) or \
                   (follow_hi_pct is not None and follow_hi_pct >= 7.0)
             wins.append(1 if win else 0)
 
         if not rets and not follows:
             continue
 
-        # 直近N件に絞ってスコア化
         wins2 = wins[:lookback_n]
         rets2 = [x for x in rets[:lookback_n] if x is not None]
         fol2  = [x for x in follows[:lookback_n] if x is not None]
 
-        win_rate   = (sum(wins2)/len(wins2)) if wins2 else 0.0
-        gap_mean   = (sum(rets2)/len(rets2)) if rets2 else 0.0
-        follow_mean= (sum(fol2)/len(fol2)) if fol2 else 0.0
-        cons       = (sum(wins2[:3])/3.0) if len(wins2)>=3 else (sum(wins2)/max(1,len(wins2)))
+        win_rate    = (sum(wins2) / len(wins2)) if wins2 else 0.0
+        gap_mean    = (sum(rets2) / len(rets2)) if rets2 else 0.0
+        follow_mean = (sum(fol2)  / len(fol2))  if fol2  else 0.0
+        cons        = (sum(wins2[:3]) / 3.0) if len(wins2) >= 3 else (sum(wins2) / max(1, len(wins2)))
 
-        s = (win_rate*60.0) + (max(0.0,gap_mean)/6.0*20.0) + (max(0.0,follow_mean)/10.0*10.0) + (cons*10.0)
+        s = (win_rate * 60.0) + (max(0.0, gap_mean) / 6.0 * 20.0) + (max(0.0, follow_mean) / 10.0 * 10.0) + (cons * 10.0)
         outs.append((code, round(min(100.0, max(0.0, s)), 1)))
 
-    return pd.DataFrame(outs, columns=["コード","edge_score"])
-
+    out_df = pd.DataFrame(outs, columns=["コード", "edge_score"])
+    # 結合先の安定のためdtype固定
+    out_df["コード"] = _norm_code_str(out_df["コード"])
+    out_df["edge_score"] = pd.to_numeric(out_df["edge_score"], errors="coerce").fillna(0.0)
+    return out_df
+    
+    
 def build_pre_earnings_rank(conn: sqlite3.Connection) -> pd.DataFrame:
     """
     “決算前の良さ”を全銘柄にスコアリング：
@@ -7711,67 +9474,108 @@ def build_pre_earnings_rank(conn: sqlite3.Connection) -> pd.DataFrame:
     momentum_score は「右肩上がり/HH近接/出来高増加」から簡易合成（0-100）
     """
     edge = build_earnings_edge_scores(conn)  # コード, edge_score
+    if edge.empty:
+        edge = pd.DataFrame(columns=["コード", "edge_score"])
+    edge["コード"] = _norm_code_str(edge.get("コード", pd.Series([], dtype="string")))
+    edge["edge_score"] = pd.to_numeric(edge.get("edge_score", 0.0), errors="coerce").fillna(0.0)
 
-    # モメンタム側（既存カラムを利用）
-    q = """
-       SELECT コード, 銘柄名, 現在値, 前日終値比率, 出来高, 右肩上がりスコア
-       FROM screener
-    """
-    s = pd.read_sql_query(q, conn)
+    # モメンタム側
+    s = pd.read_sql_query(
+        """
+        SELECT コード, 銘柄名, 現在値, 前日終値比率, 出来高, 右肩上がりスコア
+        FROM screener
+        """,
+        conn
+    )
     if s.empty:
-        s = pd.DataFrame(columns=["コード"])
-    # 高値接近度：直近60日高値比（price_historyから）
-    hi = pd.read_sql_query("""
-      WITH z AS(
-        SELECT コード, MAX(日付) AS d FROM price_history GROUP BY コード
-      )
-      SELECT p.コード, p.終値 AS close, (
-               SELECT MAX(高値) FROM price_history q
-               WHERE q.コード=p.コード AND q.日付 >= date(p.日付, '-60 day')
-             ) AS hh60
-      FROM price_history p
-      JOIN z ON p.コード=z.コード AND p.日付=z.d
-    """, conn)
-    if not hi.empty:
-        hi["near_hh"] = (hi["close"]/hi["hh60"]-1.0)*100.0
-        hi["near_hh_score"] = hi["near_hh"].apply(lambda x: 100.0 if x>=-1.0 else (50.0 if x>=-5.0 else 0.0))
-    else:
-        hi = pd.DataFrame(columns=["コード","near_hh_score"])
+        s = pd.DataFrame(columns=["コード", "銘柄名", "右肩上がりスコア"])
+    s["コード"] = _norm_code_str(s.get("コード", pd.Series([], dtype="string")))
+    s["銘柄名"] = _str_series(s.get("銘柄名", pd.Series([], dtype="string")))
+    s["右肩上がりスコア"] = pd.to_numeric(s.get("右肩上がりスコア", 0), errors="coerce")
 
-    # 出来高ブースト（過去20日移動平均比）
-    vol = pd.read_sql_query("""
-      WITH cur AS(
-        SELECT コード, MAX(日付) d FROM price_history GROUP BY コード
-      ),
-      v AS(
-        SELECT p.コード, p.出来高 AS v0,
-               (SELECT AVG(出来高) FROM price_history q WHERE q.コード=p.コード AND q.日付>=date(p.日付,'-20 day') AND q.日付<p.日付) AS v20
+    # 高値接近度
+    hi = pd.read_sql_query(
+        """
+        WITH z AS(
+          SELECT コード, MAX(日付) AS d FROM price_history GROUP BY コード
+        )
+        SELECT p.コード, p.終値 AS close, (
+                 SELECT MAX(高値) FROM price_history q
+                 WHERE q.コード=p.コード AND q.日付 >= date(p.日付, '-60 day')
+               ) AS hh60
         FROM price_history p
-        JOIN cur ON p.コード=cur.コード AND p.日付=cur.d
-      )
-      SELECT 代码 as コード, v0, v20 FROM (
-        SELECT コード as 代码, v0, v20 FROM v
-      )
-    """, conn)
-    # SQLite互換のため別名経由
-
-    if not vol.empty:
-        vol["boost"] = vol.apply(lambda r: (r["v0"]/max(1.0, r["v20"])) if r["v20"] else 1.0, axis=1)
-        vol["vol_score"] = vol["boost"].apply(lambda x: 100.0 if x>=3.0 else (70.0 if x>=2.0 else (40.0 if x>=1.3 else 0.0)))
+        JOIN z ON p.コード=z.コード AND p.日付=z.d
+        """,
+        conn
+    )
+    if hi.empty:
+        hi = pd.DataFrame(columns=["コード", "near_hh_score"])
     else:
-        vol = pd.DataFrame(columns=["コード","vol_score"])
+        hi["コード"] = _norm_code_str(hi["コード"])
+        hi["close"] = pd.to_numeric(hi["close"], errors="coerce")
+        hi["hh60"]  = pd.to_numeric(hi["hh60"], errors="coerce")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            hi["near_hh"] = (hi["close"] / hi["hh60"] - 1.0) * 100.0
+        hi["near_hh_score"] = hi["near_hh"].apply(
+            lambda x: 100.0 if (pd.notna(x) and x >= -1.0) else (50.0 if (pd.notna(x) and x >= -5.0) else 0.0)
+        )
 
-    # 結合
-    df = s.merge(edge, on="コード", how="left").merge(hi[["コード","near_hh_score"]], on="コード", how="left").merge(vol[["コード","vol_score"]], on="コード", how="left")
-    df["edge_score"] = df["edge_score"].fillna(0.0)
-    # 右肩スコアがあれば優遇
-    df["mom_raw"] = df[["右肩上がりスコア"]].fillna(0.0).clip(lower=0, upper=100).iloc[:,0]*0.6 + df["near_hh_score"].fillna(0.0)*0.25 + df["vol_score"].fillna(0.0)*0.15
-    df["momentum_score"] = df["mom_raw"].clip(0,100)
-    df["pre_score"] = (0.6*df["edge_score"] + 0.4*df["momentum_score"]).round(1)
+    # 出来高ブースト
+    vol = pd.read_sql_query(
+        """
+        WITH cur AS(
+          SELECT コード, MAX(日付) d FROM price_history GROUP BY コード
+        ),
+        v AS(
+          SELECT p.コード, p.出来高 AS v0,
+                 (SELECT AVG(出来高) FROM price_history q
+                  WHERE q.コード=p.コード AND q.日付>=date(p.日付,'-20 day') AND q.日付<p.日付) AS v20
+          FROM price_history p
+          JOIN cur ON p.コード=cur.コード AND p.日付=cur.d
+        )
+        SELECT 代码 as コード, v0, v20 FROM (
+          SELECT コード as 代码, v0, v20 FROM v
+        )
+        """,
+        conn
+    )
+    if vol.empty:
+        vol = pd.DataFrame(columns=["コード", "vol_score"])
+    else:
+        vol["コード"] = _norm_code_str(vol["コード"])
+        vol["v0"] = pd.to_numeric(vol["v0"], errors="coerce")
+        vol["v20"] = pd.to_numeric(vol["v20"], errors="coerce")
+        # v20が0/NaNの時は1.0扱い
+        base = vol["v20"].where(vol["v20"].fillna(0) != 0, 1.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            vol["boost"] = vol["v0"] / base
+        vol["vol_score"] = vol["boost"].apply(
+            lambda x: 100.0 if (pd.notna(x) and x >= 3.0) else
+                      (70.0  if (pd.notna(x) and x >= 2.0) else
+                      (40.0  if (pd.notna(x) and x >= 1.3) else 0.0))
+        )
+
+    # 結合（コード=stringで統一）
+    df = s.merge(edge, on="コード", how="left") \
+          .merge(hi[["コード", "near_hh_score"]], on="コード", how="left") \
+          .merge(vol[["コード", "vol_score"]], on="コード", how="left")
+
+    df["edge_score"] = pd.to_numeric(df.get("edge_score", 0), errors="coerce").fillna(0.0)
+    mom_rightup = pd.to_numeric(df.get("右肩上がりスコア", 0), errors="coerce").fillna(0.0).clip(0, 100)
+    near_hh     = pd.to_numeric(df.get("near_hh_score", 0), errors="coerce").fillna(0.0).clip(0, 100)
+    vol_score   = pd.to_numeric(df.get("vol_score", 0), errors="coerce").fillna(0.0).clip(0, 100)
+
+    df["momentum_score"] = (mom_rightup * 0.6 + near_hh * 0.25 + vol_score * 0.15).clip(0, 100)
+    df["pre_score"] = (0.6 * df["edge_score"] + 0.4 * df["momentum_score"]).round(1)
+
+    # 表示用列の型
+    df["銘柄名"] = _str_series(df.get("銘柄名", pd.Series([], dtype="string")))
     df = df.sort_values(["pre_score"], ascending=False)
-    print("pre_earn sample:", df.head(5).to_dict(orient="records"))
-    cols = ["コード","銘柄名","pre_score","edge_score","momentum_score"]
-    df = df
+
+    # printサンプル（必要なら残す）
+    print("pre_earn sample:", df[["コード", "銘柄名", "pre_score"]].head(5).to_dict(orient="records"))
+
+    cols = ["コード", "銘柄名", "pre_score", "edge_score", "momentum_score"]
     return df[cols]
 
 def yj_board(code: str, name: str):
@@ -7821,41 +9625,39 @@ def _build_preearn_fallback(conn):
     # JSON化で NaN を弾く
     return [{k: (None if (isinstance(v, float) and (v != v)) else v) for k, v in r.items()}
             for r in out.to_dict("records")]
+            
 def build_earnings_tables(conn):
     """
     実績(直近1日) と 予測ランキング を返す (ev_df, pre_df)
     """
-
-    # ========== 実績（列の存在を動的に確認してSELECT） ==========
-    # 1) 実テーブルの列名を取得
+    # ========== 実績：存在列のみSELECT ==========
     cols_df = pd.read_sql_query("PRAGMA table_info(earnings_events)", conn)
-    have = set(cols_df["name"].astype(str))
+    have = set(_str_series(cols_df["name"]))
+    base_cols = ["コード", "提出時刻", "タイトル", "センチメント"]
+    opt_cols  = ["ヒットKW"]
+    sel_cols  = [c for c in base_cols + opt_cols if c in have]
 
-    base_cols = ["コード", "提出時刻", "タイトル", "センチメント"]  # 必須候補
-    opt_cols  = ["ヒットKW"]                                        # あれば使う
-    sel_cols  = [c for c in base_cols + opt_cols if c in have]      # 実在列だけ
-
-    # 2) SQLを実在列だけで作成
-    ev_sql = f"""
-      SELECT {", ".join("e."+c for c in sel_cols)}
-      FROM earnings_events e
-      WHERE e.提出時刻 >= datetime(date('now','-1 day') || ' 00:00:00')
-      ORDER BY e.提出時刻 DESC
-    """
-    ev_df = pd.read_sql_query(ev_sql, conn) if sel_cols else pd.DataFrame()
-    ev_df = ev_df
+    if sel_cols:
+        ev_sql = f"""
+          SELECT {", ".join("e."+c for c in sel_cols)}
+          FROM earnings_events e
+          WHERE e.提出時刻 >= datetime(date('now','-1 day') || ' 00:00:00')
+          ORDER BY e.提出時刻 DESC
+        """
+        ev_df = pd.read_sql_query(ev_sql, conn)
+    else:
+        ev_df = pd.DataFrame()
 
     if not ev_df.empty:
+        ev_df["コード"] = _norm_code_str(ev_df["コード"])
         names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", conn)
-        names = names
-        ev_df = ev_df
+        if not names.empty:
+            names["コード"] = _norm_code_str(names["コード"])
         ev_df = ev_df.merge(names, on="コード", how="left")
 
-        # 時刻整形（失敗時は元の値）
         ts = pd.to_datetime(ev_df.get("提出時刻"), errors="coerce")
-        ev_df["時刻"] = ts.dt.strftime("%Y/%m/%d %H:%M").fillna(ev_df.get("提出時刻", "").astype(str))
+        ev_df["時刻"] = ts.dt.strftime("%Y/%m/%d %H:%M").fillna(_str_series(ev_df.get("提出時刻", "")))
 
-        # 銘柄リンク（yj_board 未定義でも落ちない）
         def _mk_name(code, name):
             label = name if (isinstance(name, str) and name) else str(code)
             try:
@@ -7870,14 +9672,13 @@ def build_earnings_tables(conn):
 
     # ========== 予測 ==========
     pre_df = build_pre_earnings_rank(conn)
-    pre_df = pre_df
 
     if not pre_df.empty:
-        # 銘柄名が無ければ付与
-        if "銘柄名" not in pre_df.columns:
+        pre_df["コード"] = _norm_code_str(pre_df["コード"])
+        if "銘柄名" not in pre_df.columns or pre_df["銘柄名"].isna().any():
             names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", conn)
-            names = names
-            pre_df = pre_df
+            if not names.empty:
+                names["コード"] = _norm_code_str(names["コード"])
             pre_df = pre_df.merge(names, on="コード", how="left")
 
         def _mk_name2(code, name):
@@ -7891,10 +9692,10 @@ def build_earnings_tables(conn):
         pre_df = pre_df[["銘柄", "pre_score", "edge_score", "momentum_score"]].head(200)
     else:
         pre_df = pd.DataFrame(columns=["銘柄", "pre_score", "edge_score", "momentum_score"])
-    
+
     print("[dbg] ev/pre rows:", len(ev_df), len(pre_df))
     return ev_df, pre_df
-
+    
 # ===================== （決算リスト） =====================
 
 def _guess_sentiment_by_title(title: str) -> str:
@@ -7932,29 +9733,49 @@ def _normalize_sec_code(sec: str) -> str | None:
         return s.zfill(4)
     return None
 
-def _yahoo_quote_url(code4: str) -> str:
-    # 掲示板まで飛ばすなら "/bbs" を末尾に付ける（Yahoo側の仕様変更に注意）
-    return f"https://finance.yahoo.co.jp/quote/{code4}.T/bbs"
-
-def _x_search_url(code4: str) -> str:
-    # ハッシュタグ #コード で検索
-    return f"https://x.com/search?q=%23{code4}"
-
-# ================= 安全版：直近決算読み込み（完全置き換え） =================
-
-# ===== TDnet決算(earnings)の直近N日をDBから読む =====
-
-# ===== TDnet決算(earnings)の直近N日をDBから読む =====
-def load_recent_earnings_from_db(db_or_conn, days: int = 7, limit: int = 300):
+import sqlite3
+def _yahoo_quote_url(code: str, market: str | None = None, conn: sqlite3.Connection | None = None) -> str:
     """
-    earnings_events を“日本語カラムのみ”で読む。
-    - 第一引数は sqlite3.Connection でも DBパス(str) でも可（後方互換）
-    - 共有接続は閉じない。パスから開いた場合のみ close する
+    Yahoo!ファイナンス（日本）の銘柄ページURLを安全に生成する（クリーン実装）
+    - 1引数呼び出し: _yahoo_quote_url('3350')
+    - 3引数呼び出し: _yahoo_quote_url('3350', '東P', conn)
+    どちらも受け付け、常に "https://finance.yahoo.co.jp/quote/XXXX.SUF" を返す。
+    優先度: 明示 market で推定 → resolve_yahoo_symbol() からサフィックス推定 → '.T' フォールバック
     """
-    import sqlite3, datetime as _dt
-    from zoneinfo import ZoneInfo
+    try:
+        raw = ("" if code is None else str(code)).strip()
+        if not raw:
+            return ""
+        c4 = raw.zfill(4) if raw.isdigit() else raw
 
-    # conn の判定（後方互換：パスでもOK）
+        # 市場からサフィックス推定
+        def _suffix_from_market(m: str | None) -> str | None:
+            if not m: 
+                return None
+            m = str(m)
+            if "名" in m or "NSE" in m or "名証" in m or "NAGOYA" in m: return ".N"
+            if "札" in m or "SSE" in m or "札証" in m or "SAPPORO" in m: return ".S"
+            if "福" in m or "FSE" in m or "福証" in m or "FUKUOKA" in m: return ".F"
+            if "東" in m or "TSE" in m or "東証" in m or "TOKYO" in m: return ".T"
+            return None
+
+        suf = _suffix_from_market(market)
+
+        # 明示市場が無い/判定できないときは resolve_yahoo_symbol の結果から推定
+        if not suf:
+            try:
+                ys = resolve_yahoo_symbol(raw, conn)  # may raise if not defined
+                if isinstance(ys, str) and "." in ys:
+                    suf = ys[ys.find("."):]
+            except Exception:
+                suf = None
+
+        if not suf:
+            suf = ".T"  # 最終フォールバック（東証）
+
+        return f"https://finance.yahoo.co.jp/quote/{c4}{suf}"
+    except Exception:
+        return ""    # conn の判定（後方互換：パスでもOK）
     owns_conn = False
     if isinstance(db_or_conn, sqlite3.Connection):
         conn = db_or_conn
@@ -8579,7 +10400,7 @@ def phase_sync_finance_comments(conn):
             """)
 
         conn.commit()
-        print("[sync] screener ⇐ finance_notes 同期完了")
+        print("[sync] screener <- finance_notes 同期完了")
 
     except Exception as e:
         conn.rollback()
@@ -8597,6 +10418,26 @@ def _run_charts60(py_path: str):
     subprocess.run(["python", str(py)], check=True)
     
 
+
+def _fmt_hms(sec: float) -> str:
+    """秒 → 'H時間M分S秒' 表記（Hが0でも0分を明示）"""
+    try:
+        total = int(round(sec))
+    except Exception:
+        try:
+            total = int(sec)
+        except Exception:
+            total = 0
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h > 0:
+        parts.append(f"{h}時間")
+    parts.append(f"{m}分")
+    parts.append(f"{s}秒")
+    return "".join(parts)
+
+
 def _timed(label, func, *args, **kwargs):
     """関数の処理時間を計測してログ出力するラッパー"""
     t0 = time.time()
@@ -8604,7 +10445,7 @@ def _timed(label, func, *args, **kwargs):
         return func(*args, **kwargs)
     finally:
         dt = time.time() - t0
-        print(f"[TIMER] {label}: {dt:.2f} 秒")
+        print(f"[TIMER] {label}: {_fmt_hms(dt)}")
         
 
 # ===== 実行モード判定ユーティリティ =====
@@ -8837,7 +10678,7 @@ def main():
         # ← ここでの wait/stop/close はやらない（エントリポイントで1回だけ実行）
         pass
 
-    print(f"実行時間： {time.time() - t0:.2f}s")
+    print(f"実行時間： {_fmt_hms(time.time() - t0)}")
     print("=== 終了 ===")
 
 
@@ -8888,7 +10729,7 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
         total = 0
         for i in range(0, len(codes), batch_size):
             chunk = codes[i:i+batch_size]
-            tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
+            tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
             
             try:
                 df_wide = yf.download(list(tickers_map.values()), period="10d", interval="1d",
@@ -9067,7 +10908,7 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
     total = 0
     for i in range(0, len(codes), batch_size):
         chunk = codes[i:i+batch_size]
-        tickers_map = {c: resolve_yahoo_symbol(str(c), conn) for c in chunk}
+        tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         try:
             df_wide = yf.download(list(tickers_map.values()), period="30d", interval="1d",
                                   group_by="ticker", threads=True, auto_adjust=False)
@@ -9236,7 +11077,50 @@ def wait_writes():
 #     print("[writer][WARN] failed to start at import:", _e)
 
 
+
+# ==== [INJECTED:LATE_WRAP] Ensure profiling & heartbeat coverage after all definitions ====
+try:
+    __late_wrap_targets = (
+        # daily / scheduler
+        "run_fundamental_daily", "phase_csv_import", "phase_delist_cleanup",
+        "phase_mark_karauri_nashi", "yahoo_bulk_refresh",
+        "refresh_full_history_for_insufficient",
+        "compute_right_up_persistent", "compute_right_up_early_triggers",
+        "update_market_cap_all", "update_operating_income_and_ratio",
+        "validate_prev_business_day",
+        # core
+        "phase_sync_finance_comments", "phase_merge_latest_prices",
+        "phase_make_screener", "history_refresher",
+        "screener_from_history", "sync_latest_prices",
+        # resistance / chart60
+        "resistance_update", "update_resistance", "make_charts60_flags",
+        "phase_export_html_dashboard_offline", "export_html_dashboard",
+        # utilities possibly heavy
+        "derive_update", "signal_detection", "update_since_dates",
+        "relax_rejudge_signals",
+        # entrypoint
+        "main",
+    )
+    for __fname in __late_wrap_targets:
+        try:
+            _try_profile_wrap(__fname)
+        except Exception:
+            pass
+except Exception:
+    pass
+# ==== [/INJECTED:LATE_WRAP] ====
+
+# ==== [INJECTED:MAIN_PHASE] Set phase before entering main via __main__ ====
+try:
+    __has_main_guard = True
+except Exception:
+    __has_main_guard = False
+# ==== [/INJECTED:MAIN_PHASE] ====
 if __name__ == "__main__":
+    try:
+        set_heartbeat_phase("entrypoint:before_main")
+    except Exception:
+        pass
     try:
         main()
     finally:
@@ -9255,3 +11139,363 @@ if __name__ == "__main__":
             _close_db_conn_safely()
         except Exception as _e:
             print("[db][WARN] _close_db_conn_safely:", _e)
+
+# ==== APPENDED PRE-EARNINGS FIX (TOP-LEVEL) ====
+
+def _norm_code_str(code: object) -> str:
+    import re as _re
+    s = str(code).strip().upper()
+    for suf in (".T", "-T", ".JP", "-JP"):
+        if s.endswith(suf):
+            s = s[:-len(suf)]
+    s = _re.sub(r"[^0-9]", "", s)
+    if not s:
+        return ""
+    if len(s) < 4:
+        s = s.zfill(4)
+    return s
+
+def _sanitize_codes(df: pd.DataFrame, col: str = "コード") -> pd.DataFrame:
+    if col not in df.columns:
+        # 形だけ返す（空）
+        return pd.DataFrame(columns=[col])
+    out = df.copy()
+    out[col] = out[col].astype(object).map(_norm_code_str)
+    out = out[out[col] != ""]
+    return out
+
+
+def build_pre_earnings_rank(conn: sqlite3.Connection) -> pd.DataFrame:
+    """
+    “決算前の良さ”を全銘柄にスコアリング：
+    事前スコア = 0.6*edge_score + 0.4*momentum_score
+    momentum_score は「右肩上がり/HH近接/出来高増加」から簡易合成（0-100）
+    """
+    edge = build_earnings_edge_scores(conn)  # ["コード","edge_score"]
+    edge = _sanitize_codes(edge, "コード")
+
+    s = pd.read_sql_query(
+        "SELECT コード, 銘柄名, 現在値, 前日終値比率, 出来高, 右肩上がりスコア FROM screener",
+        conn
+    )
+    s = _sanitize_codes(s, "コード").drop_duplicates(subset=["コード"], keep="last")
+
+    hi = pd.read_sql_query("""
+      WITH z AS(
+        SELECT コード, MAX(日付) AS d FROM price_history GROUP BY コード
+      )
+      SELECT p.コード, p.終値 AS close,
+             (SELECT MAX(高値) FROM price_history q
+              WHERE q.コード=p.コード AND q.日付 >= date(p.日付,'-60 day')) AS hh60
+      FROM price_history p
+      JOIN z ON p.コード=z.コード AND p.日付=z.d
+    """, conn)
+
+    if not hi.empty:
+        hi = _sanitize_codes(hi, "コード")
+        # 0除算回避
+        hi["hh60"] = hi["hh60"].replace({0: np.nan})
+        hi["near_hh"] = (hi["close"] / hi["hh60"] - 1.0) * 100.0
+        hi["near_hh_score"] = np.select(
+            [hi["near_hh"] >= -1.0, hi["near_hh"] >= -5.0],
+            [100.0, 50.0],
+            default=0.0
+        )
+        hi = hi[["コード","near_hh_score"]]
+    else:
+        hi = pd.DataFrame(columns=["コード","near_hh_score"])
+
+    vol = pd.read_sql_query("""
+      WITH cur AS(
+        SELECT コード, MAX(日付) d FROM price_history GROUP BY コード
+      ),
+      v AS(
+        SELECT p.コード,
+               p.出来高 AS v0,
+               (SELECT AVG(出来高) FROM price_history q
+                WHERE q.コード=p.コード AND q.日付>=date(p.日付,'-20 day') AND q.日付<p.日付) AS v20
+        FROM price_history p
+        JOIN cur ON p.コード=cur.コード AND p.日付=cur.d
+      )
+      SELECT コード, v0, v20 FROM v
+    """, conn)
+
+    if not vol.empty:
+        vol = _sanitize_codes(vol, "コード")
+        vol["boost"] = vol.apply(lambda r: (r["v0"] / max(1.0, r["v20"])) if r["v20"] else 1.0, axis=1)
+        vol["vol_score"] = np.select(
+            [vol["boost"] >= 3.0, vol["boost"] >= 2.0, vol["boost"] >= 1.3],
+            [100.0, 70.0, 40.0],
+            default=0.0
+        )
+        vol = vol[["コード","vol_score"]]
+    else:
+        vol = pd.DataFrame(columns=["コード","vol_score"])
+
+    df = s.merge(edge, on="コード", how="left")           .merge(hi,   on="コード", how="left")           .merge(vol,  on="コード", how="left")
+
+    df["edge_score"] = df["edge_score"].fillna(0.0)
+    df["右肩上がりスコア"] = df["右肩上がりスコア"].fillna(0.0).clip(0, 100)
+    df["near_hh_score"]  = df["near_hh_score"].fillna(0.0).clip(0, 100)
+    df["vol_score"]      = df["vol_score"].fillna(0.0).clip(0, 100)
+
+    df["momentum_score"] = (df["右肩上がりスコア"] * 0.6 +
+                            df["near_hh_score"]  * 0.25 +
+                            df["vol_score"]      * 0.15).clip(0, 100)
+
+    df["pre_score"] = (0.6 * df["edge_score"] + 0.4 * df["momentum_score"]).round(1)
+
+    out_cols = ["コード","銘柄名","pre_score","edge_score","momentum_score"]
+    if not set(out_cols).issubset(df.columns):
+        missing = [c for c in out_cols if c not in df.columns]
+        print(f"[preearn][WARN] missing columns {missing}, available={list(df.columns)[:10]}...")
+        df = pd.DataFrame(columns=out_cols)
+
+    df = df[out_cols].dropna(subset=["コード"])
+    df = _sanitize_codes(df, "コード").drop_duplicates(subset=["コード"], keep="last")
+    df = df.sort_values(["pre_score","edge_score","momentum_score"], ascending=False)
+
+    bad_mask = df["コード"].str.len() > 8
+    if bad_mask.any():
+        cnt = int(bad_mask.sum())
+        sample_bad = df.loc[bad_mask, ["コード"]].head(3).to_dict(orient="records")
+        print(f"[preearn][SANITY][WARN] invalid code length rows={cnt} sample={sample_bad}")
+        df = df.loc[~bad_mask]
+
+    print("pre_earn sample:", df.head(5).to_dict(orient="records"))
+    return df
+
+
+def build_earnings_tables(conn):
+    """
+    実績(直近1日) と 予測ランキング を返す (ev_df, pre_df)
+    """
+    cols_df = pd.read_sql_query("PRAGMA table_info(earnings_events)", conn)
+    have = set(cols_df["name"].astype(str))
+    base_cols = ["コード", "提出時刻", "タイトル", "センチメント"]
+    opt_cols  = ["ヒットKW"]
+    sel_cols  = [c for c in base_cols + opt_cols if c in have]
+    if sel_cols:
+        ev_sql = f"""
+          SELECT {", ".join("e."+c for c in sel_cols)}
+          FROM earnings_events e
+          WHERE e.提出時刻 >= datetime(date('now','-1 day') || ' 00:00:00')
+          ORDER BY e.提出時刻 DESC
+        """
+        ev_df = pd.read_sql_query(ev_sql, conn)
+    else:
+        ev_df = pd.DataFrame()
+
+    if not ev_df.empty:
+        ev_df = _sanitize_codes(ev_df, "コード")
+        names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", conn)
+        names = _sanitize_codes(names, "コード")
+        ev_df = ev_df.merge(names, on="コード", how="left")
+        ts = pd.to_datetime(ev_df.get("提出時刻"), errors="coerce")
+        ev_df["時刻"] = ts.dt.strftime("%Y/%m/%d %H:%M").fillna(ev_df.get("提出時刻", "").astype(str))
+        def _mk_name(code, name):
+            label = name if (isinstance(name, str) and name) else str(code)
+            try:
+                return yj_board(code, label)
+            except Exception:
+                return label
+        ev_df["銘柄"] = [_mk_name(c, n) for c, n in zip(ev_df["コード"], ev_df.get("銘柄名", ""))]
+        ev_df = ev_df[["銘柄", "センチメント", "タイトル", "時刻"]]
+    else:
+        ev_df = pd.DataFrame(columns=["銘柄", "センチメント", "タイトル", "時刻"])
+
+    pre_df = build_pre_earnings_rank(conn)
+    if not pre_df.empty:
+        pre_df = _sanitize_codes(pre_df, "コード")
+        if "銘柄名" not in pre_df.columns:
+            names = pd.read_sql_query("SELECT コード, 銘柄名 FROM screener", conn)
+            names = _sanitize_codes(names, "コード")
+            pre_df = pre_df.merge(names, on="コード", how="left")
+        def _mk_name2(code, name):
+            label = name if (isinstance(name, str) and name) else str(code)
+            try:
+                return yj_board(code, label)
+            except Exception:
+                return label
+        pre_df["銘柄"] = [_mk_name2(c, n) for c, n in zip(pre_df["コード"], pre_df.get("銘柄名", ""))]
+        pre_df = pre_df[["銘柄", "pre_score", "edge_score", "momentum_score"]].head(200)
+    else:
+        pre_df = pd.DataFrame(columns=["銘柄", "pre_score", "edge_score", "momentum_score"])
+
+    print("[dbg] ev/pre rows:", len(ev_df), len(pre_df))
+    return ev_df, pre_df
+
+# ==== END FIX ====
+
+
+# ==== [INJECTED: Per-line tracer REAPPLY at tail] ====
+# export func range: 6622-6727
+def _install_tail_line_tracer(func_name="phase_export_html_dashboard_offline",
+                              start_line=6622,
+                              end_line=6727):
+    import sys, threading, linecache
+    this_file = __file__
+    def _trace(frame, event, arg):
+        if event == "line" and threading.current_thread() is threading.main_thread():
+            try:
+                if frame.f_code.co_filename == this_file:
+                    ln = frame.f_lineno
+                    if (start_line is None or ln >= start_line) and (end_line is None or ln <= end_line):
+                        src_line = (linecache.getline(this_file, ln) or "").rstrip("\n")
+                        if len(src_line) > 140:
+                            src_line = src_line[:100] + " ... " + src_line[-30:]
+                        print(f"[export][LINE] {ln}: {src_line}", flush=True)
+                        try:
+                            globals()['_HB_PHASE'] = f"{func_name}:L{ln}"
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        return _trace
+    g = globals()
+    if func_name in g and callable(g[func_name]):
+        orig = g[func_name]
+        def _wrapped(*a, **kw):
+            old = sys.gettrace()
+            try:
+                print(f"[export][TRACE] enabled for {func_name} (tail) if VERBOSE else None", flush=True)
+            except Exception:
+                pass
+            sys.settrace(_trace)
+            try:
+                return orig(*a, **kw)
+            finally:
+                sys.settrace(old)
+                try:
+                    print(f"[export][TRACE] disabled for {func_name} (tail) if VERBOSE else None", flush=True)
+                except Exception:
+                    pass
+        g[func_name] = _wrapped
+
+try:
+    _install_tail_line_tracer("phase_export_html_dashboard_offline")
+except Exception:
+    pass
+try:
+    _install_tail_line_tracer("phase_export_html")
+except Exception:
+    pass
+# ==== [/INJECTED: Per-line tracer REAPPLY at tail] ====
+
+
+# ==== [BULK PRICE SUMMARIES] ============================================
+def preload_price_summaries(conn, codes, window_days=220):
+    """対象コードの直近 ~220日を一括で読み、最終/前日と MA5/25/75 をまとめて計算"""
+    if not codes:
+        return {}
+    codes = [str(c).zfill(4) for c in codes]
+
+    import datetime as _dt
+    start_date = (_dt.date.today() - _dt.timedelta(days=220)).isoformat()
+    out = {}
+    CH = 700
+
+    for i in range(0, len(codes), CH):
+        part = codes[i:i+CH]
+        ph = ",".join(["?"]*len(part))
+        sql = f"""
+            SELECT コード, 日付, 終値, 高値, 安値
+            FROM price_history
+            WHERE CAST(コード AS TEXT) IN ({ph})
+              AND 日付 >= ?
+            ORDER BY コード, 日付
+        """
+        try:
+            dfp = pd.read_sql_query(sql, conn, params=[*part, start_date], parse_dates=["日付"])
+        except Exception as _e:
+            print(f"[bulkprice][WARN] read_sql failed for chunk {i//CH}: {_e}")
+            dfp = pd.DataFrame(columns=["コード","日付","終値","高値","安値"])
+
+        if dfp.empty:
+            continue
+        for c in ("終値","高値","安値"):
+            if c in dfp.columns:
+                dfp[c] = pd.to_numeric(dfp[c], errors="coerce")
+
+        for code, g in dfp.groupby("コード", sort=False):
+            g = g.sort_values("日付")
+            close = g["終値"]
+            ma5  = close.rolling(5,  min_periods=1).mean().iloc[-1] if not close.empty else None
+            ma25 = close.rolling(25, min_periods=1).mean().iloc[-1] if not close.empty else None
+            ma75 = close.rolling(75, min_periods=1).mean().iloc[-1] if not close.empty else None
+
+            last = g.iloc[-1] if len(g) > 0 else None
+            prev = g.iloc[-2] if len(g) > 1 else None
+            out[str(code).zfill(4)] = {
+                "last_date": None if last is None else str(last["日付"].date()),
+                "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
+                "last_high":  None if last is None or pd.isna(last["高値"]) else float(last["高値"]),
+                "last_low":   None if last is None or pd.isna(last["安値"]) else float(last["安値"]),
+                "prev_date":  None if prev is None else str(prev["日付"].date()),
+                "prev_close": None if prev is None or pd.isna(prev["終値"]) else float(prev["終値"]),
+                "ma5":  None if pd.isna(ma5)  else float(ma5),
+                "ma25": None if pd.isna(ma25) else float(ma25),
+                "ma75": None if pd.isna(ma75) else float(ma75),
+            }
+    return out
+
+def enrich_rows_with_price_summary(rows, summary_map):
+    if not rows:
+        return rows
+    for r in rows:
+        c4 = str(r.get("コード") or "").zfill(4)
+        s = summary_map.get(c4) or {}
+        if s:
+            r["高値"]  = "" if s.get("last_high")  is None else f"{s['last_high']:,.0f}"
+            r["安値"]  = "" if s.get("last_low")   is None else f"{s['last_low']:,.0f}"
+            r["MA5"]   = "" if s.get("ma5")        is None else f"{s['ma5']:,.0f}"
+            r["5日"]   = r.get("MA5","")
+            r["MA25"]  = "" if s.get("ma25")       is None else f"{s['ma25']:,.0f}"
+            r["25日"]  = r.get("MA25","")
+            r["MA75"]  = "" if s.get("ma75")       is None else f"{s['ma75']:,.0f}"
+            r["75日"]  = r.get("MA75","")
+    return rows
+# ==== [/BULK PRICE SUMMARIES] ===========================================
+
+# ===== Single-File Plan A postprocess helpers (keep UI, inline DATA, kill only data.js) =====
+def _apply_planA_postprocess(html_path, data_obj):
+    try:
+        with open(html_path, "r", encoding="utf-8") as _rf:
+            _html = _rf.read()
+        _html2 = _singlefile_planA_transform(_html, data_obj)
+        if _html2 != _html:
+            with open(html_path, "w", encoding="utf-8", newline="") as _wf:
+                _wf.write(_html2)
+            print("[singlefile][PlanA] postprocess applied")
+        else:
+            print("[singlefile][PlanA] no changes made")
+    except Exception as _e:
+        print("[singlefile][PlanA][ERROR]", _e)
+
+import re as _re, json as _json, html as _html_mod
+
+def _singlefile_planA_transform(html_str, data_obj):
+    # 1) Neutralize only data.js script tags
+    def _kill_data_js(m):
+        s = m.group(0)
+        return '<!-- __neutralized_data_js__ ' + _html_mod.escape(s) + ' -->'
+    html_str = _re.sub(
+        r'<script[^>]+src=["\\\']([^"\\\']*data\\.js[^"\\\']*)["\\\'][^>]*>\\s*</script>',
+        _kill_data_js, html_str, flags=_re.I
+    )
+    # 2) Inject __DATA__ inline (after </nav> if exists, otherwise after <body>)
+    try:
+        data_json = _json.dumps(data_obj, ensure_ascii=False, separators=(",",":"))
+    except Exception:
+        # Fallback: try dict(...) if it's a pandas-friendly thing
+        try:
+            data_json = _json.dumps(dict(data_obj), ensure_ascii=False, separators=(",",":"))
+        except Exception:
+            data_json = "{}"
+    data_script = '<script id="data_inline">window.__DATA__='+data_json+';</script>'
+    if '</nav>' in html_str:
+        html_str = html_str.replace('</nav>', '</nav>\\n'+data_script, 1)
+    else:
+        html_str = _re.sub(r'<body([^>]*)>', r'<body\\1>\\n'+data_script, html_str, count=1, flags=_re.I)
+    return html_str
+# ===== End Plan A helpers =====
