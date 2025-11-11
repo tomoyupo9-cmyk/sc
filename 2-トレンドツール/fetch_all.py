@@ -1922,7 +1922,7 @@ def main():
 
     # ---- 決算（TDnet）----
     try:
-        earn_days = span_days(90) if since_dt else 14  # 既存挙動：初回は14日、増分時は最大90日まで動的
+        earn_days = span_days(4) if since_dt else 14  # 既存挙動：初回は14日、増分時は最大90日まで動的
         tdnet_items = fetch_earnings_tdnet_only(days=earn_days, per_day_limit=300)
         print(f"[earnings] raw tdnet items = {len(tdnet_items)}")
 
@@ -1946,7 +1946,7 @@ def main():
 
         if not earnings_rows:
             print("[earnings][fallback] 直近7日で再取得します…")
-            tdnet_items_fallback = fetch_earnings_tdnet_only(days=30, per_day_limit=300)
+            tdnet_items_fallback = fetch_earnings_tdnet_only(days=5, per_day_limit=300)
             print(f"[earnings][fallback] raw items = {len(tdnet_items_fallback)}")
             if since_dt:
                 tdnet_items_fallback = [it for it in tdnet_items_fallback if (_tdnet_item_pub_dt(it) or now_jst) > since_dt]
@@ -1967,7 +1967,7 @@ def main():
     # ---- 増資レーン ----
     offer_items = []
     try:
-        offer_days = span_days(30) if since_dt else 3
+        offer_days = span_days(4) if since_dt else 3
         offer_items = fetch_tdnet_by_keywords(days=offer_days, keywords=OFFERING_KW, per_day_limit=300)
         print(f"[offerings] raw tdnet items (by KW) = {len(offer_items)}")
         if since_dt:
@@ -1980,7 +1980,7 @@ def main():
     # ---- ★TOBレーン（TDNET）----
     tob_rows = []
     try:
-        tob_days = span_days(30) if since_dt else 3
+        tob_days = span_days(4) if since_dt else 3
         tob_src = fetch_tdnet_tob(days=tob_days, per_day_limit=300)
         if since_dt:
             b = len(tob_src)
