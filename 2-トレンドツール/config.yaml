@@ -58,7 +58,8 @@ bbs:
 #  感情分析（sentiment）
 # =========================================
 sentiment:
-  model: "daigo/bert-base-japanese-sentiment"
+  #model: "daigo/bert-base-japanese-sentiment"
+  model: "koheiduck/bert-japanese-finetuned-sentiment"
   threshold:
     news: 0.65
     bbs: 0.70

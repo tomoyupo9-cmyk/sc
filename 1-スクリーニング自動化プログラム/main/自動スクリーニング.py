@@ -95,6 +95,8 @@ import os
 import re
 import sqlite3
 import threading
+import sys as _sys
+
 
 # === JSON sanitize helpers (NaN/Infinity -> None) ===
 import math as _math, json as _json
@@ -142,16 +144,19 @@ class _ExportWatchdog:
             t = 0
             while not self._stop:
                 try:
-                    print(f"[export][HB] step={globals() if VERBOSE else None.get('_EXPORT_STEP','?')} t={t}s", flush=True)
-                    # also update heartbeat phase to include step (cheap)
+                    step = globals().get('_EXPORT_STEP', '?')
+                    if VERBOSE:
+                        print(f"[export][HB] step={step} t={t}s", flush=True)
+                    # Heartbeat phase 更新（あってもなくてもよい）
                     try:
-                        globals()['_HB_PHASE'] = f"{self.phase}:{globals().get('_EXPORT_STEP','?')}"
+                        globals()['_HB_PHASE'] = f"{self.phase}:{step}"
                     except Exception:
                         pass
                 except Exception:
                     pass
                 _t.sleep(self.interval)
                 t += self.interval
+
         self._thr = threading.Thread(target=_loop, daemon=True)
         self._thr.start()
         return self
@@ -885,17 +890,54 @@ def resolve_yahoo_symbol(code: str,
         return s  # 元の表記で返す（大文字化しない）
 
     # 2-2) 4桁の純数字
+    # 2-2) 4桁の純数字
     if len(S) == 4 and S.isdigit():
+        # screener から市場情報を拾う（あれば）
+        market = None
+        if conn is not None:
+            try:
+                row = conn.execute(
+                    "SELECT 市場 FROM screener WHERE コード=? LIMIT 1",
+                    (s,)
+                ).fetchone()
+                market = row[0] if row else None
+            except Exception:
+                market = None
+
+        # 市場＋override を使ってサフィックス決定
+        # （他の処理と同じく _resolve_yahoo_suffix / _market_to_yahoo_suffix を使う）
+        suffix = ".T"
+        try:
+            # _resolve_yahoo_suffix は内部で override テーブルも見てくれる
+            suffix = _resolve_yahoo_suffix(s, market)
+        except Exception:
+            try:
+                suffix = _market_to_yahoo_suffix(market)
+            except Exception:
+                suffix = ".T"
+
+        symbol_default = s + suffix   # 例: 1449 + ".S" → "1449.S"
+
         if try_online:
             try:
                 import yfinance as _yf
-                for cand in (s + ".T", s):
-                    _df = _yf.download(cand, period="5d", interval="1d", progress=False, threads=False)
+                # 優先: 市場ベースの symbol_default → フォールバック: ".T" / 生
+                for cand in (symbol_default, s + ".T", s):
+                    _df = _yf.download(
+                        cand,
+                        period="5d",
+                        interval="1d",
+                        progress=False,
+                        threads=False,
+                    )
                     if _df is not None and not _df.empty:
                         return cand
             except Exception:
                 pass
-        return s + ".T"
+
+        # オフライン or 取れなかった場合は市場ベースのシンボルを返す
+        return symbol_default
+
 
     # 2-3) 3桁数字+英字 or 4桁英数字ミックス
     pat_3d1a    = re.compile(r"^\d{3}[A-Z]$")   # 例: 130A
@@ -937,6 +979,41 @@ def _ensure_latest_prices_code_col(conn):
             cur.close()
         except Exception:
             pass
+            
+def _ensure_latest_prices_index_rows(conn):
+    """
+    screener にある『指数』行（市場='指数'）を
+    latest_prices に追加する。
+    
+    latest_prices は「コード TEXT PRIMARY KEY」「日付 TEXT NOT NULL」なので、
+    挿入時に「コード」「日付」は必ずセットで入れる必要がある。
+    終値・現在値・Res_*・Sup_* は後工程で埋まる。
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO latest_prices(コード, 日付)
+            SELECT DISTINCT
+                s.コード,
+                COALESCE(s.更新日, date('now','localtime')) AS 日付
+            FROM screener AS s
+            WHERE s.市場 = '指数'
+              AND NOT EXISTS (
+                  SELECT 1 FROM latest_prices lp
+                  WHERE lp.コード = s.コード
+              )
+        """)
+        conn.commit()
+    except Exception as e:
+        print("[WARN] _ensure_latest_prices_index_rows failed:", e)
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+
 import re
 import requests
 import smtplib
@@ -2240,6 +2317,10 @@ HL_WIN = 5
 # しきい値
 THRESH_SCORE = 70
 
+# 価格ガード（休日に price_history から現在値/前日比を補完するか）
+PRICE_GUARD_ENABLED = False  # ← しばらく挙動を見るために OFF
+
+
 # ==== [Short-term Trading Enhancements] Derived Metrics (schema assumed) ====
 def _calculate_atr_ewm(df: pd.DataFrame, period: int = 14) -> pd.Series:
     # df: 必須列 ['高値','安値','終値'] を想定。index は日付順。
@@ -2649,9 +2730,16 @@ def _ensure_resistance_columns(conn):
         cur.close()
 
 def phase_resistance_update(conn):
+    # サポレジ用のカラムを整備
     _ensure_resistance_columns(conn)
+    # latest_prices に コード列があることを保証（旧スキーマ互換）
+    _ensure_latest_prices_code_col(conn)
+    # 市場='指数' のコードを latest_prices に足しておく（^N225, VIX など）
+    _ensure_latest_prices_index_rows(conn)
+
     cur = conn.cursor()
     try:
+        # latest_prices に存在するコードすべてについてサポレジ計算
         codes = [r[0] for r in cur.execute("SELECT DISTINCT コード FROM latest_prices")]
         updates = []
         for code in codes:
@@ -2669,7 +2757,11 @@ def phase_resistance_update(conn):
             r_near  = int(1 if (r0 and r0["near"]) else 0)
             line_today = t.get("line_today")
             line_r2    = t.get("r2")
-            updates.append((hh, z_price, z_t, z_last, r_round, r_step, r_near, line_today, line_r2, code))
+            updates.append(
+                (hh, z_price, z_t, z_last,
+                 r_round, r_step, r_near,
+                 line_today, line_r2, code)
+            )
         if updates:
             cur.executemany("""
                 UPDATE latest_prices
@@ -2688,6 +2780,7 @@ def phase_resistance_update(conn):
         print(f"[resistance] updated {len(updates)} rows")
     finally:
         cur.close()
+
 # ==== /Resistance lines ====
 
 # --- DASH settings ---
@@ -2834,19 +2927,90 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   nav a.active{background:var(--blue);color:#fff}
 
   .toolbar{display:flex;gap:14px;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
+  /* ★ 好きな位置で改行させるためのダミー要素 */
+  .toolbar .toolbar-break {
+    flex-basis: 100%;  /* ここで行を切る */
+    height: 0;         /* 見た目の余白はほぼ増やさない */
+  }
   .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #CCD;border-radius:8px;background:#fff}
   .toolbar input[type="number"]{width:80px}
   .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
 
-  /* テーブルラッパ（角丸＋横スクロール） */
-  .tbl-wrap{
-    border-radius:10px;
-    overflow:auto; /* 縦横 */
-    -webkit-overflow-scrolling:touch;
-    background:#fff;
-    box-shadow:0 0 0 1px var(--line) inset;
-    max-height:70vh;
+  /* ▼ 相場環境バー（指数サポレジ＋VIX） */
+  #toolbar .env-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 6px;
+    font-size: 11px;
   }
+
+  #toolbar .env-label {
+    font-size: 11px;
+  }
+
+  #toolbar .env-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.03);
+    white-space: nowrap;
+  }
+
+  #toolbar .env-item .qhelp {
+    margin-left: 4px;
+  }
+
+
+/* テーブルラッパ（角丸＋縦横スクロール＋ヘッダー固定の基準） */
+.tbl-wrap{
+  position: relative;              /* ← sticky の基準にする */
+  border-radius: 10px;
+  overflow: auto;                  /* 縦横どちらもスクロール */
+  -webkit-overflow-scrolling: touch;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line) inset;
+  max-height: 70vh;
+}
+
+/* テーブル（横に広がる／ズレ防止） */
+.tbl-wrap > table{
+  table-layout: auto !important;   /* fixed は使わない（列つぶれ防止） */
+  width: max-content;              /* コンテンツ幅に合わせる */
+  min-width: 100%;                 /* 画面より狭い時は100% */
+  border-collapse: separate;       /* sticky のにじみ防止 */
+  border-spacing: 0;
+}
+
+/* ヘッダー（thead も sticky） */
+.tbl-wrap > table thead{
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: color-mix(in oklab, var(--bg) 94%, black);
+}
+
+/* ヘッダーセル（確実に固定） */
+.tbl-wrap > table thead th{
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 7;                      /* thead より一段高く */
+  background: color-mix(in oklab, var(--bg) 94%, black);
+  background-clip: padding-box;    /* 角丸ラッパー内のにじみ防止 */
+  box-shadow: 0 1px 0 rgba(0,0,0,.06);
+  white-space: nowrap;             /* 見出しの折返し抑止（任意） */
+}
+
+/* セル：横スクロール前提で折返し抑止（必要なら列個別で解除） */
+.tbl-wrap > table th,
+.tbl-wrap > table td{
+  white-space: nowrap;
+}
+
+
 
   /* 市場・Yahoo・X 列だけ更にタイトに（候補テーブル） */
   #tbl-candidate th:nth-child(3),
@@ -2857,6 +3021,14 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   #tbl-candidate td:nth-child(5){
     padding-left:2px; padding-right:2px; text-align:center; white-space:nowrap;
   }
+  
+/* 株探ニュース の BERTポジティブ用 ● を青く表示 */
+#tbl-candidate td[data-col="株探ニュース"] .bert-pos-dot,
+#tbl-allcols  td[data-col="株探ニュース"] .bert-pos-dot {
+  color: #2563eb;      /* 好きな青に調整OK */
+  margin-right: 2px;
+  font-weight: bold;
+}
 
   .tbl{
     border-collapse:collapse;
@@ -2869,7 +3041,7 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   .tbl th,.tbl td{
     border-bottom:1px solid var(--line);
     padding:2px 4px;
-    font-size:0.78em;
+    font-size:0.50em;
     vertical-align:top;
     box-sizing:border-box;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
@@ -3040,13 +3212,14 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
   #toolbar .group.selects > select{
     height: 28px;
     line-height: 28px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
+    border: 1px solid var(--line) !important;  /* ← 既存の上書きを防ぐ */
+    border-radius: 9999px !important;          /* ← しっかり丸枠に */
     background: #fff;
     padding: 0 24px 0 8px;   /* 右=矢印余白 */
     vertical-align: middle;
-    appearance: auto;
+    appearance: auto;        /* ← ネイティブ矢印はそのまま */
   }
+
   /* キャプションと select の間を少し空ける */
   #toolbar .group.selects label > select{ margin-left: 6px; }
 
@@ -3092,13 +3265,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 #mk_host label.mk{display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border-color,#e5e7eb);border-radius:6px}
 #mk_host input[type=checkbox]{margin-right:4px}
 
-/* 上部横スクロールバー（削除） */
-<!-- removed top scrollbar CSS/JS -->
-
-
-<!-- ※ 壊れていた「injected: freeze columns」は削除し、安定版のみ残す -->
-
-<style>
   /* 数値列 右寄せ（抵抗/支持） */
   th[data-col="抵抗帯中心"], th[data-col="最寄り抵抗"],
   th[data-col="支持帯中心"], th[data-col="最寄り支持"],
@@ -3312,6 +3478,37 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     font-size: 11px !important;   /* was inherit (≈16px) */
     letter-spacing: 0.1px;        /* 文字詰め微調整 */
   }
+
+
+/* === [INJECTED] 株探ニュースの表示調整（改行なし・省略なし・幅制限なし） === */
+#tbl-candidate th[data-col="株探ニュース(3)"],
+#tbl-candidate td[data-col="株探ニュース(3)"],
+#tbl-candidate td[data-col="株探ニュース(3)"] *{
+  white-space: nowrap !important;
+  max-width: none !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+/* === [/INJECTED] === */
+
+/* 株探ニュース(3) 列は折り返し・省略なし */
+#tbl-candidate th[data-col="株探ニュース(3)"],
+#tbl-candidate td[data-col="株探ニュース(3)"],
+#tbl-allcols  th[data-col="株探ニュース(3)"],
+#tbl-allcols  td[data-col="株探ニュース(3)"]{
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  max-width: none !important;
+}
+
+.tri { padding: 2px 4px; margin-right: 3px; border-radius: 3px; color: #fff; }
+
+.tri.good    { background-color: #2ecc71; }  /* 緑 */
+.tri.normal  { background-color: #f1c40f; }  /* 黄 */
+.tri.bad     { background-color: #e67e22; }  /* 橙 */
+.tri.verybad { background-color: #e74c3c; }  /* 赤 */
+
 
 </style>
 
@@ -3663,7 +3860,7 @@ function applyFreeze(tableId, uptoIdx){
   <nav>
     <a href="#" id="lnk-cand" class="active">候補一覧</a>
     <a href="#" id="lnk-tmr">明日用</a>
-    <a href="#" id="lnk-all">全カラム</a>
+    <!-- <a href="#" id="lnk-all">全カラム</a>  全カラムタブは廃止 -->
     <a href="#" id="lnk-earn">決算(実績)</a>
     <a href="#" id="lnk-preearn">決算(予測)</a>
     {% if include_log %}<a href="#" id="lnk-log">signals_log</a>{% endif %}
@@ -3676,6 +3873,13 @@ function applyFreeze(tableId, uptoIdx){
       <span class="muted" style="font-size:12px">近接ハイライト±</span>
       <input id="resNearPct" type="number" min="0" step="0.1" value="0.5" style="width:60px">% 
     </div>
+    <!-- ★ 相場環境バー（新） -->
+    <div class="env-row">
+      <span class="env-label muted">相場環境:</span>
+      <span id="idx-sr-summary" class="env-item"></span>
+      <span id="vix-regime" class="env-item"></span>
+    </div>
+
     <label><input type="checkbox" id="f_shodou"> 初動のみ</label>
     <label><input type="checkbox" id="f_tei"> 底打ちのみ</label>
     <label><input type="checkbox" id="f_both"> 両立のみ</label>
@@ -3687,6 +3891,12 @@ function applyFreeze(tableId, uptoIdx){
     <label><input type="checkbox" id="f_noshor"> 空売り機関なしのみ</label>
     <label><input type="checkbox" id="f_opratio"> 割安（営利対時価10%以上）のみ</label>
     <label><input type="checkbox" id="f_hit"> 当たりのみ</label>
+    <!-- === RS / 地合い / 逆行 フィルタ === -->
+    <label><input type="checkbox" id="f_rsstrong"> RS強（RS_5 > 0）</label>
+    <label><input type="checkbox" id="f_mkt_good"> 地合い：追い風（+1）</label>
+    <label><input type="checkbox" id="f_mkt_bad"> 地合い：逆風（-1）</label>
+    <label><input type="checkbox" id="f_revstrong"> 逆行強</label>
+    <label><input type="checkbox" id="f_revweak"> 逆行弱</label>
     <div class="toolbar early-filter">
       <label class="ef-chk"><input type="checkbox" value="ブレイク" ><span>ブレイク</span></label>
       <label class="ef-chk"><input type="checkbox" value="ポケット" ><span>ポケット</span></label>
@@ -3700,11 +3910,27 @@ function applyFreeze(tableId, uptoIdx){
 
     <label>進捗率≥ <input type="number" id="th_progress" placeholder="80" step="1" inputmode="decimal" autocomplete="off"></label>
     <label>スコア≥ <input type="number" id="th_score" placeholder="0" step="1" inputmode="decimal" autocomplete="off"></label>
-
+    
+    <!-- ★ この1行を追加：ここで flex の改行を強制 -->
+    <span class="toolbar-break"></span>
+    
     <label>株価≥ <input type="number" id="th_pmin" placeholder="下限" step="1" inputmode="decimal" autocomplete="off"></label>
     <label>～ ≤ <input type="number" id="th_pmax" placeholder="上限" step="1" inputmode="decimal" autocomplete="off"></label>
 
+    <label>▲(上昇) ≥
+      <input type="number" id="th_tri_g" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+    </label>
+    <label>◆(安定) ≥
+      <input type="number" id="th_tri_s" placeholder="60" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+    </label>
+    <label>■(ボラ) ≥
+      <input type="number" id="th_tri_v" placeholder="60" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+    </label>
+
+
     <label><input type="checkbox" id="f_defaultset"> 規定</label>
+    <label><input type="checkbox" id="f_goodonly">勝ちやすいだけ</label>
+
 
     <input type="text" id="q" placeholder="全文検索（コード/銘柄/判定理由など）" style="min-width:240px">
     <button class="btn" id="btn-stats">傾向グラフ</button>
@@ -3730,6 +3956,7 @@ function applyFreeze(tableId, uptoIdx){
     </div>
 
     <button class="btn copylink" id="copy-page">今のページの銘柄をコピー</button>
+    <button id="download-page-csv" class="btn">今のページの銘柄をCSVダウンロード</button>
     <button class="btn" id="download-csv">CSVダウンロード</button>
   </div>
 
@@ -3756,10 +3983,80 @@ function applyFreeze(tableId, uptoIdx){
     "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
     "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
     "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
-    "スコア":"総合スコア。","進捗率":"着手済み作業/想定全体の比率（%）。","早期種別":"ブレイク/ポケット/20MAリバ/200MAリクレイム。",
+    "スコア":"総合スコア。","進捗率":"着手済み作業/想定全体の比率（%）。",
+    "増資リスク":"将来の増資・MSワラント等による希薄化リスクのラベル（高/中/低など）。",
+    "増資スコア":"増資リスクを0〜100で数値化した指標。値が高いほど希薄化リスクが高い。",
     "判定":"最終判定。","判定理由":"候補にした根拠の要約。","推奨":"推奨ラベル。","推奨比率%":"推奨の強さ（%）。","更新":"シグナル最終更新日。",
     "ブレイク":"高値更新＋出来高伴う上抜け。","ポケット":"押し目買い有利域。","20MAリバ":"20MA再突入。","200MAリクレイム":"200MAを回復し維持。",
-    "まとめ（優先度順）":"・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。"
+    "まとめ（優先度順）":"・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。",
+    "RS_5":"【相対強度5日】個別株の5日リターン − 対応指数（TOPX/GRT250）の5日リターン。正なら指数より強い。",
+    "RS_20":"【相対強度20日】個別株の20日リターン − 対応指数の20日リターン。中期の強さを示す。",
+    "Growth_Bias":"【グロース地合い】GRT250（グロース） − TOPX（大型）。正ならグロース資金優位の相場。",
+    "地合いフラグ":"+1=追い風（TOPXと日経平均が両方強い）、0=中立、-1=逆風（両方弱い）。市場環境全体の評価。",
+    "逆行強フラグ":"地合いが弱いのに個別株が強い状態。資金流入の強さを示す。",
+    "逆行弱フラグ":"地合いが強いのに個別株が弱い状態。逆風の可能性を示す。",
+    "指数サポレジ位置":"TOPIX と 日経平均が、直近の支持線・抵抗線のどのあたりにいるかをざっくり表示します。\n\n" +
+    "・サポ直上：直近の支持線すぐ上（押し目候補）\n" +
+    "・サポ割れ：支持線を明確に割り込んで弱いゾーン\n" +
+    "・レジ直下：直近の抵抗線すぐ下（上値が重くなりやすい）\n" +
+    "・レジ抜け：抵抗線を明確に上抜けた強いゾーン\n" +
+    "・レンジ内：支持と抵抗の中間ゾーン（もみ合い）\n\n" +
+    "個別銘柄を見る前に、指数が「どの階層」にいるかを一目で把握するための指標です。",
+        "三角スコア":"Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n" +
+    "・▲(上昇)…トレンドとテーマ性。直近の株価推移・RS・出来高トレンドなどから「伸びやすさ」を評価しています。\n" +
+    "・◆(安定)…下落耐性と決算・財務の安定度。決算のブレや増資リスクが大きいほどスコアは低くなります。\n" +
+    "・■(ボラ)…ボラティリティの高さ。値動きが荒いほどスコアが高くなります（＝ハイボラ）。\n\n" +
+    "ざっくりとした目安は以下です。\n" +
+    "・▲(上昇) 70以上：右肩〜ブレイク候補。押し目を優先的にチェック。\n" +
+    "・◆(安定) 60以上：ドローダウンが比較的浅く、崩れにくいゾーン。\n" +
+    "スコアは 0〜100。一般的には 70以上で強めです。\n\n" +
+    "-----------------------------------------------\n" +
+    "【三角スコア × ザラ場時間帯：最も勝ちやすい活用法】\n" +
+    "-----------------------------------------------\n\n" +
+    "◆▲（上昇）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：9:00〜9:30（寄り付き〜初動）\n" +
+    "・RS／出来高／買いアルゴなど「短期モメンタム」は寄り付きに最も現れる\n" +
+    "・寄り後10〜30秒で流れが決まることが多く、初動の判断に向く\n\n" +
+    "● エントリーの目安\n" +
+    "・寄り直後の強い連買い\n" +
+    "・VWAP 上維持\n" +
+    "・寄り付きギャップ +2〜4% の範囲\n\n" +
+    "-----------------------------------------------\n" +
+    "◆◆（安定）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：10:30〜11:30 / 13:00〜14:00\n" +
+    "・空売り機関／業績の安定性を反映しており「押し目で拾いやすい」\n" +
+    "・朝の騒乱を避け、落ち着いた時間帯に本領を発揮する\n\n" +
+    "● エントリーの目安\n" +
+    "・押し目 → 下ヒゲ → 高値切り上げの形\n" +
+    "・VWAP 回帰\n" +
+    "・中期右肩の継続確認\n\n" +
+    "-----------------------------------------------\n" +
+    "◆■（ボラ）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：9:00〜10:00 / 14:00〜14:30\n" +
+    "・値幅が出やすくデイトレ向き\n" +
+    "・“伸びる瞬間だけ” を取る戦略との相性が良い\n\n" +
+    "● エントリーの目安\n" +
+    "・1分足の出来高急増\n" +
+    "・板の食い上げ（連続成行）\n" +
+    "・伸び止まったら即撤退\n\n" +
+    "-----------------------------------------------\n" +
+    "【結論】\n" +
+    "● ▲（上昇）は“鮮度が命” → 寄り付き〜9:30\n" +
+    "● ◆（安定）は“押し目狙い” → 10:30〜14:00\n" +
+    "● ■（ボラ）は“瞬間勝負” → 9:00〜10:00 / 14:00〜14:30\n\n" +
+    "三角スコアは、時間帯と合わせて使うと最も威力を発揮します。\n" +
+    "・■(ボラ) 40〜70：デイトレ向きの「程よいボラ」。80以上はジェットコースター帯で、建玉サイズに注意。\n\n" +
+    "三角スコアだけで売買を決めるのではなく、「判定理由」「増資リスク」「ニュース」などとセットで、\n" +
+    "『伸びやすさ × 安定度 × ボラの程よさ』を一目で比較するための目安として使ってください。",
+    "VIXレジーム":"米国の恐怖指数 VIX の水準から、相場のボラティリティ環境をざっくり区分したものです。\n\n" +
+    "・低ボラ：VIX < 14。穏やかでリスクオン寄りの地合い。\n" +
+    "・通常レンジ：14〜20。平常モード。\n" +
+    "・警戒：20〜30。ボラ拡大中で、急落・乱高下に注意。\n" +
+    "・危険：30以上。高ボラ期で、パニック的な値動きが出やすいゾーン。\n\n" +
+    "指数サポレジ位置とセットで見ると、「価格の位置」と「ボラ環境」の両方を把握できます。"
   };
 
   window.DATACOL_TO_HELPKEY = {
@@ -3769,7 +4066,17 @@ function applyFreeze(tableId, uptoIdx){
     "判定":"判定","判定理由":"判定理由","推奨アクション":"推奨","推奨比率":"推奨比率%","シグナル更新日":"更新",
     "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日",
     "抵抗帯中心":"抵抗帯中心","抵抗最終日":"抵抗最終日","最寄り抵抗":"最寄り抵抗","支持帯中心":"支持帯中心","支持最終日":"支持最終日","最寄り支持":"最寄り支持",
-    "抵抗HH":"抵抗HH","抵抗ゾーン":"抵抗ゾーン","タッチ":"タッチ","最終":"最終","キリ番":"キリ番","刻":"刻","近":"近","斜め":"斜め","R²":"R²","最近接抵抗":"最近接抵抗"
+    "抵抗HH":"抵抗HH","抵抗ゾーン":"抵抗ゾーン","タッチ":"タッチ","最終":"最終","キリ番":"キリ番","刻":"刻","近":"近","斜め":"斜め","R²":"R²","最近接抵抗":"最近接抵抗",
+    "RS_5":"RS_5",
+    "RS_20":"RS_20",
+    "Growth_Bias":"Growth_Bias",
+    "地合いフラグ":"地合いフラグ",
+    "逆行強フラグ":"逆行強フラグ",
+    "逆行弱フラグ":"逆行弱フラグ",
+    "進捗率":"進捗率",
+    "増資リスク":"増資リスク",
+    "増資スコア":"増資スコア",
+    "三角スコア": "三角スコア",
   };
 </script>
 
@@ -3809,6 +4116,8 @@ function applyFreeze(tableId, uptoIdx){
   const hasKouho = (v)=> String(v||"").includes("候補");
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
 
+
+
   // 市場フィルタ
   const LS_MK = "mk_filters_v1";
   function collectMarkets(){
@@ -3832,7 +4141,7 @@ function applyFreeze(tableId, uptoIdx){
     }
 
     // 表示順：既知→未知の並び（未知は五十音ソート）
-    const order = ["東P","東S","東G","東M","札証","名証","福証","北証","他"];
+    const order = ["東P","東S","東G","東M","札証","名証","福証","北証","指数","他"];
     const known=[], unknown=[];
     for (const s of set){
       (order.includes(s) ? known : unknown).push(s);
@@ -3954,11 +4263,35 @@ function applyFreeze(tableId, uptoIdx){
   });
 
   // offerings badge
-  const OFFER_SET = new Set((Array.isArray(RAW.offer_codes) ? RAW.offer_codes : []).map(x => String(x).padStart(4,"0")));
+  let OFFER_SET = new Set();
+
+  function rebuildOfferSet(){
+    // RAW がまだ無ければ何もしない
+    if (!RAW) {
+      OFFER_SET = new Set();
+      return;
+    }
+    const src = Array.isArray(RAW.offer_codes) ? RAW.offer_codes : [];
+    OFFER_SET = new Set(src.map(x => String(x).padStart(4, "0")));
+  }
+
   function offeringBadge(code){
     const c = String(code ?? "").padStart(4,"0");
-    return OFFER_SET.has(c) ? `<span class="badge b-gray" title="直近に増資/行使/売出/CBなどの履歴あり">増資経歴</span>` : "";
+    return OFFER_SET.has(c)
+      ? `<span class="badge b-gray" title="直近に増資/行使/売出/CBなどの履歴あり">増資経歴</span>`
+      : "";
   }
+
+  // デバッグ用フック（不要になったら消してOK）
+  window.DEBUG_OFFER = {
+    get RAW(){ return RAW; },
+    get OFFER_SET(){ return OFFER_SET; },
+    test(code){
+      const c = String(code ?? "").padStart(4,"0");
+      return { code, c, has: OFFER_SET.has(c) };
+    }
+  };
+
 
   // finance modal
   function openFinanceHtml(code){
@@ -4097,8 +4430,10 @@ function applyFreeze(tableId, uptoIdx){
 
     // JSON → 無ければ DOM から市場一覧を収集
     const MK_LIST = collectMarkets();
-    const FALLBACK = ["東P","東S","東G","東M","札証","名証","福証","北証","他"];
-    const LIST = MK_LIST.length ? MK_LIST : FALLBACK;
+    const FALLBACK = ["東P","東S","東G","東M","札証","名証","福証","北証","指数","他"];
+    // データに無くても「指数」だけは必ず候補に追加する
+    let LIST = MK_LIST.length ? MK_LIST.slice() : FALLBACK.slice();
+    if (!LIST.includes("指数")) LIST.push("指数");
 
     // 直前の選択状態：window.__mkSet があれば最優先、無ければ localStorage、なければ全ON
     let initialSet;
@@ -4193,6 +4528,172 @@ function applyFreeze(tableId, uptoIdx){
   function thScore(){ const v=num($("#th_score")?.value); return Number.isNaN(v)?null:v; }
   function thPmin(){ const v=num($("#th_pmin")?.value); return Number.isNaN(v)?null:v; }
   function thPmax(){ const v=num($("#th_pmax")?.value); return Number.isNaN(v)?null:v; }
+  
+  function thTriG(){ const v=num($("#th_tri_g")?.value); return Number.isNaN(v)?null:v; }
+  function thTriS(){ const v=num($("#th_tri_s")?.value); return Number.isNaN(v)?null:v; }
+  function thTriV(){ const v=num($("#th_tri_v")?.value); return Number.isNaN(v)?null:v; }
+
+  
+  // ====== 指数サポレジ位置（TOPX / 日経平均） ======
+  function _indexSrLabel(px, sup, res) {
+    const p = num(px), s = num(sup), r = num(res);
+    if (!Number.isFinite(p)) return "不明";
+
+    const eps = 0.003; // ±0.3% くらい
+
+    // サポ割れ / レジ抜け
+    if (Number.isFinite(s) && p < s * (1 - eps)) return "サポ割れ";
+    if (Number.isFinite(r) && p > r * (1 + eps)) return "レジ抜け";
+
+    // 直上 / 直下
+    if (Number.isFinite(s) && Math.abs(p - s) / p <= eps) return "サポ直上";
+    if (Number.isFinite(r) && Math.abs(r - p) / p <= eps) return "レジ直下";
+
+    // どちらかがあればレンジ内
+    if (Number.isFinite(s) || Number.isFinite(r)) return "レンジ内";
+
+    return "不明";
+  }
+
+  // DATA_CAND の中から「指数」行を拾って TOPIX / 日経平均 をまとめる
+  function buildIndexSrSummary(){
+    if (!Array.isArray(DATA_CAND) || !DATA_CAND.length) return null;
+
+    const idx = {};
+    for (const r of DATA_CAND){
+      const mk = String(r["市場"] || "").trim();
+      if (mk !== "指数") continue;
+
+      const name = String(r["銘柄名"] || "");
+      let key = null;
+      if (!key && (name.includes("TOPIX") || name.includes("トピックス"))) key = "TOPIX";
+      if (!key && (name.includes("日経")  || name.includes("225")))       key = "日経平均";
+      if (!key) continue;
+
+      const price = r["現在値"] ?? r["終値"];
+      const sup   = r["最寄り支持"];
+      const res   = r["最寄り抵抗"];
+
+      idx[key] = {
+        name,
+        code: String(r["コード"] || ""),
+        price,
+        sup,
+        res,
+        label: _indexSrLabel(price, sup, res)
+      };
+    }
+    return idx;
+  }
+
+function renderIndexSrSummary(){
+  const host = document.getElementById("idx-sr-summary");
+  if (!host) return;
+
+  const info = buildIndexSrSummary();
+  if (!info) { host.textContent = ""; return; }
+
+  const parts = [];
+  if (info.TOPIX) {
+    parts.push(`TOPIX: ${info.TOPIX.label}`);
+  }
+  if (info["日経平均"]) {
+    const item = info["日経平均"];
+    const lbl = item.label || "不明";
+    const p   = num(item.price);
+
+    // ★ラベルが不明でも価格があれば価格を表示
+    if (lbl === "不明" && Number.isFinite(p)) {
+      parts.push(`日経: ${p.toFixed(0)}`);
+    } else {
+      parts.push(`日経: ${lbl}`);
+    }
+  }
+
+  if (!parts.length){
+    host.textContent = "";
+    return;
+  }
+
+  const text = parts.join(" / ");
+  const esc  = escapeHtml(text);
+  host.innerHTML = `${esc} <span class="qhelp" data-key="指数サポレジ位置">?</span>`;
+}
+
+
+
+  // ====== VIXレジーム（恐怖指数の相場モード） ======
+  function _vixRegimeLabel(v){
+    const x = num(v);
+    if (!Number.isFinite(x)) return { regime:"不明", note:"-" };
+
+    if (x < 14)  return { regime:"低ボラ", note:"穏やか・リスクオン寄り" };
+    if (x < 20)  return { regime:"通常レンジ", note:"平常モード" };
+    if (x < 30)  return { regime:"警戒", note:"ボラ拡大・リスクオフ注意" };
+    return { regime:"危険", note:"高ボラ期・急変リスク大" };
+  }
+
+  // DATA_CAND から VIX 行を拾う
+  function buildVixRegime(){
+    if (!Array.isArray(DATA_CAND) || !DATA_CAND.length) return null;
+
+    for (const r of DATA_CAND){
+      const mk   = String(r["市場"] || "").trim();
+      if (mk !== "指数") continue;
+
+      const name = String(r["銘柄名"] || "");
+      const code = String(r["コード"] || "");
+
+      if (!(name.toUpperCase().includes("VIX") || code.toUpperCase().includes("VIX")))
+        continue;
+
+      const rawPrice = r["現在値"] ?? r["終値"];
+      const price = Number(rawPrice);
+      if (!Number.isFinite(price)) continue;
+
+      const ext = _vixRegimeLabel(price);
+
+      // ★ renderVixRegimeSummary が期待しているプロパティ名に合わせる
+      return {
+        name,
+        code,
+        value: price,      // 生の VIX 値
+        label: ext.regime, // 「低ボラ」「通常レンジ」「警戒」など
+        note:  ext.note
+      };
+    }
+    return null;
+  }
+
+
+
+  function renderVixRegimeSummary(){
+    const host = document.getElementById("vix-regime");
+    if (!host) return;
+
+    const info = buildVixRegime();  // 今使っている関数名に合わせて
+    if (!info) { host.textContent = ""; return; }
+
+    // info.label: 「低ボラ」「通常」「警戒」「危険」とか
+    // info.value: 生の VIX 値
+    const label = info.label || "不明";
+    const vixStr = Number.isFinite(info.value) ? info.value.toFixed(1) : "-";
+
+    const text = `VIX: ${label} (${vixStr})`;
+    const esc  = escapeHtml(text);
+    host.innerHTML = `${esc} <span class="qhelp" data-key="VIXレジーム">?</span>`;
+  }
+
+
+
+
+  // === RS / 地合い / 逆行 フィルタの変数定義 ===
+  const f_rsstrong   = document.querySelector("#f_rsstrong");
+  const f_mkt_good   = document.querySelector("#f_mkt_good");
+  const f_mkt_bad    = document.querySelector("#f_mkt_bad");
+  const f_revstrong  = document.querySelector("#f_revstrong");
+  const f_revweak    = document.querySelector("#f_revweak");
+
 
   function getSelectedTypes(){
     const box = document.querySelector(".early-filter");
@@ -4270,6 +4771,15 @@ function applyFreeze(tableId, uptoIdx){
       if(tv!=null && !(rvol>=tv)) return false;
       if(tp!=null && !(prog>=tp)) return false;
       if(ts!=null && !(score>=ts)) return false;
+      
+      const triG = thTriG(), triS = thTriS(), triV = thTriV();
+      const gr = Number(r["tri_growth"]  ?? 0);
+      const sf = Number(r["tri_safety"]  ?? 0);
+      const vo = Number(r["tri_vol"]     ?? 0);
+
+      if (triG != null && !(gr >= triG)) return false;
+      if (triS != null && !(sf >= triS)) return false;
+      if (triV != null && !(vo >= triV)) return false;
 
       // ★ 市場フィルタ（現在の選択セットを使用）
       const mkEmpty = !liveSet || liveSet.size === 0;
@@ -4279,9 +4789,68 @@ function applyFreeze(tableId, uptoIdx){
         .replace('東Ｐ','東P').replace('東Ｓ','東S');
       if (mkList.length && !mkEmpty && !liveSet.has(mk)) return false;
 
-      if(q){
-        const keys=["コード","銘柄名","判定理由","右肩早期種別","初動フラグ","底打ちフラグ","右肩上がりフラグ","右肩早期フラグ","推奨アクション"];
-        if(!keys.some(k=>String(r[k]??"").includes(q))) return false;
+      // === RS 強（RS_5 > 0） ===
+      if (f_rsstrong?.checked) {
+        if (!(r["RS_5"] > 0)) return false;
+      }
+
+      // === 地合い：追い風（+1） ===
+      if (f_mkt_good?.checked) {
+        if (String(r["地合いフラグ"]) !== "1") return false;
+      }
+
+      // === 地合い：逆風（-1） ===
+      if (f_mkt_bad?.checked) {
+        if (String(r["地合いフラグ"]) !== "-1") return false;
+      }
+
+      // === 逆行強（TOPX弱 + 個別強） ===
+      if (f_revstrong?.checked) {
+        if (String(r["逆行強フラグ"]) !== "1") return false;
+      }
+
+      // === 逆行弱（TOPX強 + 個別弱） ===
+      if (f_revweak?.checked) {
+        if (String(r["逆行弱フラグ"]) !== "1") return false;
+      }
+
+      // 勝ちやすい銘柄だけ表示（▲/◆/■）
+      const f_goodonly = $("#f_goodonly");
+      if (f_goodonly?.checked) {
+        const gr = Number(r["tri_growth"]  ?? 0);
+        const sf = Number(r["tri_safety"]  ?? 0);
+        const vo = Number(r["tri_vol"]     ?? 0);
+        // しきい値は後で微調整OK
+        if (!(gr >= 70 && sf >= 70 && vo >= 60)) return false;
+      }
+
+      
+
+
+      //検索 search
+      if (q) {
+        const keys = ["コード","銘柄名","判定理由","右肩早期種別",
+                      "初動フラグ","底打ちフラグ","右肩上がりフラグ",
+                      "右肩早期フラグ","推奨アクション","株探ニュース"];
+
+        const fields = (k)=> {
+          let s = String(r[k] ?? "");
+          // 株探ニュース(3) は aタグを含むのでテキストだけ抜き出す
+          if (k === "株探ニュース(3)") {
+            s = s.replace(/<[^>]*>/g, "");
+          }
+          return s;
+        };
+
+        const orGroups = String(q).split(/(?:\s+OR\s+|\s*\|\s*)/);  // OR / | で分割
+
+        const ok = orGroups.some(group => {
+          const terms = group.trim().split(/[\u3000\s]+/).filter(Boolean); // 空白=AND（全角/半角）
+          // すべての語が、どれかのキーの“部分一致”でヒットすればOK
+          return terms.every(t => keys.some(k => fields(k).includes(t)));
+        });
+
+        if (!ok) return false;
       }
       return true;
     });
@@ -4289,6 +4858,25 @@ function applyFreeze(tableId, uptoIdx){
 
 
   function formatJudgeLabel(r){ return isHitRow(r) ? "当たり！(1)" : "外れ！(1)"; }
+
+  //三角スコア色付け関数
+  function colorizeTriangleScores(){
+    document.querySelectorAll(".triangle-cell").forEach(cell => {
+      const g = parseInt(cell.dataset.growth || "0", 10);
+      const s = parseInt(cell.dataset.safety || "0", 10);
+      const v = parseInt(cell.dataset.vol || "0", 10);
+
+      const spans = cell.querySelectorAll(".tri");
+      spans.forEach((sp, idx) => {
+        const score = idx === 0 ? g : (idx === 1 ? s : v);
+        sp.classList.remove("good","normal","bad","verybad");
+        if (score >= 80)      sp.classList.add("good");
+        else if (score >= 60) sp.classList.add("normal");
+        else if (score >= 40) sp.classList.add("bad");
+        else                  sp.classList.add("verybad");
+      });
+    });
+  }
 
   // render: candidate
   function renderCand(){
@@ -4315,13 +4903,34 @@ function applyFreeze(tableId, uptoIdx){
       else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
       else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
 
+      // ▼三角スコア用の数値をここで用意する
+      const g  = parseInt(r["tri_growth"]  ?? 0, 10);  // ▲(上昇)
+      const s2 = parseInt(r["tri_safety"]  ?? 0, 10);  // ◆(安定)
+      const v2 = parseInt(r["tri_vol"]     ?? 0, 10);  // ■(ボラ)
+
+      // ソート用キー（上昇優先 → 安定 → ボラ）
+      const triSort = String(g * 10000 + s2 * 100 + v2).padStart(6, "0");
+
+
       const isHitTr = isHitRow(r);
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
         <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
         <td>${escapeHtml(r["市場"] || "-")}</td>
+        <td data-col="関連テーマ">${escapeHtml(r["関連テーマ"] || "")}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
+        <td class="num triangle-cell" 
+            data-col="三角スコア"
+            data-growth="${g}" 
+            data-safety="${s2}" 
+            data-vol="${v2}"
+            data-sort="${triSort}">
+            <span class="tri tri-g">${"▲(上昇)" + g}</span>
+            <span class="tri tri-s">${"◆(安定)" + s2}</span>
+            <span class="tri tri-v">${"■(ボラ)" + v2}</span>
+        </td>
+        <td data-col="株探ニュース(3)" class="nowrap">${r["株探ニュース(3)"] || ""}</td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
         <td class="num">${r["前日円差"] ?? ""}</td>
@@ -4340,12 +4949,12 @@ function applyFreeze(tableId, uptoIdx){
         <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
         <td class="num">${r["増資スコア"] ?? ""}</td>
         <td class="reason-col">${escapeHtml(r["増資理由"] || "")}</td>
-        <td>${escapeHtml(r["初動フラグ"] || "")}</td>
-        <td>${escapeHtml(r["底打ちフラグ"] || "")}</td>
-        <td>${escapeHtml(r["右肩上がりフラグ"] || "")}</td>
-        <td>${escapeHtml(r["右肩早期フラグ"] || "")}</td>
+        <td>${r["初動フラグ"] || ""}</td>
+        <td>${r["底打ちフラグ"] || ""}</td>
+        <td>${r["右肩上がりフラグ"] || ""}</td>
+        <td>${r["右肩早期フラグ"] || ""}</td>
         <td class="num">${r["右肩早期スコア"] ?? ""}</td>
-        <td>${etBadge}${escapeHtml(r["右肩早期種別_mini"] || "")}</td>
+        <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
         <td>${formatJudgeLabel(r)}</td>
         <td class="reason-col">${escapeHtml(r["判定理由"] || "")}</td>
         <td>${recBadge}</td>
@@ -4362,9 +4971,17 @@ function applyFreeze(tableId, uptoIdx){
         <td>${r["ボリバン"] || ""}</td>
         <td>${r["GC"] || ""}</td>
         <td>${r["三役"] || ""}</td>
+        <!-- === RS / 地合い / 逆行 系 新列 === -->
+        <td class="num">${fint(r["RS_5"]) ?? ""}</td>
+        <td class="num">${fint(r["RS_20"]) ?? ""}</td>
+        <td class="num">${fint(r["Growth_Bias"]) ?? ""}</td>
+        <td class="num">${r["地合いフラグ"] ?? ""}</td>
+        <td class="num">${r["逆行強フラグ"] ?? ""}</td>
+        <td class="num">${r["逆行弱フラグ"] ?? ""}</td>
       </tr>`;
     }
     body.innerHTML = html;
+    colorizeTriangleScores();
     document.querySelector("#count").textContent = String(total);
     document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
     wireDomSort("#tbl-candidate");
@@ -4420,6 +5037,13 @@ function applyFreeze(tableId, uptoIdx){
       if (rec === "エントリー有力") recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
       else if (rec === "小口提案")   recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
       else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
+      
+      // ★ ここから追加：三角スコア用の数値を整形してソートキーを作る
+      const g  = Number(r["tri_growth"] ?? 0) || 0;
+      const s2 = Number(r["tri_safety"] ?? 0) || 0;
+      const v2 = Number(r["tri_vol"] ?? 0) || 0;
+      const triSort = g * 10000 + s2 * 100 + (100 - v2);  // 上昇→安定→低ボラ優先
+
       const isHit = isHitRow(r);
       html += `<tr${isHit ? " class='hit'" : ""}>
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
@@ -4479,7 +5103,9 @@ function applyFreeze(tableId, uptoIdx){
       reason = `全体からのサンプル`;
     }
 
+    // 基準日ロジックで決まった「明日用」候補（フィルタ前のベース）を保持
     rows = _sortTomorrow(rows);
+    window.DATA_TMR = rows.slice();
 
     const lbl = document.getElementById("tmr-label");
     if (lbl){
@@ -4489,37 +5115,25 @@ function applyFreeze(tableId, uptoIdx){
       lbl.textContent = `📅 ${tgtStr} 向け（基準日: ${baseStr} / 凍結: ${freezeStr} / 抽出: ${rows.length}件・${reason}）`;
     }
 
-    window.DATA_TMR = rows;
-    renderTomorrow(rows);
+    // ツールバー条件を反映した行だけを描画
+    const filtered = (typeof applyFilter === "function") ? applyFilter(rows) : rows;
+    renderTomorrow(filtered);
   }
   // === Tomorrow logic END ===
 
-  // all
-  function renderAll(){
-    const head = document.querySelector("#all-head"), body = document.querySelector("#all-body");
-    if(!head||!body) return;
-    head.innerHTML=body.innerHTML="";
-    const rows=DATA_ALL;
-    if(!rows.length) return;
-    const cols=Object.keys(rows[0]);
-    head.innerHTML=cols.map(c=>{
-      const typ=(c.includes("フラグ")?"flag":(c.includes("日")||c.includes("更新")||c==="日時"?"date":(["現在値","出来高","売買代金(億)","時価総額億円","右肩早期スコア","推奨比率","前日終値比率","前日終値比率（％）"].includes(c)?"num":"text")));
-      return `<th class="sortable ${typ==='num'?'num':''}" data-col="${c}" data-type="${typ}">${c}<span class="arrow"></span></th>`;
-    }).join("");
-    body.innerHTML=rows.slice(0,2000).map(r=>`<tr>${
-      cols.map(c=>{
-        let v = (c === "判定") ? formatJudgeLabel(r) : (r[c] ?? "");
-        if (c === "コード") v = codeLink(v);
-        const isNum = ['現在値','出来高','売買代金(億)','時価総額億円','右肩早期スコア','推奨比率','前日終値比率','前日終値比率（％）','抵抗帯中心','最寄り抵抗','支持帯中心','最寄り支持'].includes(c);
-        return `<td class="${isNum?'num':''}">${escapeHtml(String(v))}</td>`;
-      }).join("")
-    }</tr>`).join("");
-    wireDomSort("#tbl-allcols");
-    attachQHelpsToHead('#tbl-allcols');
-  }
+
   
   // タブ
-  function render(){ if (state.tab === "all") { renderAll(); return; } if (state.tab === "tmr") { renderTomorrowWrapper(); return; } renderCand(); }
+  //function render(){ if (state.tab === "all") { renderAll(); return; } if (state.tab === "tmr") { renderTomorrowWrapper(); return; } renderCand(); }
+  function render(){
+    if (state.tab === "tmr"){
+      const base = (window.DATA_TMR && Array.isArray(window.DATA_TMR)) ? window.DATA_TMR : [];
+      const rows = (typeof applyFilter === "function") ? applyFilter(base) : base;
+      renderTomorrow(rows);
+      return;
+    }
+    renderCand();
+  }
 
   function fmtTime(ts){
     try{
@@ -4862,48 +5476,346 @@ function applyFreeze(tableId, uptoIdx){
     requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
 
-  // events
-  $("#perpage")?.addEventListener("change",(e)=>{ const v=parseInt(e.target.value,10); state.per=Number.isFinite(v)?v:500; state.page=1; render(); });
-  $("#prev")?.addEventListener("click",()=>{ if(state.page>1){state.page--; render();} });
-  $("#next")?.addEventListener("click",()=>{ state.page++; render(); });
-  $("#q")?.addEventListener("input",(e)=>{ state.q=e.target.value||""; state.page=1; render(); });
+// events
+  // 共通：ページ1に戻して再描画
+  const applyAndRender = () => {
+    state.page = 1;
+    render();
+  };
 
-  ["th_rate","th_turn","th_rvol","th_progress","th_score","th_pmin","th_pmax",
-   "f_shodou","f_tei","f_both","f_rightup","f_early","f_etype",
-   "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit"]
-    .forEach(id=>{
-      $("#"+id)?.addEventListener("input", ()=>{ state.page=1; render(); });
-      $("#"+id)?.addEventListener("change",()=>{ state.page=1; render(); });
-    });
-
-  $$(".early-filter .ef-chk input").forEach(el=>{
-    el.addEventListener("change", ()=>{ state.page=1; render(); });
+  // 件数・ページ送りは従来どおり
+  $("#perpage")?.addEventListener("change",(e)=>{
+    const v = parseInt(e.target.value,10);
+    state.per = Number.isFinite(v) ? v : 500;
+    state.page = 1;
+    render();
+  });
+  $("#prev")?.addEventListener("click",()=>{
+    if (state.page > 1){ state.page--; render(); }
+  });
+  $("#next")?.addEventListener("click",()=>{
+    state.page++; render();
   });
 
-  // ページ銘柄コピー
+  // ---- テキスト入力 (#q)：Enter / フォーカスアウトでだけ反映 ----
+  const qEl = $("#q");
+  if (qEl) {
+    // フォーカスアウト時
+    qEl.addEventListener("change", (e) => {
+      state.q = e.target.value || "";
+      applyAndRender();
+    });
+    // Enterキーで即反映
+    qEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        state.q = e.target.value || "";
+        applyAndRender();
+      }
+    });
+  }
+
+  // ---- 数値入力：change のときだけ反映 ----
+  const numIds = [
+    "th_rate","th_turn","th_rvol","th_progress","th_score","th_pmin","th_pmax",
+    "th_tri_g","th_tri_s","th_tri_v"
+  ];
+  numIds.forEach(id => {
+    const el = $("#"+id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      applyAndRender();
+    });
+  });
+
+  // ---- チェックボックス系：change で即時反映 ----
+  const chkIds = [
+    "f_shodou","f_tei","f_both","f_rightup","f_early","f_etype",
+    "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit","f_goodonly"
+  ];
+  chkIds.forEach(id => {
+    const el = $("#"+id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      applyAndRender();
+    });
+  });
+
+  // 早期フィルタ（ブレイク／ポケット／20MAリバ／200MAリクレイム）もチェックボックスなので即時反映
+  $$(".early-filter .ef-chk input").forEach(el=>{
+    el.addEventListener("change", () => {
+      applyAndRender();
+    });
+  });
+
+  // ===== ブックマーク機能 =====
+  const BM_KEY = "pg_dash_bookmarks_v1";
+
+  function loadBookmarks() {
+    try {
+      const raw = localStorage.getItem(BM_KEY);
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return obj && typeof obj === "object" ? obj : {};
+    } catch (e) {
+      console.warn("bookmark load failed", e);
+      return {};
+    }
+  }
+
+  function saveBookmarksMap(map) {
+    try {
+      localStorage.setItem(BM_KEY, JSON.stringify(map));
+    } catch (e) {
+      console.warn("bookmark save failed", e);
+    }
+  }
+
+  // 現在の入力状態を全部吸い出す
+  function collectBookmarkState() {
+    const st = { text:{}, nums:{}, checks:{}, early:[] };
+
+    // テキスト
+    if (qEl) st.text.q = qEl.value || "";
+
+    // 数値
+    numIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) st.nums[id] = el.value || "";
+    });
+
+    // チェックボックス（chkIds だけ）
+    chkIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) st.checks[id] = !!el.checked;
+    });
+
+    // 早期フィルタ（idごとに保存）
+    $$(".early-filter .ef-chk input").forEach(el=>{
+      if (!el.id) return;
+      st.checks[el.id] = !!el.checked;
+    });
+
+    return st;
+  }
+
+  // 保存した状態を画面に反映
+  function applyBookmarkState(st) {
+    if (!st) return;
+
+    // テキスト
+    if (qEl && st.text && typeof st.text.q === "string") {
+      qEl.value = st.text.q;
+      state.q   = st.text.q;
+    }
+
+    // 数値
+    if (st.nums) {
+      Object.keys(st.nums).forEach(id => {
+        const el = $("#"+id);
+        if (el) el.value = st.nums[id] ?? "";
+      });
+    }
+
+    // チェックボックス
+    if (st.checks) {
+      Object.keys(st.checks).forEach(id => {
+        const el = $("#"+id);
+        if (el && "checked" in el) {
+          el.checked = !!st.checks[id];
+        }
+      });
+    }
+
+    applyAndRender();
+  }
+
+  // セレクトの中身をマップから作り直す
+  function rebuildBookmarkSelect(map, chosen) {
+    const sel = $("#bm_select");
+    if (!sel) return;
+    sel.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = "（ブックマーク選択）";
+    sel.appendChild(opt0);
+
+    Object.keys(map).sort().forEach(name => {
+      const o = document.createElement("option");
+      o.value = name;
+      o.textContent = name;
+      sel.appendChild(o);
+    });
+
+    if (chosen && map[chosen]) {
+      sel.value = chosen;
+    } else {
+      sel.value = "";
+    }
+  }
+
+  // ツールバーにUIを生やす
+  function setupBookmarkUI() {
+    const tb = document.getElementById("toolbar");
+    if (!tb) return;
+
+    // すでにあれば再構築だけ
+    if (document.getElementById("bm_save")) {
+      const map = loadBookmarks();
+      rebuildBookmarkSelect(map);
+      return;
+    }
+
+    const wrap = document.createElement("span");
+    wrap.className = "bookmark-ctrls";
+    wrap.style.display = "inline-flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "4px";
+    wrap.style.marginLeft = "8px";
+    wrap.innerHTML = `
+      <label class="muted">ブックマーク:</label>
+      <select id="bm_select"></select>
+      <input id="bm_name" type="text" placeholder="名前" style="width:9em;">
+      <button type="button" id="bm_save" class="btn">保存</button>
+      <button type="button" id="bm_delete" class="btn">削除</button>
+    `;
+    tb.appendChild(wrap);
+
+    const sel = $("#bm_select");
+    const nameInput = $("#bm_name");
+    const btnSave = $("#bm_save");
+    const btnDelete = $("#bm_delete");
+
+    let map = loadBookmarks();
+    rebuildBookmarkSelect(map);
+
+    // 保存
+    btnSave?.addEventListener("click", () => {
+      const name = (nameInput?.value || "").trim();
+      if (!name) {
+        alert("ブックマーク名を入力してください");
+        nameInput?.focus();
+        return;
+      }
+      const payload = collectBookmarkState();
+      map[name] = payload;
+      saveBookmarksMap(map);
+      rebuildBookmarkSelect(map, name);
+    });
+
+    // 呼び出し
+    sel?.addEventListener("change", () => {
+      const name = sel.value;
+      if (!name) return;
+      const st = map[name];
+      if (!st) return;
+      applyBookmarkState(st);
+    });
+
+    // 削除
+    btnDelete?.addEventListener("click", () => {
+      const name = sel?.value;
+      if (!name || !map[name]) {
+        alert("削除するブックマークを選択してください");
+        return;
+      }
+      if (!confirm(`ブックマーク「${name}」を削除しますか？`)) return;
+      delete map[name];
+      saveBookmarksMap(map);
+      rebuildBookmarkSelect(map);
+    });
+  }
+
+  // 初期化
+  setupBookmarkUI();
+
+
+
+  // ページ銘柄コピー（列名1行 + データ行）
   $("#copy-page")?.addEventListener("click", async (e)=>{
     e.preventDefault();
-    const rows = Array.from(document.querySelectorAll("#tbl-candidate tbody tr"));
-    const lines = rows.map(tr => {
-      const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
-      const name = tr.getAttribute("data-name") ?? "";
-      if (!code || !name) return "";
-      return `"${code}","${name}",TKY,,,,,,`;
-    }).filter(x => x);
-    const text = lines.join("\n");
+
+    const tbl = document.getElementById("tbl-candidate");
+    if (!tbl || !tbl.tHead || !tbl.tBodies.length) return;
+
+    // --- CSVエスケープ（", 改行 を含む場合は二重引用） ---
+    const csvEscape = (v)=>{
+      let s = String(v ?? "");
+      if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+
+    // --- セルの表示値を取得（data-raw 優先、なければテキスト） ---
+    const getCellValue = (td)=>{
+      if (!td) return "";
+      const raw = td.getAttribute("data-raw");
+      if (raw != null) return raw;
+      return (td.textContent || "").replace(/\s+/g, " ").trim();
+    };
+
+    // 1) ヘッダー（列名）
+    const headerCells = Array.from(tbl.tHead.rows[0].cells);
+    const headerLine = headerCells
+      .map(th => csvEscape(th.getAttribute("data-col") || (th.textContent || "").trim()))
+      .join(",");
+
+    // 2) データ行（現在ページに描画されている tbody のみ）
+    const bodyRows = Array.from(tbl.tBodies[0].rows);
+    const dataLines = bodyRows.map(tr => {
+      const tds = Array.from(tr.cells);
+      return tds.map(td => csvEscape(getCellValue(td))).join(",");
+    });
+
+    // 3) 連結してクリップボードへ
+    const text = [headerLine, ...dataLines].join("\n");
+
     try{
       if (navigator.clipboard && window.isSecureContext !== false) {
         await navigator.clipboard.writeText(text);
       } else {
-        const ta = document.createElement("textarea"); ta.value = text;
-        ta.style.position="fixed"; ta.style.left="-9999px"; document.body.appendChild(ta);
-        ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
       }
       const btn = document.getElementById("copy-page");
-      btn?.classList.add("ok"); const old = btn?.textContent || "";
+      btn?.classList.add("ok");
+      const old = btn?.textContent || "";
       if (btn) btn.textContent = "コピーしました";
       setTimeout(()=>{ if(btn){ btn.classList.remove("ok"); btn.textContent = old || "今のページの銘柄をコピー"; } }, 1500);
-    }catch(_){ alert("コピーに失敗しました"); }
+    }catch(_){
+      alert("コピーに失敗しました");
+    }
+  });
+
+  // CSVダウンロード
+  $("#download-page-csv")?.addEventListener("click", (e)=>{
+    e.preventDefault();
+    const rows = Array.from(document.querySelectorAll("#tbl-candidate tbody tr"));
+    const lines = rows.map(tr => {
+      const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
+      const nameRaw = tr.getAttribute("data-name") ?? "";
+      if (!code || !nameRaw) return "";
+      const name = nameRaw.replace(/"/g, '""');
+      return `"${code}","${name}",TKY,,,,,,`;
+    }).filter(Boolean);
+    const csv = lines.join("\n");
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csv], { type: "text/csv" });
+
+    const pad = n => String(n).padStart(2, "0");
+    const dt  = new Date();
+    const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
+    const filename = `screen_current_page_only_${y}${m}${d}_${H}${M}${S}.csv`;
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
   });
 
   // CSVダウンロード
@@ -4957,14 +5869,7 @@ function applyFreeze(tableId, uptoIdx){
       if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-tmr'); }catch(_){ } }
       return;
     }
-    if (to === "all"){
-      $("#tab-all")?.classList.remove("hidden");
-      $("#lnk-all")?.classList.add("active");
-      state.page = 1;
-      render();
-      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-allcols'); }catch(_){ } }
-      return;
-    }
+
     if (to === "log"){
       $("#tab-log")?.classList.remove("hidden");
       $("#lnk-log")?.classList.add("active");
@@ -5012,9 +5917,19 @@ function applyFreeze(tableId, uptoIdx){
     try{
       // ① RAWを読む（__DATA__ を同期パース）
       RAW = readRAW();
+      
+
+      // ★ ここで offer_codes → OFFER_SET を構築
+      rebuildOfferSet();
+      console.log(
+        "[init] offer_codes len =",
+        Array.isArray(RAW.offer_codes) ? RAW.offer_codes.length : 0,
+        " / OFFER_SET size =",
+        OFFER_SET.size
+      );
+      
       const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
       DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
-      DATA_ALL     = Array.isArray(RAW.all)      ? RAW.all      : [];
       DATA_LOG     = Array.isArray(RAW.logs)     ? RAW.logs     : [];
       DATA_EARN    = Array.isArray(RAW.earnings) ? RAW.earnings : [];
       DATA_PREEARN = Array.isArray(_preSrc)      ? _preSrc      : [];
@@ -5024,10 +5939,16 @@ function applyFreeze(tableId, uptoIdx){
 
       // ③ テーブル描画後に市場チェックUIを生成（DOMフォールバックが効く）
       renderMarketCheckboxes();
+      
+      // ③.5 指数サポレジ位置サマリを表示
+      renderIndexSrSummary();
+      
+      // ③.6 VIXレジームサマリを表示
+      renderVixRegimeSummary();
 
       // ④ ヘルプや表示微調整
       forceClearThresholds();
-      document.querySelectorAll('#tbl-candidate td br, #tbl-allcols td br')
+      document.querySelectorAll('#tbl-candidate td br')
         .forEach(br => br.replaceWith(' '));
       attachQHelpsToToolbar();
       attachQHelpsToHead('#tbl-candidate');
@@ -5053,8 +5974,11 @@ function applyFreeze(tableId, uptoIdx){
             <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
             <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
             <th data-col="市場">市場</th>
+            <th class="sortable" data-col="関連テーマ" data-type="text">関連テーマ<span class="arrow"></span></th>
             <th>Yahoo</th>
             <th>X</th>
+            <th class="num sortable" data-col="三角スコア" data-type="num">△Score<span class="arrow"></span></th>
+            <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
@@ -5076,8 +6000,8 @@ function applyFreeze(tableId, uptoIdx){
             <th class="sortable" data-col="初動フラグ" data-type="text">初動<span class="arrow"></span></th>
             <th class="sortable" data-col="底打ちフラグ" data-type="text">底打ち<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩上がりフラグ" data-type="text">右肩<span class="arrow"></span></th>
-            <th class="sortable" data-col="右肩早期フラグ" data-type="text">早期<span class="arrow"></span></th>
-            <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期フラグ" data-type="text">右肩早期<span class="arrow"></span></th>
+            <th class="num sortable" data-col="右肩早期スコア" data-type="num">右肩早期スコア<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
             <th class="sortable reason-col" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
@@ -5095,6 +6019,13 @@ function applyFreeze(tableId, uptoIdx){
             <th class="sortable" data-col="ボリバン">ボリバン</th>
             <th class="sortable" data-col="GC">GC</th>
             <th class="sortable" data-col="三役">三役</th>
+            <!-- === RS / 地合い / 逆行 系 新列 === -->
+            <th class="num sortable" data-col="RS_5" data-type="num">RS_5<span class="arrow"></span></th>
+            <th class="num sortable" data-col="RS_20" data-type="num">RS_20<span class="arrow"></span></th>
+            <th class="num sortable" data-col="Growth_Bias" data-type="num">GrowthBias<span class="arrow"></span></th>
+            <th class="num sortable" data-col="地合いフラグ" data-type="num">地合い<span class="arrow"></span></th>
+            <th class="num sortable" data-col="逆行強フラグ" data-type="num">逆行強<span class="arrow"></span></th>
+            <th class="num sortable" data-col="逆行弱フラグ" data-type="num">逆行弱<span class="arrow"></span></th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -5130,7 +6061,7 @@ function applyFreeze(tableId, uptoIdx){
       </table>
     </div>
   </section>
-
+  <!-- 全カラムタブは廃止
   <section id="tab-all" class="tab hidden">
     <div class="tbl-wrap">
       <table id="tbl-allcols" class="tbl">
@@ -5146,6 +6077,7 @@ function applyFreeze(tableId, uptoIdx){
       </table>
     </div>
   </section>
+  -->
 
   <section id="tab-earn" class="tab hidden">
     <div class="tbl-wrap">
@@ -5317,6 +6249,20 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 
 
+<script>
+function kabuNewsCell(code){
+  try{
+    const map = (window.__KABUNEWS_MAP || {});
+    const arr = map[code] || [];
+    const items = arr.slice(0,3).map(x=>{
+      const t = String(x && x.title || "").replace(/"/g,"&quot;");
+      const href = (x && x.link) ? x.link : "#";
+      return `<a href="${href}" target="_blank" rel="noopener">${t}</a>`;
+    });
+    return items.join(" ・ ");
+  }catch(_){ return ""; }
+}
+</script>
 </body>
 </html>"""
 
@@ -5930,7 +6876,7 @@ def _update_screener_from_history(conn, codes):
         """, updated)
         conn.commit()
 
-def phase_yahoo_bulk_refresh(conn, codes, batch_size=200):
+def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
     """
     高速版:
       - 既存銘柄: period="2d", interval="1d" をバルクで取得し、差分だけ upsert
@@ -7207,6 +8153,126 @@ def _derive_recommendation(d: dict):
     label, ratio_band = BANDS[cand_idx][1], BANDS[cand_idx][2]
 
     return (label, ratio_band, ratio_raw)
+def _derive_triangle_scores(d):
+    """三角スコア（上昇・安定・短期ボラ）を計算して (g, s, v) を返す"""
+
+    # ---------- 1) 上昇スコア（Growth ▲） ----------
+    g = 0
+
+    # 合成スコアがあればベースにする（0〜100）
+    base = _to_float(d.get("合成スコア") or d.get("推奨比率_raw"))
+    if base is not None:
+        g += base
+
+    # 初動・右肩・早期・底打ちフラグ
+    for key in ["初動フラグ", "右肩上がりフラグ", "右肩早期フラグ", "底打ちフラグ"]:
+        if d.get(key) in ["○", "◯", "あり", 1, True]:
+            g += 10
+
+    # RVOL（2 以上は強い）
+    rvol = _to_float(d.get("RVOL代金"))
+    if rvol is not None:
+        if rvol >= 5:
+            g += 12
+        elif rvol >= 2:
+            g += 8
+        elif rvol < 1:
+            g -= 8
+
+    # RS短期 中期
+    for key in ["RS_5", "RS_20"]:
+        rs = _to_float(d.get(key))
+        if rs is not None and rs > 0:
+            g += min(rs, 10)  # 過度に効かせすぎないよう制限
+
+    # 前日比（飛びすぎ陽線は減点）
+    pct = _to_float(d.get("前日終値比率_raw"))
+    if pct is not None:
+        if pct > 6:      # 飛びすぎ陽線
+            g -= 10
+        elif pct > 3:
+            g -= 3
+
+    g = max(0, min(100, g))
+
+    # ---------- 2) 安定スコア（Safety ◆） ----------
+    s = 60  # 中立からスタート
+
+    # 空売り機関なし
+    if d.get("空売り機関なし_flag") == 1:
+        s += 15
+    else:
+        s -= 5
+
+    # 割安業績
+    if d.get("営利対時価_flag") == 1:
+        s += 10
+
+    # 営利YoY
+    yoy = _to_float(d.get("営利YoY"))
+    if yoy is not None:
+        if yoy > 0:
+            s += 5
+        else:
+            s -= 5
+
+    # 増資リスク
+    zr = _to_float(d.get("増資スコア"))
+    if zr is not None:
+        if zr >= 70:
+            s -= 15
+        elif zr >= 40:
+            s -= 8
+        else:
+            s += 3
+
+    # ATR（ボラ高すぎ＝減点）
+    atr = _to_float(d.get("ATR14_PCT"))
+    if atr is not None:
+        if atr <= 3:
+            s += 10
+        elif atr >= 7:
+            s -= 10
+
+    # 支持帯の距離
+    # （DB由来で文字列になっていることがあるので、安全に float 変換してから使う）
+    support = _to_float(d.get("最寄り支持"))
+    price   = _to_float(d.get("現在値"))
+
+    if price is not None and support is not None and price > 0:
+        dist = (price - support) / price * 100
+        if 0 <= dist <= 3:
+            s += 8
+
+    s = max(0, min(100, s))
+
+    # ---------- 3) 短期ボラスコア（Vol ■） ----------
+    v = 0  # ★必ずここで初期化するので、NameErrorが出なくなる
+
+    # ATRベース
+    if atr is not None:
+        if atr <= 1:
+            v += 20
+        elif atr <= 3:
+            v += 50
+        elif atr <= 6:
+            v += 70
+        elif atr <= 9:
+            v += 85
+        else:
+            v += 95
+
+    # RVOLで補正
+    if rvol is not None:
+        if rvol >= 5:
+            v += 10
+        elif rvol >= 2:
+            v += 5
+
+    v = max(0, min(100, v))
+
+    return int(g), int(s), int(v)
+
 
 def _derive_opratio_flag(d, threshold_pct: float = 10.0) -> str:
     """
@@ -7252,14 +8318,14 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
         d["x_url"] = f"https://x.com/search?q={_q(d.get('銘柄名') or '')}" if d.get("銘柄名") else ""
 
         # ---- 価格フィールド（休日のみEODで安全埋め）----
-        if code4 and is_holiday:
+        if PRICE_GUARD_ENABLED and code4 and is_holiday:
             try:
-                # ここで初めて接続が必要 → 遅延で取得
                 if _conn is None:
                     _conn = _get_db_conn()
                 _apply_price_fields(_conn, d, code4)  # ※ここでは close しない
             except Exception as _e:
                 print(f"[price-guard][WARN] {code4} fill failed: {_e}")
+
 
         # 売買代金(億) 補完
         if d.get("売買代金(億)") is None:
@@ -7316,6 +8382,14 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
 
         # 念のため：空売り機関なし_flag を維持
         d["空売り機関なし_flag"] = _noshor_from_agency(d.get("空売り機関"))
+        
+        # 三角スコア計算
+        g, s, v = _derive_triangle_scores(d)
+        d["tri_growth"] = g
+        d["tri_safety"] = s
+        d["tri_vol"] = v
+        d["三角スコア"] = f"▲{g:02d} ◆{s:02d} ■{v:02d}"
+
         
         d = _ensure_links(d)
         rows.append(d)
@@ -7400,7 +8474,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "営業利益","増資リスク","増資スコア","増資理由","財務コメント",
         "スコア","進捗率","overall_alpha",
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
-        "支持帯中心","支持最終日","最寄り支持"
+        "支持帯中心","支持最終日","最寄り支持","関連テーマ"
     ] if c in _df.columns]
 
     # ループ内で必ず yahoo/x を合成して rows に積む
@@ -7462,7 +8536,7 @@ def _prepare_rows_safe(df, conn):
 
 
 # ==== [BULK PRICE SUMMARIES - TOP LEVEL] ================================
-def preload_price_summaries(conn, codes, window_days=220):
+def preload_price_summaries(conn, codes, window_days=120):
     """対象コードをまとめて読み、直近の終値/高値/安値と MA5/25/75 を返す"""
     if not codes:
         return {}
@@ -7530,6 +8604,833 @@ def enrich_rows_with_price_summary(rows, summary_map):
     return rows
 # ==== [/BULK PRICE SUMMARIES - TOP LEVEL] ===============================
 
+
+# === [INJECTED | Google News RSS (site:kabutan.jp) + optional BERT sentiment] ===================
+import html as _html
+import urllib.parse as _u
+import xml.etree.ElementTree as _ET
+
+_KABUNEWS_CONF = {
+    "rss_base": "https://news.google.com/rss/search",
+    "lang": "ja",
+    "gl": "JP",
+    "ceid": "JP:ja",
+    "max_items_per_symbol": 3,
+    "enable_bert": False,          # （※今は使わないが一応残しておく）
+    "bert_model": "koheiduck/bert-japanese-finetuned-sentiment",
+    "http_timeout": 8,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36",
+    # ここから追加：ポジティブ単語辞書（含まれていたら青●）
+    "pos_keywords": [
+        "上方修正",
+        "増額修正",
+        "業績予想の上方修正",
+        "最高益",
+        "過去最高益",
+        "上場来高値",
+        "配当増額",
+        "増配",
+        "大幅増益",
+        "好決算",
+        "連結営業利益の増加",
+        "株式分割",
+        "自社株買い",
+        "中期経営計画",
+        "大型受注",
+    ],
+}
+
+
+# 軽いメモリキャッシュ（ラン内のみ）
+_KABUNEWS_CACHE = {}
+# --- [INJECTED] kabunews 用の簡易ログ関数 ---
+def _log(msg):
+    """kabunews 周り専用の軽量ロガー"""
+    try:
+        # コンソールにそのまま出すだけ（フラッシュ付き）
+        print(msg, flush=True)
+    except Exception:
+        # 最悪 print すら失敗しても無視
+        pass
+# --- [/INJECTED] ---
+
+def _kabunews_make_url(code: str, name: str) -> str:
+    code = (code or "").strip()
+    name = (name or "").strip()
+    q = f'site:kabutan.jp ({code} OR "{name}")'
+    qs = _u.urlencode({
+        "q": q,
+        "hl": _KABUNEWS_CONF["lang"],
+        "gl": _KABUNEWS_CONF["gl"],
+        "ceid": _KABUNEWS_CONF["ceid"],
+    })
+    return f'{_KABUNEWS_CONF["rss_base"]}?{qs}'
+
+
+def _kabunews_fetch(code: str, name: str) -> list[dict]:
+    """Google News RSS (site:kabutan.jp) から該当コード/銘柄のニュースを取得。
+    デバッグ用の詳細 print を追加。"""
+    import time as _t
+    key = f"{str(code).zfill(4)}:{(name or '').strip()}"
+    dbg = bool(_KABUNEWS_CONF.get("debug", True))  # 必要なら False に
+
+    if key in _KABUNEWS_CACHE:
+        if dbg:
+            print(f"[kabunews] CACHE HIT {key} items={len(_KABUNEWS_CACHE[key])}", flush=True)
+        return _KABUNEWS_CACHE[key]
+
+    url = _kabunews_make_url(code, name)
+    t0 = _t.perf_counter()
+    try:
+        import requests as _rq, xml.etree.ElementTree as _ET
+        headers = {"User-Agent": _KABUNEWS_CONF["user_agent"]}
+        r = _rq.get(url, headers=headers, timeout=_KABUNEWS_CONF["http_timeout"])
+        ct = r.headers.get("Content-Type", "")
+        if dbg:
+            print(
+                f"[kabunews] RESP {key} status={r.status_code} ct='{ct}' "
+                f"bytes={len(r.content)} dt={(_t.perf_counter()-t0):.2f}s",
+                flush=True
+            )
+        r.raise_for_status()
+
+        # RSSでないっぽい時は先頭だけ出す（Cloud対策/HTMLページ検知用）
+        if "xml" not in ct.lower() and dbg:
+            head = r.text[:160].replace("\n", " ") if isinstance(r.text, str) else ""
+            print(f"[kabunews][WARN] non-XML response {key} head={head!r}", flush=True)
+
+        root = _ET.fromstring(r.text)
+
+    except Exception as e:
+        if dbg:
+            # 文字化け回避のため repr にして短縮
+            try_head = ""
+            try:
+                try_head = (r.text[:160].replace("\n", " ")
+                            if 'r' in locals() and isinstance(r.text, str) else "")
+            except Exception:
+                pass
+            print(
+                f"[kabunews][ERR] fetch {key}: {type(e).__name__}: {e!s} head={try_head!r}",
+                flush=True
+            )
+        _KABUNEWS_CACHE[key] = []
+        return []
+
+    items = []
+    try:
+        for it in root.findall(".//item"):
+            title = (it.findtext("title") or "").strip()
+            link  = (it.findtext("link") or "").strip()
+            pub   = (it.findtext("pubDate") or "").strip()
+            if title and link:
+                items.append({"title": _html.unescape(title), "url": link, "pub": pub})
+            if len(items) >= int(_KABUNEWS_CONF.get("max_items_per_symbol") or 3):
+                break
+        if dbg:
+            print(f"[kabunews] PARSED {key} items={len(items)}", flush=True)
+    except Exception as e:
+        if dbg:
+            print(f"[kabunews][ERR] parse {key}: {type(e).__name__}: {e!s}", flush=True)
+        items = []
+
+    # ★ここから追加：pub 日付で降順ソート（新しい順）
+    try:
+        from email.utils import parsedate_to_datetime as _pdt
+        from datetime import datetime as _dt
+
+        def _parse_pub_dt(s: str):
+            s = (s or "").strip()
+            if not s:
+                return None
+            # まず RFC822 形式 (Wed, 19 Nov 2025 07:30:00 GMT) を試す
+            try:
+                return _pdt(s)
+            except Exception:
+                pass
+            # だめなら ISO っぽい文字列も一応トライ
+            try:
+                return _dt.fromisoformat(s.replace("Z", "+00:00"))
+            except Exception:
+                return None
+
+        items.sort(
+            key=lambda it: (_parse_pub_dt(it.get("pub")) or _dt.min),
+            reverse=True,  # 新しい順
+        )
+    except Exception as e:
+        if dbg:
+            print(f"[kabunews][WARN] sort by pub failed {key}: {type(e).__name__}: {e!s}",
+                  flush=True)
+    # ★追加ここまで
+
+    # 追加: BERT スコアリング（有効時のみ）
+    if items and _KABUNEWS_CONF.get("enable_bert", True):
+        if dbg:
+            print(
+                f"[kabunews] BERT start {key} n={len(items)} "
+                f"model={_KABUNEWS_CONF.get('bert_model')}",
+                flush=True
+            )
+        try:
+            bert_t0 = _t.perf_counter()
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+            _tok = AutoTokenizer.from_pretrained(_KABUNEWS_CONF["bert_model"])
+            _mdl = AutoModelForSequenceClassification.from_pretrained(_KABUNEWS_CONF["bert_model"])
+            _pipe = pipeline("sentiment-analysis", model=_mdl, tokenizer=_tok, device=-1)
+
+            texts = [it["title"] for it in items]
+            preds = _pipe(texts)
+
+            pos_cnt = neg_cnt = other_cnt = 0
+
+            for it, pr in zip(items, preds):
+                label = str(pr.get("label") or "")
+                score = float(pr.get("score") or 0.0)
+                it["sentiment"] = label
+                it["score"] = score
+
+                s_norm = label.upper()
+                if ("POS" in s_norm) or ("ポジ" in s_norm):
+                    pos_cnt += 1
+                elif ("NEG" in s_norm) or ("ネガ" in s_norm):
+                    neg_cnt += 1
+                else:
+                    other_cnt += 1
+
+            if dbg:
+                print(
+                    f"[kabunews] BERT done {key} total={len(preds)} "
+                    f"pos={pos_cnt} neg={neg_cnt} other={other_cnt} "
+                    f"dt={(_t.perf_counter()-bert_t0):.2f}s",
+                    flush=True
+                )
+
+        except Exception as e:
+            if dbg:
+                print(
+                    f"[kabunews][WARN] BERT skipped {key}: {type(e).__name__}: {e!s}",
+                    flush=True
+                )
+            for it in items:
+                it["sentiment"] = None
+                it["score"] = None
+
+    elif items and not _KABUNEWS_CONF.get("enable_bert", True):
+        if dbg:
+            print(f"[kabunews] BERT disabled by config for {key}", flush=True)
+
+    _KABUNEWS_CACHE[key] = items
+    if dbg:
+        print(
+            f"[kabunews] DONE {key} items={len(items)} "
+            f"total_dt={(_t.perf_counter()-t0):.2f}s",
+            flush=True
+        )
+    return items
+
+
+# === Bulk OR query support for Kabutan via Google News RSS ===
+def _kabunews_make_multi_url(pairs):
+    """
+    pairs: list of tuples (code, name)
+    Returns Google News RSS URL that ORs multiple symbols: site:kabutan.jp ((3350 OR "メタプラネット") OR (3905 OR "データセクション") ...)
+    """
+    parts = []
+    for code, name in pairs:
+        c = (str(code) or '').strip()
+        n = (str(name) or '').strip().replace('"', '')  # avoid breaking quotes
+        if not c and not n:
+            continue
+        if c and n:
+            parts.append(f'({c} OR "{n}")')
+        elif c:
+            parts.append(f'({c})')
+        else:
+            parts.append(f'("{n}")')
+    if not parts:
+        parts = ['']
+    q = f'site:kabutan.jp ' + '(' + ' OR '.join(parts) + ')'
+    qs = _u.urlencode({
+        "q": q,
+        "hl": _KABUNEWS_CONF["lang"],
+        "gl": _KABUNEWS_CONF["gl"],
+        "ceid": _KABUNEWS_CONF["ceid"]
+    })
+    return f'{_KABUNEWS_CONF["rss_base"]}?{qs}'
+
+def kabutan_news_fetch_bulk(pairs, per_symbol=None):
+    """
+    Fetch Kabutan news for multiple symbols with a single (or few) Google News RSS requests using OR.
+    pairs: list of (code, name)
+    per_symbol: override max items per symbol (default from conf)
+    Returns: dict {code_str4: [ (title, link, pubDate), ... ]}
+    """
+    import requests as _rq, xml.etree.ElementTree as ET
+    per_symbol = per_symbol or int(_KABUNEWS_CONF.get("max_items_per_symbol", 3))
+    # chunk pairs to keep URL length <= 1800 chars (safe margin) and <= 8 symbols per request
+    out = {str(c).zfill(4): [] for c,_ in pairs if c}
+    CHUNK = 8
+    i = 0
+    while i < len(pairs):
+        chunk = pairs[i:i+CHUNK]
+        i += CHUNK
+        url = _kabunews_make_multi_url(chunk)
+        # fallback if URL too long: reduce chunk size dynamically
+        if len(url) > 1800 and len(chunk) > 1:
+            # halve chunk and push remainder back
+            i -= CHUNK  # rewind
+            CHUNK = max(1, CHUNK//2)
+            if CHUNK == 1:
+                # accept long single if unavoidable
+                chunk = pairs[i:i+1]
+                i += 1
+                url = _kabunews_make_multi_url(chunk)
+            continue
+        try:
+            resp = _rq.get(url, headers={"User-Agent": _KABUNEWS_CONF["user_agent"]}, timeout=_KABUNEWS_CONF["http_timeout"])
+            if resp.status_code != 200:
+                _log(f'[kabunews][bulk][WARN] status={resp.status_code} url={url[:160]}')
+                continue
+            root = ET.fromstring(resp.content)
+            items = root.findall(".//item")
+            # prepare quick matchers
+            def key(code, name):
+                return str(code).zfill(4), (str(name) or '').strip()
+            ck = [key(c,n) for c,n in chunk]
+            # simple assign: if code or name appears in title or link, bucket it
+            for it in items:
+                title = (it.findtext("title") or "").strip()
+                link = (it.findtext("link") or "").strip()
+                pub = (it.findtext("{http://purl.org/dc/elements/1.1/}date") or it.findtext("pubDate") or "").strip()
+                for c4, nm in ck:
+                    if len(out.get(c4, [])) >= per_symbol: 
+                        continue
+                    if (c4 in title) or (c4 in link) or (nm and (nm in title)):
+                        out.setdefault(c4, []).append((title, link, pub))
+            # de-dup & cap per symbol
+            from email.utils import parsedate_to_datetime as _pdt
+            from datetime import datetime as _dt
+
+            def _parse_pub_dt(s: str):
+                s = (s or "").strip()
+                if not s:
+                    return None
+                try:
+                    return _pdt(s)
+                except Exception:
+                    pass
+                try:
+                    return _dt.fromisoformat(s.replace("Z", "+00:00"))
+                except Exception:
+                    return None
+
+            for c4 in list(out.keys()):
+                seen = set()
+                deduped = []
+                for t,l,p in out[c4]:
+                    k = (t,l)
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    deduped.append((t,l,p))
+                # ★ pub 日付で降順ソートしてから上位 per_symbol 件を切り出し
+                deduped.sort(
+                    key=lambda tpl: (_parse_pub_dt(tpl[2]) or _dt.min),
+                    reverse=True,
+                )
+                out[c4] = deduped[:per_symbol]
+
+        except Exception as e:
+            _log(f'[kabunews][bulk][ERR] {e!r}')
+            continue
+    return out
+
+def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="銘柄名", per_symbol=None):
+    """
+    df(コード・銘柄名入り) → 株探ニュース(3) 用の Series を返す
+    """
+    if df is None or getattr(df, "empty", True):
+        import pandas as _pd
+        return _pd.Series([], dtype=object)
+
+    import pandas as _pd
+    from datetime import datetime
+
+    per_symbol = per_symbol or int(_KABUNEWS_CONF.get("max_items_per_symbol", 2))
+    pairs = []
+    idx_map = []  # (index, code4)
+    for idx, row in df[[code_col, name_col]].iterrows():
+        c = str(row.get(code_col) or '')
+        n = str(row.get(name_col) or '')
+        c4 = c.zfill(4) if c else ''
+        pairs.append((c4, n))
+        idx_map.append((idx, c4))
+
+    # OR一括でタイトル・リンク・日付を取る
+    result_map = kabutan_news_fetch_bulk(pairs, per_symbol=per_symbol)
+
+
+    # --- ポジティブ単語辞書で判定（軽量版） ---
+    # bert_labels[code4][j] = "POS_DICT" のように、青●を付けたい位置だけマーキング
+    bert_labels = {}
+
+    # 設定から単語リストを取得（なければ空リスト）
+    pos_words = tuple(_KABUNEWS_CONF.get("pos_keywords", []))
+
+    if pos_words:
+        pos_cnt = 0
+        total = 0
+
+        for code4, items in result_map.items():
+            for j, (title, link, pub) in enumerate(items or []):
+                title = (title or "").strip()
+                if not title:
+                    continue
+                total += 1
+
+                # どれか1つでも単語が含まれていれば「ポジティブ」とみなす
+                if any(w in title for w in pos_words):
+                    bert_labels.setdefault(code4, {})[j] = "POS_DICT"
+                    pos_cnt += 1
+
+        _log(
+            f"[kabunews][pos-dict] total={total} "
+            f"marked={pos_cnt} keywords={len(pos_words)}"
+        )
+    else:
+        _log("[kabunews][pos-dict] no keywords configured; skip marking")
+
+
+
+    # 日付を YY/MM/DD に整形
+    def _fmt_pub(pub: str) -> str:
+        if not pub:
+            return ""
+        s = str(pub).strip()
+        for pat in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"):
+            try:
+                dt = datetime.strptime(s, pat)
+                return dt.strftime("%y/%m/%d")  # ← 25/11/14 みたいな形
+            except Exception:
+                pass
+        if len(s) >= 10 and s[0:4].isdigit() and s[4] in "-/" and s[7] in "-/":
+            core = s[:10].replace("-", "/")   # 2025/11/14
+            return core[2:]                   # → 25/11/14
+        return ""
+
+    # 1銘柄分を HTML 1本に整形
+    def fmt(code4, items):
+        out = []
+        for j, (title, link, pub) in enumerate(items or []):
+            title = (title or "").strip()
+            link  = (link or "").strip()
+            date_str = _fmt_pub(pub)
+
+            # タイトルはちょっと長めに（例：先頭 24 文字）
+            short_title = title[:24]
+            label = f"{date_str} {short_title}" if date_str else short_title
+
+            # BERT が positive なら青丸を付与
+            sentiment = bert_labels.get(code4, {}).get(j)
+            dot = ""
+            if sentiment:
+                s_norm = str(sentiment).upper()
+                if ("POS" in s_norm) or ("ポジ" in s_norm):
+                    dot = '<span class="bert-pos-dot">●</span>'
+
+            if link:
+                html = f'{dot}<a href="{link}" target="_blank" rel="noopener noreferrer">{label}</a>'
+            else:
+                html = f'{dot}{label}'
+            out.append(html)
+        return " / ".join(out)
+
+    data = []
+    for idx, code4 in idx_map:
+        data.append(fmt(code4, result_map.get(code4, [])))
+
+    return _pd.Series(data, index=df.index, dtype=object)
+
+def kabutan_news_line(code: str, name: str) -> str:
+    rows = _kabunews_fetch(code, name)
+    if not rows:
+        return ""
+    def _fmt(it):
+        s = it["title"]
+        if it.get("sentiment"):
+            s = f'[{it["sentiment"]}] ' + s
+        return s
+    return " ｜ ".join(_fmt(it) for it in rows)
+
+
+# [PATCH] ensure 3 news columns exist on DataFrame
+def ensure_news_cols(df):
+    try:
+        cols = getattr(df, 'columns', [])
+        for c in ('株探ニュース(1)', '株探ニュース(2)', '株探ニュース(3)'):
+            if c not in cols:
+                df[c] = None
+        return df
+    except Exception:
+        return df
+
+
+# [PATCH] guard function to safely ensure news columns on both dfs
+def _ensure_news_cols_both():
+    try:
+        globals()['df_cand'] = ensure_news_cols(globals().get('df_cand'))
+    except Exception:
+        pass
+    try:
+        globals()['df_all'] = ensure_news_cols(globals().get('df_all'))
+    except Exception:
+        pass
+
+
+
+# === [THEME] Kabutan 人気テーマ + 株探ニュース から「関連テーマ」を付与するユーティリティ ===
+def _ensure_theme_tables(conn: sqlite3.Connection):
+    # theme_master / stock_theme_kabutan の2テーブルを保証する。
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS theme_master ("
+            "  theme_id   INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  theme_name TEXT NOT NULL UNIQUE"
+            ")"
+        )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS stock_theme_kabutan ("
+            "  コード     TEXT NOT NULL,"
+            "  theme_id   INTEGER NOT NULL,"
+            "  取得日     TEXT,"
+            "  PRIMARY KEY (コード, theme_id)"
+            ")"
+        )
+        conn.commit()
+    except Exception as e:
+        try:
+            print("[theme][WARN] _ensure_theme_tables failed:", e)
+        except Exception:
+            pass
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+def _update_kabutan_theme_ranking(conn: sqlite3.Connection,
+                                  url: str = "https://kabutan.jp/info/accessranking/3_2"):
+    """
+    Kabutan「人気の株式テーマ 3日間アクセスランキング」から
+    テーマ名と同ページに掲載されている関連銘柄コードだけを取得して
+    theme_master / stock_theme_kabutan に反映する。
+
+    ※ テーマ詳細ページには飛ばない。
+    ※ 失敗しても例外は外に投げず、WARN ログだけ出して処理継続。
+    """
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+        import datetime as _dt
+    except Exception as e:
+        try:
+            print("[theme][WARN] bs4 not available, skip kabutan themes:", e)
+        except Exception:
+            pass
+        return
+
+    # 1) ページ取得
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        r.raise_for_status()
+    except Exception as e:
+        try:
+            print("[theme][WARN] fetch kabutan themes failed:", e)
+        except Exception:
+            pass
+        return
+
+    html = r.text
+    soup = BeautifulSoup(html, "lxml")
+    today = _dt.date.today().isoformat()
+
+    try:
+        cur = conn.cursor()
+        import re as _re
+
+        # 2) ランキングテーブルを特定
+        #    現在のレイアウトでは <div class="acrank acrank_theme"><table>...</table> が
+        #    テーマランキング本体になっている。
+        container = soup.find("div", class_="acrank_theme")
+        if container is None:
+            # 念のため class 完全一致でも試す
+            container = soup.find("div", class_="acrank acrank_theme")
+        if container is None:
+            try:
+                print("[theme][WARN] acrank_theme container not found; skip update")
+            except Exception:
+                pass
+            return
+
+        table = container.find("table")
+        if table is None:
+            try:
+                print("[theme][WARN] acrank_theme table not found; skip update")
+            except Exception:
+                pass
+            return
+
+        # 3) 行ごとに テーマ名＋銘柄コードを抽出
+        for tr in table.find_all("tr"):
+            # テーマ名は <td class="acrank_url"><a>テーマ名</a></td>
+            ttd = tr.find("td", class_="acrank_url")
+            if ttd is None:
+                continue
+
+            tname = (ttd.get_text(" ", strip=True) or "").strip()
+            if not tname:
+                continue
+
+            # 明らかにノイズな見出しは除外
+            if "関連サイト" in tname or "外部リンク" in tname:
+                continue
+
+            # theme_master upsert
+            cur.execute(
+                "INSERT OR IGNORE INTO theme_master(theme_name) VALUES (?)",
+                (tname,)
+            )
+            
+            cur.execute(
+                "SELECT theme_id FROM theme_master WHERE theme_name = ?",
+                (tname,)
+            )
+            row = cur.fetchone()
+            if not row or row[0] is None:
+                # theme_id が取れない異常系。念のためスキップ
+                continue
+            theme_id = int(row[0])
+
+
+            # 同じ行に並んでいる <a href="...stock...?code=XXXX"> から銘柄コードを拾う
+            codes = set()
+            for a in tr.find_all("a", href=True):
+                href = a["href"] or ""
+                m = _re.search(r"code=(\d{4}[A-Z]?)", href)
+                if not m:
+                    m = _re.search(r"/stock/(\d{4}[A-Z]?)", href)
+                if not m:
+                    continue
+                codes.add(m.group(1))
+
+            for c in codes:
+                # 4桁の数字部分だけを採用（285A → 0285 のような扱いはここではせず、数値部のみ）
+                m2 = _re.match(r"(\d{4})", str(c))
+                if not m2:
+                    continue
+                c4 = m2.group(1)
+
+                cur.execute(
+                    "INSERT OR REPLACE INTO stock_theme_kabutan(コード, theme_id, 取得日) "
+                    "VALUES (?, ?, ?)",
+                    (c4, theme_id, today)
+                )
+
+        conn.commit()
+    except Exception as e:
+        try:
+            print("[theme][WARN] parse/insert kabutan themes failed:", e)
+        except Exception:
+            pass
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+def _load_theme_maps_for_screener(conn: sqlite3.Connection):
+    '''
+    screener に『関連テーマ』列を付与するための補助データをロード。
+    戻り値: (kabutan_map, theme_names)
+      kabutan_map: { 'コード4桁': {'生成AI', '半導体', ...}, ... }
+      theme_names: ['生成AI', '半導体', ...]
+    '''
+    kabutan_map = {}
+    theme_names = []
+    try:
+        cur = conn.cursor()
+        for code4, tname in cur.execute(
+            "SELECT printf('%04d', CAST(s.コード AS INTEGER)) AS c4, m.theme_name "
+            "FROM stock_theme_kabutan s "
+            "JOIN theme_master m ON s.theme_id = m.theme_id"
+        ):
+            if not code4 or not tname:
+                continue
+            kabutan_map.setdefault(str(code4), set()).add(str(tname))
+        for (tname,) in cur.execute(
+            "SELECT theme_name FROM theme_master ORDER BY theme_name"
+        ):
+            if tname:
+                theme_names.append(str(tname))
+        cur.close()
+    except Exception as e:
+        try:
+            print("[theme][WARN] _load_theme_maps_for_screener failed:", e)
+        except Exception:
+            pass
+    return kabutan_map, theme_names
+
+def _attach_related_themes(df, kabutan_map, theme_names):
+    '''
+    DataFrame(df) に '関連テーマ' 列を付与する。
+    ・Kabutan 人気テーマ（stock_theme_kabutan）
+    ・株探ニュース(1)〜(3) タイトルに含まれるテーマ名
+    を両方マージして ' / ' 区切りで入れる。
+    '''
+    try:
+        import re as _re
+        if df is None or getattr(df, "empty", True):
+            return df
+        cols = getattr(df, "columns", [])
+        if "コード" not in cols:
+            return df
+
+        def _strip_tags(s: str) -> str:
+            # aタグなどをざっくり除去
+            return _re.sub(r"<[^>]*>", "", s or "")
+
+        def _themes_from_news(news_texts):
+            if not theme_names:
+                return set()
+            joined = " ".join(
+                _strip_tags(str(t)) for t in news_texts if t
+            )
+            if not joined:
+                return set()
+            hits = set()
+            for name in theme_names:
+                if name and name in joined:
+                    hits.add(name)
+            return hits
+
+        codes = df["コード"].astype(str).map(lambda x: x.zfill(4))
+        n1 = df["株探ニュース(1)"] if "株探ニュース(1)" in cols else None
+        n2 = df["株探ニュース(2)" ] if "株探ニュース(2)" in cols else None
+        n3 = df["株探ニュース(3)"] if "株探ニュース(3)" in cols else None
+
+        related = []
+        for i, c4 in enumerate(codes):
+            base = set(kabutan_map.get(str(c4), set()))
+            news_texts = []
+            if n1 is not None:
+                news_texts.append(n1.iloc[i])
+            if n2 is not None:
+                news_texts.append(n2.iloc[i])
+            if n3 is not None:
+                news_texts.append(n3.iloc[i])
+            from_news = _themes_from_news(news_texts)
+            all_themes = sorted(base | from_news)
+            related.append(" / ".join(all_themes) if all_themes else None)
+        df["関連テーマ"] = related
+    except Exception as e:
+        try:
+            print("[theme][WARN] _attach_related_themes failed:", e)
+        except Exception:
+            pass
+    return df
+
+# === [/THEME] ===========================================================
+
+
+###############################################
+# === 相対強度RS計算ユーティリティ ====================
+###############################################
+import pandas as pd
+
+def compute_relative_strength(df_all, index_df_map):
+    """
+    df_all: 全銘柄データ（現在の df_all）
+    index_df_map: {指数コード: 指数データ（直近～過去の価格を含むDataFrame）}
+    
+    必要列：
+        df_all      : "コード", "現在値", "前日終値", "終値20日前"
+        index_df_map: 各指数 DataFrame に "close", "close_5ago", "close_20ago"
+    """
+
+    # RS列が既に存在する場合は上書き（coerce安全）
+    df_all["RS_5"] = None
+    df_all["RS_20"] = None
+
+    # 安全化
+    if df_all is None or df_all.empty:
+        return df_all
+
+    # 各銘柄に対して対応指数を判断するロジック
+    # ※既にあなたの内部ロジック（市場列など）で指数との対応が決まる想定
+    def resolve_index_symbol(row):
+        mkt = str(row.get("市場") or "")
+
+        if "グロース" in mkt:
+            return "^GRT250"
+        if "東証" in mkt or "プライム" in mkt or "スタンダード" in mkt:
+            return "^TOPX"
+        # fallback
+        return "^TOPX"
+
+    # 指数の騰落率計算
+    def idx_return(idx_df, days):
+        try:
+            c0 = float(idx_df["close"].iloc[-1])
+            cp = float(idx_df[f"close_{days}ago"].iloc[-1])
+            return (c0 - cp) / cp
+        except Exception:
+            return None
+
+    # 銘柄の騰落率
+    def stock_return(row, days):
+        try:
+            if days == 5:
+                return (float(row["現在値"]) - float(row["終値5日前"])) / float(row["終値5日前"])
+            else:
+                return (float(row["現在値"]) - float(row["終値20日前"])) / float(row["終値20日前"])
+        except Exception:
+            return None
+
+    # メインループ
+    rs5_list = []
+    rs20_list = []
+
+    for _, r in df_all.iterrows():
+        idx_symbol = resolve_index_symbol(r)
+        idx_df = index_df_map.get(idx_symbol)
+
+        if idx_df is None:
+            rs5_list.append(None)
+            rs20_list.append(None)
+            continue
+
+        idx5 = idx_return(idx_df, 5)
+        idx20 = idx_return(idx_df, 20)
+        st5 = stock_return(r, 5)
+        st20 = stock_return(r, 20)
+
+        if st5 is not None and idx5 is not None:
+            rs5_list.append(st5 - idx5)
+        else:
+            rs5_list.append(None)
+
+        if st20 is not None and idx20 is not None:
+            rs20_list.append(st20 - idx20)
+        else:
+            rs20_list.append(None)
+
+    df_all["RS_5"] = rs5_list
+    df_all["RS_20"] = rs20_list
+
+    return df_all
+
+
+# === [/INJECTED] ===========================================================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
                                         include_log: bool=False, log_limit: int=2000):
     """HTMLダッシュボード出力（1ファイル完結版：__DATA__ を <script type=application/json> と window.__DATA__ で埋め込む）"""
@@ -7580,6 +9481,17 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _ensure_latest_prices_code_col(conn)
     _p("done: _ensure_latest_prices_code_col")
 
+    # 1.5) テーマ関連テーブルを保証し、Kabutan 人気テーマを最新化
+    try:
+        _ensure_theme_tables(conn)
+        _update_kabutan_theme_ranking(conn)
+        _p("theme: _ensure_theme_tables + kabutan ranking updated")
+    except Exception as _e:
+        try:
+            print("[theme][WARN] setup/update skipped:", _e)
+        except Exception:
+            pass
+
     # 2) V5 収集（失敗しても継続）
     _p("V5: collect start")
     t = _t.perf_counter()
@@ -7592,82 +9504,53 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     # 3) 候補・全カラム
     t = _t.perf_counter()
-    _p("SQL: df_cand start")
-    df_cand = pd.read_sql_query("""
-SELECT
-  s.コード,
-  lp.Res_Zone        AS 抵抗帯中心,
-  lp.Res_Zone_Last   AS 抵抗最終日,
-  lp.Res_Nearest     AS 最寄り抵抗,
-  lp.Sup_Zone        AS 支持帯中心,
-  lp.Sup_Zone_Last   AS 支持最終日,
-  lp.Sup_Nearest     AS 最寄り支持,
-  s.銘柄名, s.市場,
-  s.現在値,
-  s."前日終値"       AS 前日終値,
-  s."前日円差"       AS "前日円差",
-  s.前日終値比率,
-  s.出来高, s.時価総額億円,
-  COALESCE(
-    s.売買代金億,
-    CASE WHEN s.現在値 IS NOT NULL AND s.出来高 IS NOT NULL
-         THEN (s.現在値 * s.出来高) / 100000000.0 END
-  ) AS "売買代金(億)",
-  s.売買代金20日平均億,
-  s.RVOL代金,
-  s.合成スコア,
-  s.ATR14_PCT        AS "ATR14%",
-  s.初動フラグ, s.初動開始日,
-  s.底打ちフラグ, s.底打ち開始日,
-  s.右肩上がりフラグ, s.右肩開始日,
-  s.右肩早期フラグ, s.右肩早期開始日,
-  s.右肩早期種別, s.右肩早期種別開始日, s.右肩早期前回種別,
-  s.右肩早期スコア,
-  s.空売り機関,
-  s.シグナル更新日,
-  s.営業利益,
-  s.増資リスク, s.増資スコア, s.増資理由, s.財務コメント,
-  s.スコア,
-  s.進捗率,
-  s.overall_alpha
-FROM screener s
-LEFT JOIN latest_prices lp
-  ON CAST(lp.コード AS TEXT) = CAST(s.コード AS TEXT)
-ORDER BY COALESCE(s.時価総額億円,0) DESC, COALESCE(s.出来高,0) DESC, s.コード
-""", conn)
-    _p(f"SQL: df_cand done shape={df_cand.shape} dt={( _t.perf_counter()-t):.2f}s")
-
-    t = _t.perf_counter()
-    _p("SQL: df_all start")
+    _p("SQL: df_all/df_cand start")
     df_all = pd.read_sql_query("""
-SELECT s.*,
-       lp.Res_HH   AS 直近高値90日,
-       lp.Res_Zone AS 抵抗帯中心,
-       lp.Res_Zone_Touches AS 抵抗タッチ数,
-       lp.Res_Zone_Last    AS 抵抗最終日,
-       lp.Res_Round AS 抵抗節目,
-       lp.Res_Round_Step AS 抵抗節目刻み,
-       lp.Res_Round_Near AS 抵抗節目近,
-       lp.Res_Line_Today AS 抵抗線今日,
-       lp.Res_Line_R2    AS 抵抗R2,
-       lp.Res_Nearest    AS 最寄り抵抗,
-       lp.Sup_LL   AS 直近安値90日,
-       lp.Sup_Zone AS 支持帯中心,
-       lp.Sup_Zone_Touches AS 支持タッチ数,
-       lp.Sup_Zone_Last    AS 支持最終日,
-       lp.Sup_Round AS 支持節目,
-       lp.Sup_Round_Step AS 支持節目刻み,
-       lp.Sup_Round_Near AS 支持節目近,
-       lp.Sup_Line_Today AS 支持線今日,
-       lp.Sup_Line_R2    AS 支持R2,
-       lp.Sup_Nearest    AS 最寄り支持
-FROM screener s
-LEFT JOIN latest_prices lp
-  ON CAST(lp.コード AS TEXT) = CAST(s.コード AS TEXT)
-ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
-""", conn)
-    _p(f"SQL: df_all done shape={df_all.shape} dt={( _t.perf_counter()-t):.2f}s")
-    
+      SELECT s.*,
+             lp.Res_HH   AS 直近高値90日,
+             lp.Res_Zone AS 抵抗帯中心,
+             lp.Res_Zone_Touches AS 抵抗タッチ数,
+             lp.Res_Zone_Last    AS 抵抗最終日,
+             lp.Res_Round AS 抵抗節目,
+             lp.Res_Round_Step AS 抵抗節目刻み,
+             lp.Res_Round_Near AS 抵抗節目近,
+             lp.Res_Line_Today AS 抵抗線今日,
+             lp.Res_Line_R2    AS 抵抗R2,
+             lp.Res_Nearest    AS 最寄り抵抗,
+             lp.Sup_LL   AS 直近安値90日,
+             lp.Sup_Zone AS 支持帯中心,
+             lp.Sup_Zone_Touches AS 支持タッチ数,
+             lp.Sup_Zone_Last    AS 支持最終日,
+             lp.Sup_Round AS 支持節目,
+             lp.Sup_Round_Step AS 支持節目刻み,
+             lp.Sup_Round_Near AS 支持節目近,
+             lp.Sup_Line_Today AS 支持線今日,
+             lp.Sup_Line_R2    AS 支持R2,
+             lp.Sup_Nearest    AS 最寄り支持
+      FROM screener s
+      LEFT JOIN latest_prices lp
+        ON CAST(lp.コード AS TEXT) = CAST(s.コード AS TEXT)
+      ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
+    """, conn)
+    df_all = ensure_news_cols(df_all)
+    _p(f"SQL: df_all/df_cand done shape={df_all.shape} dt={( _t.perf_counter()-t):.2f}s")
+
+    # df_cand は df_all から作成（現状は全件。必要に応じて「候補」絞り込みを追加）
+    df_cand = df_all.copy()
+
+    # 3) Kabutan 人気テーマ + 株探ニュースから『関連テーマ』列を付与
+    try:
+        kabutan_map, theme_names = _load_theme_maps_for_screener(conn)
+        if kabutan_map or theme_names:
+            _attach_related_themes(df_cand, kabutan_map, theme_names)
+            _attach_related_themes(df_all, kabutan_map, theme_names)
+            _p("theme: attached '関連テーマ' to df_cand/df_all")
+    except Exception as _e:
+        try:
+            print("[theme][WARN] attach to DataFrame failed:", _e)
+        except Exception:
+            pass
+
     ######################################################################
     #制限版
     ######################################################################
@@ -7683,13 +9566,31 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     ######################################################################
     #制限版
     ######################################################################
+    ######################################################################
+    #制限版
+    ######################################################################
+    # --- ▼ TEMP: 表示件数を最大100件に制限（cand/allを同期） ▼ ---
+    #_LIMIT = 10
+    # cand は並びを維持して先頭だけ
+    #df_cand = df_cand.head(_LIMIT).copy()
+
+    # all は cand に残した銘柄だけへ絞る（コードキーで同期）
+    #_codes = set(df_cand["コード"].astype(str).str.zfill(4))
+    #df_all = df_all[df_all["コード"].astype(str).str.zfill(4).isin(_codes)].copy()
+    # --- ▲ TEMPここまで ▲ ---
+    ######################################################################
+    #制限版
+    ######################################################################
+
     # 4) 軽い整形
     _p("rename/round: start")
+    t_rename = _t.perf_counter()
 
     try:
         ren = {"推奨": "推奨アクション", "推奨比率%": "推奨比率"}
-        present = {k:v for k,v in ren.items() if k in df_cand.columns}
-        if present: df_cand.rename(columns=present, inplace=True)
+        present = {k: v for k, v in ren.items() if k in df_cand.columns}
+        if present:
+            df_cand.rename(columns=present, inplace=True)
         if "判定" not in df_cand.columns:
             df_cand["判定"] = df_cand["右肩上がりフラグ"] if "右肩上がりフラグ" in df_cand.columns else None
         if "判定理由" not in df_cand.columns:
@@ -7698,18 +9599,277 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         print("[rename][WARN-Bonly]", _e)
 
     def _round2_inplace(df):
-        if df is None or df.empty: return
+        if df is None or df.empty:
+            return
         percent = ["前日終値比率","前日終値比率（％）","フォロー高値pct","最大逆行pct","リターン終値pct","推奨比率","ATR14%","進捗率"]
         money   = ["売買代金(億)","売買代金億","売買代金20日平均億","RVOL代金","時価総額億円"]
         price   = ["現在値","前日終値","前日円差","始値","高値","安値","終値"]
         score   = ["右肩早期スコア","合成スコア","スコア"]
-        for c in percent+money+price+score:
+        for c in percent + money + price + score:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
-    _round2_inplace(df_cand); _round2_inplace(df_all)
-    _p("rename/round: done")
+
+    _round2_inplace(df_cand)
+    _round2_inplace(df_all)
+    _p(f"rename/round: done dt={( _t.perf_counter() - t_rename ): .2f}s")
+
+    ###############################################################
+    #  === RS_5 / RS_20 / Growth_Bias / 地合い / 逆行フラグ 追加 ===
+    ###############################################################
+    t_rs = _t.perf_counter()
+    _p("RS/GrowthBias: start")
+
+    import pandas as pd
+    import numpy as np
+
+    # ------------------------------------------------------------
+    # 1) 指数の終値を price_history から取得するヘルパ
+    # ------------------------------------------------------------
+
+    def _get_index_returns(conn, code, days_list=[1,5,20]):
+        """指数コードに対して、直近の騰落率（1日・5日・20日）を返す"""
+
+        # --- エイリアス対応（TOPIX 系だけ特別扱い）---
+        aliases = [code]
+        if code in ("^TOPX", "^TOPIX"):
+            # price_history に入っていそうな別名を全部見る
+            aliases = ["^TOPX", "^TOPIX", "TOPIX", "998405.T"]
+
+        # IN 句を作成
+        in_clause = ",".join(f"'{c}'" for c in aliases)
+
+        q = f"""
+            SELECT 日付, 終値
+            FROM price_history
+            WHERE コード IN ({in_clause})
+            ORDER BY 日付 ASC
+        """
+        df = pd.read_sql_query(q, conn)
+
+        if df.empty:
+            return {d: None for d in days_list}
+
+        # 日付でソートして、終値の推移から d 日前との騰落率を求める
+        df = df.sort_values("日付")
+        out = {}
+
+        try:
+            last = df["終値"].iloc[-1]
+            for d in days_list:
+                if len(df) > d:
+                    before = df["終値"].iloc[-(d+1)]
+                    out[d] = float(last - before) / before
+                else:
+                    out[d] = None
+        except Exception:
+            out = {d: None for d in days_list}
+
+        return out
+
+
+
+    # ------------------------------------------------------------
+    # 2) 銘柄ごとの対応指数を決める関数
+    # ------------------------------------------------------------
+    def _resolve_index_symbol(row):
+        m = str(row.get("市場") or "")
+        if "グロース" in m:
+            return "^GRT250"
+        if "東証" in m or "プライム" in m or "スタンダード" in m:
+            return "^TOPX"
+        return "^TOPX"
+
+
+    # ------------------------------------------------------------
+    # 3) RS_5 / RS_20 を計算して df_all に追加
+    # ------------------------------------------------------------
+    # まず price_history から、各銘柄の 5日前/20日前 の終値を取得
+    try:
+        q = """
+            SELECT
+                A.コード,
+                A.終値 AS 終値20日前
+            FROM price_history A
+            JOIN latest_prices L
+              ON L.コード = A.コード
+            WHERE A.日付 = (
+                SELECT 日付
+                FROM price_history
+                WHERE コード = A.コード
+                ORDER BY 日付 DESC
+                LIMIT 1 OFFSET 20
+            )
+        """
+        df_20 = pd.read_sql_query(q, conn)
+
+        q = """
+            SELECT
+                A.コード,
+                A.終値 AS 終値5日前
+            FROM price_history A
+            JOIN latest_prices L
+              ON L.コード = A.コード
+            WHERE A.日付 = (
+                SELECT 日付
+                FROM price_history
+                WHERE コード = A.コード
+                ORDER BY 日付 DESC
+                LIMIT 1 OFFSET 5
+            )
+        """
+        df_5 = pd.read_sql_query(q, conn)
+
+        df_all = df_all.merge(df_5, on="コード", how="left")
+        df_all = df_all.merge(df_20, on="コード", how="left")
+    except Exception as _e:
+        print("[RS][WARN] failed to load past prices", _e)
+
+    # 指数の騰落率をロード（1日＋5日＋20日）
+    idx_cache = {}
+    for sym in ["^TOPX", "^N225", "^GRT250"]:
+        idx_cache[sym] = _get_index_returns(conn, sym, days_list=[1,5,20])
+
+    # RS計算
+    rs5 = []
+    rs20 = []
+    for _, r in df_all.iterrows():
+        idx = _resolve_index_symbol(r)
+        idx5 = idx_cache[idx].get(5)
+        idx20 = idx_cache[idx].get(20)
+
+        try:
+            st5 = (r["現在値"] - r["終値5日前"]) / r["終値5日前"] if r["終値5日前"] else None
+        except Exception:
+            st5 = None
+
+        try:
+            st20 = (r["現在値"] - r["終値20日前"]) / r["終値20日前"] if r["終値20日前"] else None
+        except Exception:
+            st20 = None
+
+        rs5.append(st5 - idx5 if st5 is not None and idx5 is not None else None)
+        rs20.append(st20 - idx20 if st20 is not None and idx20 is not None else None)
+
+    df_all["RS_5"] = rs5
+    df_all["RS_20"] = rs20
+
+
+    # ------------------------------------------------------------
+    # 4) Growth_Bias（グロース地合いバイアス）
+    # ------------------------------------------------------------
+    topx20 = idx_cache["^TOPX"][20]
+    grt20 = idx_cache["^GRT250"][20]
+
+    if topx20 is not None and grt20 is not None:
+        growth_bias = grt20 - topx20
+    else:
+        growth_bias = None
+
+    df_all["Growth_Bias"] = growth_bias
+
+
+    # ------------------------------------------------------------
+    # 5) 地合いフラグ（TOPX＋N225）
+    # ------------------------------------------------------------
+    topx20 = idx_cache["^TOPX"][20]
+    nikkei20 = idx_cache["^N225"][20]
+
+    def _market_flag(t, n):
+        try:
+            if t > 0.02 and n > 0.02:
+                return 1
+            if t < -0.02 and n < -0.02:
+                return -1
+            return 0
+        except Exception:
+            return 0
+
+    df_all["地合いフラグ"] = _market_flag(topx20, nikkei20)
+
+
+    # ------------------------------------------------------------
+    # 6) 逆行フラグ（指数と銘柄の当日比較）
+    # ------------------------------------------------------------
+    # 指数の当日騰落率（TOPXのみ利用）
+    topx1 = idx_cache["^TOPX"][1] if "^TOPX" in idx_cache else None
+
+    rev_strong = []
+    rev_weak = []
+
+    for _, r in df_all.iterrows():
+        try:
+            stock1 = (r["現在値"] - r["前日終値"]) / r["前日終値"]
+        except Exception:
+            stock1 = None
+
+        if stock1 is None or topx1 is None:
+            rev_strong.append(0)
+            rev_weak.append(0)
+            continue
+
+        # 逆行強（TOPX弱いのに個別が強い）
+        if topx1 < -0.015 and stock1 > 0.01:
+            rev_strong.append(1)
+        else:
+            rev_strong.append(0)
+
+        # 逆行弱（TOPX強いのに個別が弱い）
+        if topx1 > 0.015 and stock1 < -0.01:
+            rev_weak.append(1)
+        else:
+            rev_weak.append(0)
+
+    df_all["逆行強フラグ"] = rev_strong
+    df_all["逆行弱フラグ"] = rev_weak
+    _p(f"RS/GrowthBias: done dt={( _t.perf_counter() - t_rs ): .2f}s")
+
+
+    ###############################################################
+    # === パッチ終了 ===
+    ###############################################################
+
+
+    # === [INJECTED] 株探ニュース(3) 列を追加（改行/省略なし・DB保存なし） ===
+    try:
+        _p("news: kabutan bulk start")
+        t_news = _t.perf_counter()
+
+        def _news_apply_row(r):
+            c = str(r.get("コード") or "").zfill(4)
+            n = str(r.get("銘柄名") or "")
+            return kabutan_news_line(c, n)
+
+        news_ser_all = None
+
+        # 先に df_all だけでニュースをまとめて実行
+        if 'コード' in df_all.columns and '銘柄名' in df_all.columns:
+            news_ser_all = kabutan_news_lines_bulk_for_dataframe(
+                df_all, code_col='コード', name_col='銘柄名'
+            )
+            df_all['株探ニュース(3)'] = news_ser_all
+
+        # df_cand 側は df_all の結果を「コード」でマッピングして流用
+        if 'コード' in df_cand.columns and '銘柄名' in df_cand.columns:
+            if news_ser_all is not None:
+                # コード→ニュース の対応表を作る（重複コードは最後の行を採用）
+                news_map = (
+                    df_all[['コード', '株探ニュース(3)']]
+                    .drop_duplicates(subset=['コード'], keep='last')
+                    .set_index('コード')['株探ニュース(3)']
+                )
+                df_cand['株探ニュース(3)'] = df_cand['コード'].map(news_map).fillna("")
+            else:
+                # 保険：df_all のニュース取得に失敗したときだけ個別に取り直す
+                df_cand['株探ニュース(3)'] = kabutan_news_lines_bulk_for_dataframe(
+                    df_cand, code_col='コード', name_col='銘柄名'
+                )
+        _p(f"news: kabutan bulk done dt={( _t.perf_counter() - t_news ): .2f}s")
+    except Exception as _e_news:
+        print('[news][WARN] 株探ニュース列の付与に失敗:', _e_news)
+    # === [/INJECTED] ===
 
     # 5) ログ（省略可）
+    t_log = _t.perf_counter()
     _p(f"log: fetch start include_log={include_log}")
     if include_log:
         try:
@@ -7721,9 +9881,11 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
             df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
     else:
         df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
-    _p(f"log: fetch done shape={df_log.shape}")
+    _p(f"log: fetch done shape={df_log.shape} dt={( _t.perf_counter() - t_log ): .2f}s")
 
+    
     # 6) フラグ装飾（略式）
+    t_flags = _t.perf_counter()
     _p("flags: decorate start")
     def _mini(text): return "" if not text else f"&nbsp;<span class='mini'>{text}</span>"
     def _flag_with_since(flag, since):
@@ -7734,19 +9896,37 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         if since_kind: extras.append(f"{since_kind}〜")
         if prev_kind:  extras.append(f"prev: {prev_kind}")
         return _mini(" / ".join(extras)) if extras else ""
-    if not df_cand.empty:
-        df_cand["初動フラグ"]       = df_cand.apply(lambda r: _flag_with_since(r.get("初動フラグ"), r.get("初動開始日")), axis=1)
-        df_cand["底打ちフラグ"]     = df_cand.apply(lambda r: _flag_with_since(r.get("底打ちフラグ"), r.get("底打ち開始日")), axis=1)
-        df_cand["右肩上がりフラグ"] = df_cand.apply(lambda r: _flag_with_since(r.get("右肩上がりフラグ"), r.get("右肩開始日")), axis=1)
-        df_cand["右肩早期フラグ"]   = df_cand.apply(lambda r: _flag_with_since(r.get("右肩早期フラグ"), r.get("右肩早期開始日")), axis=1)
-        df_cand["右肩早期種別_mini"] = df_cand.apply(
+
+    # ★ df_cand と df_all の両方に適用（存在チェック付き）
+    for _df in (df_cand, df_all):
+        if _df is None or getattr(_df, "empty", True): 
+            continue
+        _df["初動フラグ"]       = _df.apply(lambda r: _flag_with_since(r.get("初動フラグ"), r.get("初動開始日")), axis=1)
+        _df["底打ちフラグ"]     = _df.apply(lambda r: _flag_with_since(r.get("底打ちフラグ"), r.get("底打ち開始日")), axis=1)
+        _df["右肩上がりフラグ"] = _df.apply(lambda r: _flag_with_since(r.get("右肩上がりフラグ"), r.get("右肩開始日")), axis=1)
+        _df["右肩早期フラグ"]   = _df.apply(lambda r: _flag_with_since(r.get("右肩早期フラグ"), r.get("右肩早期開始日")), axis=1)
+        _df["右肩早期種別_mini"] = _df.apply(
             lambda r: _early_kind_mini(r.get("右肩早期種別開始日"), r.get("右肩早期前回種別"))
                       if (r.get("右肩早期種別") or "").strip() else "",
             axis=1
         )
         for c in ["初動開始日","底打ち開始日","右肩開始日","右肩早期開始日","右肩早期種別開始日","右肩早期前回種別"]:
-            if c in df_cand.columns: df_cand.drop(columns=[c], inplace=True)
-    _p("flags: decorate done")
+            if c in _df.columns:
+                _df.drop(columns=[c], inplace=True)
+
+    _p(f"flags: decorate done dt={( _t.perf_counter() - t_flags ): .2f}s")
+
+    # --- ensure KABU news column exists (for both cand/all) ---
+    try:
+        for _df in (df_cand, df_all):
+            if _df is not None and not getattr(_df, "empty", True):
+                if "株探ニュース(3)" not in _df.columns:
+                    _df["株探ニュース(3)"] = ""
+    except Exception as _e:
+        print("[warn] ensure 株探ニュース(3) column:", _e)
+
+
+
     # 7) レコード化
     import time as _t
     _t0 = _t.time()
@@ -7807,8 +9987,6 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     print(f"[timer] preload_price_summaries: map={{len(summary_map)}}", flush=True)
 
     all_rows  = enrich_rows_with_price_summary(all_rows,  summary_map)
-    # cand_rows への個別呼び出しは不要（同じ dict 参照）。必要なら下行をコメント解除。
-    # cand_rows = enrich_rows_with_price_summary(cand_rows, summary_map)
     _tick("price_summary_enrich (load+merge)")
 
     # 7.2) chart / 移動平均 / ボリバン / GC / 三役
@@ -7854,15 +10032,22 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
     hist_rows = []
     earnings_rows = []
     preearn_rows  = []
+    
+    _tick("base_day next_business_day done")
 
     # 9) data オブジェクト
+    offering_code_set = _load_offering_codes_from_db(conn, days=3650)
     data_obj = {
-        "cand": cand_rows, "all": all_rows, "logs": log_rows,
-        "hist": hist_rows, "meta": meta,
-        "earnings": earnings_rows, "preearn": preearn_rows,
-        "offer_codes": sorted(list(_load_offering_codes_from_db(conn, days=400)))
+        "cand": cand_rows,
+        "logs": log_rows,
+        "hist": hist_rows,
+        "meta": meta,
+        "earnings": earnings_rows,
+        "preearn": preearn_rows,
+        "offer_codes":  sorted(offering_code_set),
     }
     data_json = dumps_json_clean(data_obj)
+    _tick("json clean done")
 
     # 10) テンプレ描画
     template_dir = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\templates"
@@ -7885,21 +10070,29 @@ ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コー
         build_id=build_id
     )
 
+    _tick("template done")
+
     # 11) __DATA__ を <body> 直後にインライン注入（+ window.__DATA__）※関数側で両方入れる実装に統一
+    t_inject = _t.perf_counter()
     html = __inject_inline_data_json(html, data_obj)
+    _p(f"inject_inline_data_json: dt={( _t.perf_counter() - t_inject ): .2f}s")
+
 
     # 12) 書き出し（PlanA 後処理は存在すれば実行／なければ静かにスキップ）
+    t_write = _t.perf_counter()
     os.makedirs(os.path.dirname(html_path), exist_ok=True)
     with open(html_path, "w", encoding="utf-8", newline="") as f:
         f.write(html)
         if '_apply_planA_postprocess' in globals():
             try:
                 _apply_planA_postprocess(html_path, data_obj)
+                _tick("planA done")
             except Exception:
                 pass
+    _p(f"write+planA: dt={( _t.perf_counter() - t_write ): .2f}s")
 
     print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
-    _p(f"exit: total dt={( _t.perf_counter()-t0):.2f}s")
+
 
 
 # ========= 営業利益 
@@ -7908,62 +10101,148 @@ def update_operating_income_and_ratio(conn, batch_size=300, max_workers=12, use_
     既存カラムに合わせて保存：
       - 営業利益（整数・単位=億円）
       - 営利対時価（小数2桁・単位=%）
-    yahooqueryのincome_statementから最新（年次/四半期）を取得。
+
+    ※方針A版：
+      yahooquery には行かず、pl_quarter テーブルから
+      「直近4Qの営業利益合計」を使って計算する。
+      営業利益の単位は「百万円」を想定し、億円に変換して格納。
     """
+    import pandas as pd
+
     try:
-        pass
-    except ImportError:
-        print("[oper] yahooquery が未導入のためスキップします")
+        # 1) pl_quarter から必要なカラムだけ取得
+        pl = pd.read_sql_query("""
+            SELECT
+                コード,
+                決算期,
+                四半期,
+                営業利益
+            FROM pl_quarter
+        """, conn)
+    except Exception as e:
+        print("[oper][WARN] pl_quarter 読み込みに失敗したためスキップ:", e)
         return
 
-    codes = [str(r[0]) for r in conn.execute("SELECT コード FROM screener").fetchall()]
-    if not codes:
-        print("[oper] 対象コードなし")
+    if pl.empty:
+        print("[oper] pl_quarter が空のためスキップ")
         return
 
-    freq = "quarterly" if use_quarterly else "annual"
-    total_updated = 0
+    # 日付として扱うためのソートキー
+    pl["決算期_ord"] = pd.to_datetime(pl["決算期"], errors="coerce")
+    pl = pl.dropna(subset=["決算期_ord"])
 
-    for i in range(0, len(codes), batch_size):
-        chunk = codes[i:i+batch_size]
-        symbols = [f"{c}.T" for c in chunk]
+    if pl.empty:
+        print("[oper] pl_quarter に有効な決算期が無いためスキップ")
+        return
 
-        tq = YQ(symbols, asynchronous=True, max_workers=max_workers)
+    # コード＋決算期＋四半期順でソート（古い→新しい）
+    pl = pl.sort_values(["コード", "決算期_ord", "四半期"])
 
-        # income_statement を "最新 asOfDate" で1行に正規化
-        latest = {}
+    # 2) コードごとに「直近4レコード分の営業利益合計」を計算
+    #    ※四半期データがそろっていない銘柄はあるので、その場合はある分だけの合計
+    def _sum_last4(group):
+        g = group.tail(4)
+        # 営業利益が NaN のものは 0 扱い（完全に無い銘柄は後で弾く）
+        vals = g["営業利益"].dropna()
+        if vals.empty:
+            return None
+        return float(vals.sum())
+
+    series_sum = pl.groupby("コード").apply(_sum_last4).rename("営業利益_sum")
+
+    # None（有効な営業利益が取れなかった銘柄）は除外
+    series_sum = series_sum.dropna()
+    if series_sum.empty:
+        print("[oper] 有効な営業利益が計算できずスキップ")
+        return
+
+    df_oper = series_sum.reset_index()
+
+    # 3) 単位変換：百万円 → 億円（想定）
+    #    ※もし pl_quarter.営業利益 が既に「億円」なら divisor を 1.0 に変更してください。
+    DIVISOR_TO_OKU = 1.0
+
+    def _to_oku(x):
         try:
-            is_resp = tq.income_statement(freq)
-            if hasattr(is_resp, "reset_index"):  # DataFrameパターン
-                df = is_resp.reset_index()
-                # ['symbol','asOfDate','OperatingIncome'(または OperatingIncomeLoss), ...]
-                for sym, g in df.groupby("symbol"):
-                    g = g.dropna(subset=["asOfDate"]).sort_values("asOfDate")
-                    if len(g):
-                        latest[sym] = g.iloc[-1].to_dict()
-            else:  # dictパターン
-                for sym, rows in (is_resp or {}).items():
-                    if isinstance(rows, list):
-                        rows = [r for r in rows if isinstance(r, dict) and r.get("asOfDate")]
-                        rows.sort(key=lambda r: r.get("asOfDate"))
-                        if rows:
-                            latest[sym] = rows[-1]
+            return float(x) / DIVISOR_TO_OKU
         except Exception:
-            pass
+            return None
 
-        updates = []  # (営業利益_億円_int, 営利対時価_pct_2f, コード)
-        for sym in symbols:
-            ent = latest.get(sym) or {}
-            op = ent.get("OperatingIncome", ent.get("OperatingIncomeLoss"))
-            if op is None:
-                continue
-            try:
-                # yahooqueryは数値/文字/辞書混在のことがある
-                if isinstance(op, dict):
-                    op = op.get("raw", op.get("fmt"))
-                op = float(str(op).replace(",", ""))
-            except Exception:
-                continue
+    df_oper["営業利益_億"] = df_oper["営業利益_sum"].apply(_to_oku)
+
+    # 整数（億円）に丸める（端数は四捨五入）
+    def _round_int(x):
+        if x is None:
+            return None
+        try:
+            return int(round(float(x)))
+        except Exception:
+            return None
+
+    df_oper["営業利益_億_int"] = df_oper["営業利益_億"].apply(_round_int)
+
+    # 4) screener 側の時価総額を読み込み
+    try:
+        sc = pd.read_sql_query("""
+            SELECT コード, 時価総額億円
+            FROM screener
+        """, conn)
+    except Exception as e:
+        print("[oper][WARN] screener 読み込みに失敗したためスキップ:", e)
+        return
+
+    if sc.empty:
+        print("[oper] screener が空のためスキップ")
+        return
+
+    # 5) join して「営利対時価 (%)」を計算
+    df = df_oper.merge(sc, on="コード", how="inner")
+
+    def _calc_ratio(row):
+        op_oku = row.get("営業利益_億_int")
+        mc_oku = row.get("時価総額億円")
+        try:
+            if op_oku is None:
+                return None
+            if mc_oku is None or float(mc_oku) <= 0:
+                return None
+            return round(float(op_oku) * 100.0 / float(mc_oku), 2)
+        except Exception:
+            return None
+
+    df["営利対時価_pct"] = df.apply(_calc_ratio, axis=1)
+
+    # 6) UPDATE 用のタプルリストを作成
+    updates = []
+    for _, r in df.iterrows():
+        code_str = str(r["コード"])
+        op_int   = r["営業利益_億_int"]
+        ratio    = r["営利対時価_pct"]
+
+        # 営業利益が None のものは UPDATE 対象から外す
+        if op_int is None:
+            continue
+
+        updates.append((
+            int(op_int),
+            float(ratio) if ratio is not None else None,
+            code_str,
+        ))
+
+    if not updates:
+        print("[oper] 更新対象レコードなし")
+        return
+
+    cur = conn.cursor()
+    cur.executemany("""
+        UPDATE screener
+        SET 営業利益 = ?, 営利対時価 = ?
+        WHERE コード = ?
+    """, updates)
+    conn.commit()
+
+    print(f"[oper] 営業利益・営利対時価を更新しました rows={len(updates)}（pl_quarterベース）")
+
 
 # ===== Gmail送信 =====
 def send_index_html_via_gmail(attach_path: str) -> bool:
@@ -9340,7 +11619,8 @@ def run_fundamental_daily(force: bool = False):
     # 2) 実行
     try:
         print(f"[fundamental] 実行開始: {FUND_SCRIPT}")
-        subprocess.run(["python", FUND_SCRIPT], check=True)
+        # ★ ここを修正：python 固定 → _sys.executable
+        subprocess.run([_sys.executable, str(FUND_SCRIPT)], check=True)
         print("[fundamental] 株探ファンダ 全銘柄処理 OK")
     except subprocess.CalledProcessError as e:
         print(f"[fundamental][ERROR] 子プロセス失敗: returncode={e.returncode}")
@@ -9350,6 +11630,7 @@ def run_fundamental_daily(force: bool = False):
     MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
     MARKER_FILE.touch()  # 中身は不要、更新日時だけ使う
     print(f"[fundamental] マーカー更新(mtime): {MARKER_FILE}")
+
 
 # ======= 決算関連 =======
 
@@ -10415,8 +12696,13 @@ def _run_charts60(py_path: str):
     if not py.exists():
         raise FileNotFoundError(f"charts60_make.py が見つかりません: {py}")
     # そのまま実行（DBパスはスクリプト内に埋め込み済み）
-    subprocess.run(["python", str(py)], check=True)
-    
+    # メインと同じ Python 実行ファイルを使う（pythonw.exe で起動していればそれを継承）
+    _subprocess.run(
+        [_sys.executable, str(py)],
+        check=True,
+        creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
 
 
 def _fmt_hms(sec: float) -> str:
@@ -10450,17 +12736,17 @@ def _timed(label, func, *args, **kwargs):
 
 # ===== 実行モード判定ユーティリティ =====
 def _auto_run_mode():
-    """JSTで 11:30-12:30 は MIDDAYそれ以外はEOD"""
+    """JSTで 9:00-15:25 は MIDDAY（場中）、それ以外は EOD"""
     if not AUTO_MODE:
         return RUN_SESSION.upper()
 
-    try:
-        now = dtm.datetime.now(ZoneInfo("Asia/Tokyo")).time()
-    except Exception:
-        now = dtm.datetime.now().time()
+    now = dtm.datetime.now(ZoneInfo("Asia/Tokyo")).time()
 
-    return "MIDDAY" if dtm.time(11,30) <= now < dtm.time(12,30) else "EOD"
-
+    # 場中（前場＋後場＋昼休みも含めて）を MIDDAY 扱いにする
+    if dtm.time(9, 0) <= now < dtm.time(15, 25):
+        return "MIDDAY"
+    else:
+        return "EOD"
 # ===== メイン処理 =====
 def main():
 
@@ -11381,81 +13667,6 @@ try:
 except Exception:
     pass
 # ==== [/INJECTED: Per-line tracer REAPPLY at tail] ====
-
-
-# ==== [BULK PRICE SUMMARIES] ============================================
-def preload_price_summaries(conn, codes, window_days=220):
-    """対象コードの直近 ~220日を一括で読み、最終/前日と MA5/25/75 をまとめて計算"""
-    if not codes:
-        return {}
-    codes = [str(c).zfill(4) for c in codes]
-
-    import datetime as _dt
-    start_date = (_dt.date.today() - _dt.timedelta(days=220)).isoformat()
-    out = {}
-    CH = 700
-
-    for i in range(0, len(codes), CH):
-        part = codes[i:i+CH]
-        ph = ",".join(["?"]*len(part))
-        sql = f"""
-            SELECT コード, 日付, 終値, 高値, 安値
-            FROM price_history
-            WHERE CAST(コード AS TEXT) IN ({ph})
-              AND 日付 >= ?
-            ORDER BY コード, 日付
-        """
-        try:
-            dfp = pd.read_sql_query(sql, conn, params=[*part, start_date], parse_dates=["日付"])
-        except Exception as _e:
-            print(f"[bulkprice][WARN] read_sql failed for chunk {i//CH}: {_e}")
-            dfp = pd.DataFrame(columns=["コード","日付","終値","高値","安値"])
-
-        if dfp.empty:
-            continue
-        for c in ("終値","高値","安値"):
-            if c in dfp.columns:
-                dfp[c] = pd.to_numeric(dfp[c], errors="coerce")
-
-        for code, g in dfp.groupby("コード", sort=False):
-            g = g.sort_values("日付")
-            close = g["終値"]
-            ma5  = close.rolling(5,  min_periods=1).mean().iloc[-1] if not close.empty else None
-            ma25 = close.rolling(25, min_periods=1).mean().iloc[-1] if not close.empty else None
-            ma75 = close.rolling(75, min_periods=1).mean().iloc[-1] if not close.empty else None
-
-            last = g.iloc[-1] if len(g) > 0 else None
-            prev = g.iloc[-2] if len(g) > 1 else None
-            out[str(code).zfill(4)] = {
-                "last_date": None if last is None else str(last["日付"].date()),
-                "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
-                "last_high":  None if last is None or pd.isna(last["高値"]) else float(last["高値"]),
-                "last_low":   None if last is None or pd.isna(last["安値"]) else float(last["安値"]),
-                "prev_date":  None if prev is None else str(prev["日付"].date()),
-                "prev_close": None if prev is None or pd.isna(prev["終値"]) else float(prev["終値"]),
-                "ma5":  None if pd.isna(ma5)  else float(ma5),
-                "ma25": None if pd.isna(ma25) else float(ma25),
-                "ma75": None if pd.isna(ma75) else float(ma75),
-            }
-    return out
-
-def enrich_rows_with_price_summary(rows, summary_map):
-    if not rows:
-        return rows
-    for r in rows:
-        c4 = str(r.get("コード") or "").zfill(4)
-        s = summary_map.get(c4) or {}
-        if s:
-            r["高値"]  = "" if s.get("last_high")  is None else f"{s['last_high']:,.0f}"
-            r["安値"]  = "" if s.get("last_low")   is None else f"{s['last_low']:,.0f}"
-            r["MA5"]   = "" if s.get("ma5")        is None else f"{s['ma5']:,.0f}"
-            r["5日"]   = r.get("MA5","")
-            r["MA25"]  = "" if s.get("ma25")       is None else f"{s['ma25']:,.0f}"
-            r["25日"]  = r.get("MA25","")
-            r["MA75"]  = "" if s.get("ma75")       is None else f"{s['ma75']:,.0f}"
-            r["75日"]  = r.get("MA75","")
-    return rows
-# ==== [/BULK PRICE SUMMARIES] ===========================================
 
 # ===== Single-File Plan A postprocess helpers (keep UI, inline DATA, kill only data.js) =====
 def _apply_planA_postprocess(html_path, data_obj):

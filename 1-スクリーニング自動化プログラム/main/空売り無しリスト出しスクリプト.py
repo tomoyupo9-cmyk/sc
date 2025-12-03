@@ -7,8 +7,8 @@ from playwright.async_api import async_playwright, Browser, Page
 
 # ==== 設定 ====
 # CHROME_PATH の代わりに Playwright が自動でブラウザを管理します
-INPUT_CODES = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/株コード番号.txt')
-OUTPUT_TXT = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/空売り無しリスト.txt')
+INPUT_CODES = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/main/input_data/株コード番号.txt')
+OUTPUT_TXT = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/main/input_data/空売り無しリスト.txt')
 BASE_URL = 'https://karauri.net'
 HEADLESS = True  # ヘッドレスモード (True/False)
 REQUEST_INTERVAL_MS = 800  # アクセス間隔 (ミリ秒) - ★並行処理の総量制御に使用
