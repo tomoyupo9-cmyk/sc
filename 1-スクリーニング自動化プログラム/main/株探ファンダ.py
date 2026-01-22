@@ -57,14 +57,14 @@ HEADERS = {
                    "AppleWebKit/537.36 (KHTML, like Gecko) "
                    "Chrome/126.0.0.0 Safari/537.36")
 }
-ASYNC_CONCURRENCY_LIMIT = 15
+ASYNC_CONCURRENCY_LIMIT = 10
 MASTER_CODES_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt"
 DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
 
 # リトライ設定
 RETRY_HTTP_STATUSES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 4
-BACKOFF_BASE_SEC = 1.5   # 1.0,1.5,2.25,3.38... + ジッター
+BACKOFF_BASE_SEC = 2.0   # 1.0,1.5,2.25,3.38... + ジッター
 JITTER_SEC = 0.3
 
 # DBスキップ：デフォルト有効（無効化は --no-db-skip）

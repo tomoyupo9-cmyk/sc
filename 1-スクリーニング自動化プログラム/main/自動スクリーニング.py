@@ -2188,6 +2188,7 @@ RUN_SESSION = "EOD"
 # --- AUTO settings ---
 # 機能フラグ（ON/OFF）
 AUTO_MODE = True
+#AUTO_MODE = False
 
 # --- GMAIL settings ---
 # gmail app password
@@ -2719,6 +2720,7 @@ def _ensure_resistance_columns(conn):
         need("Res_Round_Near", "INTEGER")
         need("Res_Line_Today", "REAL")
         need("Res_Line_R2", "REAL")
+        need("S_High_Status", "TEXT")
         if add:
             for c, typ in add:
                 try:
@@ -2744,6 +2746,16 @@ def phase_resistance_update(conn):
         updates = []
         for code in codes:
             df = _res__load_history(conn, code, RES_LOOKBACK_DAYS)
+            
+            # ▼▼▼ 【追加】ストップ高判定 ▼▼▼
+            sh_val = ""
+            try:
+                # Step1で作った関数を呼び出す
+                sh_val = analyze_stop_high_status(df) 
+            except Exception:
+                pass
+            # ▲▲▲ --------------------------
+            
             h = derive_resistance_horizontal(df)
             t = derive_trendline_resistance(df)
             hh = h["highest_high"]
@@ -2757,10 +2769,14 @@ def phase_resistance_update(conn):
             r_near  = int(1 if (r0 and r0["near"]) else 0)
             line_today = t.get("line_today")
             line_r2    = t.get("r2")
+            # ▼▼▼ 【修正】updates.append の最後に sh_val を追加する ▼▼▼
+            # ※ code の「直前」に挿入してください
             updates.append(
                 (hh, z_price, z_t, z_last,
                  r_round, r_step, r_near,
-                 line_today, line_r2, code)
+                 line_today, line_r2, 
+                 sh_val,  # ← ★これを追加！
+                 code)
             )
         if updates:
             cur.executemany("""
@@ -2773,7 +2789,8 @@ def phase_resistance_update(conn):
                        Res_Round_Step = ?,
                        Res_Round_Near = ?,
                        Res_Line_Today = ?,
-                       Res_Line_R2 = ?
+                       Res_Line_R2 = ?,
+                       S_High_Status = ?
                  WHERE コード = ?
             """, updates)
             conn.commit()
@@ -3778,12 +3795,12 @@ function applyFreeze(tableId, uptoIdx){
   }
 
   // 3) 上部横スクロールバーを設置し、本体と双方向同期
-  function mountTopScrollbar(){
-    var table = document.getElementById('tbl-candidate');
-    if (!table) { requestAnimationFrame(mountTopScrollbar); return; }
+  function mountTopScrollbarFor(tableId){
+    var table = document.getElementById(tableId);
+    if (!table) return;
 
     var sc = findScrollerFor(table);
-    if (!sc) { requestAnimationFrame(mountTopScrollbar); return; }
+    if (!sc) return;
 
     // 既に設置済みならスキップ
     if (sc.previousElementSibling && sc.previousElementSibling.classList.contains('xbar-top')) return;
@@ -3824,6 +3841,14 @@ function applyFreeze(tableId, uptoIdx){
     window.addEventListener('resize', syncSize);
     setTimeout(syncSize, 100); // レイアウト確定後の保険
   }
+
+  // ★候補一覧 + 明日用 両方に適用
+  function mountTopScrollbar(){
+    ["tbl-candidate", "tbl-tmr"].forEach(function(id){
+      mountTopScrollbarFor(id);
+    });
+  }
+
 
   // 初期化
   if (document.readyState === 'loading'){
@@ -3897,6 +3922,16 @@ function applyFreeze(tableId, uptoIdx){
     <label><input type="checkbox" id="f_mkt_bad"> 地合い：逆風（-1）</label>
     <label><input type="checkbox" id="f_revstrong"> 逆行強</label>
     <label><input type="checkbox" id="f_revweak"> 逆行弱</label>
+    <!-- === 株探ニュース フィルタ === -->
+    <label style="margin-left:12px;">
+      株探ニュース
+      <input type="number" id="f_news_days" min="0" style="width:4em;" placeholder="日数">
+      日以内(2指定が理想)
+    </label>
+    <label style="margin-left:8px;">
+      <input type="checkbox" id="f_news_bluepos">
+      青●ありのみ
+    </label>
     <div class="toolbar early-filter">
       <label class="ef-chk"><input type="checkbox" value="ブレイク" ><span>ブレイク</span></label>
       <label class="ef-chk"><input type="checkbox" value="ポケット" ><span>ポケット</span></label>
@@ -3921,10 +3956,10 @@ function applyFreeze(tableId, uptoIdx){
       <input type="number" id="th_tri_g" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
     </label>
     <label>◆(安定) ≥
-      <input type="number" id="th_tri_s" placeholder="60" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+      <input type="number" id="th_tri_s" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
     </label>
     <label>■(ボラ) ≥
-      <input type="number" id="th_tri_v" placeholder="60" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+      <input type="number" id="th_tri_v" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
     </label>
 
 
@@ -3995,13 +4030,16 @@ function applyFreeze(tableId, uptoIdx){
     "地合いフラグ":"+1=追い風（TOPXと日経平均が両方強い）、0=中立、-1=逆風（両方弱い）。市場環境全体の評価。",
     "逆行強フラグ":"地合いが弱いのに個別株が強い状態。資金流入の強さを示す。",
     "逆行弱フラグ":"地合いが強いのに個別株が弱い状態。逆風の可能性を示す。",
-    "指数サポレジ位置":"TOPIX と 日経平均が、直近の支持線・抵抗線のどのあたりにいるかをざっくり表示します。\n\n" +
-    "・サポ直上：直近の支持線すぐ上（押し目候補）\n" +
-    "・サポ割れ：支持線を明確に割り込んで弱いゾーン\n" +
-    "・レジ直下：直近の抵抗線すぐ下（上値が重くなりやすい）\n" +
-    "・レジ抜け：抵抗線を明確に上抜けた強いゾーン\n" +
-    "・レンジ内：支持と抵抗の中間ゾーン（もみ合い）\n\n" +
-    "個別銘柄を見る前に、指数が「どの階層」にいるかを一目で把握するための指標です。",
+    "指数サポレジ位置": 
+      "日経平均(^N225)・TOPIX(^TOPX)・スタンダード(1551) 等が、直近の「節目」のどこにいるかを表示します。\n\n" +
+      "●レジ直下：抵抗線がすぐ上にある状態\n" +
+      "　→ 天井が近く、叩き落とされるリスクあり（高値掴み注意）。\n" +
+      "　→ 勢いよく抜ければ「レジ抜け」となり上昇加速。\n\n" +
+      "●サポ直上：支持線がすぐ下にある状態\n" +
+      "　→ 下げ止まりやすく、押し目買いのチャンス。\n\n" +
+      "・レジ抜け：抵抗線を突破した強いゾーン（青天井）\n" +
+      "・サポ割れ：支持線を割り込んだ弱いゾーン（下落警戒）\n" +
+      "・レンジ内：上にも下にも動ける中間ゾーン",
         "三角スコア":"Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n" +
     "・▲(上昇)…トレンドとテーマ性。直近の株価推移・RS・出来高トレンドなどから「伸びやすさ」を評価しています。\n" +
     "・◆(安定)…下落耐性と決算・財務の安定度。決算のブレや増資リスクが大きいほどスコアは低くなります。\n" +
@@ -4415,7 +4453,7 @@ function applyFreeze(tableId, uptoIdx){
   }
 
   // state
-  const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), q:"", data: DATA_CAND.slice() };
+  const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), q:"", data: DATA_CAND.slice(),  news_days: 0,news_blue_only: false};
   window.state = state;
 
   // 市場
@@ -4562,12 +4600,18 @@ function applyFreeze(tableId, uptoIdx){
     const idx = {};
     for (const r of DATA_CAND){
       const mk = String(r["市場"] || "").trim();
-      if (mk !== "指数") continue;
+      if (mk !== "指数" && mk !== "INDEX" && String(r["コード"])=="1551") continue;
 
       const name = String(r["銘柄名"] || "");
+      const code = String(r["コード"] || "");
+      
       let key = null;
       if (!key && (name.includes("TOPIX") || name.includes("トピックス"))) key = "TOPIX";
       if (!key && (name.includes("日経")  || name.includes("225")))       key = "日経平均";
+      
+      // スタンダード(1551)を検出するロジック
+      if (!key && (name.includes("スタンダード") || name.includes("Standard") || code == "1551")) key = "Standard";
+      
       if (!key) continue;
 
       const price = r["現在値"] ?? r["終値"];
@@ -4609,6 +4653,13 @@ function renderIndexSrSummary(){
       parts.push(`日経: ${lbl}`);
     }
   }
+
+
+  if (info["Standard"]) {
+      // スタンダード(1551)の表示。価格は桁が違うので「ラベル(MA判定など)」だけ出すのが無難
+      parts.push(`Std: ${info.Standard.label}`);
+  }
+ 
 
   if (!parts.length){
     host.textContent = "";
@@ -4824,14 +4875,69 @@ function renderIndexSrSummary(){
         if (!(gr >= 70 && sf >= 70 && vo >= 60)) return false;
       }
 
-      
+      // === 株探ニュース絞り込み（日付 / 青●） ===
+      const newsDaysEl = $("#f_news_days");
+      const newsBlueEl = $("#f_news_bluepos");
+      const newsDays = parseInt(newsDaysEl?.value ?? "", 10) || 0;
+      const onlyBlue = !!newsBlueEl?.checked;
+
+      if (newsDays > 0 || onlyBlue) {
+        // 株探ニュース(3) 列のHTML（aタグ・span含む）
+        const html = String(r["株探ニュース(3)"] ?? "");
+
+        // セルが空なら、条件指定されているときは除外
+        if (!html) {
+          return false;
+        }
+
+        // 青●ありのみ
+        if (onlyBlue) {
+          // BERTポジティブ用 ● が含まれているか？
+          if (!html.includes("bert-pos-dot") && !html.includes("●")) {
+            return false;
+          }
+        }
+
+        // 日数フィルタ（YY/MM/DD 形式で埋まっている日付を拾う）
+        if (newsDays > 0) {
+          // 今日は localDateStr で 00:00 に正規化
+          const today   = new Date();
+          const todayKey = localDateStr(today);      // "YYYY-MM-DD"
+          const todayMs  = Date.parse(todayKey);
+
+          const re = /(\d{2})\/(\d{2})\/(\d{2})/g;   // 例: "25/12/04"
+          let m, within = false;
+
+          while ((m = re.exec(html)) !== null) {
+            let yy = parseInt(m[1], 10);  // 25
+            const mm = parseInt(m[2], 10) - 1;
+            const dd = parseInt(m[3], 10);
+
+            // 2桁年 → 2000年代として扱う
+            if (yy < 100) yy += 2000;
+
+            const d = new Date(yy, mm, dd);
+            const diff = (todayMs - d.getTime()) / 86400000;  // 日数差
+
+            if (!Number.isNaN(diff) && diff >= 0 && diff <= newsDays) {
+              within = true;
+              break;
+            }
+          }
+
+          if (!within) {
+            return false;
+          }
+        }
+      }
+
 
 
       //検索 search
       if (q) {
         const keys = ["コード","銘柄名","判定理由","右肩早期種別",
                       "初動フラグ","底打ちフラグ","右肩上がりフラグ",
-                      "右肩早期フラグ","推奨アクション","株探ニュース"];
+                      "右肩早期フラグ","推奨アクション","株探ニュース","株探ニュース(3)"];
 
         const fields = (k)=> {
           let s = String(r[k] ?? "");
@@ -4913,6 +5019,13 @@ function renderIndexSrSummary(){
 
 
       const isHitTr = isHitRow(r);
+      // ▼▼▼ 追加: S高の色判定 ▼▼▼
+      const shVal = String(r["S高"]||"");
+      let shStyle = "";
+      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";      // 赤太字
+      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; // グレー
+      // ▲▲▲
+      
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
         <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
@@ -4935,6 +5048,7 @@ function renderIndexSrSummary(){
         <td class="num">${r["前日終値"] ?? ""}</td>
         <td class="num">${r["前日円差"] ?? ""}</td>
         <td class="num">${r["前日終値比率"] ?? ""}</td>
+        <td style="${shStyle}">${escapeHtml(shVal)}</td>
         <td class="num">${r["高値"] ?? ""}</td>
         <td class="num">${r["安値"] ?? ""}</td>
         <td class="num">${r["MA5"] ?? r["5日"] ?? r["５日"] ?? ""}</td>
@@ -4972,9 +5086,9 @@ function renderIndexSrSummary(){
         <td>${r["GC"] || ""}</td>
         <td>${r["三役"] || ""}</td>
         <!-- === RS / 地合い / 逆行 系 新列 === -->
-        <td class="num">${fint(r["RS_5"]) ?? ""}</td>
-        <td class="num">${fint(r["RS_20"]) ?? ""}</td>
-        <td class="num">${fint(r["Growth_Bias"]) ?? ""}</td>
+        <td class="num">${f2(r["RS_5"])}</td>
+        <td class="num">${f2(r["RS_20"])}</td>
+        <td class="num">${f2(r["Growth_Bias"])}</td>
         <td class="num">${r["地合いフラグ"] ?? ""}</td>
         <td class="num">${r["逆行強フラグ"] ?? ""}</td>
         <td class="num">${r["逆行弱フラグ"] ?? ""}</td>
@@ -5045,7 +5159,13 @@ function renderIndexSrSummary(){
       const triSort = g * 10000 + s2 * 100 + (100 - v2);  // 上昇→安定→低ボラ優先
 
       const isHit = isHitRow(r);
-      html += `<tr${isHit ? " class='hit'" : ""}>
+      // ▼▼▼ 追加: S高の色判定 ▼▼▼
+      const shVal = String(r["S高"]||"");
+      let shStyle = "";
+      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";      // 赤太字
+      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; // グレー
+      // ▲▲▲
+      html += `<tr${isHit ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
         <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
         <td>${escapeHtml(r["市場"] || "-")}</td>
@@ -5053,6 +5173,7 @@ function renderIndexSrSummary(){
         <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
         <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
+        <td style="${shStyle}">${escapeHtml(shVal)}</td>
         <td class="num">${r["売買代金(億)"]??""}</td>
         <td>${financeLink(r["コード"])}${financeNote(r)}</td>
         <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
@@ -5476,12 +5597,33 @@ function renderIndexSrSummary(){
     requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
 
+
 // events
   // 共通：ページ1に戻して再描画
   const applyAndRender = () => {
     state.page = 1;
     render();
   };
+
+  // 株探ニュース 日数フィルタ
+  const newsDaysInput = document.getElementById("f_news_days");
+  if (newsDaysInput) {
+    newsDaysInput.addEventListener("input", () => {
+      const v = parseInt(newsDaysInput.value, 10);
+      state.news_days = Number.isFinite(v) && v > 0 ? v : 0;  // 0以下は無効扱い
+      applyAndRender();
+    });
+  }
+
+  // 株探ニュース 青●のみ
+  const newsBlueChk = document.getElementById("f_news_bluepos");
+  if (newsBlueChk) {
+    newsBlueChk.addEventListener("change", () => {
+      state.news_blue_only = !!newsBlueChk.checked;
+      applyAndRender();
+    });
+  }
+
 
   // 件数・ページ送りは従来どおり
   $("#perpage")?.addEventListener("change",(e)=>{
@@ -5531,7 +5673,9 @@ function renderIndexSrSummary(){
   // ---- チェックボックス系：change で即時反映 ----
   const chkIds = [
     "f_shodou","f_tei","f_both","f_rightup","f_early","f_etype",
-    "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit","f_goodonly"
+    "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit","f_goodonly",
+    // ↓ここを追加
+    "f_rsstrong","f_mkt_good","f_mkt_bad","f_revstrong","f_revweak"
   ];
   chkIds.forEach(id => {
     const el = $("#"+id);
@@ -5540,6 +5684,7 @@ function renderIndexSrSummary(){
       applyAndRender();
     });
   });
+
 
   // 早期フィルタ（ブレイク／ポケット／20MAリバ／200MAリクレイム）もチェックボックスなので即時反映
   $$(".early-filter .ef-chk input").forEach(el=>{
@@ -5573,7 +5718,7 @@ function renderIndexSrSummary(){
 
   // 現在の入力状態を全部吸い出す
   function collectBookmarkState() {
-    const st = { text:{}, nums:{}, checks:{}, early:[] };
+    const st = { text:{}, nums:{}, checks:{} };
 
     // テキスト
     if (qEl) st.text.q = qEl.value || "";
@@ -5595,6 +5740,10 @@ function renderIndexSrSummary(){
       if (!el.id) return;
       st.checks[el.id] = !!el.checked;
     });
+
+    // 抵抗ネアのしきい値も一応保存
+    const rn = $("#resNearPct");
+    if (rn) st.nums.resNearPct = rn.value || "";
 
     return st;
   }
@@ -5630,6 +5779,36 @@ function renderIndexSrSummary(){
     applyAndRender();
   }
 
+  // 全フィルタを「デフォルト」に戻す（解除ボタン用）
+  function clearFiltersToDefault() {
+    // テキスト
+    if (qEl) {
+      qEl.value = "";
+      state.q = "";
+    }
+
+    // 数値は空文字に
+    numIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) el.value = "";
+    });
+
+    // 抵抗ネアは初期値 0.5 に戻す（HTMLのvalue="0.5"に合わせている）
+    const rn = $("#resNearPct");
+    if (rn) rn.value = "0.5";
+
+    // チェック類は全部 OFF
+    chkIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) el.checked = false;
+    });
+    $$(".early-filter .ef-chk input").forEach(el=>{
+      el.checked = false;
+    });
+
+    applyAndRender();
+  }
+
   // セレクトの中身をマップから作り直す
   function rebuildBookmarkSelect(map, chosen) {
     const sel = $("#bm_select");
@@ -5654,7 +5833,7 @@ function renderIndexSrSummary(){
     }
   }
 
-  // ツールバーにUIを生やす
+  // ツールバーにブックマークUIを生やす
   function setupBookmarkUI() {
     const tb = document.getElementById("toolbar");
     if (!tb) return;
@@ -5677,6 +5856,7 @@ function renderIndexSrSummary(){
       <select id="bm_select"></select>
       <input id="bm_name" type="text" placeholder="名前" style="width:9em;">
       <button type="button" id="bm_save" class="btn">保存</button>
+      <button type="button" id="bm_clear" class="btn">解除</button>
       <button type="button" id="bm_delete" class="btn">削除</button>
     `;
     tb.appendChild(wrap);
@@ -5684,6 +5864,7 @@ function renderIndexSrSummary(){
     const sel = $("#bm_select");
     const nameInput = $("#bm_name");
     const btnSave = $("#bm_save");
+    const btnClear = $("#bm_clear");
     const btnDelete = $("#bm_delete");
 
     let map = loadBookmarks();
@@ -5712,6 +5893,12 @@ function renderIndexSrSummary(){
       applyBookmarkState(st);
     });
 
+    // 解除（デフォルトに戻す＆セレクトを未選択に）
+    btnClear?.addEventListener("click", () => {
+      sel.value = "";
+      clearFiltersToDefault();
+    });
+
     // 削除
     btnDelete?.addEventListener("click", () => {
       const name = sel?.value;
@@ -5723,6 +5910,7 @@ function renderIndexSrSummary(){
       delete map[name];
       saveBookmarksMap(map);
       rebuildBookmarkSelect(map);
+      sel.value = "";
     });
   }
 
@@ -5730,12 +5918,11 @@ function renderIndexSrSummary(){
   setupBookmarkUI();
 
 
-
   // ページ銘柄コピー（列名1行 + データ行）
   $("#copy-page")?.addEventListener("click", async (e)=>{
     e.preventDefault();
 
-    const tbl = document.getElementById("tbl-candidate");
+    const tbl = document.getElementById(getActiveTableId());
     if (!tbl || !tbl.tHead || !tbl.tBodies.length) return;
 
     // --- CSVエスケープ（", 改行 を含む場合は二重引用） ---
@@ -5795,7 +5982,8 @@ function renderIndexSrSummary(){
   // CSVダウンロード
   $("#download-page-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
-    const rows = Array.from(document.querySelectorAll("#tbl-candidate tbody tr"));
+    const tblId = getActiveTableId();
+    const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
     const lines = rows.map(tr => {
       const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
       const nameRaw = tr.getAttribute("data-name") ?? "";
@@ -5821,7 +6009,8 @@ function renderIndexSrSummary(){
   // CSVダウンロード
   $("#download-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
-    const rows = Array.from(document.querySelectorAll("#tbl-candidate tbody tr"));
+    const tblId = getActiveTableId();
+    const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
     const lines = rows.map(tr => {
       const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
       const nameRaw = tr.getAttribute("data-name") ?? "";
@@ -5897,6 +6086,20 @@ function renderIndexSrSummary(){
       return;
     }
   }
+  
+  
+  // ★ どのタブがアクティブかからテーブルIDを返す
+  function getActiveTableId(){
+    const tab = state && state.tab;
+    if (tab === "tmr")      return "tbl-tmr";
+    if (tab === "log")      return "tbl-log";
+    if (tab === "earn")     return "tbl-earn";
+    if (tab === "preearn")  return "tbl-preearn";
+    // "cand" や "all" などは候補テーブル扱い
+    return "tbl-candidate";
+  }
+  
+  
   (function(){
     const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all","lnk-log":"log","lnk-earn":"earn","lnk-preearn":"preearn" };
     window.NAV_MAP = map;
@@ -5983,6 +6186,7 @@ function renderIndexSrSummary(){
             <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
             <th class="num sortable" data-col="高値" data-type="num">高値<span class="arrow"></span></th>
             <th class="num sortable" data-col="安値" data-type="num">安値<span class="arrow"></span></th>
             <th class="num sortable" data-col="5日" data-type="num">5日<span class="arrow"></span></th>
@@ -6014,11 +6218,11 @@ function renderIndexSrSummary(){
             <th class="num sortable" data-col="支持帯中心" data-type="num">支持帯中心<span class="arrow"></span></th>
             <th class="sortable" data-col="支持最終日" data-type="text">支持最終日<span class="arrow"></span></th>
             <th class="num sortable" data-col="最寄り支持" data-type="num">最寄り支持<span class="arrow"></span></th>
-            <th class="sortable" data-col="chart">chart</th>
-            <th class="sortable" data-col="移動平均">移動平均</th>
-            <th class="sortable" data-col="ボリバン">ボリバン</th>
-            <th class="sortable" data-col="GC">GC</th>
-            <th class="sortable" data-col="三役">三役</th>
+            <th class="sortable" data-col="chart">chart<span class="arrow"></span></th>
+            <th class="sortable" data-col="移動平均">移動平均<span class="arrow"></span></th>
+            <th class="sortable" data-col="ボリバン">ボリバン<span class="arrow"></span></th>
+            <th class="sortable" data-col="GC">GC<span class="arrow"></span></th>
+            <th class="sortable" data-col="三役">三役<span class="arrow"></span></th>
             <!-- === RS / 地合い / 逆行 系 新列 === -->
             <th class="num sortable" data-col="RS_5" data-type="num">RS_5<span class="arrow"></span></th>
             <th class="num sortable" data-col="RS_20" data-type="num">RS_20<span class="arrow"></span></th>
@@ -6046,6 +6250,7 @@ function renderIndexSrSummary(){
             <th>X</th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
             <th data-col="増資リスク">増資リスク</th>
@@ -9367,13 +9572,11 @@ def compute_relative_strength(df_all, index_df_map):
 
     # 各銘柄に対して対応指数を判断するロジック
     # ※既にあなたの内部ロジック（市場列など）で指数との対応が決まる想定
+    # 変更後（スタンダードの行を追加）
     def resolve_index_symbol(row):
         mkt = str(row.get("市場") or "")
-
-        if "グロース" in mkt:
-            return "^GRT250"
-        if "東証" in mkt or "プライム" in mkt or "スタンダード" in mkt:
-            return "^TOPX"
+        if "グロース" in mkt: return "^GRT250"
+        if "東証" in mkt or "プライム" in mkt: return "^TOPX"
         # fallback
         return "^TOPX"
 
@@ -9428,6 +9631,81 @@ def compute_relative_strength(df_all, index_df_map):
     df_all["RS_20"] = rs20_list
 
     return df_all
+
+# --- 【追加】制限値幅（ストップ高幅）を返す関数 ---
+def get_limit_price_width(price):
+    if price < 100: return 30
+    if price < 200: return 50
+    if price < 500: return 80
+    if price < 700: return 100
+    if price < 1000: return 150
+    if price < 1500: return 300
+    if price < 2000: return 400
+    if price < 3000: return 500
+    if price < 5000: return 700
+    if price < 7000: return 1000
+    if price < 10000: return 1500
+    if price < 15000: return 3000
+    if price < 20000: return 4000
+    if price < 30000: return 5000
+    return 10000 # 3万以上は一旦略
+
+# --- 【修正版】ストップ高の状態を判定する関数 ---
+def analyze_stop_high_status(hist_df):
+    if hist_df is None or len(hist_df) < 5:
+        return "" # データ不足
+
+    # 【修正1】カラム名を日本語('終値')に合わせる
+    col_close = '終値' if '終値' in hist_df.columns else 'close'
+    if col_close not in hist_df.columns:
+        return ""
+
+    # 終値リスト
+    closes = hist_df[col_close].values
+    
+    # 【修正2】日付は index ではなく '日付' カラムにある
+    if '日付' in hist_df.columns:
+        dates = hist_df['日付'].values
+    else:
+        dates = hist_df.index
+
+    # 日付フォーマット用
+    def fmt_date(dt):
+        # numpy.datetime64 などの対応
+        s = str(dt)
+        return s[:10]
+
+    # --- 1. 今日(最新)がストップ高か判定 ---
+    today_price = closes[-1]
+    prev_price  = closes[-2]
+    limit_w     = get_limit_price_width(prev_price)
+    
+    # 誤差対策で -1円 以上の余裕を見る
+    is_today_sh = (today_price >= prev_price + limit_w - 0.5)
+
+    if is_today_sh:
+        # 連続記録を遡る
+        start_date = fmt_date(dates[-1])
+        for i in range(2, len(closes)):
+            p_curr = closes[-i]
+            p_prev = closes[-i-1]
+            lim    = get_limit_price_width(p_prev)
+            
+            if p_curr >= p_prev + lim - 0.5:
+                start_date = fmt_date(dates[-i])
+            else:
+                break
+        return f"〇 {start_date}〜"
+
+    # --- 2. 今日は違うが、昨日がストップ高だった場合 ---
+    prev_prev_price = closes[-3]
+    limit_w_prev    = get_limit_price_width(prev_prev_price)
+    is_prev_sh      = (prev_price >= prev_prev_price + limit_w_prev - 0.5)
+
+    if is_prev_sh:
+        return "ストップ高停止"
+
+    return ""
 
 
 # === [/INJECTED] ===========================================================
@@ -9507,6 +9785,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _p("SQL: df_all/df_cand start")
     df_all = pd.read_sql_query("""
       SELECT s.*,
+             lp.S_High_Status AS S高,
              lp.Res_HH   AS 直近高値90日,
              lp.Res_Zone AS 抵抗帯中心,
              lp.Res_Zone_Touches AS 抵抗タッチ数,
@@ -10081,6 +10360,15 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # 12) 書き出し（PlanA 後処理は存在すれば実行／なければ静かにスキップ）
     t_write = _t.perf_counter()
     os.makedirs(os.path.dirname(html_path), exist_ok=True)
+    
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    # ここに追記してください！
+    try:
+        export_monitor_list(df_cand)
+    except Exception as e:
+        print(f"[monitor] export failed: {e}")
+    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+    
     with open(html_path, "w", encoding="utf-8", newline="") as f:
         f.write(html)
         if '_apply_planA_postprocess' in globals():
@@ -10093,7 +10381,61 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
 
+def export_monitor_list(df_cand, filename="rss_monitor_list.json"):
+    """
+    スクリプト実行時点で「何らかのシグナル」が出ている銘柄をすべて抽出し、
+    OUTPUT_DIR に JSONファイルとして保存する。（エラー回避・全部入り版）
+    """
+    import datetime
+    import json
+    import os
 
+    try:
+        # 1. 抽出対象のコードを集める（重複なし）
+        target_codes = set()
+        
+        # A) 「推奨アクション」があれば優先的に拾う
+        if "推奨アクション" in df_cand.columns:
+            s = df_cand["推奨アクション"].fillna("").astype(str)
+            codes = df_cand[s.isin(['エントリー有力', '小口提案', '押し目買い'])]['コード']
+            target_codes.update(codes.tolist())
+
+        # B) 「右肩早期種別」（ブレイク、ポケット、20MAリバ等）が出ている銘柄を拾う
+        if "右肩早期種別" in df_cand.columns:
+            s = df_cand["右肩早期種別"].fillna("").astype(str)
+            # 空文字でないものをすべて抽出
+            codes = df_cand[s.str.strip() != ""]['コード']
+            target_codes.update(codes.tolist())
+
+        # C) その他の主要フラグ（右肩上がり、初動、底打ち）が「候補」の銘柄を拾う
+        for col in ["右肩上がりフラグ", "初動フラグ", "底打ちフラグ"]:
+            if col in df_cand.columns:
+                s = df_cand[col].fillna("").astype(str)
+                codes = df_cand[s == "候補"]['コード']
+                target_codes.update(codes.tolist())
+
+        # リスト化してソート（None排除）
+        final_list = sorted([str(c) for c in target_codes if c])
+
+        # 2. 保存パスの生成
+        out_dir = OUTPUT_DIR if "OUTPUT_DIR" in globals() else "."
+        os.makedirs(out_dir, exist_ok=True)
+        full_path = os.path.join(out_dir, filename)
+
+        # 3. JSON保存
+        output_data = {
+            "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "target_codes": final_list
+        }
+        
+        with open(full_path, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, indent=4, ensure_ascii=False)
+            
+        print(f"\n[連携] リアルタイム監視リストを更新しました: {len(final_list)} 銘柄")
+        print(f"       保存先: {full_path}", flush=True)
+
+    except Exception as e:
+        print(f"[連携][ERROR] 監視リストの出力に失敗しました: {e}", flush=True)
 
 # ========= 営業利益 
 def update_operating_income_and_ratio(conn, batch_size=300, max_workers=12, use_quarterly=False):
@@ -12942,7 +13284,7 @@ def main():
             except Exception as e:
                 print(f"[HTML-EXPORT][FATAL] HTML生成中に致命的なエラーが発生しました: {e}")
                 raise
-
+            
             # (9) ローカル表示
             ok = False
             try:
