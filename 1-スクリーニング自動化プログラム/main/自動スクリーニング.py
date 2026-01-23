@@ -3885,10 +3885,7 @@ function applyFreeze(tableId, uptoIdx){
   <nav>
     <a href="#" id="lnk-cand" class="active">候補一覧</a>
     <a href="#" id="lnk-tmr">明日用</a>
-    <!-- <a href="#" id="lnk-all">全カラム</a>  全カラムタブは廃止 -->
-    <a href="#" id="lnk-earn">決算(実績)</a>
-    <a href="#" id="lnk-preearn">決算(予測)</a>
-    {% if include_log %}<a href="#" id="lnk-log">signals_log</a>{% endif %}
+    <!-- <a href="#" id="lnk-preearn">決算(予測)</a>-->
     <span class="mini" style="margin-left:auto">build: {{ build_id }}</span>
     <span id="nav-summary-anchor"></span></nav>
 
@@ -4134,7 +4131,7 @@ function applyFreeze(tableId, uptoIdx){
 
   // ---- data ----
   let RAW = {};
-  let DATA_CAND = [], DATA_ALL = [], DATA_LOG = [], DATA_EARN = [], DATA_PREEARN = [];
+  let DATA_CAND = [], DATA_ALL = [], DATA_PREEARN = [];
   function readRAW(){
     try{
       const n = document.getElementById("__DATA__");
@@ -5268,80 +5265,7 @@ function renderIndexSrSummary(){
     }catch(_){ return String(ts ?? ""); }
   }
 
-  function renderEarnings(rows){
-    function pickNameAndCode(rawName, rawCode){
-      const html = String(rawName ?? "");
-      let name = html.replace(/<[^>]*>/g,"").replace(/\s*\(\d{4}\)\s*$/,"").trim();
-      if (!name) name = String(rawName ?? "").trim();
-      let code = (rawCode ?? "").toString();
-      if (!/^\d{4}$/.test(code)){
-        const m1 = html.match(/\((\d{4})\)/); if (m1) code = m1[1];
-      }
-      if (!/^\d{4}$/.test(code)){
-        const m2 = html.match(/quote\/(\d{4})\.T/i); if (m2) code = m2[1];
-      }
-      return { name, code: /^\d{4}$/.test(code) ? code : "" };
-    }
-    const esc = (s)=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
-    const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
 
-    const tbl   = document.getElementById("tbl-earn");
-    const thead = tbl?.querySelector("thead tr");
-    const tbody = document.getElementById("earn-body");
-    if(!tbl||!thead||!tbody){ return; }
-
-    thead.innerHTML = `
-      <th>コード</th><th>銘柄</th><th>Yahoo</th>
-      <th>センチメント</th><th>タイトル</th><th>要約</th>
-      <th>判定</th><th class="reason-col">理由</th><th>時刻</th>
-    `;
-
-    if(!rows?.length){
-      tbody.innerHTML = `<tr><td colspan="10" class="muted">データなし</td></tr>`;
-      wireDomSort("#tbl-earn");
-      attachQHelpsToHead('#tbl-earn');
-      return;
-    }
-
-    tbody.innerHTML = rows.map(r=>{
-      const rawName = r.name ?? r.symbol ?? r.銘柄 ?? "";
-      const rawCode = r.code ?? r.ticker ?? r.symbol ?? r.コード ?? "";
-      const { name, code } = pickNameAndCode(rawName, rawCode);
-      const code4   = code ? String(code).padStart(4,"0") : "";
-      const yahoo   = code4 ? `<a href="${yUrl(code4)}" target="_blank" rel="noopener">Yahoo</a>` : "";
-
-      const sRaw = (r.sentiment ?? "").toString().toLowerCase();
-      const cls  = sRaw.includes("pos")||sRaw.includes("良") ? "b-green"
-                 : sRaw.includes("neg")||sRaw.includes("悪") ? "b-orange" : "b-yellow";
-      const pill = `<span class="badge ${cls}">● ${escapeHtml(r.sentiment ?? "neutral")}</span>`;
-
-      const title = r.title ? esc(r.title) : "";
-      const link  = r.link  ? String(r.link) : "";
-      const titleHtml = link ? `<a href="${link}" target="_blank" rel="noopener">${title}</a>` : (title||"-");
-
-      const summary = esc(r.summary ?? "");
-      const verdict = esc((r.verdict ?? "").toString());
-      const reasons = Array.isArray(r.reasons) ? r.reasons : [];
-      const reasonHtml = reasons.length
-        ? `<div class="reason-tags">${reasons.slice(0,12).map(x=>`<span class="reason-tag">${esc(String(x))}</span>`).join("")}</div>`
-        : `<span class="muted">-</span>`;
-
-      return `<tr>
-        <td>${code4 ? codeLink(code4) : ""}</td>
-        <td>${esc(name)}</td>
-        <td>${yahoo}</td>
-        <td>${pill}</td>
-        <td>${titleHtml}</td>
-        <td class="reason-col">${summary || "<span class='muted'>-</span>"}</td>
-        <td>${verdict || "<span class='muted'>-</span>"}</td>
-        <td class="reason-col">${reasonHtml}</td>
-        <td class="mono">${fmtTime(r.time)}</td>
-      </tr>`;
-    }).join("");
-
-    wireDomSort("#tbl-earn");
-    attachQHelpsToHead('#tbl-earn');
-  }
 
   function _fmt2num(x){
     if (x === null || x === undefined) return "";
@@ -6059,25 +5983,7 @@ function renderIndexSrSummary(){
       return;
     }
 
-    if (to === "log"){
-      $("#tab-log")?.classList.remove("hidden");
-      $("#lnk-log")?.classList.add("active");
-      const lb = $("#log-body");
-      if (lb && !lb.getAttribute("data-inited")){
-        lb.innerHTML = (DATA_LOG||[]).map(r=> `<tr><td>${r["日時"]||""}</td><td>${r["コード"]||""}</td><td>${r["種別"]||""}</td><td>${escapeHtml(r["詳細"]||"")}</td></tr>`).join("");
-        lb.setAttribute("data-inited","1");
-      }
-      attachQHelpsToHead('#tbl-log');
-      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-log'); }catch(_){ } }
-      return;
-    }
-    if (to === "earn"){
-      $("#tab-earn")?.classList.remove("hidden");
-      $("#lnk-earn")?.classList.add("active");
-      renderEarnings(DATA_EARN);
-      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-earn'); }catch(_){ } }
-      return;
-    }
+
     if (to === "preearn"){
       $("#tab-preearn")?.classList.remove("hidden");
       $("#lnk-preearn")?.classList.add("active");
@@ -6092,8 +5998,6 @@ function renderIndexSrSummary(){
   function getActiveTableId(){
     const tab = state && state.tab;
     if (tab === "tmr")      return "tbl-tmr";
-    if (tab === "log")      return "tbl-log";
-    if (tab === "earn")     return "tbl-earn";
     if (tab === "preearn")  return "tbl-preearn";
     // "cand" や "all" などは候補テーブル扱い
     return "tbl-candidate";
@@ -6101,7 +6005,7 @@ function renderIndexSrSummary(){
   
   
   (function(){
-    const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all","lnk-log":"log","lnk-earn":"earn","lnk-preearn":"preearn" };
+    const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all","lnk-preearn":"preearn" };
     window.NAV_MAP = map;
     Object.keys(map).forEach(id=>{
       const a = document.getElementById(id);
@@ -6133,8 +6037,6 @@ function renderIndexSrSummary(){
       
       const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
       DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
-      DATA_LOG     = Array.isArray(RAW.logs)     ? RAW.logs     : [];
-      DATA_EARN    = Array.isArray(RAW.earnings) ? RAW.earnings : [];
       DATA_PREEARN = Array.isArray(_preSrc)      ? _preSrc      : [];
 
       // ② まず候補タブを描画（テーブルがDOMに並ぶ）
@@ -6266,42 +6168,7 @@ function renderIndexSrSummary(){
       </table>
     </div>
   </section>
-  <!-- 全カラムタブは廃止
-  <section id="tab-all" class="tab hidden">
-    <div class="tbl-wrap">
-      <table id="tbl-allcols" class="tbl">
-        <thead><tr id="all-head">
-          <th data-col="抵抗帯中心" class="num">抵抗帯中心</th>
-          <th data-col="抵抗最終日">抵抗最終日</th>
-          <th data-col="最寄り抵抗" class="num">最寄り抵抗</th>
-          <th data-col="支持帯中心" class="num">支持帯中心</th>
-          <th data-col="支持最終日">支持最終日</th>
-          <th data-col="最寄り支持" class="num">最寄り支持</th>
-        </tr></thead>
-        <tbody id="all-body"></tbody>
-      </table>
-    </div>
-  </section>
-  -->
 
-  <section id="tab-earn" class="tab hidden">
-    <div class="tbl-wrap">
-      <table id="tbl-earn" class="tbl">
-        <thead>
-          <tr>
-            <th>銘柄</th>
-            <th>センチメント</th>
-            <th>タイトル</th>
-            <th>要約</th>
-            <th>判定</th>
-            <th class="reason-col">理由</th>
-            <th>時刻</th>
-          </tr>
-        </thead>
-        <tbody id="earn-body"></tbody>
-      </table>
-     </div>
-   </section>
 
   <section id="tab-preearn" class="tab hidden">
      <div class="tbl-wrap">
@@ -6323,25 +6190,6 @@ function renderIndexSrSummary(){
        </table>
      </div>
   </section>
-
-  {% if include_log %}
-  <section id="tab-log" class="tab hidden">
-    <div class="tbl-wrap">
-      <table id="tbl-log" class="tbl">
-        <thead>
-          <tr>
-            <th class="sortable" data-col="日時" data-type="date">日時<span class="arrow"></span></th>
-            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
-            <th class="sortable" data-col="種別" data-type="text">種別<span class="arrow"></span></th>
-            <th class="sortable" data-col="詳細" data-type="text">詳細<span class="arrow"></span></th>
-          </tr>
-        </thead>
-        <tbody id="log-body"></tbody>
-      </table>
-    </div>
-  </section>
-  {% endif %}
-
 
 <script>
 document.addEventListener('DOMContentLoaded', function(){
@@ -6535,9 +6383,9 @@ except Exception:
 - EOD/MIDDAY 自動判定（JST 11:30–12:30 は MIDDAY スナップショット、それ以外は EOD）
 - 祝日/土日スキップ（jpholiday + 追加休場日ファイル対応）
 - yahooquery で quotes / history を一括取得（初回は 12mo、通常は 10d）
-- 初動/底打ち/上昇余地スコア/右肩上がりスコア の判定とログ（signals_log）
+- 初動/底打ち/上昇余地スコア/右肩上がりスコア の判定
 - 前営業日の翌日検証（判定とCSV出力）
-- オフライン1ファイルHTMLダッシュボード（候補一覧/検証/全カラム/price_history/signals_log）
+- オフライン1ファイルHTMLダッシュボード（候補一覧/検証/全カラム/price_history）
 - Gmail で index.html を送信（任意、ZIP同梱可）
 
 前提: Python 3.11 / pip install yahooquery pandas jpholiday
@@ -7681,7 +7529,7 @@ VOL_BOOST = 1.5             # ブレイク時の出来高ブースト(×20日平
 EXT_20_MAX = 0.05           # 20MAからの乖離上限(=+5%)
 EXT_50_MAX = 0.10           # 50MAからの乖離上限(=+10%)
 
-# ---- スキーマ確保（screener の列/ signals_log の最小列）----
+# ---- スキーマ確保（screener の列/ 最小列）----
 def _ma(s, n):  return s.rolling(n, min_periods=n).mean()
 def _avg_vol(v, n=20): return v.rolling(n, min_periods=n).mean()
 
@@ -7803,7 +7651,6 @@ def compute_right_up_early_triggers(conn, as_of=None, log_datetime=None):
     右肩上がりの“早めに仕掛ける”4シグナル（ブレイク/ポケット/20MAリバ/200MAリクレイム）を判定。
     - price_history の日足のみで判定
     - screener: 右肩早期フラグ/種別/スコア を更新
-    - signals_log: 日時で記録（前場/後場など1日複数回の実行に対応）
     引数:
       as_of        … 判定する“日付”（例 '2025-08-22'）。未指定なら price_history の MAX(日付)
       log_datetime … ログに書く“日時”（例 '2025-08-22 09:01:00'）。未指定なら now()
@@ -10309,7 +10156,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         pass
 
     hist_rows = []
-    earnings_rows = []
     preearn_rows  = []
     
     _tick("base_day next_business_day done")
@@ -10321,7 +10167,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         "logs": log_rows,
         "hist": hist_rows,
         "meta": meta,
-        "earnings": earnings_rows,
         "preearn": preearn_rows,
         "offer_codes":  sorted(offering_code_set),
     }
