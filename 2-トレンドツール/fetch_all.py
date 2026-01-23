@@ -685,6 +685,7 @@ def load_earnings_for_dashboard_from_db(days: int = 30, filter_mode: str = "nonn
     return items[:300]
 
 # ------------------ HTML生成（日別タブ込み + ★TOB(TDNET)タブ） ------------------
+# ------------------ HTML生成（日別タブ込み + ★TOB(TDNET)タブ） ------------------
 def render_dashboard_html(payload: dict, api_base: str = "") -> str:
     data_json = json.dumps(payload, ensure_ascii=False)
 
@@ -707,7 +708,7 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
   .card{border:1px solid var(--br);border-radius:12px;padding:12px;margin:14px 0;background:#fff}
   table{width:100%;border-collapse:collapse}
   th,td{border-bottom:1px solid #f1f5f9;padding:8px 10px;text-align:left;vertical-align:top}
-  th{background:#f8fafc;color:#334155;font-weight:600;position:sticky;top:0}
+  th{background:#f8fafc;color:#334155;font-weight:600;position:sticky;top:0; z-index:10;}
   .codechip{display:inline-flex;align-items:center;gap:6px}
   .code{display:inline-block;background:#f1f5f9;border-radius:999px;padding:2px 8px;font-size:12px;color:#334155}
   .badge{display:inline-block;padding:2px 10px;border-radius:999px;color:#fff;font-size:12px;white-space:nowrap}
@@ -719,7 +720,7 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
   .btn:hover{filter:brightness(0.98)}
   .small{font-size:12px;color:#64748b}
   a{color:#1d4ed8;text-decoration:none} a:hover{text-decoration:underline}
-  .day-head{font-weight:700;margin:18px 0 8px}
+  .day-head{font-weight:700;margin:18px 0 8px; background:#f1f5f9; color:#334155;}
   .muted{opacity:.85}
   td.num{text-align:right}
   td.diff.plus{color:#16a34a;font-weight:600}
@@ -733,6 +734,9 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
   .jdg.negative{ color:#7f1d1d; background:#fef2f2; border-color:#fecaca; }
   .ev{ padding:4px 10px; border-radius:12px; line-height:1.9; background:#f0f9ff; color:#0c4a6e; border-left:4px solid #38bdf8; }
   .ev .chip{ display:inline-block; margin:2px 6px 2px 0; padding:2px 8px; border-radius:999px; background:#e0f2fe; border:1px solid #bae6fd; font-weight:600; }
+  /* Filter Input Style */
+  .filter-input { width: 90%; font-size: 11px; padding: 4px; margin-top: 4px; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box; }
+  .filter-input:focus { outline: 2px solid #bfdbfe; border-color: #3b82f6; }
 </style>
 
 <h1>注目度ダッシュボード</h1>
@@ -810,25 +814,96 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
     return `<div class="judge-row"><span class="jdg ${cls}">判定: ${esc(verdict||"")}<span class="score">${s}</span></span>${ev}</div>`;
   }
 
+  // --- Filtering Logic ---
+  function applyFilters(){
+    const inputs = document.querySelectorAll(".filter-input");
+    const rows = document.querySelectorAll("#tbody tr");
+    
+    // 現在のフィルタ条件を抽出 [{col: 1, val: "7203"}, ...]
+    const activeFilters = [];
+    inputs.forEach(inp => {
+        const val = inp.value.toLowerCase().trim();
+        if(val) activeFilters.push({ col: parseInt(inp.dataset.col), val: val });
+    });
+
+    rows.forEach(tr => {
+        // "earnings_day" の日付ヘッダー行は特別扱い（一旦表示、後でクリーンアップ）
+        if(tr.classList.contains("day-head")) {
+            tr.style.display = ""; 
+            return;
+        }
+        
+        // データ行の判定
+        let isMatch = true;
+        if(activeFilters.length > 0) {
+            activeFilters.forEach(f => {
+                const td = tr.children[f.col];
+                if(!td) return;
+                const txt = td.textContent.toLowerCase();
+                // 数値カラムなどでカンマが入っていても部分一致で検索可能
+                if(!txt.includes(f.val)) isMatch = false;
+            });
+        }
+        tr.style.display = isMatch ? "" : "none";
+    });
+
+    // "earnings_day" の場合、子要素がすべて消えた日付ヘッダーを隠す処理
+    if(MODE === "earnings_day"){
+        const dayHeads = document.querySelectorAll("tr.day-head");
+        dayHeads.forEach(head => {
+            let next = head.nextElementSibling;
+            let hasVisibleChild = false;
+            // 次のヘッダーまたは末尾まで走査
+            while(next && !next.classList.contains("day-head")){
+                if(next.style.display !== "none") {
+                    hasVisibleChild = true; 
+                    break;
+                }
+                next = next.nextElementSibling;
+            }
+            head.style.display = hasVisibleChild ? "" : "none";
+        });
+    }
+  }
+
+  // Helper for generating TH with filter input
+  function thFilter(label, colIdx, width){
+    return `<th>${label}<br><input type="text" class="filter-input" data-col="${colIdx}" oninput="applyFilters()" placeholder="絞込..."></th>`;
+  }
+  function thSimple(label){ return `<th>${label}</th>`; }
+
+
 function render(j){
   document.getElementById("stamp").textContent = "生成時刻: " + (j.generated_at || "");
   const thead=document.getElementById("thead");
   const tbody=document.getElementById("tbody");
   tbody.innerHTML="";
 
+  // --- 決算（日別） ---
   if(MODE==="earnings_day"){
     const rows=(j.earnings||[])
       .slice()
       .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score_judge||0)-Number(a.score_judge||0));})
       .slice(0, 300);
-    thead.innerHTML=`<tr>
-      <th>#</th><th>コード</th><th>銘柄</th><th>増資経歴</th><th>Yahoo</th>
-      <th class="num">現在値</th><th class="num">前日終値</th><th class="num">前日比(円)</th>
-      <th>判定スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
+    
+    // 絞り込み可能な列: コード(1), 銘柄(2), スコア(8), Sentiment(9), 内容(10)
+    thead.innerHTML = `<tr>`
+      + thSimple("#")
+      + thFilter("コード", 1)
+      + thFilter("銘柄", 2)
+      + thSimple("増資経歴")
+      + thSimple("Yahoo")
+      + thSimple("現在値") + thSimple("前日終値") + thSimple("前日比")
+      + thFilter("判定スコア", 8)
+      + thFilter("Sentiment", 9)
+      + thFilter("書類名 / サマリ / 判定理由", 10)
+      + thSimple("時刻")
+      + `</tr>`;
+
     if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="12" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
     let day=""; rows.forEach((r,idx)=>{
       const d=(r.time||"").slice(0,10);
-      if(d!==day){day=d; const trh=document.createElement("tr"); trh.innerHTML=`<td colspan="12" class="day-head">${esc(day)}</td>`; tbody.appendChild(trh);}
+      if(d!==day){day=d; const trh=document.createElement("tr"); trh.className="day-head"; trh.innerHTML=`<td colspan="12">${esc(day)}</td>`; tbody.appendChild(trh);}
       const q=r.quote||{};
       const cur = q.current!=null ? Number(q.current).toLocaleString() : "";
       const prev= q.prev_close!=null ? Number(q.prev_close).toLocaleString() : "";
@@ -852,15 +927,26 @@ function render(j){
     return;
   }
 
+  // --- 決算（一覧） ---
   if(MODE==="earnings"){
     const rows=(j.earnings||[])
       .slice()
       .sort((a,b)=>{const tb=parseJST(b.time),ta=parseJST(a.time);return tb!==ta?tb-ta:(Number(b.score_judge||0)-Number(a.score_judge||0));})
       .slice(0, 300);
-    thead.innerHTML=`<tr>
-      <th>#</th><th>コード</th><th>銘柄</th><th>増資経歴</th><th>Yahoo</th>
-      <th class="num">現在値</th><th class="num">前日終値</th><th class="num">前日比(円)</th>
-      <th>判定スコア</th><th>Sentiment</th><th>書類名 / サマリ / 判定理由</th><th>時刻</th></tr>`;
+    
+    thead.innerHTML = `<tr>`
+      + thSimple("#")
+      + thFilter("コード", 1)
+      + thFilter("銘柄", 2)
+      + thSimple("増資経歴")
+      + thSimple("Yahoo")
+      + thSimple("現在値") + thSimple("前日終値") + thSimple("前日比")
+      + thFilter("判定スコア", 8)
+      + thFilter("Sentiment", 9)
+      + thFilter("書類名 / サマリ / 判定理由", 10)
+      + thSimple("時刻")
+      + `</tr>`;
+
     if(!rows.length){const tr=document.createElement("tr");tr.innerHTML=`<td colspan="12" class="small">直近では見つかりませんでした。</td>`;tbody.appendChild(tr);return;}
     rows.forEach((r,idx)=>{
       const q=r.quote||{};
@@ -886,13 +972,25 @@ function render(j){
     return;
   }
 
+  // --- 掲示板 ---
   if(MODE==="bbs"){
     const rows=(j.rows||[]).slice().sort((a,b)=>{
       const a24=a?.bbs?.posts_24h||0, b24=b?.bbs?.posts_24h||0; if(b24!==a24) return b24-a24;
       const a72=a?.bbs?.posts_72h||0, b72=b?.bbs?.posts_72h||0; if(b72!==a72) return b72-a72;
       return String(a.name||a.ticker).localeCompare(String(b.name||b.ticker));
     });
-    thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>増資経歴</th><th>BBS(24h)</th><th>BBS(72h)</th><th>増加率</th><th>Sentiment(News)</th><th>最新ニュース</th></tr>`;
+    
+    thead.innerHTML = `<tr>`
+      + thSimple("#")
+      + thFilter("銘柄", 1)
+      + thSimple("増資経歴")
+      + thSimple("BBS(24h)")
+      + thSimple("BBS(72h)")
+      + thSimple("増加率")
+      + thFilter("Sentiment(News)", 6)
+      + thFilter("最新ニュース", 7)
+      + `</tr>`;
+
     rows.forEach((r,idx)=>{
       const tr=document.createElement("tr"); const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
       const b24=r?.bbs?.posts_24h||0, b72=r?.bbs?.posts_72h||0, growth=(b24/Math.max(1,b72)).toFixed(2);
@@ -989,7 +1087,19 @@ function render(j){
 
   // 総合
   const rows=(j.rows||[]).slice().sort((a,b)=>(b.score||0)-(a.score||0));
-  thead.innerHTML=`<tr><th>#</th><th>銘柄</th><th>増資経歴</th><th>スコア</th><th>Trends</th><th>BBS</th><th>News(24h)</th><th>Sentiment</th><th>最新ニュース</th></tr>`;
+  
+  thead.innerHTML = `<tr>`
+    + thSimple("#")
+    + thFilter("銘柄", 1)
+    + thSimple("増資経歴")
+    + thFilter("スコア", 3)
+    + thSimple("Trends")
+    + thSimple("BBS")
+    + thSimple("News(24h)")
+    + thFilter("Sentiment", 7)
+    + thFilter("最新ニュース", 8)
+    + `</tr>`;
+
   rows.forEach((r,idx)=>{
     const tr=document.createElement("tr"); const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
     const items=(r.news&&r.news.items)?r.news.items:[]; const label=(items[0]?.sentiment)||"neutral";
