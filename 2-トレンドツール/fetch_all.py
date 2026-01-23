@@ -280,12 +280,12 @@ def load_offerings_recent_map(days: int = 365*3) -> dict[str, bool]:
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='offerings_events'")
         if not cur.fetchone():
             return out
+        # 修正: CAST AS INTEGER をやめ、文字列として先頭4文字を取得するロジックに変更
         rows = cur.execute("""
             SELECT DISTINCT
                    CASE
-                     WHEN length(コード)=4 THEN コード
-                     WHEN length(コード)=5 AND substr(コード,1,1) BETWEEN '0' AND '9' THEN substr(コード,1,4)
-                     ELSE printf('%04d', CAST(コード AS INTEGER))
+                     WHEN length(コード) >= 4 THEN substr(コード, 1, 4)
+                     ELSE コード
                    END AS code4
             FROM offerings_events
             WHERE date(提出時刻) >= date('now', ?)
@@ -313,7 +313,8 @@ def upsert_offerings_events(conn: sqlite3.Connection, tdnet_items: list[dict]):
         td = it.get("Tdnet", it) or {}
         raw = (td.get("company_code") or td.get("code") or td.get("company_code_raw") or "").strip()
         if re.fullmatch(r"\d{5}", raw): return raw[:4]
-        if re.fullmatch(r"\d{4}", raw): return raw
+        # 修正: 英字入り4桁に対応
+        if re.fullmatch(r"\d{3}[0-9a-zA-Z]", raw): return raw.upper()
         return (td.get("ticker") or "").strip()
 
     def norm_time(s: str) -> str:
@@ -561,9 +562,14 @@ def upsert_earnings_rows(conn: sqlite3.Connection, rows: list[dict]):
 
     def norm_code(r: dict) -> str:
         cc = (r.get("company_code") or r.get("company_code_raw") or "").strip()
+        # 5桁数字なら先頭4桁 (例: 13010 -> 1301)
         if cc.isdigit() and len(cc) == 5:
             return cc[:4]
-        return str(r.get("ticker") or "").zfill(4)
+        # 修正: 既に英字入りで抽出済みの ticker があればそれを優先
+        tk = str(r.get("ticker") or "").strip().upper()
+        if len(tk) == 4:
+            return tk
+        return tk.zfill(4)
 
     for r in rows:
         title = (r.get("title") or "").strip()
@@ -1492,10 +1498,11 @@ def tdnet_items_to_earnings_rows(tdnet_items):
         title = (td.get("title") or "").strip()
         name  = (td.get("company_name") or "").strip()
         code_raw = str(td.get("company_code") or td.get("code") or "").strip()
+        # 修正: 4桁目がアルファベットのパターン (例: 130A) に対応
         if re.fullmatch(r"\d{5}", code_raw):
             ticker = code_raw[:4]
-        elif re.fullmatch(r"\d{4}", code_raw):
-            ticker = code_raw
+        elif re.fullmatch(r"\d{3}[0-9a-zA-Z]", code_raw):
+            ticker = code_raw.upper()  # アルファベットは大文字に統一
         else:
             ticker = ""
 
