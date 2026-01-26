@@ -2180,7 +2180,7 @@ def main():
     # --- ★TDNET TOBのダッシュボード用データ ---
     tob_for_dash = []
     try:
-        tob_for_dash = load_tob_for_dashboard_from_db(days=120)
+        tob_for_dash = load_tob_for_dashboard_from_db(days=365)
     except Exception as e:
         print("[TOB] load dash error:", e)
 

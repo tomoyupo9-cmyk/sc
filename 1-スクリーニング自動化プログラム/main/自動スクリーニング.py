@@ -96,6 +96,7 @@ import re
 import sqlite3
 import threading
 import sys as _sys
+import html
 
 
 # === JSON sanitize helpers (NaN/Infinity -> None) ===
@@ -2321,6 +2322,285 @@ THRESH_SCORE = 70
 # 価格ガード（休日に price_history から現在値/前日比を補完するか）
 PRICE_GUARD_ENABLED = False  # ← しばらく挙動を見るために OFF
 
+# ==========================================
+# ★追加パーツ: AI予測ロジック
+# ==========================================
+import joblib
+import pandas as pd
+import numpy as np
+import os
+
+# モデルのパス（環境に合わせて書き換えてください）
+MODEL_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
+TRAIN_SCRIPT_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\モデル学習.py"
+def add_ai_analysis(conn, rows):
+    """
+    既存のスクリーニング結果(rows)を受け取り、AIスコア・判定・目標値を付与して返す関数
+    (修正版: None値の安全なハンドリングを追加)
+    """
+    if not os.path.exists(MODEL_PATH):
+        print(f"[AI] モデルが見つかりません: {MODEL_PATH}")
+        return rows
+
+    # 対象銘柄がなければ何もしない
+    target_codes = [r['コード'] for r in rows if r.get('現在値')]
+    if not target_codes:
+        return rows
+
+    print(f"[AI] {len(target_codes)}銘柄のAI分析を開始...")
+
+    try:
+        model = joblib.load(MODEL_PATH)
+        
+        # --- 1. 市場全体の地合い計算 (Market Sentiment) ---
+        date_q = "SELECT MAX(日付) FROM price_history"
+        try:
+            latest_date_df = pd.read_sql(date_q, conn)
+            if latest_date_df.empty or latest_date_df.iloc[0, 0] is None:
+                latest_date = None
+            else:
+                latest_date = latest_date_df.iloc[0, 0]
+        except Exception:
+            latest_date = None
+
+        feat_market_sentiment = 0.5
+        feat_market_return = 0.0
+
+        if latest_date:
+            market_q = f"""
+                SELECT 終値, 始値
+                FROM price_history 
+                WHERE 日付 = '{latest_date}' AND 終値 > 0
+            """
+            df_market = pd.read_sql(market_q, conn)
+            
+            if not df_market.empty:
+                # 簡易的に始値比で騰落を判定
+                up_count = len(df_market[df_market['終値'] > df_market['始値']])
+                total = len(df_market)
+                feat_market_sentiment = up_count / total if total > 0 else 0.5
+                
+                # 平均騰落率（rowsの情報から推定）
+                pcts = []
+                for r in rows:
+                    val = r.get('前日終値比率')
+                    if val is not None and str(val).strip() != "":
+                        try:
+                            pcts.append(float(str(val).replace('%','')))
+                        except:
+                            pass
+                feat_market_return = sum(pcts)/len(pcts)/100.0 if pcts else 0.0
+
+        # --- 2. 個別銘柄のデータ準備 ---
+        codes_str = "'" + "','".join(target_codes) + "'"
+        hist_q = f"""
+            SELECT コード, 日付, 始値, 高値, 安値, 終値, 出来高
+            FROM price_history
+            WHERE コード IN ({codes_str})
+            ORDER BY 日付 ASC
+        """
+        df_hist_all = pd.read_sql(hist_q, conn)
+        df_hist_all['日付'] = pd.to_datetime(df_hist_all['日付'])
+
+        # --- 3. 特徴量計算＆予測ループ ---
+        ai_inputs = []
+        valid_indices = []
+
+        for i, r in enumerate(rows):
+            code = r.get('コード')
+            
+            # --- 【修正】価格の安全な取得 ---
+            try:
+                raw_price = r.get('現在値')
+                if raw_price is None:
+                    price = 0
+                else:
+                    # 文字列 "1,234" 等も考慮して変換
+                    price = float(str(raw_price).replace(',', ''))
+            except Exception:
+                price = 0
+            
+            # ボロ株フィルタ (300円未満は除外)
+            if price < 300:
+                r['AIスコア'] = '-'
+                r['AI判定'] = '-'
+                r['AI目標値'] = '-'
+                continue
+
+            # 履歴データの抽出
+            df_part = df_hist_all[df_hist_all['コード'] == code]
+            if len(df_part) < 75: # データ不足
+                r['AIスコア'] = '-'
+                r['AI判定'] = '-'
+                continue
+
+            # テクニカル計算
+            c = df_part['終値'].values
+            o = df_part['始値'].values
+            h = df_part['高値'].values
+            l = df_part['安値'].values
+            v = df_part['出来高'].values
+            
+            # 最新値
+            curr_c, curr_o, curr_h, curr_l, curr_v = c[-1], o[-1], h[-1], l[-1], v[-1]
+            ser_c = pd.Series(c)
+            
+            # --- 【修正】騰落率の安全な取得 ---
+            try:
+                raw_pct = r.get('前日終値比率')
+                if raw_pct is None or str(raw_pct).strip() == "":
+                    # データがない場合は0とするか、計算不能としてスキップ
+                    feat_return = 0.0
+                else:
+                    pct_str = str(raw_pct).replace('%', '')
+                    feat_return = float(pct_str) / 100.0
+            except Exception:
+                feat_return = 0.0
+            
+            # 各種指標
+            ma5 = ser_c.rolling(5).mean().iloc[-1]
+            ma20 = ser_c.rolling(20).mean().iloc[-1]
+            ma25 = ser_c.rolling(25).mean().iloc[-1]
+            ma75 = ser_c.rolling(75).mean().iloc[-1]
+            std20 = ser_c.rolling(20).std().iloc[-1]
+            
+            # RSI
+            delta = ser_c.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rsi = 100 - (100 / (1 + gain/loss))
+            feat_rsi = rsi.iloc[-1] if not np.isnan(rsi.iloc[-1]) else 50
+
+            # RVOL
+            ser_v = pd.Series(v)
+            ma_vol_5 = ser_v.rolling(5).mean().iloc[-1]
+            feat_vol_ratio = curr_v / ma_vol_5 if (ma_vol_5 and ma_vol_5 > 0) else 1.0
+
+            # 入力ベクトル
+            feats = [
+                feat_return,                                # return_1d
+                (curr_h - curr_l) / curr_c if curr_c else 0, # range
+                (curr_c - curr_o) / curr_o if curr_o else 0, # body
+                (curr_h - max(curr_c, curr_o)) / curr_c if curr_c else 0, # upper_shadow
+                (curr_c - ma5)/ma5 if ma5 else 0,           # kairi_5
+                (curr_c - ma25)/ma25 if ma25 else 0,        # kairi_25
+                (curr_c - ma75)/ma75 if ma75 else 0,        # kairi_75
+                feat_rsi,                                   # rsi_14
+                (curr_c - ma20)/(2*std20) if (std20 and std20 > 0) else 0, # bb_pos
+                feat_vol_ratio,                             # vol_ratio
+                1 if (ma5>ma25 and ma25>ma75) else 0,       # perfect_order
+                1 if (curr_c>ma5 and curr_c>ma25) else 0,   # trend_strong
+                feat_market_return,                         # market_return
+                feat_market_sentiment,                      # market_sentiment
+                feat_return - feat_market_return            # relative_strength
+            ]
+            ai_inputs.append(feats)
+            valid_indices.append(i)
+
+        # 一括予測実行
+        if ai_inputs:
+            cols = ['return_1d','range','body','upper_shadow','kairi_5','kairi_25','kairi_75',
+                    'rsi_14','bb_pos','vol_ratio','perfect_order','trend_strong',
+                    'market_return','market_sentiment','relative_strength']
+            X_pred = pd.DataFrame(ai_inputs, columns=cols)
+            # NaNが含まれているとエラーになるため0埋め
+            X_pred = X_pred.fillna(0)
+            
+            probs = model.predict_proba(X_pred)[:, 1]
+            
+            for idx, prob in zip(valid_indices, probs):
+                score = round(prob * 100, 1)
+                r = rows[idx]
+                r['AIスコア'] = score
+                
+                # 判定
+                # --- 【修正】現在値(price)をここで再利用 ---
+                try:
+                    p_val = float(str(r.get('現在値', 0)).replace(',', ''))
+                except:
+                    p_val = 0
+
+                if score >= 70:
+                    r['AI判定'] = '★GO'
+                    r['AI目標値'] = int(p_val * 1.10)
+                else:
+                    r['AI判定'] = '-'
+                    r['AI目標値'] = '-'
+    
+    except Exception as e:
+        print(f"[AI] エラー発生のためスキップ: {e}")
+        # 詳細なデバッグ情報が必要なら以下をコメントアウト解除
+        # import traceback
+        # traceback.print_exc()
+    
+    return rows
+# ==========================================
+# ★追加: DBからTOB情報を取得する関数
+# ==========================================
+def load_tob_titles_map(days=180):
+    """
+    DBの tob_events テーブルから直近days日間の情報を取得し、
+    銘柄コードごとのリストにして返す。
+    """
+    out = {}
+    
+    # ファイル内で定義されている DB_PATH を使用
+    # もし見つからない場合は直接パスを書くか、変数名を確認してください
+    if 'DB_PATH' not in globals():
+        # 仮のパス（エラー回避用）
+        db_path = "kani2.db" 
+    else:
+        db_path = DB_PATH
+
+    if not Path(db_path).exists():
+        return out
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        
+        # テーブル存在確認
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tob_events'")
+        if not cur.fetchone():
+            conn.close()
+            return out
+            
+        # 提出時刻の新しい順に取得
+        sql = """
+            SELECT コード, タイトル, 提出時刻
+            FROM tob_events
+            WHERE date(提出時刻) >= date('now', ?)
+            ORDER BY 提出時刻 DESC
+        """
+        rows = cur.execute(sql, (f"-{days} day",)).fetchall()
+        conn.close()
+        
+        for r in rows:
+            # コードの正規化
+            raw_code = str(r[0] or "")
+            code4 = raw_code.zfill(4) if raw_code.isdigit() else raw_code[:4]
+
+            title = html.escape(r[1] or "")
+            
+            # 日付整形 (例: 2026-01-23 -> 01/23)
+            ts_str = (r[2] or "").replace("/", "-")
+            if len(ts_str) >= 10:
+                date_short = ts_str[5:10].replace("-", "/") 
+            else:
+                date_short = "--/--"
+
+            # リスト表示用HTML
+            display_str = f"<span style='color:#94a3b8; font-family:monospace;'>({date_short})</span> {title}"
+            
+            if code4 not in out:
+                out[code4] = []
+            out[code4].append(display_str)
+            
+    except Exception as e:
+        print(f"[TOB] map build error: {e}")
+        
+    return out
+
 
 # ==== [Short-term Trading Enhancements] Derived Metrics (schema assumed) ====
 def _calculate_atr_ewm(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -3526,6 +3806,44 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
 .tri.bad     { background-color: #e67e22; }  /* 橙 */
 .tri.verybad { background-color: #e74c3c; }  /* 赤 */
 
+/* === ★変更: TOBポップアップ（body直下表示用） === */
+.tob-btn {
+  cursor: pointer;
+  color: #fff; background: #f97316;
+  padding: 2px 8px; border-radius: 4px;
+  font-size: 10px; font-weight: bold;
+  white-space: nowrap; display: inline-block;
+  user-select: none;
+}
+.tob-btn:hover { opacity: 0.9; }
+
+/* ポップアップ本体（画面最前面に固定） */
+#tob-modal-overlay {
+  display: none; position: fixed; z-index: 9999;
+  left: 0; top: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.1); /* 背景を少し暗くしてクリックで閉じるエリアにする */
+}
+#tob-modal-content {
+  position: absolute;
+  background: #fff; border: 1px solid #cbd5e1;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  padding: 12px; border-radius: 8px;
+  width: 340px; max-width: 90vw;
+  max-height: 400px; overflow-y: auto;
+  font-size: 12px; line-height: 1.5; color: #333;
+}
+.tob-item { border-bottom: 1px solid #f1f5f9; padding: 6px 0; }
+.tob-item:last-child { border-bottom: none; }
+/* === 変更ここまで === */
+
+  /* 関連テーマの幅制限と...表示 */
+  .theme-col {
+    max-width: 150px;        /* 幅を150pxに制限（画面に合わせて調整してください） */
+    white-space: nowrap;     /* 改行させない */
+    overflow: hidden;        /* はみ出しを隠す */
+    text-overflow: ellipsis; /* 末尾を ... にする */
+    cursor: help;            /* マウスカーソルを？マークっぽくする */
+  }
 
 </style>
 
@@ -3997,6 +4315,9 @@ function applyFreeze(tableId, uptoIdx){
 <!-- ヘルプ定義＆マップ -->
 <script>
   window.HELP_TEXT = {
+    "AIスコア": "AIによる有望度評価（0-100点）。トレンド・RSI・乖離率・市場地合い等を総合分析。",
+    "AI判定": "AIスコアが基準（70点）以上の場合に「★GO」を表示。買いシグナルの候補。",
+    "AI目標値": "AI判定が「★GO」の場合の目標株価。現在値の+10%を目安に設定。",
     "抵抗帯中心":"過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
     "抵抗最終日":"直近で抵抗帯に触れた日。",
     "最寄り抵抗":"現在値以上で最も近い抵抗。",
@@ -5013,7 +5334,23 @@ function renderIndexSrSummary(){
 
       // ソート用キー（上昇優先 → 安定 → ボラ）
       const triSort = String(g * 10000 + s2 * 100 + v2).padStart(6, "0");
-
+      
+      // ▼▼▼▼▼▼▼ ステップ3：ここに追加 ▼▼▼▼▼▼▼
+      // TOBセルの中身を作る（onclick版）
+      const tobList = r.tob_titles || [];
+      let tobHtml = "";
+      if (tobList.length > 0) {
+          const jsonStr = encodeURIComponent(JSON.stringify(tobList));
+          tobHtml = `
+            <span class="tob-btn"
+                  data-json="${jsonStr}"
+                  onclick="showTobHistory(this, this.dataset.json)">
+                  TOB情報 (${tobList.length})
+            </span>`;
+      } else {
+          tobHtml = `<span style="color:#e2e8f0; font-size:10px;">-</span>`;
+      }
+      // ▲▲▲▲▲▲▲ 追加ここまで ▲▲▲▲▲▲▲
 
       const isHitTr = isHitRow(r);
       // ▼▼▼ 追加: S高の色判定 ▼▼▼
@@ -5027,7 +5364,8 @@ function renderIndexSrSummary(){
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
         <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
         <td>${escapeHtml(r["市場"] || "-")}</td>
-        <td data-col="関連テーマ">${escapeHtml(r["関連テーマ"] || "")}</td>
+        <td>${tobHtml}</td>
+        <td class="theme-col" data-col="関連テーマ" title="${escapeHtml(r["関連テーマ"] || "")}">${escapeHtml(r["関連テーマ"] || "")}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num triangle-cell" 
@@ -5040,6 +5378,9 @@ function renderIndexSrSummary(){
             <span class="tri tri-s">${"◆(安定)" + s2}</span>
             <span class="tri tri-v">${"■(ボラ)" + v2}</span>
         </td>
+        <td class="num">${r["AIスコア"] || "-"}</td>
+        <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
+        <td class="num">${r["AI目標値"] || "-"}</td>
         <td data-col="株探ニュース(3)" class="nowrap">${r["株探ニュース(3)"] || ""}</td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
@@ -5171,6 +5512,8 @@ function renderIndexSrSummary(){
         <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
         <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
         <td style="${shStyle}">${escapeHtml(shVal)}</td>
+        <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
+        <td class="num">${r["AI目標値"] || "-"}</td>
         <td class="num">${r["売買代金(億)"]??""}</td>
         <td>${financeLink(r["コード"])}${financeNote(r)}</td>
         <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
@@ -5528,7 +5871,9 @@ function renderIndexSrSummary(){
     state.page = 1;
     render();
   };
+  
 
+  
   // 株探ニュース 日数フィルタ
   const newsDaysInput = document.getElementById("f_news_days");
   if (newsDaysInput) {
@@ -6068,6 +6413,59 @@ function renderIndexSrSummary(){
   document.removeEventListener('DOMContentLoaded', init);
   document.addEventListener('DOMContentLoaded', init);
 
+  // === ★追加: TOBポップアップ制御 ===
+(function(){
+  // モーダル用のDOMを生成（一度だけ）
+  if (!document.getElementById('tob-modal-overlay')) {
+    const ov = document.createElement('div');
+    ov.id = 'tob-modal-overlay';
+    ov.innerHTML = '<div id="tob-modal-content"></div>';
+    document.body.appendChild(ov);
+
+    // 背景クリックで閉じる
+    ov.addEventListener('click', (e) => {
+      if (e.target === ov) ov.style.display = 'none';
+    });
+  }
+})();
+
+// グローバル関数として公開（HTMLから onclick で呼ぶため）
+window.showTobHistory = function(btn, jsonStr) {
+  try {
+    const list = JSON.parse(decodeURIComponent(jsonStr));
+    const ov = document.getElementById('tob-modal-overlay');
+    const ct = document.getElementById('tob-modal-content');
+    
+    // 中身を生成
+    let html = `<div style="font-weight:bold; margin-bottom:8px; color:#f97316; border-bottom:2px solid #ffedd5; padding-bottom:4px;">TOB関連書類履歴 (${list.length})</div>`;
+    html += list.map(item => `<div class="tob-item">${item}</div>`).join("");
+    ct.innerHTML = html;
+
+    // 表示位置の計算（ボタンの近くに出す）
+    const rect = btn.getBoundingClientRect();
+    const scrollY = window.scrollY || document.documentElement.scrollTop;
+    
+    // 基本はボタンの「右下」に出す
+    let top = rect.bottom + 5 + scrollY;
+    let left = rect.left;
+
+    // 画面からはみ出るようなら調整（簡易版）
+    if (left + 340 > window.innerWidth) {
+        left = window.innerWidth - 350; // 右端に寄せる
+    }
+
+    ct.style.top = top + 'px';
+    ct.style.left = left + 'px';
+    
+    ov.style.display = 'block';
+
+  } catch (e) {
+    console.error("TOB view error:", e);
+  }
+};
+// === 追加ここまで ===
+
+
 })();
 </script>
 
@@ -6079,10 +6477,14 @@ function renderIndexSrSummary(){
             <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
             <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
             <th data-col="市場">市場</th>
+            <th data-col="TOB">TOB情報</th>
             <th class="sortable" data-col="関連テーマ" data-type="text">関連テーマ<span class="arrow"></span></th>
             <th>Yahoo</th>
             <th>X</th>
             <th class="num sortable" data-col="三角スコア" data-type="num">△Score<span class="arrow"></span></th>
+            <th class="num sortable" data-col="AIスコア" data-type="num">AIスコア<span class="arrow"></span></th>
+            <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
+            <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
             <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
@@ -6153,6 +6555,8 @@ function renderIndexSrSummary(){
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
+            <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
+            <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
             <th data-col="増資リスク">増資リスク</th>
@@ -6407,6 +6811,9 @@ def run_karauri_script():
         return proc
     except Exception as e:
         print(f"[karauri][WARN] 起動に失敗しました: {e}")
+
+
+
 
 # --- EDINET 取得で使う ---
 
@@ -10120,6 +10527,23 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     enhance_with_chart_flags(conn, all_rows)
     # enhance_with_chart_flags(conn, cand_rows)  # 基本不要。別参照にしているなら有効化。
     _tick("chart_flags_enhance")
+    
+    # ==== ★★★ ここに追加：TOBデータの注入処理 ★★★ ====
+    try:
+        print("[TOB] Loading TOB data...")
+        tob_map = load_tob_titles_map(180) # 定義した関数を呼び出し
+        
+        # all_rows にデータを注入（cand_rowsもこれを参照しているので反映されます）
+        for r in all_rows:
+            # コードを4桁文字列に揃える
+            c_raw = str(r.get("コード") or r.get("code") or "").strip()
+            c4 = c_raw.zfill(4) if c_raw.isdigit() else c_raw[:4]
+            
+            # リストをセット（無ければ空リスト）
+            r["tob_titles"] = tob_map.get(c4, [])
+    except Exception as e:
+        print(f"[TOB] inject failed: {e}")
+    # ==== ★★★ 追加ここまで ★★★ ====
 
     # 欠損チェック
     _need = ["高値","安値","5日","25日","75日","chart","移動平均","ボリバン","GC","三役"]
@@ -10159,6 +10583,19 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     preearn_rows  = []
     
     _tick("base_day next_business_day done")
+
+    # -------------------------------------------------------
+    # ★追加: ここでAI判定を実行！
+    # （cand_rows はこの時点でスクリーニング済みの候補リストです）
+    # -------------------------------------------------------
+    print("[AI] 詳細分析を実行しています...")
+    try:
+        # 定義済みの add_ai_analysis 関数を呼び出す
+        cand_rows = add_ai_analysis(conn, cand_rows)
+    except Exception as e:
+        print(f"[AI] 分析に失敗しました: {e}")
+    # -------------------------------------------------------
+
 
     # 9) data オブジェクト
     offering_code_set = _load_offering_codes_from_db(conn, days=3650)
@@ -11790,6 +12227,33 @@ def _run_fetch_all(fetch_path: str | None = None,
             except Exception:
                 pass
 
+
+def _run_train_model():
+    if not os.path.exists(TRAIN_SCRIPT_PATH):
+        raise FileNotFoundError(f"train script not found: {TRAIN_SCRIPT_PATH}")
+
+    py = sys.executable
+    cmd = [py, "-u", TRAIN_SCRIPT_PATH]
+
+    print(f"[train_model] 実行開始: {cmd}")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        bufsize=1
+    )
+
+    for line in proc.stdout:
+        print("[train_model]", line.rstrip())
+
+    rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"train_model 異常終了 rc={rc}")
+
+    print("[train_model] 正常終了")
+
+
 # ===== カブタン呼び出し
 
 def run_fundamental_daily(force: bool = False):
@@ -12967,6 +13431,19 @@ def main():
     # ---------------------------------------------------------------------
     t0 = time.time()
     print("=== 開始 ===")
+    
+    # -------------------------------------------------------
+    # ★追加: 起動時に学習スクリプトを叩いてモデルを更新
+    # -------------------------------------------------------
+    import subprocess
+    # 学習スクリプトのパス（ご自身の環境に合わせて修正してください）
+    
+    try:
+        _timed("train_model", _run_train_model)
+    except Exception as e:
+        print(f"[train_model][WARN] {e}")
+        print("既存モデルで続行")
+
 
     # (0) 付帯処理：空売り機関リストの更新
     try:
