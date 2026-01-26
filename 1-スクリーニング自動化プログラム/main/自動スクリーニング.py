@@ -3776,29 +3776,6 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     letter-spacing: 0.1px;        /* 文字詰め微調整 */
   }
 
-
-/* === [INJECTED] 株探ニュースの表示調整（改行なし・省略なし・幅制限なし） === */
-#tbl-candidate th[data-col="株探ニュース(3)"],
-#tbl-candidate td[data-col="株探ニュース(3)"],
-#tbl-candidate td[data-col="株探ニュース(3)"] *{
-  white-space: nowrap !important;
-  max-width: none !important;
-  overflow: visible !important;
-  text-overflow: clip !important;
-}
-/* === [/INJECTED] === */
-
-/* 株探ニュース(3) 列は折り返し・省略なし */
-#tbl-candidate th[data-col="株探ニュース(3)"],
-#tbl-candidate td[data-col="株探ニュース(3)"],
-#tbl-allcols  th[data-col="株探ニュース(3)"],
-#tbl-allcols  td[data-col="株探ニュース(3)"]{
-  white-space: nowrap !important;
-  overflow: visible !important;
-  text-overflow: clip !important;
-  max-width: none !important;
-}
-
 .tri { padding: 2px 4px; margin-right: 3px; border-radius: 3px; color: #fff; }
 
 .tri.good    { background-color: #2ecc71; }  /* 緑 */
@@ -3843,6 +3820,27 @@ DASH_TEMPLATE_STR = r"""<!doctype html>
     overflow: hidden;        /* はみ出しを隠す */
     text-overflow: ellipsis; /* 末尾を ... にする */
     cursor: help;            /* マウスカーソルを？マークっぽくする */
+  }
+  
+/* 株探ニュース(3) 用のスタイル */
+  td[data-col="株探ニュース(3)"] {
+    max-width: 250px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: help;
+  }
+  /* マウスオーバー時に全文を表示 */
+  td[data-col="株探ニュース(3)"]:hover {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    z-index: 999;
+    position: relative;
+    background: #fff;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    width: max-content;
+    max-width: 600px;
   }
 
 </style>
@@ -5376,7 +5374,7 @@ function renderIndexSrSummary(){
         <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
         <td>${escapeHtml(r["市場"] || "-")}</td>
         <td>${tobHtml}</td>
-        <td class="theme-col" data-col="関連テーマ" title="${escapeHtml(r["関連テーマ"] || "")}">${escapeHtml(r["関連テーマ"] || "")}</td>
+        <td class="theme-col" data-col="関連テーマ" title="${escapeHtml(r["関連テーマ"]?.replace(/<[^>]*>/g, "") || "")}">${r["関連テーマ"] || ""}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num triangle-cell" 
@@ -5392,7 +5390,7 @@ function renderIndexSrSummary(){
         <td class="num">${r["AIスコア"] || "-"}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num">${r["AI目標値"] || "-"}</td>
-        <td data-col="株探ニュース(3)" class="nowrap">${r["株探ニュース(3)"] || ""}</td>
+        <td data-col="株探ニュース(3)" class="news-col" title="${escapeHtml(String(r["株探ニュース(3)"]||"").replace(/<[^>]*>/g, ""))}">${r["株探ニュース(3)"] || ""}</td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
         <td class="num">${r["前日円差"] ?? ""}</td>
