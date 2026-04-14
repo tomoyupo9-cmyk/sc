@@ -1,0 +1,45 @@
+-- yahoo_symbol_override テーブルが未作成なら作成
+CREATE TABLE IF NOT EXISTS yahoo_symbol_override (
+  code TEXT PRIMARY KEY,            -- 自分の側で使う“コード”（指数シンボル）
+  override_symbol TEXT NOT NULL,    -- Yahooに問い合わせる実シンボル（ETFなど）
+  note TEXT
+);
+
+-- screener に指数を登録（無ければ追加）。最低限フィールドに合わせて調整。
+-- 市場は 'INDEX' 固定、空売り機関は 'なし' 推奨。
+INSERT OR IGNORE INTO screener (コード, 銘柄名, 市場, 空売り機関, 登録日, 更新日)
+VALUES
+  ('^N225',      '日経平均',                  'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^TOPIX',     'TOPIX',                     'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^GSPC',      'S&P 500',                   'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^DJI',       'ダウ平均',                  'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^IXIC',      'NASDAQ 総合',               'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^TRJ',       '東証REIT指数(代理取得)',     'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^MOTHERS',   '東証マザーズ(代理取得)',     'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^GRT250',    '東証グロース250(代理取得)',  'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^JPXNK400',  'JPX日経400(代理取得)',       'INDEX', 'なし', DATE('now'), DATE('now')),
+  ('^VIX',       'VIX',                       'INDEX', 'なし', DATE('now'), DATE('now'));
+
+-- 既存なら名称だけ同期（任意）
+UPDATE screener SET 銘柄名='日経平均'                 WHERE コード='^N225';
+UPDATE screener SET 銘柄名='TOPIX'                    WHERE コード='^TOPIX';
+UPDATE screener SET 銘柄名='S&P 500'                  WHERE コード='^GSPC';
+UPDATE screener SET 銘柄名='ダウ平均'                  WHERE コード='^DJI';
+UPDATE screener SET 銘柄名='NASDAQ 総合'              WHERE コード='^IXIC';
+UPDATE screener SET 銘柄名='東証REIT指数(代理取得)'   WHERE コード='^TRJ';
+UPDATE screener SET 銘柄名='東証マザーズ(代理取得)'   WHERE コード='^MOTHERS';
+UPDATE screener SET 銘柄名='東証グロース250(代理取得)'WHERE コード='^GRT250';
+UPDATE screener SET 銘柄名='JPX日経400(代理取得)'     WHERE コード='^JPXNK400';
+UPDATE screener SET 銘柄名='VIX'                      WHERE コード='^VIX';
+
+
+
+INSERT INTO yahoo_symbol_override (コード, 問い合わせシンボル) VALUES
+  ('^TOPIX',    '1306.T'),   -- 1308.Tに差し替え可
+  ('^TOPX',     '1306.T'),   -- 念のため両表記対応
+  ('^TRJ',      '1343.T'),   -- 東証REIT指数→ETF
+  ('^MOTHERS',  '2516.T'),   -- 旧マザーズ代替：東証グロース250 ETF
+  ('^GRT250',   '2516.T'),   -- グロース250
+  ('^JPXNK400', '1591.T')    -- JPX日経400
+ON CONFLICT(コード) DO UPDATE SET
+  問い合わせシンボル = excluded.問い合わせシンボル;

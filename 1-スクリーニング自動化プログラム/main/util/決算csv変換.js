@@ -17,9 +17,9 @@ const fs = require('fs');
 const readline = require('readline');
 
 //readstreamを作成
-const rs = fs.createReadStream('H:\\desctop\\株攻略\\1-スクリーニング自動化プログラム\\input.csv');
+const rs = fs.createReadStream('H:\\desctop\\株攻略\\1-スクリーニング自動化プログラム\\main\\util\\input.csv');
 //writestreamを作成
-const ws = fs.createWriteStream('H:\\desctop\\株攻略\\1-スクリーニング自動化プログラム\\output.csv');
+const ws = fs.createWriteStream('H:\\desctop\\株攻略\\1-スクリーニング自動化プログラム\\main\\util\\output.csv');
 
 //インターフェースの設定
 const rl = readline.createInterface({

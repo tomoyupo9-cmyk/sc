@@ -1,0 +1,3557 @@
+<!doctype html>
+<html lang="ja">
+<head>
+
+<meta http-equiv="Cache-Control" content="no-store">
+<meta http-equiv="Pragma" content="no-cache">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>スクリーニング ダッシュボード</title>
+<style>
+  :root{
+    --sticky-left-w: 0px;
+    --ink:#1f2937; --muted:#6b7280; --bg:#f9fafb; --line:#e5e7eb;
+    --blue:#0d3b66; --green:#15803d; --orange:#b45309; --yellow:#a16207;
+    --hit:#ffe6ef; --rowhover:#f6faff;
+    /* scroll-pad 用（ここに統合） */
+    --railW: 520px;
+    --padFactor: 1.05;
+    --padGutter: 16px;
+    --toolbarH: 0px;     /* ツールバー実測高（JSで上書き） */
+    --topScrollH: 16px;  /* 上部横スクロールバーの高さ */
+  }
+
+  /* 全体 */
+  body{
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans JP',sans-serif;
+    margin:16px; color:var(--ink); background:#fff;
+  }
+
+  nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+  nav a{padding:6px 10px;border-radius:8px;text-decoration:none;background:#e1e8f0;color:#1f2d3d;font-weight:600}
+  nav a.active{background:var(--blue);color:#fff}
+
+  .toolbar{display:flex;gap:14px;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
+  /* ★ 好きな位置で改行させるためのダミー要素 */
+  .toolbar .toolbar-break {
+    flex-basis: 100%;  /* ここで行を切る */
+    height: 0;         /* 見た目の余白はほぼ増やさない */
+  }
+  .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #CCD;border-radius:8px;background:#fff}
+  .toolbar input[type="number"]{width:80px}
+  .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
+
+  /* ▼ 相場環境バー（指数サポレジ＋VIX） */
+  #toolbar .env-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 6px;
+    font-size: 11px;
+  }
+
+  #toolbar .env-label {
+    font-size: 11px;
+  }
+
+  #toolbar .env-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.03);
+    white-space: nowrap;
+  }
+
+  #toolbar .env-item .qhelp {
+    margin-left: 4px;
+  }
+
+
+/* テーブルラッパ（角丸＋縦横スクロール＋ヘッダー固定の基準） */
+.tbl-wrap{
+  position: relative;              /* ← sticky の基準にする */
+  border-radius: 10px;
+  overflow: auto;                  /* 縦横どちらもスクロール */
+  -webkit-overflow-scrolling: touch;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line) inset;
+  max-height: 70vh;
+}
+
+/* テーブル（横に広がる／ズレ防止） */
+.tbl-wrap > table{
+  table-layout: auto !important;   /* fixed は使わない（列つぶれ防止） */
+  width: max-content;              /* コンテンツ幅に合わせる */
+  min-width: 100%;                 /* 画面より狭い時は100% */
+  border-collapse: separate;       /* sticky のにじみ防止 */
+  border-spacing: 0;
+}
+
+/* ヘッダー（thead も sticky） */
+.tbl-wrap > table thead{
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: color-mix(in oklab, var(--bg) 94%, black);
+}
+
+/* ヘッダーセル（確実に固定） */
+.tbl-wrap > table thead th{
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 7;                      /* thead より一段高く */
+  background: color-mix(in oklab, var(--bg) 94%, black);
+  background-clip: padding-box;    /* 角丸ラッパー内のにじみ防止 */
+  box-shadow: 0 1px 0 rgba(0,0,0,.06);
+  white-space: nowrap;             /* 見出しの折返し抑止（任意） */
+}
+
+/* セル：横スクロール前提で折返し抑止（必要なら列個別で解除） */
+.tbl-wrap > table th,
+.tbl-wrap > table td{
+  white-space: nowrap;
+}
+
+
+
+  /* 市場・Yahoo・X 列だけ更にタイトに（候補テーブル） */
+  #tbl-candidate th:nth-child(3),
+  #tbl-candidate th:nth-child(4),
+  #tbl-candidate th:nth-child(5),
+  #tbl-candidate td:nth-child(3),
+  #tbl-candidate td:nth-child(4),
+  #tbl-candidate td:nth-child(5){
+    padding-left:2px; padding-right:2px; text-align:center; white-space:nowrap;
+  }
+  
+/* 株探ニュース の BERTポジティブ用 ● を青く表示 */
+#tbl-candidate td[data-col="株探ニュース"] .bert-pos-dot,
+#tbl-allcols  td[data-col="株探ニュース"] .bert-pos-dot {
+  color: #2563eb;      /* 好きな青に調整OK */
+  margin-right: 2px;
+  font-weight: bold;
+}
+
+  .tbl{
+    border-collapse:collapse;
+    width:max-content;
+    background:#fff;
+    table-layout:fixed;
+    padding-right:var(--sticky-left-w);
+  }
+
+  .tbl th,.tbl td{
+    border-bottom:1px solid var(--line);
+    padding:2px 4px;
+    font-size:0.50em;
+    vertical-align:top;
+    box-sizing:border-box;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    line-height:1.25;
+  }
+
+  .tbl tbody tr{ height:22px; }
+  .tbl tbody tr:nth-child(even){ background:#fcfdff; }
+  .tbl tbody tr:hover{ background:var(--rowhover); }
+  .tbl th.sortable{ cursor:pointer; user-select:none; }
+  .tbl th.sortable .arrow{ margin-left:6px; font-size:11px; color:#666; }
+  .num{ text-align:right; }
+  .muted{ color:var(--muted); }
+  .hidden{ display:none; }
+  .count{ margin-left:6px; color:var(--muted); }
+  .pager{ display:flex; gap:8px; align-items:center; }
+  tr.hit>td{ background:var(--hit); }
+
+  /* バッジ */
+  .badge{ display:inline-flex; gap:6px; align-items:center; padding:2px 8px; border-radius:999px; font-size:12px; line-height:1; font-weight:700; }
+  .b-green{ background:#e7f6ed; color:var(--green); border:1px solid #cceedd; }
+  .b-orange{ background:#fff4e6; color:#b45309; border:1px solid #ffe2c2; }
+  .b-yellow{ background:#fff9db; color:#a16207; border:1px solid #ffe9a8; }
+  .b-gray{ background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
+
+  /* 推奨バッジ */
+  .rec-badge{ display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; line-height:1; white-space:nowrap; }
+  .rec-strong{ background:#e7f6ed; color:#166534; border:1px solid #cceedd; }
+  .rec-small { background:#fff4e6; color:#9a3412; border:1px solid #ffe2c2; }
+  .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
+  .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+  /* ヘッダー固定（候補一覧 / 全カラム） */
+  #tbl-candidate thead th,
+  #tbl-allcols  thead th{
+    position: static !important; top: auto !important; top: 0; background:#fff; z-index:61;
+    border-bottom:2px solid #ccc;
+    font-size:0.75em; padding:3px 4px;
+    white-space:nowrap !important; word-break:keep-all !important; overflow-wrap:normal !important;
+  }
+
+  /* ヘルプ（小窓＋暗幕） */
+  .help-backdrop{ position:fixed; inset:0; background:rgba(17,24,39,.45); z-index:9998; display:none; }
+  .help-pop{ position:absolute; z-index:9999; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.18); padding:12px 14px 14px; font-size:13px; line-height:1.55; display:none; width:clamp(720px, 90vw, 1200px); }
+  .help-pop .help-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; font-weight:700;}
+  .help-pop .help-close{ display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:6px; cursor:pointer; user-select:none; font-weight:700;}
+  .help-pop .help-close:hover{ background:#f3f4f6; }
+
+  .qhelp{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; margin-left:6px; border-radius:50%; border:1px solid #cbd5e1; font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;}
+  .qhelp:hover{ background:#e0e7ff; }
+
+  /* 既定＝1行 */
+  #tbl-candidate td, #tbl-candidate th,
+  #tbl-allcols  td, #tbl-allcols  th{ white-space:nowrap; word-break:keep-all; overflow-wrap:normal; }
+
+  /* 長文だけ折返し許可 */
+  th.reason-col, td.reason-col,
+  .hint-col, .fn-note { white-space:normal !important; word-break:break-word !important; overflow-wrap:anywhere !important; }
+
+  th.reason-col, td.reason-col{ font-size:0.78em; line-height:1.2; }
+
+  .mini{ font-size:10px; color:var(--muted); }
+
+  /* コードコピーリンク */
+  .copylink{ color:var(--blue); text-decoration:underline; cursor:pointer; }
+  .copylink.ok{ color:var(--green); text-decoration:none; font-weight:700; }
+
+  /* 予測タブ：理由/ヒント強調 */
+  .reason-col,.hint-col {vertical-align: top;}
+  .reason-box{ display:inline-block; padding:6px 8px; border-radius:10px; background:#fff9db; line-height:1.4; white-space: pre-wrap; }
+
+  /* 財務コメント */
+  .fn-note{ color:#b91c1c; font-weight:700; font-size:0.78em; margin-left:8px; white-space:pre-wrap; overflow:visible; text-overflow:clip; display:inline-block; max-width:clamp(600px, 60vw, 1200px); vertical-align:bottom; }
+
+  .tooltip, .popover { pointer-events:none; }
+  .reason-tags{ display:flex; flex-wrap:wrap; gap:6px; }
+  .reason-tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#eef2ff; border:1px solid #c7d2fe; color:#334155; white-space:nowrap; }
+
+  /* ボタンの色補正 */
+  #copy-page{ color:#fff !important; text-decoration:none; }
+
+  /* 市場フィルタ */
+  #market-filter label{ display:inline-flex; gap:6px; align-items:center; padding:2px 6px; border:1px solid var(--line); border-radius:8px; }
+  #market-filter input[type="checkbox"]{ transform: translateY(0.5px); }
+
+  /* ===== Column fold (fixed width via <col>) ===== */
+  #tbl-candidate{ table-layout: fixed; }
+  #tbl-candidate col{ width:auto; }
+  #tbl-candidate col.col-collapsed{ width:22px !important; }
+
+  /* 長文列は広め */
+  th[data-col="財務"], td[data-col="財務"],
+  th[data-col="理由"], td[data-col="理由"],
+  th[data-col="判定理由"], td[data-col="判定理由"],
+  th[data-col="注記"], td[data-col="注記"],
+  th[data-col="ニュース"], td[data-col="ニュース"]{
+    max-width:360px; white-space:normal; overflow-wrap:anywhere; word-break:break-word;
+  }
+
+  /* コード/銘柄はやや広め */
+  th[data-col="コード"], td[data-col="コード"],
+  th[data-col="銘柄"], td[data-col="銘柄"]{ max-width:160px; }
+
+  /* === scroll-pad (extend horizontal scroll) === */
+  .scroll-pad{
+    min-width: calc(var(--railW) * var(--padFactor) + var(--padGutter));
+    width:     calc(var(--railW) * var(--padFactor) + var(--padGutter));
+    border:none !important; background:transparent !important; pointer-events:none; padding:0 !important;
+  }
+
+  /* === Plan B: セクション・カード + sticky + 区切り線 === */
+  .tabs { position: sticky; top: 0; z-index: 60; background: var(--bg); }
+  .tabs::after { content:""; display:block; height:2px; background: var(--line); opacity:0.9; }
+
+  #toolbar { position: static !important; top: auto !important; z-index: 55; background: var(--bg); }
+  #toolbar .toolbar-card {
+    border:1px solid var(--line); border-radius:12px; padding:10px; 
+    box-shadow:0 1px 4px rgba(0,0,0,.04), 0 0 0 1px var(--line) inset;
+    display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; 
+    margin-bottom:8px;
+  }
+  #toolbar .group {
+    border:1px solid var(--line); border-radius:10px; padding:8px; 
+    display:flex; flex-wrap:wrap; gap:6px; align-items:center; background:var(--bg);
+  }
+  #toolbar .group .label { font-size:.78em; opacity:.8; margin-right:6px; }
+  #toolbar { font-size: .9em; line-height: 1.2; }
+
+  /* 配置（左→右：checks, texts, selects, buttons） */
+  /* チェック群：横並び＋綺麗に折返し */
+  #toolbar .group.checks{
+    order: 1;
+    display: flex;              /* ← grid から変更 */
+    flex-wrap: wrap;            /* 要素単位で折返し */
+    gap: 8px 10px;              /* 行間 × 列間 */
+    align-items: center;
+  }
+
+  /* 各ラベルの見た目と改行挙動 */
+  #toolbar .group.checks label{
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    padding: 2px 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg);
+    white-space: nowrap;        /* 文字は折返さず、要素として回り込む */
+  }
+
+  /* チェックボックスの縦位置を微調整（任意） */
+  #toolbar .group.checks input[type="checkbox"]{
+    transform: translateY(0.5px);
+  }
+  
+
+  #toolbar .group.texts   { order: 2; display:flex; gap:6px; }
+  #toolbar .group.selects { order: 3; display:flex; gap:6px; }
+
+  /* ← ラベルには枠を当てない（キャプションをチップ化しない） */
+  #toolbar .group.selects label{
+    display:inline-flex; gap:6px; align-items:center;
+    padding:0; border:0; background:transparent;
+  }
+
+  /* ← select 本体だけを丸枠に */
+  #toolbar .group.selects label > select,
+  #toolbar .group.selects > select{
+    height: 28px;
+    line-height: 28px;
+    border: 1px solid var(--line) !important;  /* ← 既存の上書きを防ぐ */
+    border-radius: 9999px !important;          /* ← しっかり丸枠に */
+    background: #fff;
+    padding: 0 24px 0 8px;   /* 右=矢印余白 */
+    vertical-align: middle;
+    appearance: auto;        /* ← ネイティブ矢印はそのまま */
+  }
+
+  /* キャプションと select の間を少し空ける */
+  #toolbar .group.selects label > select{ margin-left: 6px; }
+
+  #toolbar .group.buttons { order: 4; margin-left:0; display:flex; gap:8px; align-items:center; }
+
+  /* 列名との区切り線（toolbarカードの下） */
+  #toolbar::after { content:""; display:block; height:1px; background:var(--line); margin:6px 0 4px; }
+
+  /* フッターの左右2カラム（左=市場 / 右=件数+Pager） */
+  #toolbar .group.footer {
+    order: 5;
+    width: 100%;
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    align-items: center;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 8px;
+    flex-wrap: wrap;
+  }
+
+
+  #toolbar .group.footer .footer-left  { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #toolbar .group.footer .footer-ctrls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
+  #toolbar .group.footer .pager { display:flex; gap:8px; align-items:center; }
+
+  /* 市場フィルタ */
+  #market-filter { margin: 0; }
+  #market-filter .muted { margin-right: 6px; }
+
+  table thead th { background: color-mix(in oklab, var(--bg) 94%, black); }
+
+  #toolbar input[type="text"], #toolbar input[type="number"], #toolbar select { height: 28px; }
+  #toolbar .btn { height: 30px; }
+
+
+
+
+/* injected market checkbox fix */
+#mk_host{display:flex;flex-wrap:wrap;gap:8px}
+#mk_host label.mk{display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border-color,#e5e7eb);border-radius:6px}
+#mk_host input[type=checkbox]{margin-right:4px}
+
+  /* 数値列 右寄せ（抵抗/支持） */
+  th[data-col="抵抗帯中心"], th[data-col="最寄り抵抗"],
+  th[data-col="支持帯中心"], th[data-col="最寄り支持"],
+  td[data-col="抵抗帯中心"], td[data-col="最寄り抵抗"],
+  td[data-col="支持帯中心"], td[data-col="最寄り支持"] { text-align:right; }
+
+  /* === [PATCH] Toolbar font-size unify (11px) === */
+  .toolbar, .toolbar *, #toolbar, #toolbar * { font-size: 11px !important;
+    line-height: 1.6;
+  }
+  /* Ensure selects and inputs inherit correctly (browser defaults can shrink text) */
+  .toolbar select, .toolbar input, .toolbar button, .toolbar label {
+    font-size: inherit !important;
+  }
+
+  /* === [PATCH v15] Top scrollbar right below header (Pattern 1) === */
+  .table-wrap { position: relative; width: 100%; }
+  .thead-only { table-layout: fixed; width: max-content; background:#fff; }
+  .thead-only th { white-space:nowrap; }
+  .xbar-top { overflow-x: auto; height: 16px; }
+  .xbar-top-inner { height: 1px; }
+  .body-scroll { overflow-x: auto; }
+  /* Keep body table styled the same */
+  .body-scroll > table.tbl { table-layout: fixed; width: max-content; }
+
+  /* === [PATCH v16] minimize gap between toolbar footer and header row === */
+  #toolbar { margin-bottom: 0 !important; }
+  #toolbar .toolbar-card { margin-bottom: 2px !important; }
+  .table-wrap { margin-top: 0 !important; }
+  /* Make the top scrollbar as thin as possible cross-browser */
+  .xbar-top { height: 8px !important; }
+  .xbar-top { scrollbar-width: thin; }               /* Firefox */
+  .xbar-top::-webkit-scrollbar { height: 8px; }      /* Chromium/WebKit */
+  /* Optional: reduce header-only table bottom spacing if any */
+  .thead-only { margin-bottom: 0 !important; }
+
+  /* === [PATCH v19] Dropdown group: remove inner frame to keep a single card === */
+  #toolbar .group.selects {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  /* Tighten the label spacing inside selects group */
+  #toolbar .group.selects .label {
+    margin-right: 6px !important;
+    opacity: .8;
+  }
+  /* Keep each select block compact */
+  #toolbar .group.selects .select-block {
+    margin-right: 8px !important;
+  }
+
+  /* === [PATCH v20] Keep OUTER .toolbar-card, remove INNER group frames (selects) === */
+  /* Ensure the OUTER card is visible even if inner is transparent */
+  #toolbar .toolbar-card {
+    background: #fff !important;
+    border: 1px solid var(--line) !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04) !important;
+  }
+  /* Remove inner frame ONLY for the selects groups */
+  #toolbar .toolbar-card .group.selects,
+  /* Fallback: any group that actually contains a <select> (modern Chromium supports :has) */
+  #toolbar .toolbar-card .group:has(select) {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  /* Slight spacing so the two dropdown blocks don't stick together too tightly */
+  #toolbar .toolbar-card .group.selects + .group.selects { margin-left: 8px !important; }
+
+  /* === [PATCH v22] Restore OUTER dropdown frame, remove only INNER group frame === */
+  /* Outer card must be visible */
+  #toolbar .toolbar-card {
+    background: #fff !important;
+    border: 1px solid var(--line) !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,.06) !important;
+    border-radius: 12px !important;
+    padding: 10px 12px !important;
+    margin-bottom: 6px !important;
+  }
+  /* Remove only the inner group box for selects */
+  #toolbar .toolbar-card .group.selects {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  /* Keep spacing between the two select blocks */
+  #toolbar .toolbar-card .group.selects + .group.selects { margin-left: 12px !important; }
+  /* Ensure the label/select controls keep normal borders */
+  #toolbar .toolbar-card .group.selects .select-block select {
+    border: 1px solid var(--line) !important;
+    background: #fff !important;
+  }
+
+  /* === [PATCH v23] Make toolbar <select> look like other pill-framed controls === */
+  #toolbar .group.selects .select-block select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 6px 28px 6px 10px; /* room for arrow */
+    font-size: inherit;
+    line-height: 1.6;
+    min-height: 30px;
+  }
+  /* Add a simple dropdown arrow (pure CSS) */
+  #toolbar .group.selects .select-block {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  #toolbar .group.selects .select-block::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #6b7280; /* muted */
+    pointer-events: none;
+  }
+  /* Focus ring to match inputs */
+  #toolbar .group.selects .select-block select:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(13,59,102,.12);
+    border-color: #c9d2dc;
+  }
+  /* Disabled look */
+  #toolbar .group.selects .select-block select:disabled {
+    background: #f3f4f6;
+    color: #9ca3af;
+    border-color: #e5e7eb;
+  }
+
+  /* === [PATCH v24] Smaller top tabs === */
+  .tabs nav { gap: 6px !important; margin-bottom: 8px !important; }
+  .tabs nav a {
+    font-size: 11px !important;
+    padding: 4px 8px !important;
+    border-radius: 6px !important;
+  }
+
+  /* === [PATCH v25] Top tabs: match toolbar buttons size === */
+  .tabs nav { gap: 6px !important; margin-bottom: 6px !important; }
+  .tabs nav a {
+    display: inline-flex !important;
+    align-items: center !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    padding: 6px 12px !important;
+    height: 30px !important;
+    border-radius: 8px !important;
+  }
+
+  /* === [PATCH v26] Tabs size = .btn (equalize with "傾向グラフ") === */
+  :root{
+    --ctrl-h: 30px;
+    --ctrl-pad-y: 6px;
+    --ctrl-pad-x: 12px;
+    --ctrl-radius: 8px;
+  }
+  #toolbar .btn{
+    height: var(--ctrl-h) !important;
+    padding: var(--ctrl-pad-y) var(--ctrl-pad-x) !important;
+    border-radius: var(--ctrl-radius) !important;
+    font-weight: 600 !important;
+  }
+  /* 切替タブも .btn と同一寸法へ */
+  .tabs nav a{
+    height: var(--ctrl-h) !important;
+    padding: var(--ctrl-pad-y) var(--ctrl-pad-x) !important;
+    border-radius: var(--ctrl-radius) !important;
+    font-weight: 600 !important;
+    font-size: inherit !important; /* ボタンと同じフォントサイズへ（toolbarの .9em を踏襲） */
+    line-height: calc(var(--ctrl-h) - 2px) !important; /* 内側テキストの縦位置安定 */
+  }
+
+
+  /* === [PATCH v27] Compact toolbar footer gap (shrink grey space) === */
+  /* 1) Thin the separator line and margins under the toolbar */
+  #toolbar::after{
+    height: 1px !important;
+    margin: 2px 0 2px !important;
+  }
+  /* 2) Reduce bottom margin of the outer toolbar card */
+  #toolbar .toolbar-card{
+    margin-bottom: 2px !important;
+  }
+  /* 3) Make the top horizontal scroll area slimmer */
+  .xbar-top{
+    height: 8px !important; /* was 16px */
+  }
+  /* 4) Footer group padding/gap slightly smaller */
+  #toolbar .group.footer{
+    gap: 6px !important;
+    padding: 6px !important;   /* was 8px */
+    border-radius: 8px !important;
+  }
+
+
+  /* === [PATCH v28] Smaller tab label font === */
+  .tabs nav a{
+    font-size: 11px !important;   /* was inherit (≈16px) */
+    letter-spacing: 0.1px;        /* 文字詰め微調整 */
+  }
+
+.tri { padding: 2px 4px; margin-right: 3px; border-radius: 3px; color: #fff; }
+
+.tri.good    { background-color: #2ecc71; }  /* 緑 */
+.tri.normal  { background-color: #f1c40f; }  /* 黄 */
+.tri.bad     { background-color: #e67e22; }  /* 橙 */
+.tri.verybad { background-color: #e74c3c; }  /* 赤 */
+
+/* === ★変更: TOBポップアップ（body直下表示用） === */
+.tob-btn {
+  cursor: pointer;
+  color: #fff; background: #f97316;
+  padding: 2px 8px; border-radius: 4px;
+  font-size: 10px; font-weight: bold;
+  white-space: nowrap; display: inline-block;
+  user-select: none;
+}
+.tob-btn:hover { opacity: 0.9; }
+
+/* ポップアップ本体（画面最前面に固定） */
+#tob-modal-overlay {
+  display: none; position: fixed; z-index: 9999;
+  left: 0; top: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.1); /* 背景を少し暗くしてクリックで閉じるエリアにする */
+}
+#tob-modal-content {
+  position: absolute;
+  background: #fff; border: 1px solid #cbd5e1;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  padding: 12px; border-radius: 8px;
+  width: 340px; max-width: 90vw;
+  max-height: 400px; overflow-y: auto;
+  font-size: 12px; line-height: 1.5; color: #333;
+}
+.tob-item { border-bottom: 1px solid #f1f5f9; padding: 6px 0; }
+.tob-item:last-child { border-bottom: none; }
+/* === 変更ここまで === */
+
+  /* 関連テーマの幅制限と...表示 */
+  .theme-col {
+    max-width: 150px;        /* 幅を150pxに制限（画面に合わせて調整してください） */
+    white-space: nowrap;     /* 改行させない */
+    overflow: hidden;        /* はみ出しを隠す */
+    text-overflow: ellipsis; /* 末尾を ... にする */
+    cursor: help;            /* マウスカーソルを？マークっぽくする */
+  }
+  
+/* 株探ニュース(3) 用のスタイル */
+  td[data-col="株探ニュース(3)"] {
+    max-width: 250px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: help;
+  }
+  /* マウスオーバー時に全文を表示 */
+  td[data-col="株探ニュース(3)"]:hover {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    z-index: 999;
+    position: relative;
+    background: #fff;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    width: max-content;
+    max-width: 600px;
+  }
+
+</style>
+
+<script id="freeze-cols">
+(function(){
+  if (window.__FREEZE_COLS_INSTALLED__) return;
+  window.__FREEZE_COLS_INSTALLED__ = true;
+
+  function createFreezeUI(tableId, label){
+    var tbl = document.getElementById(tableId);
+    if (!tbl) return null;
+    if (document.getElementById(tableId + "-freeze-ui")) return null;
+
+    var wrap = tbl.closest(".tbl-wrap") || tbl.parentElement;
+    var ui = document.createElement("div");
+    ui.id = tableId + "-freeze-ui";
+    ui.className = "freeze-toolbar";
+    ui.style.display = "flex";
+    ui.style.gap = "8px";
+    ui.style.alignItems = "center";
+    ui.style.margin = "6px 0 8px";
+
+    var lab = document.createElement("label");
+    lab.textContent = label || "固定列：";
+
+    var sel = document.createElement("select");
+    sel.id = tableId + "-freeze-select";
+    sel.innerHTML = '<option value="">選択してください</option>';
+    sel.style.padding = "4px 8px";
+    sel.style.border = "1px solid #ccd";
+    sel.style.borderRadius = "8px";
+    sel.style.background = "#fff";
+
+    ui.appendChild(lab);
+    ui.appendChild(sel);
+
+
+// --- UI を toolbar の「プルダウン枠」に必ず入れる ---
+function mountIntoToolbar(ui){
+  // ツールバーのグルーピングは別スクリプトで DOMContentLoaded 後に走るため、
+  // まだ .group.selects が無ければ少し待ってから再試行する
+  var target = document.querySelector('#toolbar .group.selects');
+  if (target) {
+    // 枠に合わせるため group コンテナで包む
+    var holder = document.createElement('div');
+    holder.className = 'group';
+    holder.style.display = 'flex';
+    holder.style.gap = '6px';
+    holder.style.alignItems = 'center';
+    holder.appendChild(ui);
+    target.appendChild(holder);
+  } else {
+    // 次フレームで再試行（最大数回でもOK：ここでは簡潔に1回）
+    requestAnimationFrame(function(){ mountIntoToolbar(ui); });
+  }
+}
+mountIntoToolbar(ui);
+
+
+
+    var ths = tbl.querySelectorAll("thead th");
+    ths.forEach(function(th, i){
+      var nm = (th.textContent || "").trim() || th.getAttribute("data-col") || ("列" + (i+1));
+      var opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = nm;
+      sel.appendChild(opt);
+    });
+
+    try {
+      var key = "freezeIdx:" + tableId;
+      var saved = localStorage.getItem(key);
+      if (saved !== null && saved !== "") sel.value = saved;
+      // 初回は適用しない（ユーザー操作時のみ固定を反映）
+      clearFreeze(tableId);
+      sel.addEventListener("change", function(e){
+        var v = e.target.value;
+        localStorage.setItem(key, v);
+        applyFreeze(tableId, v === "" ? null : parseInt(v, 10));
+      });
+    } catch(e){}
+    return ui;
+  }
+
+  function clearFreeze(tableId){
+    var tbl = document.getElementById(tableId);
+    if (!tbl) return;
+    tbl.querySelectorAll("th,td").forEach(function(cell){
+      cell.style.position = "";
+      cell.style.left = "";
+      cell.style.zIndex = "";
+      cell.style.boxShadow = "";
+      cell.style.background = "";
+    });
+  }
+
+function applyFreeze(tableId, uptoIdx){
+  var tbl = document.getElementById(tableId);
+  if (!tbl) return;
+  clearFreeze(tableId);
+  if (uptoIdx === null || isNaN(uptoIdx)) return;
+
+  var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
+  var lefts = [];
+  var sum = 0;
+  for (var i=0;i<ths.length;i++){
+    lefts[i] = sum;
+    sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
+  }
+
+  for (var col=0; col<=uptoIdx && col<ths.length; col++){
+    var left = lefts[col] + "px";
+    tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
+      th.style.position = "sticky";
+      th.style.left = left;
+      th.style.zIndex = "3";
+      th.style.background = "#fff";
+      th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
+    });
+    tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
+      td.style.position = "sticky";
+      td.style.left = left;
+      td.style.zIndex = "2";
+      td.style.background = "#fff";
+      td.style.boxShadow = "1px 0 0 rgba(0,0,0,0.06)";
+    });
+  }
+
+  // ★ここを追加：固定列数が変わったら、sticky幅とスクロール余白を再計測
+  try { window.dispatchEvent(new Event('resize')); } catch(_) {}
+}
+
+
+  document.addEventListener("DOMContentLoaded", function(){
+    createFreezeUI("tbl-candidate", "固定列（候補一覧）：");
+    createFreezeUI("tbl-allcols", "固定列（全カラム）：");
+  });
+})();
+</script>
+
+<script id="res-map">
+(function(g){
+  if (g.__RES_MAP_INSTALLED__) return; g.__RES_MAP_INSTALLED__ = true;
+  function fmt(v){
+    if (v===null || v===undefined || v==='') return '';
+    var n = Number(v); if (!isFinite(n)) return '';
+    return n.toLocaleString('ja-JP');
+  }
+  function mapRow(row){
+    try{
+      if (row.Res_Zone !== undefined)      row["抵抗帯中心"] = fmt(row.Res_Zone);
+      if (row.Res_Zone_Last !== undefined) row["抵抗最終日"] = row.Res_Zone_Last || "";
+      if (row.Res_Nearest !== undefined)   row["最寄り抵抗"] = fmt(row.Res_Nearest);
+      if (row.Sup_Zone !== undefined)      row["支持帯中心"] = fmt(row.Sup_Zone);
+      if (row.Sup_Zone_Last !== undefined) row["支持最終日"] = row.Sup_Zone_Last || "";
+      if (row.Sup_Nearest !== undefined)   row["最寄り支持"] = fmt(row.Sup_Nearest);
+    }catch(_){}
+    return row;
+  }
+  if (Array.isArray(g.DATA_CAND)) g.DATA_CAND = g.DATA_CAND.map(mapRow);
+  if (Array.isArray(g.DATA_ALL))  g.DATA_ALL  = g.DATA_ALL.map(mapRow);
+})(window);
+</script>
+
+<script>
+// === scroll-pad injector: allows scrolling further right so any column can align next to the fixed columns ===
+(function(g,d){
+  function measureRailRight(table){
+    try{
+      var edge = 0;
+      var ths = table.querySelectorAll('thead th');
+      if (!ths || !ths.length) return 0;
+      // 先頭 5～8列くらいまで見て最大rightを採用（重い計算を避ける）
+      var limit = Math.min(8, ths.length);
+      for (var i=0; i<limit; i++){
+        var th = ths[i];
+        var rect = th.getBoundingClientRect();
+        var left = th.offsetLeft || 0;  // fallback
+        var right = left + (th.offsetWidth || rect.width || 0);
+        if (right > edge) edge = right;
+      }
+      return edge;
+    }catch(e){ return 0; }
+  }
+
+
+  function ensurePadColumn(table){
+    try{
+      var rows = table.querySelectorAll('tbody tr');
+      for (var i=0; i<rows.length; i++){
+        var tr = rows[i];
+        if (!tr.querySelector('td[data-col="__PAD__"]')){
+          var td = d.createElement('td');
+          td.className = 'scroll-pad';
+          td.setAttribute('data-col','__PAD__');
+          tr.appendChild(td);
+        }
+      }
+    }catch(e){}
+  }
+
+
+  function update(){
+    var table = d.getElementById('tbl-candidate');
+    if (!table) return;
+    ensurePadColumn(table);
+    var w = measureRailRight(table);
+    if (w && w>0){
+      d.documentElement.style.setProperty('--railW', w + 'px');
+    }
+  }
+
+  d.addEventListener('DOMContentLoaded', function(){
+    try{
+      update();
+      g.addEventListener('resize', update);
+
+      try{
+        var table = d.getElementById('tbl-candidate');
+        if (table && g.MutationObserver){
+          // 変化のバーストを1フレームにまとめて update()
+          var ticking = false;
+          function queueUpdate(){
+            if (ticking) return;
+            ticking = true;
+            requestAnimationFrame(function(){
+              try { update(); } finally { ticking = false; }
+            });
+          }
+
+          // thead / tbody を両方監視
+          var obs = new MutationObserver(queueUpdate);
+          var targets = [ table.querySelector('thead'), table.querySelector('tbody') ].filter(Boolean);
+          targets.forEach(function(t){
+            obs.observe(t, {
+              childList: true,
+              attributes: true,
+              characterData: true,
+              subtree: true
+            });
+          });
+        }
+      }catch(_){}
+    }catch(e){ console.warn('[scroll-pad]', e); }
+  });
+
+})(window, document);
+</script>
+
+
+<script id="top-hscroll">
+(function(){
+  // 1) ツールバー高さをCSS変数へ（sticky用・不要なら残してOK）
+  function setToolbarOffset(){
+    var tb = document.getElementById('toolbar');
+    var h  = tb ? tb.offsetHeight : 0;
+    document.documentElement.style.setProperty('--toolbarH', h + 'px');
+  }
+  window.addEventListener('load', setToolbarOffset);
+  window.addEventListener('resize', setToolbarOffset);
+  requestAnimationFrame(setToolbarOffset);
+
+  // 2) #tbl-candidate を含む横スクロール要素を取得（.tbl-wrap優先）
+  function findScrollerFor(table){
+    if (!table) return null;
+    return table.closest('.tbl-wrap') || table.parentElement || null;
+  }
+
+  // 3) 上部横スクロールバーを設置し、本体と双方向同期
+  function mountTopScrollbarFor(tableId){
+    var table = document.getElementById(tableId);
+    if (!table) return;
+
+    var sc = findScrollerFor(table);
+    if (!sc) return;
+
+    // 既に設置済みならスキップ
+    if (sc.previousElementSibling && sc.previousElementSibling.classList.contains('xbar-top')) return;
+
+    // 既存CSSに合わせたクラス名で作成
+    var topBar = document.createElement('div');
+    topBar.className = 'xbar-top';
+    var sizer = document.createElement('div');
+    sizer.className = 'xbar-top-inner';
+    topBar.appendChild(sizer);
+
+    // 本体スクローラの直前に設置
+    sc.parentElement.insertBefore(topBar, sc);
+
+    // 総幅をテーブル側に合わせる
+    function syncSize(){
+      var w = table.scrollWidth || sc.scrollWidth || 0;
+      sizer.style.width = w + 'px';
+      topBar.scrollLeft = sc.scrollLeft;
+    }
+
+    // 双方向同期（ループ防止ロック）
+    var lock = false;
+    topBar.addEventListener('scroll', function(){
+      if (lock) return; lock = true; sc.scrollLeft = topBar.scrollLeft; lock = false;
+    });
+    sc.addEventListener('scroll', function(){
+      if (lock) return; lock = true; topBar.scrollLeft = sc.scrollLeft; lock = false;
+    });
+
+    // 初期同期 & サイズ変化追随
+    syncSize();
+    if (window.ResizeObserver){
+      var ro = new ResizeObserver(syncSize);
+      ro.observe(sc);
+      ro.observe(table);
+    }
+    window.addEventListener('resize', syncSize);
+    setTimeout(syncSize, 100); // レイアウト確定後の保険
+  }
+
+  // ★候補一覧 + 明日用 両方に適用
+  function mountTopScrollbar(){
+    ["tbl-candidate", "tbl-tmr"].forEach(function(id){
+      mountTopScrollbarFor(id);
+    });
+  }
+
+
+  // 初期化
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', mountTopScrollbar);
+  } else {
+    mountTopScrollbar();
+  }
+
+  // 既存 render() 実行後にも軽く再同期（存在すれば）
+  var _render = window.render;
+  if (typeof _render === 'function'){
+    window.render = function(){
+      try { return _render.apply(this, arguments); }
+      finally {
+        try { window.dispatchEvent(new Event('resize')); } catch(_) {}
+      }
+    };
+  }
+})();
+</script>
+
+<!-- ページ全体スクロール無効（削除） -->
+
+</head>
+<body>
+<script id="__DATA__" type="application/json">{}</script>
+<script id="inline-data">
+  (function(){
+    try{ window.__DATA__ = (typeof __DATA__ !== 'undefined' && __DATA__) || window.__DATA__ || {}; }
+    catch(e){ /* keep existing */ }
+  })();
+</script>
+
+  <nav>
+    <a href="#" id="lnk-cand" class="active">候補一覧</a>
+    <a href="#" id="lnk-tmr">明日用</a>
+    <!-- <a href="#" id="lnk-preearn">決算(予測)</a>-->
+    <span class="mini" style="margin-left:auto">build: {{ build_id }}</span>
+    <span id="nav-summary-anchor"></span></nav>
+
+  <div id="toolbar" class="toolbar">
+    <div class="res-filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 4px">
+      <span class="muted" style="font-size:12px">抵抗の表示:</span>
+      <span class="muted" style="font-size:12px">近接ハイライト±</span>
+      <input id="resNearPct" type="number" min="0" step="0.1" value="0.5" style="width:60px">% 
+    </div>
+    <!-- ★ 相場環境バー（新） -->
+    <div class="env-row">
+      <span class="env-label muted">相場環境:</span>
+      <span id="idx-sr-summary" class="env-item"></span>
+      <span id="vix-regime" class="env-item"></span>
+    </div>
+
+    <label><input type="checkbox" id="f_shodou"> 初動のみ</label>
+    <label><input type="checkbox" id="f_tei"> 底打ちのみ</label>
+    <label><input type="checkbox" id="f_both"> 両立のみ</label>
+    <label><input type="checkbox" id="f_rightup"> 右肩上がりのみ</label>
+    <label><input type="checkbox" id="f_early"> 早期のみ</label>
+    <label><input type="checkbox" id="f_etype"> 早期種別あり</label>
+    <label><input type="checkbox" id="f_recstrong"> エントリー有力のみ</label>
+    <label><input type="checkbox" id="f_smallpos"> 小口提案のみ</label>
+    <label><input type="checkbox" id="f_noshor"> 空売り機関なしのみ</label>
+    <label><input type="checkbox" id="f_opratio"> 割安（営利対時価10%以上）のみ</label>
+    <label><input type="checkbox" id="f_hit"> 当たりのみ</label>
+    <!-- === RS / 地合い / 逆行 フィルタ === -->
+    <label><input type="checkbox" id="f_rsstrong"> RS強（RS_5 > 0）</label>
+    <label><input type="checkbox" id="f_mkt_good"> 地合い：追い風（+1）</label>
+    <label><input type="checkbox" id="f_mkt_bad"> 地合い：逆風（-1）</label>
+    <label><input type="checkbox" id="f_revstrong"> 逆行強</label>
+    <label><input type="checkbox" id="f_revweak"> 逆行弱</label>
+    <!-- === 株探ニュース フィルタ === -->
+    <label style="margin-left:12px;">
+      株探ニュース
+      <input type="number" id="f_news_days" min="0" style="width:4em;" placeholder="日数">
+      日以内(2指定が理想)
+    </label>
+    <label style="margin-left:8px;">
+      <input type="checkbox" id="f_news_bluepos">
+      青●ありのみ
+    </label>
+    <div class="toolbar early-filter">
+      <label class="ef-chk"><input type="checkbox" value="ブレイク" ><span>ブレイク</span></label>
+      <label class="ef-chk"><input type="checkbox" value="ポケット" ><span>ポケット</span></label>
+      <label class="ef-chk"><input type="checkbox" value="20MAリバ" ><span>20MAリバ</span></label>
+      <label class="ef-chk"><input type="checkbox" value="200MAリクレイム" ><span>200MAリクレイム</span></label>
+    </div>
+
+    <label>上昇率≥ <input type="number" id="th_rate" placeholder="3.0" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label>売買代金≥ <input type="number" id="th_turn" placeholder="10" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label>RVOL代金≥ <input type="number" id="th_rvol" placeholder="3.0" step="0.1" inputmode="decimal" autocomplete="off"></label>
+
+    <label>進捗率≥ <input type="number" id="th_progress" placeholder="80" step="1" inputmode="decimal" autocomplete="off"></label>
+    <label>スコア≥ <input type="number" id="th_score" placeholder="0" step="1" inputmode="decimal" autocomplete="off"></label>
+    
+    <input type="text" id="f_holder" placeholder="大株主(Activists...)" style="width:140px; margin-left:8px;">
+    
+    <!-- ★ この1行を追加：ここで flex の改行を強制 -->
+    <span class="toolbar-break"></span>
+    
+    <label>株価≥ <input type="number" id="th_pmin" placeholder="下限" step="1" inputmode="decimal" autocomplete="off"></label>
+    <label>～ ≤ <input type="number" id="th_pmax" placeholder="上限" step="1" inputmode="decimal" autocomplete="off"></label>
+
+    <label>▲(上昇) ≥
+      <input type="number" id="th_tri_g" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+    </label>
+    <label>◆(安定) ≥
+      <input type="number" id="th_tri_s" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+    </label>
+    <label>■(ボラ) ≥
+      <input type="number" id="th_tri_v" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
+    </label>
+
+
+    <label><input type="checkbox" id="f_defaultset"> 規定</label>
+    <label><input type="checkbox" id="f_goodonly">勝ちやすいだけ</label>
+    <label><input type="checkbox" id="f_tob_only">TOB情報</label>
+
+
+    <input type="text" id="q" placeholder="全文検索（コード/銘柄/判定理由など）" style="min-width:240px">
+    <button class="btn" id="btn-stats">傾向グラフ</button>
+    <button class="btn" id="btn-ts">推移グラフ</button>
+
+    <span class="pager">
+      <label>表示件数
+        <select id="perpage">
+          <option value="200">200</option><option value="500">500</option>
+          <option value="1000">1000</option><option value="2000" selected>2000</option>
+        </select>
+      </label>
+      <button class="btn" id="prev">前へ</button>
+      <button class="btn" id="next">次へ</button>
+      <span id="pageinfo" class="muted">- / -</span>
+    </span>
+    <span class="count">件数: <b id="count">-</b></span>
+    
+    <div class="toolbar" id="market-filter" style="gap:8px; align-items:center;">
+      <span class="muted">市場:</span>
+      <label class="mk-all"><input type="checkbox" id="mk_all" checked> 全て</label>
+      <span id="mk_host" style="display:inline-flex; gap:8px; flex-wrap:wrap;"></span>
+    </div>
+
+    <button class="btn copylink" id="copy-page">今のページの銘柄をコピー</button>
+    <button id="download-page-csv" class="btn">今のページの銘柄をCSVダウンロード</button>
+    <button class="btn" id="download-csv">CSVダウンロード</button>
+  </div>
+
+
+
+<!-- ヘルプ定義＆マップ -->
+<script>
+  window.HELP_TEXT = {
+    "AIスコア": "AIによる有望度評価（0-100点）。トレンド・RSI・乖離率・市場地合い等を総合分析。",
+    "AI判定": "AIスコアが基準（70点）以上の場合に「★GO」を表示。買いシグナルの候補。",
+    "AI目標値": "AI判定が「★GO」の場合の目標株価。現在値の+10%を目安に設定。",
+    "抵抗帯中心":"過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
+    "抵抗最終日":"直近で抵抗帯に触れた日。",
+    "最寄り抵抗":"現在値以上で最も近い抵抗。",
+    "支持帯中心":"過去データからタッチ回数が最も多い価格帯の中心（支持）。",
+    "支持最終日":"直近で支持帯に触れた日。",
+    "最寄り支持":"現在値以下で最も近い支持。",
+    "規定":"既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
+    "コード":"東証の銘柄コード（4桁、ETF等は例外あり）。",
+    "銘柄":"銘柄名。","現在値":"最新の株価（終値/スナップショット）。","前日終値":"その銘柄の前日の終値。基準価格となる。",
+    "高値":"当日の高値。","安値":"当日の安値。","5日":"単純移動平均（5日）。","25日":"単純移動平均（25日）。","75日":"単純移動平均（75日）。",
+    "抵抗HH":"過去N日(設定値)の最高値。","抵抗ゾーン":"タッチ回数最大の水平帯の中心値。","タッチ":"抵抗ゾーンへの到達回数。","最終":"抵抗ゾーンの最終タッチ日。",
+    "キリ番":"最高値に最も近い丸め値。","刻":"キリ番の刻み。","近":"最高値がキリ番に十分近いか。","斜め":"ピボット高値回帰の本日外挿値。","R²":"決定係数。",
+    "最近接抵抗":"現在値より上で最も近い抵抗。",
+    "前日比(円)":"当日の株価が前日終値から何円動いたか。",
+    "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
+    "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
+    "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
+    "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
+    "スコア":"総合スコア。","進捗率":"着手済み作業/想定全体の比率（%）。",
+    "増資リスク":"将来の増資・MSワラント等による希薄化リスクのラベル（高/中/低など）。",
+    "増資スコア":"増資リスクを0〜100で数値化した指標。値が高いほど希薄化リスクが高い。",
+    "判定":"最終判定。","判定理由":"候補にした根拠の要約。","推奨":"推奨ラベル。","推奨比率%":"推奨の強さ（%）。","更新":"シグナル最終更新日。",
+    "ブレイク":"高値更新＋出来高伴う上抜け。","ポケット":"押し目買い有利域。","20MAリバ":"20MA再突入。","200MAリクレイム":"200MAを回復し維持。",
+    "まとめ（優先度順）":"・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。",
+    "RS_5":"【相対強度5日】個別株の5日リターン − 対応指数（TOPX/GRT250）の5日リターン。正なら指数より強い。",
+    "RS_20":"【相対強度20日】個別株の20日リターン − 対応指数の20日リターン。中期の強さを示す。",
+    "Growth_Bias":"【グロース地合い】GRT250（グロース） − TOPX（大型）。正ならグロース資金優位の相場。",
+    "地合いフラグ":"+1=追い風（TOPXと日経平均が両方強い）、0=中立、-1=逆風（両方弱い）。市場環境全体の評価。",
+    "逆行強フラグ":"地合いが弱いのに個別株が強い状態。資金流入の強さを示す。",
+    "逆行弱フラグ":"地合いが強いのに個別株が弱い状態。逆風の可能性を示す。",
+    "指数サポレジ位置": 
+      "日経平均(^N225)・TOPIX(^TOPX)・スタンダード(1551) 等が、直近の「節目」のどこにいるかを表示します。\n\n" +
+      "●レジ直下：抵抗線がすぐ上にある状態\n" +
+      "　→ 天井が近く、叩き落とされるリスクあり（高値掴み注意）。\n" +
+      "　→ 勢いよく抜ければ「レジ抜け」となり上昇加速。\n\n" +
+      "●サポ直上：支持線がすぐ下にある状態\n" +
+      "　→ 下げ止まりやすく、押し目買いのチャンス。\n\n" +
+      "・レジ抜け：抵抗線を突破した強いゾーン（青天井）\n" +
+      "・サポ割れ：支持線を割り込んだ弱いゾーン（下落警戒）\n" +
+      "・レンジ内：上にも下にも動ける中間ゾーン",
+        "三角スコア":"Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n" +
+    "・▲(上昇)…トレンドとテーマ性。直近の株価推移・RS・出来高トレンドなどから「伸びやすさ」を評価しています。\n" +
+    "・◆(安定)…下落耐性と決算・財務の安定度。決算のブレや増資リスクが大きいほどスコアは低くなります。\n" +
+    "・■(ボラ)…ボラティリティの高さ。値動きが荒いほどスコアが高くなります（＝ハイボラ）。\n\n" +
+    "ざっくりとした目安は以下です。\n" +
+    "・▲(上昇) 70以上：右肩〜ブレイク候補。押し目を優先的にチェック。\n" +
+    "・◆(安定) 60以上：ドローダウンが比較的浅く、崩れにくいゾーン。\n" +
+    "スコアは 0〜100。一般的には 70以上で強めです。\n\n" +
+    "-----------------------------------------------\n" +
+    "【三角スコア × ザラ場時間帯：最も勝ちやすい活用法】\n" +
+    "-----------------------------------------------\n\n" +
+    "◆▲（上昇）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：9:00〜9:30（寄り付き〜初動）\n" +
+    "・RS／出来高／買いアルゴなど「短期モメンタム」は寄り付きに最も現れる\n" +
+    "・寄り後10〜30秒で流れが決まることが多く、初動の判断に向く\n\n" +
+    "● エントリーの目安\n" +
+    "・寄り直後の強い連買い\n" +
+    "・VWAP 上維持\n" +
+    "・寄り付きギャップ +2〜4% の範囲\n\n" +
+    "-----------------------------------------------\n" +
+    "◆◆（安定）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：10:30〜11:30 / 13:00〜14:00\n" +
+    "・空売り機関／業績の安定性を反映しており「押し目で拾いやすい」\n" +
+    "・朝の騒乱を避け、落ち着いた時間帯に本領を発揮する\n\n" +
+    "● エントリーの目安\n" +
+    "・押し目 → 下ヒゲ → 高値切り上げの形\n" +
+    "・VWAP 回帰\n" +
+    "・中期右肩の継続確認\n\n" +
+    "-----------------------------------------------\n" +
+    "◆■（ボラ）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：9:00〜10:00 / 14:00〜14:30\n" +
+    "・値幅が出やすくデイトレ向き\n" +
+    "・“伸びる瞬間だけ” を取る戦略との相性が良い\n\n" +
+    "● エントリーの目安\n" +
+    "・1分足の出来高急増\n" +
+    "・板の食い上げ（連続成行）\n" +
+    "・伸び止まったら即撤退\n\n" +
+    "-----------------------------------------------\n" +
+    "【結論】\n" +
+    "● ▲（上昇）は“鮮度が命” → 寄り付き〜9:30\n" +
+    "● ◆（安定）は“押し目狙い” → 10:30〜14:00\n" +
+    "● ■（ボラ）は“瞬間勝負” → 9:00〜10:00 / 14:00〜14:30\n\n" +
+    "三角スコアは、時間帯と合わせて使うと最も威力を発揮します。\n" +
+    "・■(ボラ) 40〜70：デイトレ向きの「程よいボラ」。80以上はジェットコースター帯で、建玉サイズに注意。\n\n" +
+    "三角スコアだけで売買を決めるのではなく、「判定理由」「増資リスク」「ニュース」などとセットで、\n" +
+    "『伸びやすさ × 安定度 × ボラの程よさ』を一目で比較するための目安として使ってください。",
+    "VIXレジーム":"米国の恐怖指数 VIX の水準から、相場のボラティリティ環境をざっくり区分したものです。\n\n" +
+    "・低ボラ：VIX < 14。穏やかでリスクオン寄りの地合い。\n" +
+    "・通常レンジ：14〜20。平常モード。\n" +
+    "・警戒：20〜30。ボラ拡大中で、急落・乱高下に注意。\n" +
+    "・危険：30以上。高ボラ期で、パニック的な値動きが出やすいゾーン。\n\n" +
+    "指数サポレジ位置とセットで見ると、「価格の位置」と「ボラ環境」の両方を把握できます。"
+  };
+
+  window.DATACOL_TO_HELPKEY = {
+    "コード":"コード","銘柄名":"銘柄","現在値":"現在値","前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
+    "出来高":"出来高","売買代金(億)":"売買代金(億)",
+    "初動フラグ":"初動","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
+    "判定":"判定","判定理由":"判定理由","推奨アクション":"推奨","推奨比率":"推奨比率%","シグナル更新日":"更新",
+    "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日",
+    "抵抗帯中心":"抵抗帯中心","抵抗最終日":"抵抗最終日","最寄り抵抗":"最寄り抵抗","支持帯中心":"支持帯中心","支持最終日":"支持最終日","最寄り支持":"最寄り支持",
+    "抵抗HH":"抵抗HH","抵抗ゾーン":"抵抗ゾーン","タッチ":"タッチ","最終":"最終","キリ番":"キリ番","刻":"刻","近":"近","斜め":"斜め","R²":"R²","最近接抵抗":"最近接抵抗",
+    "RS_5":"RS_5",
+    "RS_20":"RS_20",
+    "Growth_Bias":"Growth_Bias",
+    "地合いフラグ":"地合いフラグ",
+    "逆行強フラグ":"逆行強フラグ",
+    "逆行弱フラグ":"逆行弱フラグ",
+    "進捗率":"進捗率",
+    "増資リスク":"増資リスク",
+    "増資スコア":"増資スコア",
+    "三角スコア": "三角スコア",
+  };
+</script>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---- numeric/date helpers ----
+  function _toNumRaw(v){
+    const s = String(v ?? "").replace(/[,\s円％%]/g, "");
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : NaN;
+  }
+  function fint(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? String(Math.round(n)) : ""; }
+  function f2(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? n.toFixed(2) : ""; }
+  function fd(v){ return v ? String(v).slice(0,10) : ""; }
+
+  // ---- data ----
+  let RAW = {};
+  let DATA_CAND = [], DATA_ALL = [], DATA_PREEARN = [];
+  function readRAW(){
+    try{
+      const n = document.getElementById("__DATA__");
+      return n ? JSON.parse(n.textContent || "{}") : {};
+    }catch(_){ return {}; }
+  }
+
+  // ---- utils ----
+  const $  = (s,r=document)=>r.querySelector(s);
+  const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
+  const num = (v)=>_toNumRaw(v);
+  const cmp = (a,b)=>{ if(a==null&&b==null) return 0; if(a==null) return -1; if(b==null) return 1;
+    const na=+a, nb=+b, da=new Date(a), db=new Date(b);
+    if(!Number.isNaN(na)&&!Number.isNaN(nb)) return na-nb;
+    if(!Number.isNaN(da)&&!Number.isNaN(db)) return da-db;
+    return String(a).localeCompare(String(b),"ja"); };
+  const hasKouho = (v)=> String(v||"").includes("候補");
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
+
+
+
+  // 市場フィルタ
+  const LS_MK = "mk_filters_v1";
+  function collectMarkets(){
+    // 1) まず JSON 側から収集
+    const srcs = [window.DATA_CAND, window.DATA_ALL, window.DATA_EARN, window.DATA_PREEARN];
+    const set = new Set();
+    for (const arr of srcs){
+      for (const r of (arr || [])){
+        const v = String(r?.["市場"] ?? "").trim();
+        if (v) set.add(v);
+      }
+    }
+
+    // 2) JSONに無ければ DOM 側（候補テーブルの3列目=市場）から推定
+    if (!set.size){
+      document.querySelectorAll('#tbl-candidate tbody tr td:nth-child(3)')
+        .forEach(td => {
+          const v = td.textContent.trim();
+          if (v) set.add(v);
+        });
+    }
+
+    // 表示順：既知→未知の並び（未知は五十音ソート）
+    const order = ["東P","東S","東G","東M","札証","名証","福証","北証","指数","他"];
+    const known=[], unknown=[];
+    for (const s of set){
+      (order.includes(s) ? known : unknown).push(s);
+    }
+    unknown.sort((a,b)=>a.localeCompare(b,"ja"));
+    return [...known, ...unknown];
+  }
+
+  function loadMkState(allKeys){
+    try{
+      const raw = JSON.parse(localStorage.getItem(LS_MK)||"{}");
+      if (!raw || !raw.keys) return new Set(allKeys);
+      const on = new Set(raw.keys.filter(k => allKeys.includes(k)));
+      return on.size? on : new Set(allKeys);
+    }catch(_){ return new Set(allKeys); }
+  }
+  function saveMkState(set){ try{ localStorage.setItem(LS_MK, JSON.stringify({keys:[...set]})); }catch(_){} }
+
+  // ヘルプ（?）
+  document.addEventListener('click', (e)=>{
+    const q = e.target.closest && e.target.closest('.qhelp');
+    if(!q) return;
+    e.preventDefault();
+    const key = q.dataset.key || '';
+    const htmlRaw = (window.HELP_TEXT && window.HELP_TEXT[key]) || '（説明準備中）';
+    const html = htmlRaw.replace(/\n/g,'<br>');
+    openHelp(`<div style="max-width:1000px">${html}</div>`);
+  });
+  function makeQ(el, helpKey){
+    if(!el || !helpKey) return;
+    if(el.querySelector && el.querySelector(`.qhelp[data-key="${helpKey}"]`)) return;
+    const s = document.createElement('span');
+    s.className = 'qhelp';
+    s.dataset.key = helpKey;
+    s.textContent = '?';
+    el.appendChild(s);
+  }
+  function attachQHelpsToHead(tableSelector){
+    const map = window.DATACOL_TO_HELPKEY || {};
+    const root = document.querySelector(tableSelector);
+    if(!root) return;
+    const ths = root.querySelectorAll('thead th');
+    ths.forEach(th=>{
+      const col = th.getAttribute && th.getAttribute('data-col');
+      let key = (col && map[col]) || null;
+      if(!key){
+        const label = (th.textContent || '').trim();
+        if (window.HELP_TEXT && Object.prototype.hasOwnProperty.call(window.HELP_TEXT, label)){ key = label; }
+      }
+      if(key) makeQ(th, key);
+    });
+  }
+  function attachQHelpsToToolbar(){
+    const resolveLabel = (inp) => {
+      if (!inp) return null;
+      let lb = inp.closest && inp.closest('label');
+      if (lb) return lb;
+      if (inp.labels && inp.labels.length) return inp.labels[0];
+      if (inp.id) {
+        lb = document.querySelector(`label[for="${inp.id}"]`);
+        if (lb) return lb;
+      }
+      let p = inp.previousElementSibling;
+      for (let i=0; i<3 && p; i++, p=p.previousElementSibling) { if (p.tagName === 'LABEL') return p; }
+      return inp.parentElement || null;
+    };
+    const pairs = [
+      ['#f_defaultset','規定'],
+      ['#th_rate','前日終値比率（％）'],
+      ['#th_turn','売買代金(億)'],
+      ['#th_rvol','RVOL代金'],
+      ['#th_progress','進捗率'],
+      ['#th_score','スコア'],
+      ['#th_pmin','現在値'],
+      ['#th_pmax','現在値'],
+    ];
+    pairs.forEach(([sel, key])=>{
+      const inp = document.querySelector(sel);
+      const lb  = resolveLabel(inp);
+      if (lb) makeQ(lb, key);
+    });
+    if (window.HELP_TEXT) {
+      document.querySelectorAll('#toolbar .early-filter label').forEach(lb=>{
+        const key = (lb.textContent || '').trim();
+        if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) { if (!lb.querySelector('.qhelp')) makeQ(lb, key); }
+      });
+      document.querySelectorAll('#toolbar label').forEach(lb=>{
+        if (lb.querySelector('.qhelp')) return;
+        const key = (lb.textContent || '').trim();
+        if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) { makeQ(lb, key); }
+      });
+    }
+  }
+
+  // copy link（単一コード）
+  function codeLink(code){
+    if(code==null) return "";
+    const s = String(code).padStart(4, "0");
+    return `<a href="#" class="copylink" data-copy="${s}" title="コードをコピー">${s}</a>`;
+  }
+  document.addEventListener("click", async (e)=>{
+    const a = e.target.closest && e.target.closest("a.copylink");
+    if (!a || a.id === "copy-page") return;
+    e.preventDefault();
+    const text = a.dataset.copy || "";
+    try{
+      if (navigator.clipboard && window.isSecureContext !== false) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.left = "-9999px";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+      }
+      const old = a.textContent; a.classList.add("ok"); a.textContent = "コピー済";
+      setTimeout(() => { a.classList.remove("ok"); a.textContent = old; }, 1200);
+    } catch (_){
+      const old = a.textContent; a.textContent = "失敗"; setTimeout(() => { a.textContent = old; }, 1200);
+    }
+  });
+
+  // offerings badge
+  let OFFER_SET = new Set();
+
+  function rebuildOfferSet(){
+    // RAW がまだ無ければ何もしない
+    if (!RAW) {
+      OFFER_SET = new Set();
+      return;
+    }
+    const src = Array.isArray(RAW.offer_codes) ? RAW.offer_codes : [];
+    OFFER_SET = new Set(src.map(x => String(x).padStart(4, "0")));
+  }
+
+  function offeringBadge(code){
+    const c = String(code ?? "").padStart(4,"0");
+    return OFFER_SET.has(c)
+      ? `<span class="badge b-gray" title="直近に増資/行使/売出/CBなどの履歴あり">増資経歴</span>`
+      : "";
+  }
+
+  // デバッグ用フック（不要になったら消してOK）
+  window.DEBUG_OFFER = {
+    get RAW(){ return RAW; },
+    get OFFER_SET(){ return OFFER_SET; },
+    test(code){
+      const c = String(code ?? "").padStart(4,"0");
+      return { code, c, has: OFFER_SET.has(c) };
+    }
+  };
+
+
+  // finance modal
+  function openFinanceHtml(code){
+    closeAllTips();
+    const back = ensureChartModal();
+    const body = document.getElementById("__chart_body__");
+    const src = `graph/finance_${String(code).padStart(4,"0")}.html`;
+    body.innerHTML = `<iframe src="${src}" style="width:100%; height:80vh; border:0;"></iframe>`;
+    back.style.display = "block";
+    const box = document.getElementById("__chart_box__");
+    box.style.display = "block";
+    const sx = window.scrollX||0, sy = window.scrollY||0;
+    box.style.top = `${sy+60}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${sx + Math.max(10, (document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+  }
+  function financeLink(code){
+    if(code==null) return "";
+    const s = String(code).padStart(4, "0");
+    return `<a href="#" class="financelink" data-code="${s}" title="財務グラフを開く">財務</a>`;
+  }
+  function financeNote(row){
+    let v = row?.["財務コメント"];
+    if (!v) return "";
+    let s = String(v).trim();
+    s = s
+      .replace(/^\s*[⚠︎⚠️△▲※＊*]?\s*判定（[^）]*）\s*[:：]?\s*/i, "")
+      .replace(/^\s*[⚠︎⚠️△▲※＊*]?\s*(判定|コメント)\s*[:：]?\s*/i, "")
+      .replace(/^\s*[：:\-・]+\s*/, "");
+    const t = escapeHtml(s);
+    return ` <span class="fn-note" title="${t}">${t}</span>`;
+  }
+  document.addEventListener("click", (e)=>{
+    const a = e.target.closest && e.target.closest("a.financelink");
+    if(!a) return;
+    e.preventDefault();
+    const code = a.dataset.code;
+    if(code) openFinanceHtml(code);
+  });
+
+  // 任意グラフリンク
+  document.addEventListener("click", (e)=>{
+    const a = e.target.closest && e.target.closest("a.chartlink");
+    if (!a) return;
+    e.preventDefault();
+    try{
+      closeAllTips();
+      const back = ensureChartModal();
+      const body = document.getElementById("__chart_body__");
+
+      let url = a.getAttribute("data-href") || a.getAttribute("href") || "";
+      url = url.replace(/\\/g, "/");
+
+      const box = document.getElementById("__chart_box__");
+      const head = box && box.querySelector(".help-head > div:first-child");
+      const code = a.getAttribute("data-code") || (a.closest("tr")?.getAttribute("data-code")) || "";
+      if (head) head.textContent = code ? `グラフ（${code}）` : "グラフ";
+
+      body.innerHTML = `<iframe src="${url}" style="width:100%; height:80vh; border:0;"></iframe>`;
+      back.style.display = "block";
+      box.style.display  = "block";
+      const sx = window.scrollX||0, sy = window.scrollY||0;
+      box.style.top = `${sy+60}px`;
+      requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+    }catch(err){
+      console.error("[chartlink open error]", err);
+      const u = a.getAttribute("data-href") || a.getAttribute("href");
+      if (u) window.open(u, "_blank", "noopener");
+    }
+  });
+
+  // DOM sort
+  function wireDomSort(tableSelector){
+    const table = document.querySelector(tableSelector); if(!table) return;
+    const ths = Array.from(table.querySelectorAll('thead th.sortable'));
+    const cellVal = (td)=>{
+      if (!td) return '';
+      const ds = td.getAttribute ? td.getAttribute('data-sort') : null;
+      return (ds !== null && ds !== '') ? ds : (td.textContent || '');
+    };
+    const toNum = (s)=>{
+      let t = String(s ?? '').trim().replace(/\s|[円％%]/g,'');
+      if (t.indexOf('.') === -1 && /^-?\d+,\d+$/.test(t)) t = t.replace(',', '.'); else t = t.replace(/,/g,'');
+      const n = parseFloat(t);
+      return Number.isFinite(n) ? n : NaN;
+    };
+    ths.forEach((th)=>{
+      if (th.__wiredSort) return;
+      th.__wiredSort = true;
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', ()=>{
+        const colIndex = th.cellIndex;
+        const dirPrev = th.dataset.dir;
+        ths.forEach(h=>{ h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
+        const dir = (dirPrev === 'asc') ? 'desc' : 'asc';
+        th.dataset.dir = dir;
+        const typ = th.dataset.type || 'text';
+        const rows = Array.from(table.querySelectorAll('tbody tr'));
+        rows.sort((r1, r2)=>{
+          const aRaw = cellVal(r1.children[colIndex]).trim();
+          const bRaw = cellVal(r2.children[colIndex]).trim();
+          if (typ === 'num'){
+            const aKey = toNum(aRaw), bKey = toNum(bRaw);
+            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
+              return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
+            }
+          } else if (typ === 'date'){
+            const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
+            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
+              return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
+            }
+          }
+          const sa = String(aRaw).toLowerCase();
+          const sb = String(bRaw).toLowerCase();
+          return dir==='asc' ? sa.localeCompare(sb,'ja') : sb.localeCompare(sa,'ja');
+        });
+        const tb = table.querySelector('tbody');
+        rows.forEach(r=>tb.appendChild(r));
+        const arrow = th.querySelector('.arrow'); if (arrow) arrow.textContent = (dir==='asc'?'▲':'▼');
+      });
+    });
+  }
+
+  // state
+  const state = { tab:"cand", page:1, per:parseInt($("#perpage")?.value||"500",10), q:"", data: DATA_CAND.slice(),  news_days: 0,news_blue_only: false};
+  window.state = state;
+
+  // 市場
+  const MK_LIST = collectMarkets();
+  const mkSet   = loadMkState(MK_LIST);
+
+
+  function renderMarketCheckboxes(){
+    const host = document.querySelector('#mk_host');
+    const mkAll = document.querySelector('#mk_all');
+    if (!host || !mkAll) return;
+
+    // JSON → 無ければ DOM から市場一覧を収集
+    const MK_LIST = collectMarkets();
+    const FALLBACK = ["東P","東S","東G","東M","札証","名証","福証","北証","指数","他"];
+    // データに無くても「指数」だけは必ず候補に追加する
+    let LIST = MK_LIST.length ? MK_LIST.slice() : FALLBACK.slice();
+    if (!LIST.includes("指数")) LIST.push("指数");
+
+    // 直前の選択状態：window.__mkSet があれば最優先、無ければ localStorage、なければ全ON
+    let initialSet;
+    if (window.__mkSet instanceof Set) {
+      initialSet = new Set([...window.__mkSet].filter(k => LIST.includes(k)));
+    } else {
+      let raw = {};
+      try { raw = JSON.parse(localStorage.getItem('mk_filters_v1') || '{}'); } catch(_){}
+      const saved = Array.isArray(raw.keys) ? raw.keys : [];
+      initialSet = new Set(saved.filter(k => LIST.includes(k)));
+      // 空集合のとき：none=true なら全OFF維持、そうでなければ従来どおり全ON
+      if (!initialSet.size && !raw.none) initialSet = new Set(LIST);
+    }
+
+    host.innerHTML = '';
+    LIST.forEach(mk => {
+      const id = 'mk_' + mk;
+      const checkedAttr = initialSet.has(mk) ? 'checked' : '';
+      host.insertAdjacentHTML('beforeend',
+        `<label class="mk" style="margin-right:8px;">
+           <input type="checkbox" id="${id}" data-mk="${mk}" ${checkedAttr}> <span>${mk}</span>
+         </label>`);
+    });
+
+    // 適用関数：DOM表示に触らず「状態→再描画」で件数も同期させる
+    const apply = () => {
+      const onRaw = new Set(LIST.filter(mk => document.getElementById('mk_'+mk)?.checked));
+      mkAll.checked = LIST.every(mk => onRaw.has(mk));
+
+      // 全OFFの場合は "__NONE__" セントネルで「何も通さない」状態を表現し、保存は none:true
+      const on = (onRaw.size === 0) ? new Set(['__NONE__']) : onRaw;
+      try {
+        localStorage.setItem('mk_filters_v1',
+          JSON.stringify({ keys: onRaw.size ? [...onRaw] : [], none: onRaw.size === 0 })
+        );
+      } catch(_){}
+      window.__mkSet = on;
+
+
+      // 2) 再描画（applyFilter が __mkSet を見て絞り込み、#count も更新される）
+      try { if (window.state) window.state.page = 1; } catch(_){}
+      render();   // ← ローカル関数を直接呼ぶ
+    };
+
+
+    // イベント配線
+    LIST.forEach(mk => {
+      document.getElementById('mk_'+mk)?.addEventListener('change', () => {
+        apply();
+        render();
+      });
+    });
+    mkAll.addEventListener('change', () => {
+      LIST.forEach(mk => {
+        const cb = document.getElementById('mk_'+mk);
+        if (cb) cb.checked = mkAll.checked;
+      });
+      apply();
+      render();
+    });
+
+    // 初期適用
+    apply();
+  }
+
+  window.collectMarkets = collectMarkets;
+  window.renderMarketCheckboxes = renderMarketCheckboxes;
+
+
+  // 抵抗/支持トグル（未実装時でも安全）
+  document.addEventListener('change', e=>{
+    if (e.target.matches('.res-tog, #resNearPct')) { render(); }
+  });
+
+  const DEFAULTS = { rate:3, turn:5, rvol:2 };
+  function applyDefaults(on){
+    const ia=$("#th_rate"), it=$("#th_turn"), ir=$("#th_rvol");
+    if(!ia||!it||!ir) return;
+    if(on){ ia.value=DEFAULTS.rate; it.value=DEFAULTS.turn; ir.value=DEFAULTS.rvol; }
+    else  { ia.value=""; it.value=""; ir.value=""; ia.removeAttribute("value"); it.removeAttribute("value"); ir.removeAttribute("value"); }
+    state.page=1; render();
+  }
+  function forceClearThresholds(){
+    const cb=$("#f_defaultset");
+    if(cb) cb.checked=false;
+    applyDefaults(false);
+  }
+  function thRate(){ const v=num($("#th_rate")?.value); return Number.isNaN(v)?null:v; }
+  function thTurn(){ const v=num($("#th_turn")?.value); return Number.isNaN(v)?null:v; }
+  function thRvol(){ const v=num($("#th_rvol")?.value); return Number.isNaN(v)?null:v; }
+  function thProg(){ const v=num($("#th_progress")?.value); return Number.isNaN(v)?null:v; }
+  function thScore(){ const v=num($("#th_score")?.value); return Number.isNaN(v)?null:v; }
+  function thPmin(){ const v=num($("#th_pmin")?.value); return Number.isNaN(v)?null:v; }
+  function thPmax(){ const v=num($("#th_pmax")?.value); return Number.isNaN(v)?null:v; }
+  
+  function thTriG(){ const v=num($("#th_tri_g")?.value); return Number.isNaN(v)?null:v; }
+  function thTriS(){ const v=num($("#th_tri_s")?.value); return Number.isNaN(v)?null:v; }
+  function thTriV(){ const v=num($("#th_tri_v")?.value); return Number.isNaN(v)?null:v; }
+
+  
+  // ====== 指数サポレジ位置（TOPX / 日経平均） ======
+  function _indexSrLabel(px, sup, res) {
+    const p = num(px), s = num(sup), r = num(res);
+    if (!Number.isFinite(p)) return "不明";
+
+    const eps = 0.003; // ±0.3% くらい
+
+    // サポ割れ / レジ抜け
+    if (Number.isFinite(s) && p < s * (1 - eps)) return "サポ割れ";
+    if (Number.isFinite(r) && p > r * (1 + eps)) return "レジ抜け";
+
+    // 直上 / 直下
+    if (Number.isFinite(s) && Math.abs(p - s) / p <= eps) return "サポ直上";
+    if (Number.isFinite(r) && Math.abs(r - p) / p <= eps) return "レジ直下";
+
+    // どちらかがあればレンジ内
+    if (Number.isFinite(s) || Number.isFinite(r)) return "レンジ内";
+
+    return "不明";
+  }
+
+  // DATA_CAND の中から「指数」行を拾って TOPIX / 日経平均 をまとめる
+  function buildIndexSrSummary(){
+    if (!Array.isArray(DATA_CAND) || !DATA_CAND.length) return null;
+
+    const idx = {};
+    for (const r of DATA_CAND){
+      const mk = String(r["市場"] || "").trim();
+      if (mk !== "指数" && mk !== "INDEX" && String(r["コード"])=="1551") continue;
+
+      const name = String(r["銘柄名"] || "");
+      const code = String(r["コード"] || "");
+      
+      let key = null;
+      if (!key && (name.includes("TOPIX") || name.includes("トピックス"))) key = "TOPIX";
+      if (!key && (name.includes("日経")  || name.includes("225")))       key = "日経平均";
+      
+      // スタンダード(1551)を検出するロジック
+      if (!key && (name.includes("スタンダード") || name.includes("Standard") || code == "1551")) key = "Standard";
+      
+      if (!key) continue;
+
+      const price = r["現在値"] ?? r["終値"];
+      const sup   = r["最寄り支持"];
+      const res   = r["最寄り抵抗"];
+
+      idx[key] = {
+        name,
+        code: String(r["コード"] || ""),
+        price,
+        sup,
+        res,
+        label: _indexSrLabel(price, sup, res)
+      };
+    }
+    return idx;
+  }
+
+function renderIndexSrSummary(){
+  const host = document.getElementById("idx-sr-summary");
+  if (!host) return;
+
+  const info = buildIndexSrSummary();
+  if (!info) { host.textContent = ""; return; }
+
+  const parts = [];
+  if (info.TOPIX) {
+    parts.push(`TOPIX: ${info.TOPIX.label}`);
+  }
+  if (info["日経平均"]) {
+    const item = info["日経平均"];
+    const lbl = item.label || "不明";
+    const p   = num(item.price);
+
+    // ★ラベルが不明でも価格があれば価格を表示
+    if (lbl === "不明" && Number.isFinite(p)) {
+      parts.push(`日経: ${p.toFixed(0)}`);
+    } else {
+      parts.push(`日経: ${lbl}`);
+    }
+  }
+
+
+  if (info["Standard"]) {
+      // スタンダード(1551)の表示。価格は桁が違うので「ラベル(MA判定など)」だけ出すのが無難
+      parts.push(`Std: ${info.Standard.label}`);
+  }
+ 
+
+  if (!parts.length){
+    host.textContent = "";
+    return;
+  }
+
+  const text = parts.join(" / ");
+  const esc  = escapeHtml(text);
+  host.innerHTML = `${esc} <span class="qhelp" data-key="指数サポレジ位置">?</span>`;
+}
+
+
+
+  // ====== VIXレジーム（恐怖指数の相場モード） ======
+  function _vixRegimeLabel(v){
+    const x = num(v);
+    if (!Number.isFinite(x)) return { regime:"不明", note:"-" };
+
+    if (x < 14)  return { regime:"低ボラ", note:"穏やか・リスクオン寄り" };
+    if (x < 20)  return { regime:"通常レンジ", note:"平常モード" };
+    if (x < 30)  return { regime:"警戒", note:"ボラ拡大・リスクオフ注意" };
+    return { regime:"危険", note:"高ボラ期・急変リスク大" };
+  }
+
+  // DATA_CAND から VIX 行を拾う
+  function buildVixRegime(){
+    if (!Array.isArray(DATA_CAND) || !DATA_CAND.length) return null;
+
+    for (const r of DATA_CAND){
+      const mk   = String(r["市場"] || "").trim();
+      if (mk !== "指数") continue;
+
+      const name = String(r["銘柄名"] || "");
+      const code = String(r["コード"] || "");
+
+      if (!(name.toUpperCase().includes("VIX") || code.toUpperCase().includes("VIX")))
+        continue;
+
+      const rawPrice = r["現在値"] ?? r["終値"];
+      const price = Number(rawPrice);
+      if (!Number.isFinite(price)) continue;
+
+      const ext = _vixRegimeLabel(price);
+
+      // ★ renderVixRegimeSummary が期待しているプロパティ名に合わせる
+      return {
+        name,
+        code,
+        value: price,      // 生の VIX 値
+        label: ext.regime, // 「低ボラ」「通常レンジ」「警戒」など
+        note:  ext.note
+      };
+    }
+    return null;
+  }
+
+
+
+  function renderVixRegimeSummary(){
+    const host = document.getElementById("vix-regime");
+    if (!host) return;
+
+    const info = buildVixRegime();  // 今使っている関数名に合わせて
+    if (!info) { host.textContent = ""; return; }
+
+    // info.label: 「低ボラ」「通常」「警戒」「危険」とか
+    // info.value: 生の VIX 値
+    const label = info.label || "不明";
+    const vixStr = Number.isFinite(info.value) ? info.value.toFixed(1) : "-";
+
+    const text = `VIX: ${label} (${vixStr})`;
+    const esc  = escapeHtml(text);
+    host.innerHTML = `${esc} <span class="qhelp" data-key="VIXレジーム">?</span>`;
+  }
+
+
+
+
+  // === RS / 地合い / 逆行 フィルタの変数定義 ===
+  const f_rsstrong   = document.querySelector("#f_rsstrong");
+  const f_mkt_good   = document.querySelector("#f_mkt_good");
+  const f_mkt_bad    = document.querySelector("#f_mkt_bad");
+  const f_revstrong  = document.querySelector("#f_revstrong");
+  const f_revweak    = document.querySelector("#f_revweak");
+
+
+  function getSelectedTypes(){
+    const box = document.querySelector(".early-filter");
+    if (!box) return [];
+    return Array.from(box.querySelectorAll(".ef-chk input:checked")).map(el => el.value);
+  }
+
+  function isHitRow(r){
+    const v = String((r && (r["判定"] ?? r["judge"] ?? "")) || "").trim().toLowerCase();
+    if (/^当たり/.test(v)) return true;
+    if (v === "win" || v === "auto" || v === "再評価ok") return true;
+    return false;
+  }
+
+  function applyFilter(rows){
+
+    // ★ 全OFF（__NONE__）なら即 全除外
+    const ls = (window.__mkSet instanceof Set) ? window.__mkSet : mkSet;
+    if (ls && ls.has('__NONE__')) return [];
+
+    const q   = ($("#q")?.value||"").trim();
+    const sel = getSelectedTypes();
+    const useEarly = sel.length > 0;
+
+    // ★ 市場セットは「現在のUI状態(window.__mkSet)」を最優先で使用
+    const liveSet = ls;
+    const mkList  = collectMarkets(); // 空でなければ市場フィルタ有効
+
+    return rows.filter(r=>{
+      const sh  = hasKouho(r["初動フラグ"]);
+      const te  = hasKouho(r["底打ちフラグ"]);
+      const ru  = hasKouho(r["右肩上がりフラグ"]);
+      const ea  = hasKouho(r["右肩早期フラグ"]);
+      const etp = (String(r["右肩早期種別"]||"").trim().length>0);
+      const ns  = String(r["空売り機関なし_flag"]||"0")==="1";
+      const op  = String(r["営利対時価_flag"]||"0")==="1";
+      const hit = isHitRow(r);
+
+      const rec = (String(r["推奨アクション"]||"").trim());
+      const recStrong = (rec === "エントリー有力");
+      const recSmall  = (rec === "小口提案");
+
+      if($("#f_shodou")?.checked && !sh) return false;
+      if($("#f_tei")?.checked    && !te) return false;
+      if($("#f_both")?.checked   && !(sh && ru)) return false;
+      if($("#f_rightup")?.checked&& !ru) return false;
+      if($("#f_early")?.checked  && !ea) return false;
+      if($("#f_etype")?.checked  && !etp) return false;
+      if($("#f_recstrong")?.checked && !recStrong) return false;
+      if($("#f_smallpos")?.checked  && !recSmall)  return false;
+      if($("#f_noshor")?.checked && !ns) return false;
+      if($("#f_opratio")?.checked&& !op) return false;
+      if($("#f_hit")?.checked    && !hit) return false;
+
+      if (useEarly){
+        const val = String(r["右肩早期種別"]||"");
+        if (!sel.some(v => val.includes(v))) return false;
+      }
+
+      const price = num(r["現在値"]);
+      const rate  = num(r["前日終値比率"]);
+      const turn  = num(r["売買代金(億)"]);
+      const rvol  = num(r["RVOL代金"]);
+      const prog  = num(r["進捗率"]);
+      const score = num(r["スコア"]);
+
+      // 関数内で以下のように取得
+      const holderVal = (document.getElementById("f_holder")?.value || "").toLowerCase();
+
+      // ループ(metrics.forEach)の中で判定
+      if (holderVal) {
+          const h = (r["大株主"] || "").toLowerCase();
+          if (!h.includes(holderVal)) isHit = false;
+      }
+
+      const tr = thRate(), tt = thTurn(), tv = thRvol(), tp = thProg(), ts = thScore();
+      const pmin = thPmin(), pmax = thPmax();
+
+      if(pmin!=null && !(price>=pmin)) return false;
+      if(pmax!=null && !(price<=pmax)) return false;
+
+      if(tr!=null && !(rate>=tr)) return false;
+      if(tt!=null && !(turn>=tt)) return false;
+      if(tv!=null && !(rvol>=tv)) return false;
+      if(tp!=null && !(prog>=tp)) return false;
+      if(ts!=null && !(score>=ts)) return false;
+      
+      const triG = thTriG(), triS = thTriS(), triV = thTriV();
+      const gr = Number(r["tri_growth"]  ?? 0);
+      const sf = Number(r["tri_safety"]  ?? 0);
+      const vo = Number(r["tri_vol"]     ?? 0);
+
+      if (triG != null && !(gr >= triG)) return false;
+      if (triS != null && !(sf >= triS)) return false;
+      if (triV != null && !(vo >= triV)) return false;
+
+      // ★ 市場フィルタ（現在の選択セットを使用）
+      const mkEmpty = !liveSet || liveSet.size === 0;
+      // 表記ゆらぎ吸収（東Ｇ/東Ｍ/東Ｐ/東Ｓ → 東G/M/P/S）
+      const mk = String(r["市場"]||"").trim()
+        .replace('東Ｇ','東G').replace('東Ｍ','東M')
+        .replace('東Ｐ','東P').replace('東Ｓ','東S');
+      if (mkList.length && !mkEmpty && !liveSet.has(mk)) return false;
+
+      // === RS 強（RS_5 > 0） ===
+      if (f_rsstrong?.checked) {
+        if (!(r["RS_5"] > 0)) return false;
+      }
+
+      // === 地合い：追い風（+1） ===
+      if (f_mkt_good?.checked) {
+        if (String(r["地合いフラグ"]) !== "1") return false;
+      }
+
+      // === 地合い：逆風（-1） ===
+      if (f_mkt_bad?.checked) {
+        if (String(r["地合いフラグ"]) !== "-1") return false;
+      }
+
+      // === 逆行強（TOPX弱 + 個別強） ===
+      if (f_revstrong?.checked) {
+        if (String(r["逆行強フラグ"]) !== "1") return false;
+      }
+
+      // === 逆行弱（TOPX強 + 個別弱） ===
+      if (f_revweak?.checked) {
+        if (String(r["逆行弱フラグ"]) !== "1") return false;
+      }
+
+      // 勝ちやすい銘柄だけ表示（▲/◆/■）
+      const f_goodonly = $("#f_goodonly");
+      if (f_goodonly?.checked) {
+        const gr = Number(r["tri_growth"]  ?? 0);
+        const sf = Number(r["tri_safety"]  ?? 0);
+        const vo = Number(r["tri_vol"]     ?? 0);
+        // しきい値は後で微調整OK
+        if (!(gr >= 70 && sf >= 70 && vo >= 60)) return false;
+      }
+
+      // === TOB情報ありのみ表示 ===
+      const f_tob_only = $("#f_tob_only");
+      if (f_tob_only?.checked) {
+        const tobVal = String(r["TOB"] || "").trim();
+        // 空文字、またはハイフンのみの場合は表示対象外とする
+        if (tobVal === "" || tobVal === "-") return false;
+      }
+
+      // === 株探ニュース絞り込み（日付 / 青●） ===
+      const newsDaysEl = $("#f_news_days");
+      const newsBlueEl = $("#f_news_bluepos");
+      const newsDays = parseInt(newsDaysEl?.value ?? "", 10) || 0;
+      const onlyBlue = !!newsBlueEl?.checked;
+
+      if (newsDays > 0 || onlyBlue) {
+        // 株探ニュース(3) 列のHTML（aタグ・span含む）
+        const html = String(r["株探ニュース(3)"] ?? "");
+
+        // セルが空なら、条件指定されているときは除外
+        if (!html) {
+          return false;
+        }
+
+        // 青●ありのみ
+        if (onlyBlue) {
+          // BERTポジティブ用 ● が含まれているか？
+          if (!html.includes("bert-pos-dot") && !html.includes("●")) {
+            return false;
+          }
+        }
+
+        // 日数フィルタ（YY/MM/DD 形式で埋まっている日付を拾う）
+        if (newsDays > 0) {
+          // 今日は localDateStr で 00:00 に正規化
+          const today   = new Date();
+          const todayKey = localDateStr(today);      // "YYYY-MM-DD"
+          const todayMs  = Date.parse(todayKey);
+
+          const re = /(\d{2})\/(\d{2})\/(\d{2})/g;   // 例: "25/12/04"
+          let m, within = false;
+
+          while ((m = re.exec(html)) !== null) {
+            let yy = parseInt(m[1], 10);  // 25
+            const mm = parseInt(m[2], 10) - 1;
+            const dd = parseInt(m[3], 10);
+
+            // 2桁年 → 2000年代として扱う
+            if (yy < 100) yy += 2000;
+
+            const d = new Date(yy, mm, dd);
+            const diff = (todayMs - d.getTime()) / 86400000;  // 日数差
+
+            if (!Number.isNaN(diff) && diff >= 0 && diff <= newsDays) {
+              within = true;
+              break;
+            }
+          }
+
+          if (!within) {
+            return false;
+          }
+        }
+      }
+
+
+
+      //検索 search
+      if (q) {
+        const keys = ["コード","銘柄名","判定理由","右肩早期種別",
+                      "初動フラグ","底打ちフラグ","右肩上がりフラグ",
+                      "右肩早期フラグ","推奨アクション","株探ニュース","株探ニュース(3)"];
+
+        const fields = (k)=> {
+          let s = String(r[k] ?? "");
+          // 株探ニュース(3) は aタグを含むのでテキストだけ抜き出す
+          if (k === "株探ニュース(3)") {
+            s = s.replace(/<[^>]*>/g, "");
+          }
+          return s;
+        };
+
+        const orGroups = String(q).split(/(?:\s+OR\s+|\s*\|\s*)/);  // OR / | で分割
+
+        const ok = orGroups.some(group => {
+          const terms = group.trim().split(/[\u3000\s]+/).filter(Boolean); // 空白=AND（全角/半角）
+          // すべての語が、どれかのキーの“部分一致”でヒットすればOK
+          return terms.every(t => keys.some(k => fields(k).includes(t)));
+        });
+
+        if (!ok) return false;
+      }
+      return true;
+    });
+  }
+
+
+  function formatJudgeLabel(r){ return isHitRow(r) ? "当たり！(1)" : "外れ！(1)"; }
+
+  //三角スコア色付け関数
+  function colorizeTriangleScores(){
+    document.querySelectorAll(".triangle-cell").forEach(cell => {
+      const g = parseInt(cell.dataset.growth || "0", 10);
+      const s = parseInt(cell.dataset.safety || "0", 10);
+      const v = parseInt(cell.dataset.vol || "0", 10);
+
+      const spans = cell.querySelectorAll(".tri");
+      spans.forEach((sp, idx) => {
+        const score = idx === 0 ? g : (idx === 1 ? s : v);
+        sp.classList.remove("good","normal","bad","verybad");
+        if (score >= 80)      sp.classList.add("good");
+        else if (score >= 60) sp.classList.add("normal");
+        else if (score >= 40) sp.classList.add("bad");
+        else                  sp.classList.add("verybad");
+      });
+    });
+  }
+
+  // render: candidate
+  function renderCand(){
+    const body = document.querySelector("#tbl-candidate tbody");
+    if(!body) return;
+    const rows = applyFilter(state.data);
+    const total = rows.length, per = state.per, maxPage = Math.max(1, Math.ceil(total/per));
+    state.page = Math.min(state.page, maxPage);
+    const s = (state.page-1)*per, e = Math.min(s+per, total);
+
+    let html = "";
+    for (let i = s; i < e; i++) {
+      const r = rows[i] || {};
+      const et = (r["右肩早期種別"] || "").trim();
+      let etBadge = et;
+      if (et === "ブレイク") etBadge = '<span class="badge b-green">● ブレイク</span>';
+      else if (et === "20MAリバ") etBadge = '<span class="badge b-green">● 20MAリバ</span>';
+      else if (et === "ポケット") etBadge = '<span class="badge b-orange">● ポケット</span>';
+      else if (et === "200MAリクレイム") etBadge = '<span class="badge b-yellow">● 200MAリクレイム</span>';
+
+      const rec = (r["推奨アクション"] || "").trim();
+      let recBadge = "";
+      if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+      else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+      else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
+
+      // ▼三角スコア用の数値をここで用意する
+      const g  = parseInt(r["tri_growth"]  ?? 0, 10);  // ▲(上昇)
+      const s2 = parseInt(r["tri_safety"]  ?? 0, 10);  // ◆(安定)
+      const v2 = parseInt(r["tri_vol"]     ?? 0, 10);  // ■(ボラ)
+
+      // ソート用キー（上昇優先 → 安定 → ボラ）
+      const triSort = String(g * 10000 + s2 * 100 + v2).padStart(6, "0");
+      
+      // ▼▼▼▼▼▼▼ ステップ3：ここに追加 ▼▼▼▼▼▼▼
+      // TOBセルの中身を作る（onclick版）
+      const tobList = r.tob_titles || [];
+      let tobHtml = "";
+      if (tobList.length > 0) {
+          const jsonStr = encodeURIComponent(JSON.stringify(tobList));
+          tobHtml = `
+            <span class="tob-btn"
+                  data-json="${jsonStr}"
+                  onclick="showTobHistory(this, this.dataset.json)">
+                  TOB情報 (${tobList.length})
+            </span>`;
+      } else {
+          tobHtml = `<span style="color:#e2e8f0; font-size:10px;">-</span>`;
+      }
+      // ▲▲▲▲▲▲▲ 追加ここまで ▲▲▲▲▲▲▲
+
+      const isHitTr = isHitRow(r);
+      // ▼▼▼ 追加: S高の色判定 ▼▼▼
+      const shVal = String(r["S高"]||"");
+      let shStyle = "";
+      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";      // 赤太字
+      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; // グレー
+      // ▲▲▲
+      
+      html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
+        <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
+        <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
+        <td>${escapeHtml(r["市場"] || "-")}</td>
+        <td>${tobHtml}</td>
+        <td class="theme-col" data-col="関連テーマ" title="${escapeHtml(r["関連テーマ"]?.replace(/<[^>]*>/g, "") || "")}">${r["関連テーマ"] || ""}</td>
+        <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
+        <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
+        <td class="num triangle-cell" 
+            data-col="三角スコア"
+            data-growth="${g}" 
+            data-safety="${s2}" 
+            data-vol="${v2}"
+            data-sort="${triSort}">
+            <span class="tri tri-g">${"▲(上昇)" + g}</span>
+            <span class="tri tri-s">${"◆(安定)" + s2}</span>
+            <span class="tri tri-v">${"■(ボラ)" + v2}</span>
+        </td>
+        <td class="num">${r["AIスコア"] || "-"}</td>
+        <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
+        <td class="num">${r["AI目標値"] || "-"}</td>
+        <td data-col="株探ニュース(3)" class="news-col" title="${escapeHtml(String(r["株探ニュース(3)"]||"").replace(/<[^>]*>/g, ""))}">${r["株探ニュース(3)"] || ""}</td>
+        <td class="num">${r["現在値"] ?? ""}</td>
+        <td class="num">${r["前日終値"] ?? ""}</td>
+        <td class="num">${r["前日円差"] ?? ""}</td>
+        <td class="num">${r["前日終値比率"] ?? ""}</td>
+        <td style="${shStyle}">${escapeHtml(shVal)}</td>
+        <td class="num">${r["高値"] ?? ""}</td>
+        <td class="num">${r["安値"] ?? ""}</td>
+        <td class="num">${r["MA5"] ?? r["5日"] ?? r["５日"] ?? ""}</td>
+        <td class="num">${r["MA25"] ?? r["25日"] ?? r["２５日"] ?? ""}</td>
+        <td class="num">${r["MA75"] ?? r["75日"] ?? r["７５日"] ?? ""}</td>
+        <td class="num">${r["出来高"] ?? ""}</td>
+        <td class="num">${r["売買代金(億)"] ?? ""}</td>
+        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+        <td>${escapeHtml(r["overall_alpha"] ?? "")}</td>
+        <td class="num">${r["スコア"] ?? ""}</td>
+        <td class="num">${r["進捗率"] ?? ""}</td>
+        <td class="num">${r["PBR"] ? Number(r["PBR"]).toFixed(2) : "-"}</td>
+        <td class="num">${r["現金同等物"] ? Math.round(r["現金同等物"]/100000000).toLocaleString() : "-"}</td>
+        <td class="num">${r["有利子負債"] ? Math.round(r["有利子負債"]/100000000).toLocaleString() : "-"}</td>
+        <td class="theme-col" title="${escapeHtml(r["大株主"]||"")}">${escapeHtml(r["大株主"]||"-")}</td>
+        <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
+        <td class="num">${r["増資スコア"] ?? ""}</td>
+        <td class="reason-col">${escapeHtml(r["増資理由"] || "")}</td>
+        <td>${r["初動フラグ"] || ""}</td>
+        <td>${r["底打ちフラグ"] || ""}</td>
+        <td>${r["右肩上がりフラグ"] || ""}</td>
+        <td>${r["右肩早期フラグ"] || ""}</td>
+        <td class="num">${r["右肩早期スコア"] ?? ""}</td>
+        <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
+        <td>${formatJudgeLabel(r)}</td>
+        <td class="reason-col">${escapeHtml(r["判定理由"] || "")}</td>
+        <td>${recBadge}</td>
+        <td class="num">${r["推奨比率"] ?? ""}</td>
+        <td>${r["シグナル更新日"] || ""}</td>
+        <td class="num">${fint(r["抵抗帯中心"])}</td>
+        <td>${r["抵抗最終日"] ?? ""}</td>
+        <td class="num">${fint(r["最寄り抵抗"])}</td>
+        <td class="num">${fint(r["支持帯中心"])}</td>
+        <td>${r["支持最終日"] ?? ""}</td>
+        <td class="num">${fint(r["最寄り支持"])}</td>
+        <td>${r["chart"] || ""}</td>
+        <td>${r["移動平均"] || ""}</td>
+        <td>${r["ボリバン"] || ""}</td>
+        <td>${r["GC"] || ""}</td>
+        <td>${r["三役"] || ""}</td>
+        <!-- === RS / 地合い / 逆行 系 新列 === -->
+        <td class="num">${f2(r["RS_5"])}</td>
+        <td class="num">${f2(r["RS_20"])}</td>
+        <td class="num">${f2(r["Growth_Bias"])}</td>
+        <td class="num">${r["地合いフラグ"] ?? ""}</td>
+        <td class="num">${r["逆行強フラグ"] ?? ""}</td>
+        <td class="num">${r["逆行弱フラグ"] ?? ""}</td>
+      </tr>`;
+    }
+    body.innerHTML = html;
+    colorizeTriangleScores();
+    document.querySelector("#count").textContent = String(total);
+    document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
+    wireDomSort("#tbl-candidate");
+    attachQHelpsToHead('#tbl-candidate');
+    if (typeof installCandidateFolds === 'function') { try{ installCandidateFolds(); }catch(_){ } }
+  }
+
+  // === Tomorrow logic START ===
+  function toKey(x){
+    if (x instanceof Date) {
+      const y=x.getFullYear(), m=('0'+(x.getMonth()+1)).slice(-2), d=('0'+x.getDate()).slice(-2);
+      return `${y}-${m}-${d}`;
+    }
+    const s = String(x ?? "").trim().slice(0,10).replace(/[./]/g,'-').replace(/\//g,'-');
+    const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+    const dt = new Date(s);
+    if (isNaN(+dt)) return "";
+    const yy=dt.getFullYear(), mm=('0'+(dt.getMonth()+1)).slice(-2), dd=('0'+dt.getDate()).slice(-2);
+    return `${yy}-${mm}-${dd}`;
+  }
+  function latestUpdateDate(rows){
+    const ds = (rows||[]).map(r=>toKey(r?.["シグナル更新日"])).filter(Boolean);
+    return ds.sort().pop() || null;
+  }
+  function localDateStr(d){ const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2); return `${y}-${m}-${da}`; }
+  function prevBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()-1);}while([0,6].includes(dt.getDay())); return dt; }
+  function nextBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt; }
+  function _hasCandidateFlag(r){
+    return String(r?.["初動フラグ"]||"").includes("候補")
+        || String(r?.["右肩上がりフラグ"]||"").includes("候補")
+        || String(r?.["右肩早期フラグ"]||"").includes("候補");
+  }
+  function _pickTomorrowRows(src, baseKey){
+    if(!Array.isArray(src) || !baseKey) return [];
+    return src.filter(r => toKey(r?.["シグナル更新日"])===baseKey && _hasCandidateFlag(r));
+  }
+  function _computeBaseAndTargetFromLocalNow(){
+    const now = new Date();
+    const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const baseDate = inFreeze ? prevBusinessDay(today) : today;
+    const targetDate = nextBusinessDay(baseDate);
+    return { inFreeze, baseDate, targetDate };
+  }
+  function renderTomorrow(rows){
+    const body = document.querySelector("#tbl-tmr tbody");
+    if (!body) return;
+    let html = "";
+    rows.forEach(r=>{
+      const rec = (r["推奨アクション"] || "").trim();
+      let recBadge = "";
+      if (rec === "エントリー有力") recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+      else if (rec === "小口提案")   recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
+      else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
+      
+      // ★ ここから追加：三角スコア用の数値を整形してソートキーを作る
+      const g  = Number(r["tri_growth"] ?? 0) || 0;
+      const s2 = Number(r["tri_safety"] ?? 0) || 0;
+      const v2 = Number(r["tri_vol"] ?? 0) || 0;
+      const triSort = g * 10000 + s2 * 100 + (100 - v2);  // 上昇→安定→低ボラ優先
+
+      const isHit = isHitRow(r);
+      // ▼▼▼ 追加: S高の色判定 ▼▼▼
+      const shVal = String(r["S高"]||"");
+      let shStyle = "";
+      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";      // 赤太字
+      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; // グレー
+      // ▲▲▲
+      html += `<tr${isHit ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
+        <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
+        <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
+        <td>${escapeHtml(r["市場"] || "-")}</td>
+        <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
+        <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X</a></td>
+        <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
+        <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
+        <td style="${shStyle}">${escapeHtml(shVal)}</td>
+        <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
+        <td class="num">${r["AI目標値"] || "-"}</td>
+        <td class="num">${r["売買代金(億)"]??""}</td>
+        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
+        <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
+        <td class="num">${r["増資スコア"] ?? ""}</td>
+        <td class="reason-col">${escapeHtml(r["増資理由"] || "")}</td>
+        <td class="num">${r["右肩早期スコア"]??""}</td>
+        <td>${escapeHtml((r["右肩早期種別"]||"").trim())}</td>
+        <td>${isHit ? "当たり！(1)" : "外れ！(1)"}</td>
+        <td>${recBadge}</td>
+      </tr>`;
+    });
+    body.innerHTML = html;
+    wireDomSort("#tbl-tmr");
+    attachQHelpsToHead('#tbl-tmr');
+  }
+  function _sortTomorrow(rows){
+    return rows.slice().sort((a,b)=>{
+      const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
+      const r = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
+      if (r !== 0) return r;
+      const s = (+b["右肩早期スコア"]||0) - (+a["右肩早期スコア"]||0);
+      if (s !== 0) return s;
+      return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
+    });
+  }
+  function renderTomorrowWrapper(){
+    const { inFreeze, baseDate, targetDate } = _computeBaseAndTargetFromLocalNow();
+    const baseKey = toKey(baseDate);
+    const latestKey = latestUpdateDate(DATA_CAND);
+
+    let reason = `基準日の「候補」`;
+    let rows = _pickTomorrowRows(DATA_CAND, baseKey);
+
+    if (rows.length === 0 && latestKey && latestKey !== baseKey){
+      rows = _pickTomorrowRows(DATA_CAND, latestKey);
+      if (rows.length) reason = `最新日(${latestKey})の「候補」にフォールバック`;
+    }
+    if (rows.length === 0){
+      rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===baseKey);
+      if (rows.length) reason = `基準日(${baseKey})の全件（候補条件なし）`;
+    }
+    if (rows.length === 0 && latestKey){
+      rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===latestKey);
+      if (rows.length) reason = `最新日(${latestKey})の全件（候補条件なし）`;
+    }
+    if (rows.length === 0){
+      rows = (DATA_CAND||[]).slice();
+      reason = `全体からのサンプル`;
+    }
+
+    // 基準日ロジックで決まった「明日用」候補（フィルタ前のベース）を保持
+    rows = _sortTomorrow(rows);
+    window.DATA_TMR = rows.slice();
+
+    const lbl = document.getElementById("tmr-label");
+    if (lbl){
+      const baseStr = localDateStr(baseDate);
+      const tgtStr  = localDateStr(nextBusinessDay(baseDate));
+      const freezeStr = inFreeze ? "ON" : "OFF";
+      lbl.textContent = `📅 ${tgtStr} 向け（基準日: ${baseStr} / 凍結: ${freezeStr} / 抽出: ${rows.length}件・${reason}）`;
+    }
+
+    // ツールバー条件を反映した行だけを描画
+    const filtered = (typeof applyFilter === "function") ? applyFilter(rows) : rows;
+    renderTomorrow(filtered);
+  }
+  // === Tomorrow logic END ===
+
+
+  
+  // タブ
+  //function render(){ if (state.tab === "all") { renderAll(); return; } if (state.tab === "tmr") { renderTomorrowWrapper(); return; } renderCand(); }
+  function render(){
+    if (state.tab === "tmr"){
+      const base = (window.DATA_TMR && Array.isArray(window.DATA_TMR)) ? window.DATA_TMR : [];
+      const rows = (typeof applyFilter === "function") ? applyFilter(base) : base;
+      renderTomorrow(rows);
+      return;
+    }
+    renderCand();
+  }
+
+  function fmtTime(ts){
+    try{
+      const d = new Date(ts);
+      if (!isNaN(d)) {
+        const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2);
+        const hh=('0'+d.getHours()).slice(-2), mm=('0'+d.getMinutes()).slice(-2);
+        return `${y}/${m}/${da} ${hh}:${mm}`;
+      }
+      return String(ts ?? "");
+    }catch(_){ return String(ts ?? ""); }
+  }
+
+
+
+  function _fmt2num(x){
+    if (x === null || x === undefined) return "";
+    const n = parseFloat(String(x).replace(/[,％%]/g,""));
+    if (!Number.isFinite(n)) return String(x ?? "");
+    return Number.isInteger(n) ? String(n) : n.toFixed(2);
+  }
+  function _formatTwoDecimals(tableSelector){
+    const tbl = document.querySelector(tableSelector);
+    if (!tbl) return;
+    const ths = Array.from(tbl.querySelectorAll("thead th"));
+    const targets = [];
+    const norm = (s)=> String(s||"").replace(/\s+/g,"").replace(/[（）]/g, v=> (v==="（"?"(" : ")")).trim();
+    ths.forEach((th, idx)=>{
+      const t = norm(th.textContent);
+      if (t.includes("前日終値比率")) targets.push(idx);
+      if (t === "売買代金(億)" || t === "売買代金億") targets.push(idx);
+      if (t === "現在値" || t === "前日終値" || t === "前日比(円)") targets.push(idx);
+    });
+    if (!targets.length) return;
+    const rows = tbl.querySelectorAll("tbody tr");
+    rows.forEach(tr=>{
+      targets.forEach(ci=>{
+        const td = tr.children[ci]; if (!td) return;
+        const raw = td.textContent.trim(); if (!raw) return;
+        td.textContent = _fmt2num(raw); td.classList.add("num");
+      });
+    });
+  }
+
+  function renderPreEarnings(rows){
+    function pickNameAndCode(rawName, rawCode){
+      const html = String(rawName ?? "");
+      let name = html.replace(/<[^>]*>/g,"").replace(/\s*\(\d{4}\)\s*$/,"").trim();
+      if (!name) name = String(rawName ?? "").trim();
+      let code = (rawCode ?? "").toString();
+      if (!/^\d{4}$/.test(code)){
+        const m1 = html.match(/\((\d{4})\)/);
+        if (m1) code = m1[1];
+      }
+      if (!/^\d{4}$/.test(code)){
+        const m2 = html.match(/quote\/(\d{4})\.T/i);
+        if (m2) code = m2[1];
+      }
+      return { name, code: /^\d{4}$/.test(code) ? code : "" };
+    }
+    const esc = (s)=>String(s??"").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
+
+    const tbl   = document.getElementById("tbl-preearn");
+    const thead = tbl?.querySelector("thead tr");
+    const tbody = document.getElementById("preearn-body");
+    if(!tbl||!thead||!tbody){ return; }
+
+    thead.innerHTML = `
+      <th>コード</th><th>銘柄</th><th>Yahoo</th>
+      <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
+      <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
+      <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
+      <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
+      <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
+      <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
+      <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
+      <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
+    `;
+
+    if(!rows?.length){
+      tbody.innerHTML = `<tr><td colspan="12" class="muted">データなし</td></tr>`;
+      wireDomSort("#tbl-preearn");
+      _formatTwoDecimals("#tbl-preearn");
+      attachQHelpsToHead('#tbl-preearn');
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r=>{
+      const rawName = r.name ?? r.symbol ?? r.銘柄 ?? "";
+      const rawCode = r.code ?? r.ticker ?? r.symbol ?? r.コード ?? "";
+      const { name, code } = pickNameAndCode(rawName, rawCode);
+      const code4   = code ? String(code).padStart(4,"0") : "";
+      const yahoo   = code4 ? `<a href="${yUrl(code4)}" target="_blank" rel="noopener">Yahoo</a>` : "";
+
+      return `<tr>
+        <td>${code4 ? codeLink(code4) : ""}</td>
+        <td>${escapeHtml(name)}</td>
+        <td>${yahoo}</td>
+        <td class="num">${_fmt2num(r.pre_score)}</td>
+        <td class="num">${_fmt2num(r.edge_score)}</td>
+        <td class="num">${_fmt2num(r.momentum_score)}</td>
+        <td class="reason-col"><div class="reason-box">${escapeHtml(r["スコア理由"] ?? "根拠薄め（暫定）")}</div></td>
+        <td class="hint-col"><div class="reason-box">${escapeHtml(r["予測ヒント"] ?? "（準備中）")}</div></td>
+        <td class="num">${_fmt2num(r["期待株価"]) || (_fmt2num(r.現在値) || "")}</td>
+        <td>${escapeHtml(r["修正見通し"] ?? "中立")}</td>
+        <td>${escapeHtml(r["過熱度"] ?? "中立")}</td>
+      </tr>`;
+    }).join("");
+
+    wireDomSort("#tbl-preearn");
+    _formatTwoDecimals("#tbl-preearn");
+    attachQHelpsToHead('#tbl-preearn');
+  }
+
+  // help & modal
+  function ensureHelpDom(){
+    let bd=document.querySelector(".help-backdrop");
+    if(!bd){ bd=document.createElement("div"); bd.className="help-backdrop"; document.body.appendChild(bd); }
+    let pp=document.querySelector(".help-pop");
+    if(!pp){ pp=document.createElement("div"); pp.className="help-pop"; pp.innerHTML='<div class="help-head"><div>ヘルプ</div><div class="help-close">×</div></div><div class="help-body"></div>'; document.body.appendChild(pp); }
+    pp.querySelector(".help-close").onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    bd.onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    return {bd,pp};
+  }
+  function openHelp(html){
+    const {bd,pp}=ensureHelpDom();
+    const body = pp.querySelector(".help-body");
+    body.innerHTML = html;
+    bd.style.display = "block";
+    pp.style.display = "block";
+    const sy = window.scrollY||0; pp.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ pp.style.left = `${Math.max(10,(document.documentElement.clientWidth - pp.offsetWidth)/2)}px`; });
+  }
+  function closeAllTips(){ const t=document.querySelectorAll('.tooltip, .popover'); t.forEach(el=>el.remove()); }
+  function ensureChartModal(){
+    let bd=document.getElementById("__chart_back__");
+    if(!bd){ bd=document.createElement("div"); bd.id="__chart_back__"; bd.className="help-backdrop"; document.body.appendChild(bd); }
+    let pp=document.getElementById("__chart_box__");
+    if(!pp){
+      pp=document.createElement("div"); pp.id="__chart_box__"; pp.className="help-pop";
+      pp.innerHTML=`<div class="help-head"><div>グラフ</div><div class="help-close">×</div></div><div id="__chart_body__"></div>`;
+      document.body.appendChild(pp);
+    }
+    pp.querySelector(".help-close").onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    bd.onclick=()=>{ pp.style.display="none"; bd.style.display="none"; };
+    return bd;
+  }
+
+  // charts (簡易)
+  function drawBar(canvas, labels, values, title){
+    const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+    ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
+    const nums = values.map(v => (v === "" || v == null ? NaN : +v));
+    const finite = nums.filter(Number.isFinite);
+    if (!finite.length) { ctx.fillText("データなし（欠損）", pad, H/2); return; }
+    const max = Math.max(1, ...finite);
+    const bw  = (W - pad*2) / labels.length * 0.7;
+    labels.forEach((lb, i) => {
+      const v = Number.isFinite(nums[i]) ? nums[i] : 0;
+      const x = pad + (i + 0.15) * (W - pad*2) / labels.length;
+      const h = (H - pad*2) * (v / max);
+      ctx.fillStyle = "#4a90e2";
+      if (h > 0) ctx.fillRect(x, H - pad - h, bw, h);
+      ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
+      ctx.fillText(lb, x, H - pad + 14);
+      ctx.fillText(String(v), x, H - pad - h - 4);
+    });
+  }
+  function drawLine(canvas, labels, values, title){
+    const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
+    ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
+    const nums = values.map(v => (v === "" || v == null ? NaN : +v));
+    const finite = nums.filter(Number.isFinite);
+    if (!finite.length) { ctx.fillText("データなし（欠損）", pad, H/2); return; }
+    const max = Math.max(1, ...finite);
+    const min = Math.min(0, ...finite);
+    const step = (W - pad*2) / Math.max(1, labels.length - 1);
+    ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 2; ctx.beginPath();
+    nums.forEach((v, i) => {
+      const val = Number.isFinite(v) ? v : 0;
+      const x = pad + i * step;
+      const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    if (labels.length === 1) { const x = pad; const val = Number.isFinite(nums[0]) ? nums[0] : 0;
+      const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
+      ctx.fillStyle = "#4a90e2"; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fill(); }
+    ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
+    labels.forEach((lb, i) => { const x = pad + i * step; ctx.fillText(lb, x - 10, H - pad + 14); });
+  }
+
+  function openStatsChart(){
+    const back = ensureChartModal(), body = $("#__chart_body__");
+    const rows = applyFilter(state.data);
+    const rvolBuckets=["<1","1-2","2-3","3-5","5+"], rvolCnt=[0,0,0,0,0];
+    const turnBuckets=["<5","5-10","10-50","50-100","100+"], turnCnt=[0,0,0,0,0];
+    rows.forEach(r=>{
+      const rvol = num(r["RVOL代金"]);
+      if(!Number.isNaN(rvol)){ if(rvol<1)rvolCnt[0]++; else if(rvol<2)rvolCnt[1]++; else if(rvol<3)rvolCnt[2]++; else if(rvol<5)rvolCnt[3]++; else rvolCnt[4]++; }
+      const turn = num(r["売買代金(億)"]);
+      if(!Number.isNaN(turn)){ if(turn<5)turnCnt[0]++; else if(turn<10)turnCnt[1]++; else if(turn<50)turnCnt[2]++; else if(turn<100)turnCnt[3]++; else turnCnt[4]++; }
+    });
+    body.innerHTML = `<h3>傾向グラフ（表示中データ）</h3><canvas id="cv1" style="width:100%;height:340px;"></canvas><canvas id="cv2" style="width:100%;height:340px;margin-top:16px;"></canvas>`;
+    const c1 = body.querySelector("#cv1"), c2 = body.querySelector("#cv2");
+    const fit = ()=>{
+      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
+      [c1,c2].forEach(cv=>{
+        cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
+        cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
+        const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
+      });
+      drawBar(c1, rvolBuckets, rvolCnt, "RVOL代金の分布");
+      drawBar(c2, turnBuckets, turnCnt, "売買代金(億)の分布");
+    };
+    if (window.__stats_fit__) window.removeEventListener("resize", window.__stats_fit__);
+    window.__stats_fit__ = fit;
+    window.addEventListener("resize", fit, { passive:true });
+    fit();
+    back.style.display="block";
+    const box = document.getElementById("__chart_box__"); box.style.display="block";
+    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+  }
+
+  function openTrendChart(){
+    const back = ensureChartModal(), body = $("#__chart_body__");
+    let src = [];
+    try { const RAW = JSON.parse(document.getElementById("__DATA__").textContent || "{}"); if (Array.isArray(RAW.hist) && RAW.hist.length) src = RAW.hist; } catch(_) {}
+    if (!src.length) src = applyFilter(state.data);
+    const byDay = new Map();
+    src.forEach(r=>{
+      const d = String(r["シグナル更新日"]||r["日付"]||r["日時"]||"").slice(0,10);
+      if(!d) return;
+      const hit = isHitRow(r) ? 1 : 0;
+      const o = byDay.get(d) || {tot:0,hit:0};
+      o.tot++; o.hit += hit;
+      byDay.set(d,o);
+    });
+    const days = Array.from(byDay.keys()).sort();
+    const rate = days.map(d=>{ const o = byDay.get(d)||{tot:0,hit:0}; return o.tot ? Math.round(1000*o.hit/o.tot)/10 : 0; });
+    body.innerHTML = `<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" style="width:100%;height:340px;"></canvas>`;
+    const cv = body.querySelector("#cv3");
+    const fit = ()=>{
+      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
+      cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
+      cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
+      const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
+      drawLine(cv, days, rate, "当たり率（%）");
+    };
+    if (window.__trend_fit__) window.removeEventListener("resize", window.__trend_fit__);
+    window.__trend_fit__ = fit;
+    window.addEventListener("resize", fit, {passive:true});
+    fit();
+    back.style.display="block";
+    const box = document.getElementById("__chart_box__"); box.style.display="block";
+    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
+    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
+  }
+
+
+// events
+  // 共通：ページ1に戻して再描画
+  const applyAndRender = () => {
+    state.page = 1;
+    render();
+  };
+  
+
+  
+  // 株探ニュース 日数フィルタ
+  const newsDaysInput = document.getElementById("f_news_days");
+  if (newsDaysInput) {
+    newsDaysInput.addEventListener("input", () => {
+      const v = parseInt(newsDaysInput.value, 10);
+      state.news_days = Number.isFinite(v) && v > 0 ? v : 0;  // 0以下は無効扱い
+      applyAndRender();
+    });
+  }
+
+  // 株探ニュース 青●のみ
+  const newsBlueChk = document.getElementById("f_news_bluepos");
+  if (newsBlueChk) {
+    newsBlueChk.addEventListener("change", () => {
+      state.news_blue_only = !!newsBlueChk.checked;
+      applyAndRender();
+    });
+  }
+
+
+  // 件数・ページ送りは従来どおり
+  $("#perpage")?.addEventListener("change",(e)=>{
+    const v = parseInt(e.target.value,10);
+    state.per = Number.isFinite(v) ? v : 500;
+    state.page = 1;
+    render();
+  });
+  $("#prev")?.addEventListener("click",()=>{
+    if (state.page > 1){ state.page--; render(); }
+  });
+  $("#next")?.addEventListener("click",()=>{
+    state.page++; render();
+  });
+
+  // ---- テキスト入力 (#q)：Enter / フォーカスアウトでだけ反映 ----
+  const qEl = $("#q");
+  if (qEl) {
+    // フォーカスアウト時
+    qEl.addEventListener("change", (e) => {
+      state.q = e.target.value || "";
+      applyAndRender();
+    });
+    // Enterキーで即反映
+    qEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        state.q = e.target.value || "";
+        applyAndRender();
+      }
+    });
+  }
+
+  // ---- 数値入力：change のときだけ反映 ----
+  const numIds = [
+    "th_rate","th_turn","th_rvol","th_progress","th_score","th_pmin","th_pmax",
+    "th_tri_g","th_tri_s","th_tri_v"
+  ];
+  numIds.forEach(id => {
+    const el = $("#"+id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      applyAndRender();
+    });
+  });
+
+  // ---- チェックボックス系：change で即時反映 ----
+  const chkIds = [
+    "f_shodou","f_tei","f_both","f_rightup","f_early","f_etype",
+    "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit","f_goodonly",
+    // ↓ここを追加
+    "f_rsstrong","f_mkt_good","f_mkt_bad","f_revstrong","f_revweak"
+  ];
+  chkIds.forEach(id => {
+    const el = $("#"+id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      applyAndRender();
+    });
+  });
+
+
+  // 早期フィルタ（ブレイク／ポケット／20MAリバ／200MAリクレイム）もチェックボックスなので即時反映
+  $$(".early-filter .ef-chk input").forEach(el=>{
+    el.addEventListener("change", () => {
+      applyAndRender();
+    });
+  });
+
+  // ===== ブックマーク機能 =====
+  const BM_KEY = "pg_dash_bookmarks_v1";
+
+  function loadBookmarks() {
+    try {
+      const raw = localStorage.getItem(BM_KEY);
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return obj && typeof obj === "object" ? obj : {};
+    } catch (e) {
+      console.warn("bookmark load failed", e);
+      return {};
+    }
+  }
+
+  function saveBookmarksMap(map) {
+    try {
+      localStorage.setItem(BM_KEY, JSON.stringify(map));
+    } catch (e) {
+      console.warn("bookmark save failed", e);
+    }
+  }
+
+  // 現在の入力状態を全部吸い出す
+  function collectBookmarkState() {
+    const st = { text:{}, nums:{}, checks:{} };
+
+    // テキスト
+    if (qEl) st.text.q = qEl.value || "";
+
+    // 数値
+    numIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) st.nums[id] = el.value || "";
+    });
+
+    // チェックボックス（chkIds だけ）
+    chkIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) st.checks[id] = !!el.checked;
+    });
+
+    // 早期フィルタ（idごとに保存）
+    $$(".early-filter .ef-chk input").forEach(el=>{
+      if (!el.id) return;
+      st.checks[el.id] = !!el.checked;
+    });
+
+    // 抵抗ネアのしきい値も一応保存
+    const rn = $("#resNearPct");
+    if (rn) st.nums.resNearPct = rn.value || "";
+
+    return st;
+  }
+
+  // 保存した状態を画面に反映
+  function applyBookmarkState(st) {
+    if (!st) return;
+
+    // テキスト
+    if (qEl && st.text && typeof st.text.q === "string") {
+      qEl.value = st.text.q;
+      state.q   = st.text.q;
+    }
+
+    // 数値
+    if (st.nums) {
+      Object.keys(st.nums).forEach(id => {
+        const el = $("#"+id);
+        if (el) el.value = st.nums[id] ?? "";
+      });
+    }
+
+    // チェックボックス
+    if (st.checks) {
+      Object.keys(st.checks).forEach(id => {
+        const el = $("#"+id);
+        if (el && "checked" in el) {
+          el.checked = !!st.checks[id];
+        }
+      });
+    }
+
+    applyAndRender();
+  }
+
+  // 全フィルタを「デフォルト」に戻す（解除ボタン用）
+  function clearFiltersToDefault() {
+    // テキスト
+    if (qEl) {
+      qEl.value = "";
+      state.q = "";
+    }
+
+    // 数値は空文字に
+    numIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) el.value = "";
+    });
+
+    // 抵抗ネアは初期値 0.5 に戻す（HTMLのvalue="0.5"に合わせている）
+    const rn = $("#resNearPct");
+    if (rn) rn.value = "0.5";
+
+    // チェック類は全部 OFF
+    chkIds.forEach(id => {
+      const el = $("#"+id);
+      if (el) el.checked = false;
+    });
+    $$(".early-filter .ef-chk input").forEach(el=>{
+      el.checked = false;
+    });
+
+    applyAndRender();
+  }
+
+  // セレクトの中身をマップから作り直す
+  function rebuildBookmarkSelect(map, chosen) {
+    const sel = $("#bm_select");
+    if (!sel) return;
+    sel.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = "（ブックマーク選択）";
+    sel.appendChild(opt0);
+
+    Object.keys(map).sort().forEach(name => {
+      const o = document.createElement("option");
+      o.value = name;
+      o.textContent = name;
+      sel.appendChild(o);
+    });
+
+    if (chosen && map[chosen]) {
+      sel.value = chosen;
+    } else {
+      sel.value = "";
+    }
+  }
+
+  // ツールバーにブックマークUIを生やす
+  function setupBookmarkUI() {
+    const tb = document.getElementById("toolbar");
+    if (!tb) return;
+
+    // すでにあれば再構築だけ
+    if (document.getElementById("bm_save")) {
+      const map = loadBookmarks();
+      rebuildBookmarkSelect(map);
+      return;
+    }
+
+    const wrap = document.createElement("span");
+    wrap.className = "bookmark-ctrls";
+    wrap.style.display = "inline-flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "4px";
+    wrap.style.marginLeft = "8px";
+    wrap.innerHTML = `
+      <label class="muted">ブックマーク:</label>
+      <select id="bm_select"></select>
+      <input id="bm_name" type="text" placeholder="名前" style="width:9em;">
+      <button type="button" id="bm_save" class="btn">保存</button>
+      <button type="button" id="bm_clear" class="btn">解除</button>
+      <button type="button" id="bm_delete" class="btn">削除</button>
+    `;
+    tb.appendChild(wrap);
+
+    const sel = $("#bm_select");
+    const nameInput = $("#bm_name");
+    const btnSave = $("#bm_save");
+    const btnClear = $("#bm_clear");
+    const btnDelete = $("#bm_delete");
+
+    let map = loadBookmarks();
+    rebuildBookmarkSelect(map);
+
+    // 保存
+    btnSave?.addEventListener("click", () => {
+      const name = (nameInput?.value || "").trim();
+      if (!name) {
+        alert("ブックマーク名を入力してください");
+        nameInput?.focus();
+        return;
+      }
+      const payload = collectBookmarkState();
+      map[name] = payload;
+      saveBookmarksMap(map);
+      rebuildBookmarkSelect(map, name);
+    });
+
+    // 呼び出し
+    sel?.addEventListener("change", () => {
+      const name = sel.value;
+      if (!name) return;
+      const st = map[name];
+      if (!st) return;
+      applyBookmarkState(st);
+    });
+
+    // 解除（デフォルトに戻す＆セレクトを未選択に）
+    btnClear?.addEventListener("click", () => {
+      sel.value = "";
+      clearFiltersToDefault();
+    });
+
+    // 削除
+    btnDelete?.addEventListener("click", () => {
+      const name = sel?.value;
+      if (!name || !map[name]) {
+        alert("削除するブックマークを選択してください");
+        return;
+      }
+      if (!confirm(`ブックマーク「${name}」を削除しますか？`)) return;
+      delete map[name];
+      saveBookmarksMap(map);
+      rebuildBookmarkSelect(map);
+      sel.value = "";
+    });
+  }
+
+  // 初期化
+  setupBookmarkUI();
+
+
+  // ページ銘柄コピー（列名1行 + データ行）
+  $("#copy-page")?.addEventListener("click", async (e)=>{
+    e.preventDefault();
+
+    const tbl = document.getElementById(getActiveTableId());
+    if (!tbl || !tbl.tHead || !tbl.tBodies.length) return;
+
+    // --- CSVエスケープ（", 改行 を含む場合は二重引用） ---
+    const csvEscape = (v)=>{
+      let s = String(v ?? "");
+      if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+
+    // --- セルの表示値を取得（data-raw 優先、なければテキスト） ---
+    const getCellValue = (td)=>{
+      if (!td) return "";
+      const raw = td.getAttribute("data-raw");
+      if (raw != null) return raw;
+      return (td.textContent || "").replace(/\s+/g, " ").trim();
+    };
+
+    // 1) ヘッダー（列名）
+    const headerCells = Array.from(tbl.tHead.rows[0].cells);
+    const headerLine = headerCells
+      .map(th => csvEscape(th.getAttribute("data-col") || (th.textContent || "").trim()))
+      .join(",");
+
+    // 2) データ行（現在ページに描画されている tbody のみ）
+    const bodyRows = Array.from(tbl.tBodies[0].rows);
+    const dataLines = bodyRows.map(tr => {
+      const tds = Array.from(tr.cells);
+      return tds.map(td => csvEscape(getCellValue(td))).join(",");
+    });
+
+    // 3) 連結してクリップボードへ
+    const text = [headerLine, ...dataLines].join("\n");
+
+    try{
+      if (navigator.clipboard && window.isSecureContext !== false) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      const btn = document.getElementById("copy-page");
+      btn?.classList.add("ok");
+      const old = btn?.textContent || "";
+      if (btn) btn.textContent = "コピーしました";
+      setTimeout(()=>{ if(btn){ btn.classList.remove("ok"); btn.textContent = old || "今のページの銘柄をコピー"; } }, 1500);
+    }catch(_){
+      alert("コピーに失敗しました");
+    }
+  });
+
+  // CSVダウンロード
+  $("#download-page-csv")?.addEventListener("click", (e)=>{
+    e.preventDefault();
+    const tblId = getActiveTableId();
+    const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
+    const lines = rows.map(tr => {
+      const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
+      const nameRaw = tr.getAttribute("data-name") ?? "";
+      if (!code || !nameRaw) return "";
+      const name = nameRaw.replace(/"/g, '""');
+      return `"${code}","${name}",TKY,,,,,,`;
+    }).filter(Boolean);
+    const csv = lines.join("\n");
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csv], { type: "text/csv" });
+
+    const pad = n => String(n).padStart(2, "0");
+    const dt  = new Date();
+    const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
+    const filename = `screen_current_page_only_${y}${m}${d}_${H}${M}${S}.csv`;
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
+  });
+
+  // CSVダウンロード
+  $("#download-csv")?.addEventListener("click", (e)=>{
+    e.preventDefault();
+    const tblId = getActiveTableId();
+    const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
+    const lines = rows.map(tr => {
+      const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
+      const nameRaw = tr.getAttribute("data-name") ?? "";
+      if (!code || !nameRaw) return "";
+      const name = nameRaw.replace(/"/g, '""');
+      return `"${code}","${name}",TKY,,,,,,`;
+    }).filter(Boolean);
+    const csv = lines.join("\n");
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csv], { type: "text/csv" });
+
+    const pad = n => String(n).padStart(2, "0");
+    const dt  = new Date();
+    const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
+    const filename = `screen_current_${y}${m}${d}_${H}${M}${S}.csv`;
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
+  });
+
+  $("#btn-stats")?.addEventListener("click",openStatsChart);
+  $("#btn-ts")?.addEventListener("click",openTrendChart);
+  $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
+
+  // タブ切替
+  function switchTab(to){
+    state.tab = to;
+    $$(".tab").forEach(el=>el.classList.add("hidden"));
+    $$("nav a").forEach(a=>a.classList.remove("active"));
+    if (to === "cand"){
+      $("#tab-candidate")?.classList.remove("hidden");
+      $("#lnk-cand")?.classList.add("active");
+      state.data = DATA_CAND.slice();
+      state.page = 1;
+      render();
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-candidate'); }catch(_){ } }
+      return;
+    }
+    if (to === "tmr"){
+      $("#tab-tmr")?.classList.remove("hidden");
+      $("#lnk-tmr")?.classList.add("active");
+      renderTomorrowWrapper();
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-tmr'); }catch(_){ } }
+      return;
+    }
+
+
+    if (to === "preearn"){
+      $("#tab-preearn")?.classList.remove("hidden");
+      $("#lnk-preearn")?.classList.add("active");
+      renderPreEarnings(DATA_PREEARN);
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-preearn'); }catch(_){ } }
+      return;
+    }
+  }
+  
+  
+  // ★ どのタブがアクティブかからテーブルIDを返す
+  function getActiveTableId(){
+    const tab = state && state.tab;
+    if (tab === "tmr")      return "tbl-tmr";
+    if (tab === "preearn")  return "tbl-preearn";
+    // "cand" や "all" などは候補テーブル扱い
+    return "tbl-candidate";
+  }
+  
+  
+  (function(){
+    const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all","lnk-preearn":"preearn" };
+    window.NAV_MAP = map;
+    Object.keys(map).forEach(id=>{
+      const a = document.getElementById(id);
+      if (!a) return;
+      a.addEventListener("click", (e)=>{ e.preventDefault(); switchTab(map[id]); });
+    });
+  })();
+
+  // initial
+  // 存在しない fold 関数の安全化
+  if (typeof window.installCandidateFolds !== 'function') window.installCandidateFolds = function(){};
+  if (typeof window.installFoldsFor !== 'function') window.installFoldsFor = function(){};
+
+
+  function init(){
+    try{
+      // ① RAWを読む（__DATA__ を同期パース）
+      RAW = readRAW();
+      
+
+      // ★ ここで offer_codes → OFFER_SET を構築
+      rebuildOfferSet();
+      console.log(
+        "[init] offer_codes len =",
+        Array.isArray(RAW.offer_codes) ? RAW.offer_codes.length : 0,
+        " / OFFER_SET size =",
+        OFFER_SET.size
+      );
+      
+      const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
+      DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
+      DATA_PREEARN = Array.isArray(_preSrc)      ? _preSrc      : [];
+
+      // ② まず候補タブを描画（テーブルがDOMに並ぶ）
+      switchTab("cand");
+
+      // ③ テーブル描画後に市場チェックUIを生成（DOMフォールバックが効く）
+      renderMarketCheckboxes();
+      
+      // ③.5 指数サポレジ位置サマリを表示
+      renderIndexSrSummary();
+      
+      // ③.6 VIXレジームサマリを表示
+      renderVixRegimeSummary();
+
+      // ④ ヘルプや表示微調整
+      forceClearThresholds();
+      document.querySelectorAll('#tbl-candidate td br')
+        .forEach(br => br.replaceWith(' '));
+      attachQHelpsToToolbar();
+      attachQHelpsToHead('#tbl-candidate');
+      const navAnchor = document.getElementById('nav-summary-anchor') || document.querySelector('nav');
+      if (navAnchor) makeQ(navAnchor, 'まとめ（優先度順）');
+
+      // ⑤ sticky幅・scroll-pad の再計測
+      try{ if (typeof measureStickyWidth === 'function') measureStickyWidth(); }catch(_){}
+      try{ window.dispatchEvent(new Event('resize')); }catch(_){}
+    }catch(e){ try{ console.error('[init fatal]', e); }catch(_){} }
+  }
+  document.removeEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', init);
+
+  // === ★追加: TOBポップアップ制御 ===
+(function(){
+  // モーダル用のDOMを生成（一度だけ）
+  if (!document.getElementById('tob-modal-overlay')) {
+    const ov = document.createElement('div');
+    ov.id = 'tob-modal-overlay';
+    ov.innerHTML = '<div id="tob-modal-content"></div>';
+    document.body.appendChild(ov);
+
+    // 背景クリックで閉じる
+    ov.addEventListener('click', (e) => {
+      if (e.target === ov) ov.style.display = 'none';
+    });
+  }
+})();
+
+// グローバル関数として公開（HTMLから onclick で呼ぶため）
+window.showTobHistory = function(btn, jsonStr) {
+  try {
+    const list = JSON.parse(decodeURIComponent(jsonStr));
+    const ov = document.getElementById('tob-modal-overlay');
+    const ct = document.getElementById('tob-modal-content');
+    
+    // 中身を生成
+    let html = `<div style="font-weight:bold; margin-bottom:8px; color:#f97316; border-bottom:2px solid #ffedd5; padding-bottom:4px;">TOB関連書類履歴 (${list.length})</div>`;
+    html += list.map(item => `<div class="tob-item">${item}</div>`).join("");
+    ct.innerHTML = html;
+
+    // 表示位置の計算（ボタンの近くに出す）
+    const rect = btn.getBoundingClientRect();
+    const scrollY = window.scrollY || document.documentElement.scrollTop;
+    
+    // 基本はボタンの「右下」に出す
+    let top = rect.bottom + 5 + scrollY;
+    let left = rect.left;
+
+    // 画面からはみ出るようなら調整（簡易版）
+    if (left + 340 > window.innerWidth) {
+        left = window.innerWidth - 350; // 右端に寄せる
+    }
+
+    ct.style.top = top + 'px';
+    ct.style.left = left + 'px';
+    
+    ov.style.display = 'block';
+
+  } catch (e) {
+    console.error("TOB view error:", e);
+  }
+};
+// === 追加ここまで ===
+
+
+})();
+</script>
+
+  <section id="tab-candidate" class="tab">
+    <div class="tbl-wrap">
+      <table id="tbl-candidate" class="tbl">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
+            <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th data-col="市場">市場</th>
+            <th class="sortable" data-col="TOB">TOB情報</th>
+            <th class="sortable" data-col="関連テーマ" data-type="text">関連テーマ<span class="arrow"></span></th>
+            <th>Yahoo</th>
+            <th>X</th>
+            <th class="num sortable" data-col="三角スコア" data-type="num">△Score<span class="arrow"></span></th>
+            <th class="num sortable" data-col="AIスコア" data-type="num">AIスコア<span class="arrow"></span></th>
+            <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
+            <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
+            <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
+            <th class="num sortable" data-col="高値" data-type="num">高値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="安値" data-type="num">安値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="5日" data-type="num">5日<span class="arrow"></span></th>
+            <th class="num sortable" data-col="25日" data-type="num">25日<span class="arrow"></span></th>
+            <th class="num sortable" data-col="75日" data-type="num">75日<span class="arrow"></span></th>
+            <th class="num sortable" data-col="出来高" data-type="num">出来高<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th>財務</th>
+            <th class="sortable" data-col="overall_alpha" data-type="text">α<span class="arrow"></span></th>
+            <th class="num sortable" data-col="スコア" data-type="num">スコア<span class="arrow"></span></th>
+            <th class="num sortable" data-col="進捗率" data-type="num">進捗率<span class="arrow"></span></th>
+            <th class="num sortable" data-col="PBR" data-type="num">PBR<span class="arrow"></span></th>
+            <th class="num sortable" data-col="現金同等物" data-type="num">現金(億)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="有利子負債" data-type="num">負債(億)<span class="arrow"></span></th>
+            <th data-col="大株主">大株主</th>
+            <th data-col="増資リスク">増資リスク</th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
+            <th class="reason-col" data-col="増資理由">理由</th>
+            <th class="sortable" data-col="初動フラグ" data-type="text">初動<span class="arrow"></span></th>
+            <th class="sortable" data-col="底打ちフラグ" data-type="text">底打ち<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩上がりフラグ" data-type="text">右肩<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期フラグ" data-type="text">右肩早期<span class="arrow"></span></th>
+            <th class="num sortable" data-col="右肩早期スコア" data-type="num">右肩早期スコア<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
+            <th class="sortable reason-col" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+            <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
+            <th class="sortable" data-col="シグナル更新日" data-type="date">シグナル更新日<span class="arrow"></span></th>
+            <th class="num sortable" data-col="抵抗帯中心" data-type="num">抵抗帯中心<span class="arrow"></span></th>
+            <th class="sortable" data-col="抵抗最終日" data-type="text">抵抗最終日<span class="arrow"></span></th>
+            <th class="num sortable" data-col="最寄り抵抗" data-type="num">最寄り抵抗<span class="arrow"></span></th>
+            <th class="num sortable" data-col="支持帯中心" data-type="num">支持帯中心<span class="arrow"></span></th>
+            <th class="sortable" data-col="支持最終日" data-type="text">支持最終日<span class="arrow"></span></th>
+            <th class="num sortable" data-col="最寄り支持" data-type="num">最寄り支持<span class="arrow"></span></th>
+            <th class="sortable" data-col="chart">chart<span class="arrow"></span></th>
+            <th class="sortable" data-col="移動平均">移動平均<span class="arrow"></span></th>
+            <th class="sortable" data-col="ボリバン">ボリバン<span class="arrow"></span></th>
+            <th class="sortable" data-col="GC">GC<span class="arrow"></span></th>
+            <th class="sortable" data-col="三役">三役<span class="arrow"></span></th>
+            <!-- === RS / 地合い / 逆行 系 新列 === -->
+            <th class="num sortable" data-col="RS_5" data-type="num">RS_5<span class="arrow"></span></th>
+            <th class="num sortable" data-col="RS_20" data-type="num">RS_20<span class="arrow"></span></th>
+            <th class="num sortable" data-col="Growth_Bias" data-type="num">GrowthBias<span class="arrow"></span></th>
+            <th class="num sortable" data-col="地合いフラグ" data-type="num">地合い<span class="arrow"></span></th>
+            <th class="num sortable" data-col="逆行強フラグ" data-type="num">逆行強<span class="arrow"></span></th>
+            <th class="num sortable" data-col="逆行弱フラグ" data-type="num">逆行弱<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-tmr" class="tab hidden">
+    <div class="tbl-wrap">
+      <div id="tmr-label" style="margin:8px 0 4px;font-weight:800;font-size:16px;color:#0d3b66;"></div>
+      <table id="tbl-tmr" class="tbl">
+        <thead>
+          <tr>
+            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
+            <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
+            <th data-col="市場">市場</th>
+            <th>Yahoo</th>
+            <th>X</th>
+            <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
+            <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
+            <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
+            <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
+            <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
+            <th>財務</th>
+            <th data-col="増資リスク">増資リスク</th>
+            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
+            <th class="reason-col" data-col="増資理由">理由</th>
+            <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
+            <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+
+  <section id="tab-preearn" class="tab hidden">
+     <div class="tbl-wrap">
+       <table id="tbl-preearn" class="tbl">
+         <thead>
+           <tr>
+             <th>銘柄</th>
+             <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
+             <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
+             <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
+             <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
+             <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
+             <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
+           </tr>
+         </thead>
+         <tbody id="preearn-body"></tbody>
+       </table>
+     </div>
+  </section>
+
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  const tb = document.getElementById('toolbar');
+  if(!tb) return;
+
+  // ラッパ生成（初回のみ）
+  if(!tb.querySelector('.toolbar-card')){
+    const card = document.createElement('div');
+    card.className = 'toolbar-card';
+    while(tb.firstChild){ card.appendChild(tb.firstChild); }
+    tb.appendChild(card);
+  }
+  const card = tb.querySelector('.toolbar-card');
+
+  // 4グループ + フッター
+  const gChecks  = document.createElement('div'); gChecks.className  = 'group checks';
+  const gTexts   = document.createElement('div'); gTexts.className   = 'group texts';
+  const gSelects = document.createElement('div'); gSelects.className = 'group selects';
+  const gBtns    = document.createElement('div'); gBtns.className    = 'group buttons';
+  const gFooter  = document.createElement('div'); gFooter.className  = 'group footer';
+
+  // ラベル
+  const mkLabel = txt => { const s=document.createElement('span'); s.className='label'; s.textContent=txt; return s; };
+  gChecks.appendChild(mkLabel('チェック'));
+  gTexts.appendChild(mkLabel('テキスト'));
+  gSelects.appendChild(mkLabel('プルダウン'));
+  gBtns.appendChild(mkLabel('ボタン'));
+
+  // 既存直下ノードを分類
+  const nodes = Array.from(card.childNodes);
+  nodes.forEach(n => {
+    if(!(n instanceof HTMLElement)) return;
+
+    // ① 市場フィルタは「必ず」フッター左側へ
+    if (n.id === 'market-filter') { 
+      gFooter.appendChild(n); 
+      return;
+    }
+
+    // 初期チェック群
+    if (n.classList.contains('early-filter')) { gChecks.appendChild(n); return; }
+
+    // 件数バッジ・Pager・表示件数はフッター右側
+    if (n.classList.contains('count'))       { gFooter.appendChild(n); return; }
+    if (n.classList.contains('pager'))       { gFooter.appendChild(n); return; }
+    if (n.tagName==='LABEL' && n.querySelector('#perpage')) { gFooter.appendChild(n); return; }
+    if (n.id === 'perpage')                  { gFooter.appendChild(n); return; }
+
+    // ボタン類
+    if (n.matches('button, .btn, .copylink, [id="copy-page"], [id="download-csv"]')) { gBtns.appendChild(n); return; }
+
+    // プルダウン
+    if (n.tagName==='LABEL' && n.querySelector('select')) { gSelects.appendChild(n); return; }
+    if (n.tagName==='SELECT')                              { gSelects.appendChild(n); return; }
+
+    // テキスト/数字入力
+    if (n.tagName==='LABEL' && n.querySelector('input[type="text"], input[type="number"]')) { gTexts.appendChild(n); return; }
+    if (n.matches('input[type="text"], input[type="number"]'))                                { gTexts.appendChild(n); return; }
+
+    // チェックボックス
+    if (n.tagName==='LABEL' && n.querySelector('input[type="checkbox"]')) { gChecks.appendChild(n); return; }
+    if (n.matches('input[type="checkbox"]'))                               { gChecks.appendChild(n); return; }
+
+    // その他はテキスト群へ
+    gTexts.appendChild(n);
+  });
+
+  // 並べ替え反映（カードを空にしてから希望順で追加）
+  while (card.firstChild) { card.removeChild(card.firstChild); }
+  card.appendChild(gChecks);   // ① checks
+  card.appendChild(gTexts);    // ② texts
+  card.appendChild(gSelects);  // ③ selects
+  card.appendChild(gBtns);     // ④ buttons
+  card.appendChild(gFooter);   // ⑤ footer
+});
+</script>
+
+<script id="footer-reflow">
+document.addEventListener('DOMContentLoaded', function () {
+  const tb = document.getElementById('toolbar');
+  const footer = tb && tb.querySelector('.group.footer');
+  if (!footer) return;
+
+  // 左右ラッパー（重複生成しない）
+  let left = footer.querySelector('.footer-left');
+  let ctrls = footer.querySelector('.footer-ctrls');
+  if (!left)  { left  = document.createElement('div'); left.className  = 'footer-left';  footer.prepend(left); }
+  if (!ctrls) { ctrls = document.createElement('div'); ctrls.className = 'footer-ctrls'; footer.appendChild(ctrls); }
+
+  // 1) 市場チェック群を左端へ（#market-filter を最優先で移動）
+  const market = footer.querySelector('#market-filter');
+  if (market && market.parentElement !== left) left.appendChild(market);
+
+  // 2) 表示件数・前へ/次へ・件数バッジを右側へ集約
+  const moves = [];
+
+  // よくある要素候補（必要に応じて追記OK）
+  footer.querySelectorAll('select#perpage, select[name="perpage"], .pager, .count').forEach(n => moves.push(n));
+
+  // ラベル単体ノード（「表示件数」「前へ」「次へ」「件数」等）も拾う
+  Array.from(footer.children).forEach(el => {
+    if (!(el instanceof HTMLElement)) return;
+    const t = (el.textContent || '').trim();
+    if (/表示件数|前へ|次へ|件数[：:]/.test(t) && !moves.includes(el)) moves.push(el);
+  });
+
+  moves.forEach(el => { if (el && el.parentElement !== ctrls) ctrls.appendChild(el); });
+});
+</script>
+
+
+<script>
+function kabuNewsCell(code){
+  try{
+    const map = (window.__KABUNEWS_MAP || {});
+    const arr = map[code] || [];
+    const items = arr.slice(0,3).map(x=>{
+      const t = String(x && x.title || "").replace(/"/g,"&quot;");
+      const href = (x && x.link) ? x.link : "#";
+      return `<a href="${href}" target="_blank" rel="noopener">${t}</a>`;
+    });
+    return items.join(" ・ ");
+  }catch(_){ return ""; }
+}
+</script>
+</body>
+</html>
