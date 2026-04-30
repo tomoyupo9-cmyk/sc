@@ -14,7 +14,8 @@ from typing import List, Dict, Any, Set, Optional, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import time, random
+        
 # ==== 共通ユーティリティ/DB ====
 try:
     # パッケージ形式でも相対/絶対の両対応
@@ -31,7 +32,14 @@ except Exception:
 from bs4 import BeautifulSoup, NavigableString
 from dateutil import parser, tz
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+    "Referer": "https://finance.yahoo.co.jp/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
+}
 YAHOO_BASE_URL = "https://finance.yahoo.co.jp"
 _DEFAULT_TIMEOUT = 15
 _SESSION: Optional[requests.Session] = None
@@ -309,6 +317,7 @@ def fetch_search_comments(
     else:
         # 並列取得
         def _fetch_one(p: int, url: str):
+            time.sleep(random.uniform(1.0, 3.0)) # ★WAF回避のためのランダム待機（ジッター）
             try:
                 html = _http_get(url)
                 if not html:
@@ -318,7 +327,8 @@ def fetch_search_comments(
             except Exception:
                 return (p, [])
 
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        # ★ 攻撃的すぎる max_workers=6 を 2 に減らす
+        with ThreadPoolExecutor(max_workers=2) as ex: 
             futs = [ex.submit(_fetch_one, i + 1, u) for i, u in enumerate(page_urls)]
             for fut in as_completed(futs):
                 page_results.append(fut.result())
