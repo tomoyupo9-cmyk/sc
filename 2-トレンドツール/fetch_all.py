@@ -59,6 +59,19 @@ from src.news import fetch_news
 from src.bbs import fetch_bbs_stats, fetch_leak_comments, fetch_tob_comments
 from src.discovery import build_universe
 from src.common import ensure_dir, dump_json, now_iso, load_config
+# --- ログ抑制パッチ（ここから追加） ---
+import logging
+
+# PyPDF2 や pdfminer の内部ログが stderr に流れるのを抑制する
+logging.getLogger("PyPDF2").setLevel(logging.ERROR)
+# 他のライブラリ（pdfminerなど）が原因の場合も考慮して全体的に警告以下を抑制
+logging.basicConfig(level=logging.ERROR)
+
+# 標準エラー出力に直接書かれるライブラリ用の対策（必要に応じて）
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+# --- ログ抑制パッチ（ここまで） ---
+
 
 ROOT = Path(__file__).resolve().parent
 OUT_DIR = ROOT / "out"
@@ -112,7 +125,71 @@ def _summarize_title_simple(title: str):
     label, score, hit_kw = _judge_sentiment(title)  # label: "positive"/"neutral"/"negative"
     return summary, label, hit_kw
 # ---------------------------------------------------------------------------
+def load_tob_from_bbs_lightweight(rows_to_check):
+    import requests
+    import time
+    import random
+    from datetime import datetime
 
+    # セッションを作成し、ブラウザに近いヘッダーを設定
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+        "Referer": "https://finance.yahoo.co.jp/",
+    })
+
+    keywords = ["TOB", "買収", "公開買付", "親会社", "子会社化"]
+    results_rows = []
+    
+    # 100件は多いため、安全のために件数を絞ることを推奨（例: [:50]）
+    target_list = rows_to_check[:50] 
+    print(f"[Board-Check] 開始: {len(target_list)} 銘柄をスキャンします...")
+
+    for r in target_list:
+        code = str(r.get("ticker", ""))
+        if not code: continue
+        
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T/bbs"
+        try:
+            # セッション経由でリクエスト
+            res = session.get(url, timeout=7)
+            res.raise_for_status()
+            
+            # --- サイレントブロック検知 ---
+            # 200 OKでも中身が「掲示板」でない（認証ページ等）場合は即座に中止
+            if "掲示板" not in res.text:
+                print(f"  [!] Yahoo掲示板からブロックされた可能性があります。処理を中断します。")
+                break
+
+            # キーワード判定
+            found = [kw for kw in keywords if kw in res.text]
+            if found:
+                results_rows.append({
+                    "ticker": code,
+                    "name": r.get("name", ""),
+                    "count": "検知", 
+                    "comments": [{"text": f"掲示板にてキーワード検知: {', '.join(found)}", "link": url, "sentiment": "neutral", "published": "最新"}]
+                })
+                print(f"  [Board-Check] Detected: {code} ({', '.join(found)})")
+            
+            # --- 修正案Bの核心: 間隔のランダム化 ---
+            # 2.0秒〜5.0秒の間でランダムに待機し、Bot判定を回避
+            wait_time = random.uniform(2.0, 5.0)
+            time.sleep(wait_time)
+            
+        except Exception as e:
+            print(f"  [Error] {code}: {str(e)[:50]}")
+            # エラーが連続する場合はIP制限の可能性があるため、少し長めに休む
+            time.sleep(10)
+            continue
+            
+    return {
+        "rows": results_rows, 
+        "total_tickers": len(results_rows), 
+        "generated_at": datetime.now().isoformat()
+    }
 # ------------------ TDnet: 取得 ------------------
 TDNET_LIST_JSON = "https://webapi.yanoshin.jp/webapi/tdnet/list/{date_from}-{date_to}.json"
 
@@ -748,8 +825,6 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
 <h1>注目度ダッシュボード</h1>
 <div class="toolbar">
   <div class="tabs">
-    <button class="tab active" data-mode="total">総合</button>
-    <button class="tab" data-mode="bbs">掲示板</button>
     <button class="tab" data-mode="earnings">決算</button>
     <button class="tab" data-mode="earnings_day">決算（日別）</button>
     <button class="tab" data-mode="leak">漏れ？</button>
@@ -770,7 +845,7 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
 <script>
   window.__DATA__ = __DATA_JSON__;
   const API_BASE = "";
-  let MODE = "total";
+  let MODE = "earnings";
 
   function esc(s){return (s??"").toString().replace(/[&<>\"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
   function fmt(v){const n=Number(v||0);return isFinite(n)?n.toFixed(3):"0.000";}
@@ -1179,9 +1254,13 @@ def _extract_text_pypdf2(pdf_bytes: bytes) -> str:
 def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
     if not pdf_bytes:
         return ""
+    # 先に pdfminer を試す（比較的静かで高精度）
     text = _extract_text_pdfminer(pdf_bytes)
     if text and len(text) > 30:
         return text
+    
+    # ここで PyPDF2 が呼ばれる際にログが出る。
+    # 前述の logging.getLogger("PyPDF2").setLevel(logging.ERROR) が効いていれば静かになります。
     text = _extract_text_pypdf2(pdf_bytes)
     return text
     
@@ -1975,48 +2054,6 @@ def main():
 
     # ---- 総合/掲示板タブ ----
     rows = []
-    for sym in symbols:
-        ticker = sym.get("ticker")
-        aliases = sym.get("aliases", [])
-        yf_code = sym.get("bbs", {}).get("yahoo_finance_code", ticker)
-
-        try:
-            trends = fetch_trends(aliases, timeframe="now 7-d", geo="JP")
-        except Exception as e:
-            print("[trends][WARN] skip due to error:", e)
-            trends = {"latest": 0.0, "series": []}
-        news = fetch_news(
-            sym.get("news_query"),
-            max_items=cfg.get("news", {}).get("max_items_per_symbol", 30),
-            include_debug=include_dbg,
-        )
-        bbs = fetch_bbs_stats(
-            yf_code,
-            look_threads=cfg.get("bbs", {}).get("look_threads", 50),
-            include_samples=include_bbs_samples,
-            max_samples=bbs_max_samples,
-        )
-
-        if include_dbg:
-            pos = sum(1 for it in news["items"] if it.get("sentiment") == "positive")
-            neg = sum(1 for it in news["items"] if it.get("sentiment") == "negative")
-            neu = sum(1 for it in news["items"] if it.get("sentiment") == "neutral")
-            print(f"[{ticker}] news pos/neu/neg = {pos}/{neu}/{neg} (24h={news['count_24h']})")
-
-        rows.append({
-            "ticker": ticker,
-            "name": sym.get("name"),
-            "trends": trends,
-            "news": news,
-            "bbs": bbs,
-        })
-
-    scores = build_scores(rows, cfg.get("weights", {"trends": 1.0, "bbs_growth": 1.0, "news": 1.0}))
-    for i, s in enumerate(scores):
-        rows[i]["score"] = s
-    bbs_scores = build_bbs_scores(rows)
-    for i, s in enumerate(bbs_scores):
-        rows[i]["score_bbs"] = s
 
     # ---- ★★★ 増分のチェックポイントを決定 ----
     conn = _get_db_conn()
@@ -2155,10 +2192,12 @@ def main():
     except Exception as e:
         print("[bbs_search][leak] error:", e)
         leak = {"rows": [], "total_comments": 0, "total_tickers": 0, "generated_at": now_iso()}
+    # --- 掲示板検索：軽量モード（全銘柄の最新だけサッと見る） ---
     try:
-        tob_bbs = fetch_tob_comments(DB_PATH, max_pages=60)
+        # 収集を止めた rows の代わりに、大元の symbols を渡す
+        tob_bbs = load_tob_from_bbs_lightweight(symbols)
     except Exception as e:
-        print("[bbs_search][tob] error:", e)
+        print("[bbs_search][tob-light] error:", e)
         tob_bbs = {"rows": [], "total_comments": 0, "total_tickers": 0, "generated_at": now_iso()}
 
     # ▼▼ 追加：TDNETで既にTOBが決まっている銘柄を掲示板TOBタブから除外 ▼▼
@@ -2186,7 +2225,7 @@ def main():
 
     output = {
         "generated_at": now_iso(),
-        "rows": rows,
+        "rows": [],
         "earnings": earnings_for_dash,
         "leak": leak,
         "tob": tob_bbs,         # 掲示板集計（TDNET決定済みを除外済み）
