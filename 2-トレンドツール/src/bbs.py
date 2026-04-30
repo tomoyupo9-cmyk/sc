@@ -369,6 +369,7 @@ def fetch_search_comments(
             SELECT ticker, name, COUNT(link)
               FROM {table}
              WHERE ticker IS NOT NULL AND LENGTH(ticker)=4 AND ticker GLOB '[0-9][0-9][0-9][0-9]'
+             AND date(published) >= date('now', '-14 day')
              GROUP BY ticker, name
              HAVING COUNT(link) > 0
              ORDER BY COUNT(link) DESC
@@ -388,6 +389,7 @@ def fetch_search_comments(
             SELECT {cols_sel}
               FROM {table}
              WHERE ticker IS NOT NULL AND LENGTH(ticker)=4 AND ticker GLOB '[0-9][0-9][0-9][0-9]'
+             AND date(published) >= date('now', '-14 day')
              ORDER BY published DESC
             """
         )
