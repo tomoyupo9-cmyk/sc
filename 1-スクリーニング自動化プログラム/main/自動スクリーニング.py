@@ -2257,7 +2257,8 @@ USE_CSV = True
 # 最大件数/上限
 TEST_LIMIT = 50
 # 機能フラグ（ON/OFF）
-TEST_MODE = False
+#TEST_MODE = False
+TEST_MODE = True
 
 # --- YQ settings ---
 # EOD処理のバッチサイズ
@@ -8717,16 +8718,41 @@ def batch_update_all_financials(conn,
                     div_1y = _sum_dividends_1y(divobj, one_year_ago)
 
                     # --- ★追加: 大株主 ---
+                    # --- ★追加: 大株主 (修正版) ---
                     mhobj = sym_raw.get("major_holders")
                     if mhobj is not None:
                         try:
-                            # DataFrameの場合 "Holder"列の上位3つを取得
-                            if hasattr(mhobj, "to_string") and "Holder" in mhobj.columns:
-                                top = mhobj["Holder"].head(3).tolist()
-                                holders_str = ", ".join([str(h) for h in top])
+                            if hasattr(mhobj, "to_string") and "Holder" in getattr(mhobj, "columns", []):
+                                # 米国株などで DataFrame (Holder列) が取れた場合
+                                top = mhobj["Holder"].head(3).astype(str).tolist()
+                                holders_str = ", ".join(top)
                             elif isinstance(mhobj, dict):
-                                holders_str = str(mhobj)
-                        except: pass
+                                # dict化されたDataFrameの場合（Holderキーが存在）
+                                if "Holder" in mhobj and isinstance(mhobj["Holder"], dict):
+                                    h_dict = mhobj["Holder"]
+                                    s_keys = sorted(h_dict.keys(), key=lambda x: int(x) if str(x).isdigit() else 999)
+                                    holders_str = ", ".join([str(h_dict[k]) for k in s_keys if h_dict[k]][:3])
+                                else:
+                                    # 日本株特有の統計データ(insidersPercentHeld等)の場合
+                                    insiders = mhobj.get("insidersPercentHeld")
+                                    institutions = mhobj.get("institutionsPercentHeld")
+                                    count = mhobj.get("institutionsCount")
+                                    
+                                    parts = []
+                                    if insiders is not None:
+                                        parts.append(f"内部者:{insiders*100:.1f}%")
+                                    if institutions is not None:
+                                        parts.append(f"機関:{institutions*100:.1f}%")
+                                    if count is not None:
+                                        parts.append(f"({int(count)}社)")
+                                        
+                                    if parts:
+                                        holders_str = " ".join(parts)
+                                    else:
+                                        # 完全に未知の構造の場合は短くカット
+                                        holders_str = str(mhobj)[:50]
+                        except Exception: 
+                            pass
 
             except Exception as e:
                 log.debug(f"[parse.warn] {c} parse error: {e}")
