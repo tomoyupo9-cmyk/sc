@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time, random
-        
+
+
 # ==== 共通ユーティリティ/DB ====
 try:
     # パッケージ形式でも相対/絶対の両対応
@@ -34,8 +35,8 @@ from dateutil import parser, tz
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
     "Referer": "https://finance.yahoo.co.jp/",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1"
@@ -316,22 +317,33 @@ def fetch_search_comments(
                 break
     else:
         # 並列取得
+        
         def _fetch_one(p: int, url: str):
-            time.sleep(random.uniform(1.0, 3.0)) # ★WAF回避のためのランダム待機（ジッター）
+            # 隠密の極意：リクエスト前に1.5秒〜3.5秒のランダムな「人間のためらい」を挿入
+            time.sleep(random.uniform(1.5, 3.5))
             try:
                 html = _http_get(url)
-                if not html:
+                if not html: return (p, [])
+                
+                # サイレントブロック（200 OKを返しつつ中身が警告画面のケース）を検知
+                if "アクセス集中" in html.text or "お手数ですが" in html.text:
+                    print(f"  [bbs][WARN] Yahoo WAF restriction detected on page {p}.")
                     return (p, [])
+                    
                 items, _ = _parse_search_page(html.text)
                 return (p, items)
             except Exception:
                 return (p, [])
 
-        # ★ 攻撃的すぎる max_workers=6 を 2 に減らす
-        with ThreadPoolExecutor(max_workers=2) as ex: 
+        # WAFのシグネチャに引っかからないよう、最大スレッド数を強制的に「2」以下にキャップする
+        safe_workers = min(2, max_workers)
+        
+        with ThreadPoolExecutor(max_workers=safe_workers) as ex:
             futs = [ex.submit(_fetch_one, i + 1, u) for i, u in enumerate(page_urls)]
             for fut in as_completed(futs):
-                page_results.append(fut.result())
+                p, items = fut.result()
+                if items:
+                    raw_all.extend(items)
 
     # 古い→新しい順
     page_results.sort(key=lambda t: t[0])
