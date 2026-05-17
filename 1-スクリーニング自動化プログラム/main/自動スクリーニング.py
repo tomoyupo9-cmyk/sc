@@ -1,6 +1,4 @@
 
-SINGLE_FILE_MODE = True
-
 def __inject_inline_data_json(html: str, data_obj) -> str:
     """<body>直後に JSON タグ(__DATA__) と window.__DATA__ を挿入。fallback: 文末追加。"""
     try:
@@ -97,134 +95,16 @@ import sqlite3
 import threading
 import sys as _sys
 import html
+import pandas as pd
+import numpy as np
+import shutil
+import subprocess
+from pathlib import Path
+import datetime as dtm
 
 
 # === JSON sanitize helpers (NaN/Infinity -> None) ===
 import math as _math, json as _json
-
-# ==== [INJECTED] Lightweight Profiling & data.js normalizer ====
-import time as _prof_time
-
-# === [INJECTED: Heartbeat logger] ===
-# 定期的に「生存」ログを出す。_HB_PHASE は現在のフェーズ名。
-_HB_PHASE = "boot"
-def start_heartbeat(phase_name: str = "startup", interval: int = 30):
-    global _HB_PHASE
-    _HB_PHASE = phase_name
-    def _hb():
-        while True:
-            try:
-                print(f"[HB] alive phase={_HB_PHASE}", flush=True) if VERBOSE else None
-            except Exception:
-                pass
-            try:
-                _prof_time.sleep(interval)
-            except Exception:
-                # 万一 _prof_time が無ければ time を探す
-                import time as __t
-                __t.sleep(interval)
-    import threading as __th
-    __th.Thread(target=_hb, daemon=True).start()
-
-def set_heartbeat_phase(phase_name: str):
-    global _HB_PHASE
-    _HB_PHASE = phase_name
-# === [/INJECTED: Heartbeat logger] ===
-
-# ==== [INJECTED: Export Phase Watchdog] ====
-_EXPORT_STEP = "start"
-
-class _ExportWatchdog:
-    def __init__(self, phase="phase_export_html_dashboard_offline", interval=10):
-        self.phase = phase
-        self.interval = interval
-        self._stop = False
-    def start(self):
-        import threading, time as _t
-        def _loop():
-            t = 0
-            while not self._stop:
-                try:
-                    step = globals().get('_EXPORT_STEP', '?')
-                    if VERBOSE:
-                        print(f"[export][HB] step={step} t={t}s", flush=True)
-                    # Heartbeat phase 更新（あってもなくてもよい）
-                    try:
-                        globals()['_HB_PHASE'] = f"{self.phase}:{step}"
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-                _t.sleep(self.interval)
-                t += self.interval
-
-        self._thr = threading.Thread(target=_loop, daemon=True)
-        self._thr.start()
-        return self
-    def stop(self):
-        self._stop = True
-
-# ==== [/INJECTED: Export Phase Watchdog] ====
-
-# ==== [INJECTED: Per-line tracer for export phase] ====
-if VERBOSE:
-    def _make_line_traced(func, phase_name="phase_export_html_dashboard_offline"):
-        import sys, inspect, linecache, threading
-        _func_code = func.__code__
-        _main_thread = threading.current_thread()
-
-        def _trace(frame, event, arg):
-            if event == "line" and frame.f_code is _func_code and threading.current_thread() is _main_thread:
-                lineno = frame.f_lineno
-                try:
-                    filename = frame.f_code.co_filename
-                    src_line = (linecache.getline(filename, lineno) or "").rstrip("\n")
-                    if len(src_line) > 140:
-                        src_line = src_line[:100] + " ... " + src_line[-30:]
-                    print(f"[export][LINE] {lineno}: {src_line}", flush=True)
-                    try:
-                        globals()['_HB_PHASE'] = f"{phase_name}:L{lineno}"
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-            return _trace
-
-        def _wrapped(*a, **kw):
-            try:
-                print(f"[export][TRACE] enabled for {phase_name}", flush=True) if VERBOSE else None
-            except Exception:
-                pass
-            old = sys.gettrace()
-            sys.settrace(_trace)
-            try:
-                return func(*a, **kw)
-            finally:
-                sys.settrace(old)
-                try:
-                    print(f"[export][TRACE] disabled for {phase_name}", flush=True) if VERBOSE else None
-                except Exception:
-                    pass
-        return _wrapped
-
-    # 有効化（存在すれば差し替え）
-    try:
-        phase_export_html_dashboard_offline = _make_line_traced(phase_export_html_dashboard_offline, "phase_export_html_dashboard_offline")
-    except Exception:
-        pass
-    # 代替名でも試す
-    try:
-        phase_export_html = _make_line_traced(phase_export_html, "phase_export_html")
-    except Exception:
-        pass
-else:
-    # tracer disabled in QUIET mode
-    pass
-# ==== [/INJECTED: Per-line tracer] ====
-# ==== [/INJECTED: Per-line tracer] ====
-
-if VERBOSE:
-    start_heartbeat("startup")
 # === _str_series: 安全な文字列Series化（未定義なら必ず定義） ===
 # === injected helpers: _str_series / _norm_code_str / _norm_code_series ===
 # どこかで未定義でも必ずここで供給されるようにする
@@ -235,7 +115,6 @@ try:
 except NameError:
     def _str_series(x):
         try:
-            import pandas as pd
             if isinstance(x, pd.Series):
                 try:
                     s = x.astype("string")
@@ -254,7 +133,7 @@ except NameError:
                 return ["" if v is None else str(v) for v in x]
             except Exception:
                 return x
-    print("[preearn] _str_series injected")
+
 
 # _norm_code_str: 銘柄コードの文字列正規化（末尾の .T/-T 等除去、数字抽出、4桁ゼロ埋め）
 try:
@@ -278,7 +157,7 @@ except NameError:
             return s
         except Exception:
             return "" if code is None else str(code)
-    print("[preearn] _norm_code_str injected")
+
 
 # _norm_code_series: Series/iterable に対しベクトル適用
 try:
@@ -286,28 +165,18 @@ try:
 except NameError:
     def _norm_code_series(arr):
         try:
-            import pandas as pd
             return pd.Series(arr, copy=False).map(_norm_code_str)
         except Exception:
             return [_norm_code_str(x) for x in arr]
 
 
 # ---- DB global guards (fallback) ----
-try:
-    _DB_LOCK
-except NameError:
-    import threading as _threading
-    _DB_LOCK = _threading.RLock()
-
-try:
-    _DB_SINGLETON
-except NameError:
-    _DB_SINGLETON = None
+import threading as _threading
+_DB_LOCK = _threading.RLock()
+_DB_SINGLETON = None
 # -------------------------------------
 
 # ==== safe compare helpers (pandas object列対策) ====
-import pandas as pd
-import numpy as np
 from typing import Any, Iterable
 
 def _coerce_na_ok(s: pd.Series) -> pd.Series:
@@ -341,36 +210,7 @@ def s_notin(s: pd.Series, candidates: Iterable[Any]) -> pd.Series:
     return ~s_in(s, candidates)
 
 
-def _profiled(_name, _fn):
-    def _w(*a, **kw):
-        # Update heartbeat phase to current function
-        try:
-            globals()['_HB_PHASE'] = _name
-        except Exception:
-            pass
-        t0 = _prof_time.perf_counter()
-        try:
-            print(f"[PROFILE] {_name} start", flush=True) if VERBOSE else None
-        except Exception:
-            pass
-        try:
-            return _fn(*a, **kw)
-        finally:
-            try:
-                dt = _prof_time.perf_counter() - t0
-                print(f"[PROFILE] {_name} done: {dt:.1f}s", flush=True) if VERBOSE else None
-            except Exception:
-                pass
-    return _w
 
-def _try_profile_wrap(name):
-    g = globals()
-    if name in g and callable(g[name]):
-        g[name] = _profiled(name, g[name])
-        try:
-            print(f"[PROFILE] wrap -> {name}", flush=True) if VERBOSE else None
-        except Exception:
-            pass
 
 
 def _sanitize_numbers(x):
@@ -383,7 +223,6 @@ def _sanitize_numbers(x):
     return x
 
 # ---- robust JSON dumper: accepts json.dumps kwargs and sanitizes NaN/Inf ----
-import math
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -530,141 +369,8 @@ def _ensure_links(d: dict) -> dict:
 # === end injected ===
 
 
-def _json_sanitize(obj):
-    """Recursively sanitize data for JSON: NaN/Inf -> None, Decimals -> float/str, datetimes -> isoformat."""
-    if obj is None:
-        return None
-    # primitives
-    if isinstance(obj, (str, bool, int)):
-        return obj
-    if isinstance(obj, float):
-        # convert NaN/Inf to None to keep JSON valid
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-        return obj
-    if isinstance(obj, Decimal):
-        try:
-            f = float(obj)
-            if math.isnan(f) or math.isinf(f):
-                return None
-            return f
-        except Exception:
-            return str(obj)
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-
-    # mappings
-    if isinstance(obj, dict):
-        return {str(k): _json_sanitize(v) for k, v in obj.items()}
-
-    # iterables
-    if isinstance(obj, (list, tuple, set)):
-        return [_json_sanitize(x) for x in obj]
-
-    # last resort
-    try:
-        return str(obj)
-    except Exception:
-        return None
-
-# 依存: import json, math, datetime, decimal はファイルの先頭などで済ませておく
-# from datetime import date, datetime, time
-# from decimal import Decimal
-
-def dumps_json_clean(obj,
-                     ensure_ascii=False,
-                     separators=(",", ":"),
-                     sort_keys=False,
-                     indent=None,
-                     default=None,
-                     allow_nan=False,
-                     **kwargs):
-    """
-    json.dumps 互換の引数を受け取りつつ、事前に
-      - datetime/date/time -> isoformat
-      - Decimal -> float（変換できなければ str）
-      - set/tuple -> list
-      - NaN/Inf/-Inf -> None（allow_nan=False のとき）
-      - bytes -> utf-8 decode（失敗時 ignore）
-    などをクレンジングして安全に JSON 化する。
-    """
-
-    import json, math
-    from datetime import date, datetime, time
-    from decimal import Decimal
-
-    def _is_nan_inf(x: float) -> bool:
-        return (x != x) or (x == float("inf")) or (x == float("-inf"))
-
-    def _convert_scalar(x):
-        # datetime 系
-        if isinstance(x, (datetime, date, time)):
-            try:
-                return x.isoformat()
-            except Exception:
-                return str(x)
-
-        # Decimal
-        if isinstance(x, Decimal):
-            try:
-                # 小数が大きすぎる場合の例外も拾う
-                return float(x)
-            except Exception:
-                return str(x)
-
-        # bytes
-        if isinstance(x, (bytes, bytearray, memoryview)):
-            try:
-                return bytes(x).decode("utf-8", "ignore")
-            except Exception:
-                return str(x)
-
-        # float の NaN/Inf を None に
-        if isinstance(x, float) and not allow_nan and _is_nan_inf(x):
-            return None
-
-        return x
-
-    def _clean(o):
-        # dict
-        if isinstance(o, dict):
-            return {str(_convert_scalar(k)): _clean(_convert_scalar(v)) for k, v in o.items()}
-        # list/tuple/set
-        if isinstance(o, (list, tuple, set)):
-            return [_clean(_convert_scalar(i)) for i in o]
-        # それ以外スカラ
-        return _convert_scalar(o)
-
-    cleaned = _clean(obj)
-
-    # default を渡す/渡さないの両対応
-    if default is None:
-        return json.dumps(
-            cleaned,
-            ensure_ascii=ensure_ascii,
-            separators=separators,
-            sort_keys=sort_keys,
-            indent=indent,
-            allow_nan=allow_nan,
-            **kwargs
-        )
-    else:
-        return json.dumps(
-            cleaned,
-            ensure_ascii=ensure_ascii,
-            separators=separators,
-            sort_keys=sort_keys,
-            indent=indent,
-            allow_nan=allow_nan,
-            default=default,
-            **kwargs
-        )
-
-
 # --- Third-party
 import jpholiday
-import numpy as np
-import pandas as pd
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup, escape
 
@@ -678,7 +384,6 @@ except Exception:
     import json as _json_std
     _HAS_ORJSON = False
 
-import math
 from pathlib import Path as _Path  # ensure Path available locally
 
 def _json_sanitize(obj):
@@ -1015,10 +720,8 @@ def _ensure_latest_prices_index_rows(conn):
 
 
 
-import re
 import requests
 import smtplib
-import sqlite3
 import ssl
 import subprocess
 import sys
@@ -1665,7 +1368,6 @@ def _get_last_two_closes(conn, code: str):
         print(f"[price-guard][ERROR] _get_last_two_closes failed for {code}: {_e}")
         return None, None, None, None
 
-import sqlite3
 def _yahoo_quote_url(code: str, market: str | None = None, conn: sqlite3.Connection | None = None) -> str:
     """
     Yahoo!ファイナンス（日本）の銘柄ページURLを安全に生成する（クリーン実装）
@@ -2339,9 +2041,6 @@ PRICE_GUARD_ENABLED = False  # ← しばらく挙動を見るために OFF
 # ★追加パーツ: AI予測ロジック
 # ==========================================
 import joblib
-import pandas as pd
-import numpy as np
-import os
 
 # モデルのパス（環境に合わせて書き換えてください）
 MODEL_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
@@ -2352,8 +2051,6 @@ def add_ai_analysis(conn, rows):
     【超高速化版】Pandasのベクトル化・groupby演算を使用し、計算結果は元コードと完全一致。
     """
     import joblib
-    import pandas as pd
-    import numpy as np
     import os
 
     if not os.path.exists(MODEL_PATH):
@@ -2663,7 +2360,6 @@ def _calculate_atr_ewm(df: pd.DataFrame, period: int = 14) -> pd.Series:
         return pd.Series(index=df.index, dtype=float)
 
 def _apply_shortterm_metrics(conn: sqlite3.Connection):
-    import pandas as pd
     import numpy as _np
 
     cur = conn.cursor()
@@ -3000,7 +2696,6 @@ def _ensure_resistance_columns(conn):
         cur.close()
 
 def phase_resistance_update(conn):
-    import pandas as pd
     # サポレジ用のカラムを整備
     _ensure_resistance_columns(conn)
     _ensure_latest_prices_code_col(conn)
@@ -3146,8 +2841,6 @@ def _pick_bbands(row):
     return chosen
 
 # 先頭付近
-from pathlib import Path
-import os
 from markupsafe import Markup
 
 def enhance_with_chart_flags(
@@ -3433,10 +3126,6 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, decl: 
     """Schema fixed: no-op."""
     return
 
-import re
-import pandas as pd
-import os
-import sqlite3
 
 # 4桁純数字 or 3桁数字+英字 or 4桁英数字 を受け入れ、
 # それ以外（指数 ^N225 / 998405.T 等）はそのまま大文字化だけして返す
@@ -4611,8 +4300,6 @@ def _best_signal_today(g: pd.DataFrame):
 
 # ---- メイン：早期トリガー計算・DB更新・ログ記録（日時で記録）----
 def compute_right_up_early_triggers(conn, as_of=None, log_datetime=None):
-    import pandas as pd
-    import numpy as np
 
     dmax = pd.read_sql_query("SELECT MAX(日付) d FROM price_history", conn, parse_dates=["d"])
     if dmax.empty or pd.isna(dmax.loc[0,"d"]):
@@ -4760,8 +4447,6 @@ def compute_right_up_early_triggers(conn, as_of=None, log_datetime=None):
 
 # ===== シグナル判定（初動/底打ち/上昇余地） =====
 def phase_signal_detection(conn: sqlite3.Connection):
-    import pandas as pd
-    import numpy as np
     
     cur = conn.cursor()
     cur.execute("SELECT DISTINCT コード FROM price_history")
@@ -6450,7 +6135,6 @@ def _attach_related_themes(df, kabutan_map, theme_names):
 ###############################################
 # === 相対強度RS計算ユーティリティ ====================
 ###############################################
-import pandas as pd
 
 def compute_relative_strength(df_all, index_df_map):
     """
@@ -6614,8 +6298,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     """HTMLダッシュボード出力（1ファイル完結版：__DATA__ を <script type=application/json> と window.__DATA__ で埋め込む）"""
     import os, time as _t
     import json as _json
-    import pandas as pd
-    import numpy as np
     import datetime as dtm
     from jinja2 import Environment, FileSystemLoader, select_autoescape
     try:
@@ -6798,8 +6480,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     t_rs = _t.perf_counter()
     _p("RS/GrowthBias: start")
 
-    import pandas as pd
-    import numpy as np
 
     # ------------------------------------------------------------
     # 1) 指数の終値を price_history から取得するヘルパ
@@ -7021,7 +6701,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 if col_name in df_cand.columns:
                     return df_cand[col_name].astype(str).fillna('').str.contains(keyword)
                 else:
-                    import pandas as pd
                     return pd.Series([False] * len(df_cand), index=df_cand.index)
 
             # 1. 存在するシグナル列だけを使って注目銘柄を絞り込む
@@ -7323,6 +7002,11 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _p(f"write+planA: dt={( _t.perf_counter() - t_write ): .2f}s")
     
     
+    # --- ここからGit同期を追加 ---
+    REPO_ROOT = r"C:\Users\sasit\Documents\GitHub\sc"
+    sync_to_github_pages(REPO_ROOT, html_path)
+    # --- ここまで ---
+    
     # （例）この行を追記する
     # 完成した「最終リスト」を渡すように変更！
     send_to_line_rich(data_obj["cand"]) 
@@ -7399,7 +7083,6 @@ def update_operating_income_and_ratio(conn, batch_size=300, max_workers=12, use_
       「直近4Qの営業利益合計」を使って計算する。
       営業利益の単位は「百万円」を想定し、億円に変換して格納。
     """
-    import pandas as pd
 
     try:
         # 1) pl_quarter から必要なカラムだけ取得
@@ -7927,55 +7610,52 @@ def apply_atr14_pct(conn: sqlite3.Connection) -> int:
         # 3) フォールバック（pandasで計算）
         cur.close()
         try:
-            import pandas as pd
-            import numpy as np
+            ph = pd.read_sql_query(
+                "SELECT コード, 日付, 高値, 安値, 終値 "
+                "FROM price_history ORDER BY コード, 日付",
+                conn
+            )
+            if ph.empty:
+                return 0
+
+            ph["prevC"] = ph.groupby("コード")["終値"].shift(1)
+
+            tr = np.maximum.reduce([
+                (ph["高値"] - ph["安値"]).abs().values,
+                (ph["高値"] - ph["prevC"]).abs().values,
+                (ph["安値"] - ph["prevC"]).abs().values
+            ])
+            ph["TR"] = tr
+
+            atr14 = (
+                ph.groupby("コード")["TR"]
+                  .rolling(14, min_periods=14)
+                  .mean()
+                  .reset_index(level=0, drop=True)
+            )
+            ph["ATR14"] = atr14
+
+            last = (
+                ph.groupby("コード")
+                  .tail(1)[["コード", "ATR14", "終値"]]
+                  .dropna(subset=["ATR14", "終値"])
+                  .copy()
+            )
+            last["ATR14_PCT"] = (last["ATR14"] / last["終値"] * 100.0).round(2)
+
+            cur = conn.cursor()
+            cur.executemany(
+                "UPDATE screener SET ATR14_PCT=? WHERE コード=?",
+                list(zip(last["ATR14_PCT"].tolist(),
+                         last["コード"].astype(str).tolist()))
+            )
+            conn.commit()
+            n = len(last)
+            cur.close()
+            return n
         except Exception as e:
             # pandasが無ければ何もせず終了
             return 0
-
-        ph = pd.read_sql_query(
-            "SELECT コード, 日付, 高値, 安値, 終値 "
-            "FROM price_history ORDER BY コード, 日付",
-            conn
-        )
-        if ph.empty:
-            return 0
-
-        ph["prevC"] = ph.groupby("コード")["終値"].shift(1)
-
-        tr = np.maximum.reduce([
-            (ph["高値"] - ph["安値"]).abs().values,
-            (ph["高値"] - ph["prevC"]).abs().values,
-            (ph["安値"] - ph["prevC"]).abs().values
-        ])
-        ph["TR"] = tr
-
-        atr14 = (
-            ph.groupby("コード")["TR"]
-              .rolling(14, min_periods=14)
-              .mean()
-              .reset_index(level=0, drop=True)
-        )
-        ph["ATR14"] = atr14
-
-        last = (
-            ph.groupby("コード")
-              .tail(1)[["コード", "ATR14", "終値"]]
-              .dropna(subset=["ATR14", "終値"])
-              .copy()
-        )
-        last["ATR14_PCT"] = (last["ATR14"] / last["終値"] * 100.0).round(2)
-
-        cur = conn.cursor()
-        cur.executemany(
-            "UPDATE screener SET ATR14_PCT=? WHERE コード=?",
-            list(zip(last["ATR14_PCT"].tolist(),
-                     last["コード"].astype(str).tolist()))
-        )
-        conn.commit()
-        n = len(last)
-        cur.close()
-        return n
 
 def ensure_since_schema(conn):
     """Schema fixed: no-op."""
@@ -8368,7 +8048,13 @@ def batch_update_all_financials(conn,
     # ロガー
     # --------------------------
     log = setup_fin_logger(verbose)
-
+    # ▼▼▼ 追加: 過去のゴミデータ（辞書文字列）をDBから一掃 ▼▼▼
+    try:
+        conn.execute("UPDATE screener SET 大株主 = NULL WHERE 大株主 LIKE '{%';")
+        conn.commit()
+    except Exception:
+        pass
+    # ▲▲▲ 追加ここまで ▲▲▲
     # --------------------------
     # 依存のフォールバック
     # --------------------------
@@ -8399,7 +8085,6 @@ def batch_update_all_financials(conn,
 
     def _is_nonempty_df(x):
         try:
-            import pandas as pd
             return isinstance(x, pd.DataFrame) and (not x.empty)
         except Exception:
             return False
@@ -8750,7 +8435,7 @@ def batch_update_all_financials(conn,
                                         holders_str = " ".join(parts)
                                     else:
                                         # 完全に未知の構造の場合は短くカット
-                                        holders_str = str(mhobj)[:50]
+                                        holders_str = ""
                         except Exception: 
                             pass
 
@@ -9322,7 +9007,6 @@ def _normalize_sec_code(sec: str) -> str | None:
         return s.zfill(4)
     return None
 
-import sqlite3
 def _yahoo_quote_url(code: str, market: str | None = None, conn: sqlite3.Connection | None = None) -> str:
     """
     Yahoo!ファイナンス（日本）の銘柄ページURLを安全に生成する（クリーン実装）
@@ -9683,7 +9367,6 @@ def _compute_expected_price_and_revision(conn, pre_df):
         pl["決算期_ord"] = pd.to_datetime(pl["決算期"], errors="coerce")
         last = pl.dropna(subset=["決算期_ord"]).sort_values(["コード","決算期_ord"]).groupby("コード").tail(1)
         # 進捗の基準：Q1:25/Q2:50/Q3:75/Q4:100
-        import numpy as np
         q = last["四半期"].fillna(0)
         target = np.select([q==1,q==2,q==3,q>=4], [25.0,50.0,75.0,100.0], default=0.0)
         last = last.assign(_prog_gap=(last["通期進捗率"].fillna(0.0) - target))
@@ -10032,7 +9715,6 @@ def _fmt_hms(sec: float) -> str:
     return "".join(parts)
 
 
-import time
 
 def _timed(name, func, *args, **kwargs):
     """関数を実行し、正確な実行時間を計測してログに出力する"""
@@ -10173,6 +9855,129 @@ def send_to_line_rich(cand_list):
 
     if not any([group_go, group_yuryoku]):
         print("[LINE] 本日、通知対象となる銘柄はありませんでした（GO・有力のみ）。")
+
+import subprocess
+import shutil
+import os
+from pathlib import Path
+import datetime as dtm
+
+def sync_to_github_pages(repo_root: str, target_file: str):
+    """
+    Windowsのcmd.exe（shell=True）の介在を100%遮断し、
+    カレントディレクトリ誤認バグを構造上完全に根絶した決定版。
+    万が一.gitフォルダが消失・破損していた場合の自動修復機能付き。
+    """
+    try:
+        # Windowsのネイティブな絶対パス文字列に完全変換
+        repo_path = os.path.abspath(repo_root)
+        src = Path(target_file)
+        dest = Path(repo_path) / "index.html"
+
+        if not src.exists():
+            print(f"[git][ERROR] Source HTML file not found: {target_file}")
+            return
+
+        # リポジトリの親フォルダが存在しない場合は自動作成
+        os.makedirs(repo_path, exist_ok=True)
+
+        # --- 🔥【重要】万が一.gitフォルダが壊れて消失していた場合の自動初期化 ---
+        dot_git_path = os.path.join(repo_path, ".git")
+        if not os.path.exists(dot_git_path):
+            print(f"[git][WARN] .git directory not found in {repo_path}. Initializing repository...")
+            subprocess.run(
+                ["git", "init"], 
+                cwd=repo_path, 
+                shell=False, 
+                capture_output=True, 
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+        # --- ロックファイルの自動排除 ---
+        lock_file = Path(repo_path) / ".git" / "index.lock"
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                print("[git] Removed residual index.lock file.")
+            except Exception:
+                pass
+
+        # 成果物のコピー（D:作業場 → C:リポジトリ）
+        shutil.copy(src, dest)
+        print(f"[git] Copied target: {src.name} → {dest}")
+
+        # ステルスフラグ
+        CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW
+
+        # 確実なる処置：shell=False に固定し、コマンドをリスト形式で渡す。
+        # cwdに「Windows絶対パス文字列」を直接指定することで、Gitは100%迷子にならずにその場所で起動する。
+        
+        # --- 3. git add 実行 ---
+        res_add = subprocess.run(
+            ["git", "add", "index.html"], 
+            cwd=repo_path, 
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if res_add.returncode != 0:
+            print(f"[git][ERROR] 'git add' failed.\nReason: {res_add.stderr.strip()}")
+            return
+
+        # --- 4. 差分チェック ---
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path,
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if status.returncode != 0:
+            print(f"[git][ERROR] 'git status' failed.\nReason: {status.stderr.strip()}")
+            return
+
+        # 変更（index.html）に差分がなければ終了
+        if not status.stdout.strip():
+            print("[git] No changes detected. Skipping commit and push.")
+            return
+
+        # --- 5. git commit 実行 ---
+        msg = f"Update dashboard: {dtm.datetime.now():%Y-%m-%d %H:%M:%S}"
+        res_commit = subprocess.run(
+            ["git", "commit", "-m", msg], 
+            cwd=repo_path, 
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if res_commit.returncode != 0:
+            print(f"[git][ERROR] 'git commit' failed.\nReason: {res_commit.stderr.strip()}")
+            return
+        print(f"[git] Committed changes: {msg}")
+
+        # --- 6. git push 実行 ---
+        print("[git] Pushing to GitHub repository...")
+        res_push = subprocess.run(
+            ["git", "push", "origin", "main"], 
+            cwd=repo_path, 
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if res_push.returncode != 0:
+            print(f"[git][ERROR] 'git push' failed.\nReason: {res_push.stderr.strip()}")
+            return
+
+        print(f"[git] ✅ GitHub Pages successfully updated at {dtm.datetime.now():%H:%M:%S}")
+
+    except Exception as e:
+        print(f"[git][FATAL] Unexpected infrastructure error: {e}")
+
 # ===== メイン処理 =====
 def main():
 
@@ -10415,7 +10220,6 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
     - 対象コード: screener or price_history に存在するコード全体
     - 祝日考慮: jpholiday があれば使用
     """
-    import pandas as pd
     import datetime as dt
     import sqlite3
     import yfinance as yf
@@ -10486,7 +10290,6 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
 def fallback_fill_today_from_quotes(conn):
     """15:30以降に price_history の当日欠損を quotes で補完（存在すれば）。"""
     import datetime as dt
-    import pandas as pd
     # 15:30 以降のみ
     try:
         now = dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))  # JST
@@ -10584,7 +10387,6 @@ def fallback_fill_today_from_quotes(conn):
 
 def gap_patrol_recent_15(conn, batch_size: int = 60):
     """直近15営業日で price_history 欠損のみを補完（yfinance）。"""
-    import pandas as pd
     import datetime as dt
     import yfinance as yf
 
@@ -10807,49 +10609,12 @@ def wait_writes():
 
 
 
-# ==== [INJECTED:LATE_WRAP] Ensure profiling & heartbeat coverage after all definitions ====
-try:
-    __late_wrap_targets = (
-        # daily / scheduler
-        "run_fundamental_daily", "phase_csv_import", "phase_delist_cleanup",
-        "phase_mark_karauri_nashi", "yahoo_bulk_refresh",
-        "refresh_full_history_for_insufficient",
-        "compute_right_up_persistent", "compute_right_up_early_triggers",
-        "update_market_cap_all", "update_operating_income_and_ratio",
-        "validate_prev_business_day",
-        # core
-        "phase_sync_finance_comments", "phase_merge_latest_prices",
-        "phase_make_screener", "history_refresher",
-        "screener_from_history", "sync_latest_prices",
-        # resistance / chart60
-        "resistance_update", "update_resistance", "make_charts60_flags",
-        "phase_export_html_dashboard_offline", "export_html_dashboard",
-        # utilities possibly heavy
-        "derive_update", "signal_detection", "update_since_dates",
-        "relax_rejudge_signals",
-        # entrypoint
-        "main",
-    )
-    for __fname in __late_wrap_targets:
-        try:
-            _try_profile_wrap(__fname)
-        except Exception:
-            pass
-except Exception:
-    pass
-# ==== [/INJECTED:LATE_WRAP] ====
-
-# ==== [INJECTED:MAIN_PHASE] Set phase before entering main via __main__ ====
 try:
     __has_main_guard = True
 except Exception:
     __has_main_guard = False
 # ==== [/INJECTED:MAIN_PHASE] ====
 if __name__ == "__main__":
-    try:
-        set_heartbeat_phase("entrypoint:before_main")
-    except Exception:
-        pass
     try:
         main()
     finally:
@@ -11056,60 +10821,6 @@ def build_earnings_tables(conn):
 
 # ==== END FIX ====
 
-
-# ==== [INJECTED: Per-line tracer REAPPLY at tail] ====
-# export func range: 6622-6727
-def _install_tail_line_tracer(func_name="phase_export_html_dashboard_offline",
-                              start_line=6622,
-                              end_line=6727):
-    import sys, threading, linecache
-    this_file = __file__
-    def _trace(frame, event, arg):
-        if event == "line" and threading.current_thread() is threading.main_thread():
-            try:
-                if frame.f_code.co_filename == this_file:
-                    ln = frame.f_lineno
-                    if (start_line is None or ln >= start_line) and (end_line is None or ln <= end_line):
-                        src_line = (linecache.getline(this_file, ln) or "").rstrip("\n")
-                        if len(src_line) > 140:
-                            src_line = src_line[:100] + " ... " + src_line[-30:]
-                        print(f"[export][LINE] {ln}: {src_line}", flush=True)
-                        try:
-                            globals()['_HB_PHASE'] = f"{func_name}:L{ln}"
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-        return _trace
-    g = globals()
-    if func_name in g and callable(g[func_name]):
-        orig = g[func_name]
-        def _wrapped(*a, **kw):
-            old = sys.gettrace()
-            try:
-                print(f"[export][TRACE] enabled for {func_name} (tail) if VERBOSE else None", flush=True)
-            except Exception:
-                pass
-            sys.settrace(_trace)
-            try:
-                return orig(*a, **kw)
-            finally:
-                sys.settrace(old)
-                try:
-                    print(f"[export][TRACE] disabled for {func_name} (tail) if VERBOSE else None", flush=True)
-                except Exception:
-                    pass
-        g[func_name] = _wrapped
-
-try:
-    _install_tail_line_tracer("phase_export_html_dashboard_offline")
-except Exception:
-    pass
-try:
-    _install_tail_line_tracer("phase_export_html")
-except Exception:
-    pass
-# ==== [/INJECTED: Per-line tracer REAPPLY at tail] ====
 
 # ===== Single-File Plan A postprocess helpers (keep UI, inline DATA, kill only data.js) =====
 def _apply_planA_postprocess(html_path, data_obj):
