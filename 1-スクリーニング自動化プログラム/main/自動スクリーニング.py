@@ -37,6 +37,7 @@ try:
     import orjson
 except ImportError:
     import json as orjson  # orjsonがない場合は標準jsonをorjsonとして代用
+from collections import defaultdict
 
 # --- サードパーティライブラリ ---
 import bs4 # BeautifulSoup
@@ -711,7 +712,7 @@ except Exception:
     __JST = None
 
 def _today_jst():
-    now = datetime.datetime.now(__JST) if __JST else datetime.datetime.now()
+    now = datetime.now(__JST) if __JST else datetime.now()
     return now.strftime("%Y-%m-%d")
 
 def _should_skip_today(conn, phase, force=False):
@@ -743,7 +744,7 @@ def _timed_daily_once(name, func, *args, **kwargs):
     # 実行済みのマーカーファイル等のパス（既存のロジックに合わせてください）
     
     marker_path = os.path.join(OUTPUT_DIR, f"last_{name}.txt")
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    today_str = date.today().strftime("%Y-%m-%d")
     
     # 既に今日実行済みならスキップ
     if os.path.exists(marker_path):
@@ -1023,11 +1024,11 @@ def _read_yahoo_override(conn, code_str: str):
 
 def _is_trading_session_now(now=None):
 
-    now = now.astimezone(JST) if now else datetime.datetime.datetime.now(JST)
+    now = now.astimezone(JST) if now else datetime.now(JST)
     if not _is_jp_business_day(now.date()):
         return False
     t = now.time()
-    return (datetime.datetime.time(9,0) <= t <= datetime.datetime.time(11,30)) or (datetime.datetime.time(12,30) <= t <= datetime.datetime.time(15,30))
+    return (time(9,0) <= t <= time(11,30)) or (time(12,30) <= t <= time(15,30))
 
 def _ensure_override_table(conn):
     try:
@@ -1180,7 +1181,7 @@ def _get_last_two_closes(conn, code: str):
         if hasattr(df, "index"):
             try:
                 s = pd.Series(df.index)
-                s = pd.to_datetime(s, utc=True, errors="coerce").datetime.tz_convert("Asia/Tokyo").datetime.date
+                s = pd.to_datetime(s, utc=True, errors="coerce").datetime.tz_convert("Asia/Tokyo").dt.date
                 df = df.copy()
                 df["日付"] = s.values
             except Exception:
@@ -1605,7 +1606,7 @@ def _apply_live_overrides(conn,row: dict, q: dict, avg_turn_map: dict):
 
 def _ff__log_path_for(script_path: str) -> str:
     base = os.path.splitext(os.path.basename(script_path))[0]
-    ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
     return os.path.join(tempfile.gettempdir(), f"{base}_{ts}.log")
 
 def fire_and_forget_script(script_path: str, python_exe: str | None = None) -> "subprocess.Popen[bytes]":
@@ -2880,7 +2881,7 @@ def fint(x, default=None):
         return default
 
 def today_str():
-    return datetime.datetime.now().strftime("%Y-%m-%d")
+    return datetime.now().strftime("%Y-%m-%d")
     
 # ================== 表示整形ヘルパ ==================
 
@@ -2903,7 +2904,7 @@ def _trade_date_from_quote(q, extra_closed_path=EXTRA_CLOSED_PATH):
         pass
     # fallback
     extra = _load_extra_closed(extra_closed_path) if extra_closed_path else set()
-    today_jst = datetime.datetime.now(JST).date()
+    today_jst = datetime.now(JST).date()
     if is_jp_market_holiday(today_jst, extra):
         today_jst = prev_business_day_jp(today_jst, extra)
     return today_jst.strftime("%Y-%m-%d")
@@ -3289,7 +3290,7 @@ def _to_long_history(df_wide: pd.DataFrame, codes_map) -> pd.DataFrame:
     df = df[cols].dropna(subset=["日付","終値"])
 
     # 日付→date
-    df["日付"] = pd.to_datetime(df["日付"]).datetime.date
+    df["日付"] = pd.to_datetime(df["日付"]).dt.date
     # 重複除去（同一日・同一コード）
     df = df.drop_duplicates(subset=["コード","日付"], keep="last")
     return df.sort_values(["コード","日付"])
@@ -3342,7 +3343,7 @@ def _update_screener_from_history(conn, codes):
             _r2(yen),                            # 前日円差 → 2桁
             _r2(pct),                            # 前日終値比率(％) → 2桁
             int(vol_t) if pd.notna(vol_t) else None,  # 出来高
-            datetime.datetime.today().strftime("%Y-%m-%d"),
+            dt_class.today().strftime("%Y-%m-%d"),
             str(code),
         ))
 
@@ -3538,7 +3539,7 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
             #symbols = [_to_symbol(c) for c in chunk]
             symbols = [resolve_yahoo_symbol(c, conn, True) for c in chunk]
 
-            tq = YQ(symbols, asynchronous=True, max_workers=max_workers)
+            tq = Ticker(symbols, asynchronous=True, max_workers=max_workers)
             sd = _normalize_map(tq.summary_detail)
             pr = _normalize_map(tq.price)
 
@@ -3621,7 +3622,7 @@ LEFT JOIN latest_prices lp
     batch = YQ_BATCH_MID
     for i in range(0, len(symbols_all), batch):
         symbols = symbols_all[i:i+batch]
-        t = YQ(symbols, max_workers=YQ_MAX_WORKERS)
+        t = Ticker(symbols, max_workers=YQ_MAX_WORKERS)
         quotes = t.quotes if isinstance(t.quotes, dict) else {}
 
         for sym in symbols:
@@ -3809,7 +3810,7 @@ def phase_derive_update(conn: sqlite3.Connection):
     cur.execute("SELECT コード, 初動株価, 現在値, UP継続回数, DOWN継続回数, 登録日, UPDOWN, 出来高, 時価総額億円 FROM screener")
     rows = cur.fetchall()
     d_today = today_str()
-    cal_today = datetime.date.today()
+    cal_today = date.today()
     holidays = []
 
     for (code, initial_price, current_price, up_con, down_con, regist_date, db_updown, db_volume, zika_oku) in rows:
@@ -4305,7 +4306,7 @@ def phase_signal_detection(conn: sqlite3.Connection):
 
     today = today_str()
     upd_rows, log_rows = [], []
-    start_cut = (datetime.date.today() - datetime.timedelta(days=SIGNAL_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    start_cut = (date.today() - timedelta(days=SIGNAL_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     
     print("[シグナル] データを一括計算中...")
 
@@ -4459,7 +4460,7 @@ def phase_signal_detection(conn: sqlite3.Connection):
 # ===== 翌営業日検証 =====
 def phase_validate_prev_business_day(conn: sqlite3.Connection):
     extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
-    today = datetime.date.today()
+    today = date.today()
     d0 = prev_business_day_jp(today, extra_closed)
     d1 = next_business_day_jp(d0,    extra_closed)
     d0s, d1s = d0.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d")
@@ -4930,7 +4931,7 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
     rows: list[dict] = []
 
     # JST/休日判定はループ外で1回だけ
-    today_jst = datetime.datetime.datetime.now(JST).date()
+    today_jst = datetime.now(JST).date()
     is_holiday = not _is_jp_business_day(today_jst)
 
     # ここでは “最初から” 接続を取らない（必要になった瞬間にだけ遅延で取る）
@@ -5176,7 +5177,7 @@ def preload_price_summaries(conn, codes, window_days=120):
     if not codes:
         return {}
     codes = [str(c).zfill(4) for c in codes]
-    start_date = (datetime.datetime.date.today() - datetime.datetime.timedelta(days=window_days)).isoformat()
+    start_date = (date.today() - timedelta(days=window_days)).isoformat()
     out = {}
     CH = 700
     for i in range(0, len(codes), CH):
@@ -5771,7 +5772,7 @@ def _update_kabutan_theme_ranking(conn: sqlite3.Connection,
 
     html = r.text
     soup = BeautifulSoup(html, "lxml")
-    today = datetime.datetime.date.today().isoformat()
+    today = date.today().isoformat()
 
     try:
         cur = conn.cursor()
@@ -6899,9 +6900,9 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     try:
         _tz = ZoneInfo("Asia/Tokyo") if ZoneInfo else None
-        build_id = datetime.datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S") if _tz else datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        build_id = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S") if _tz else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
-        build_id = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        build_id = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     tpl = env.get_template("dashboard.html")
     html = tpl.render(
@@ -6996,7 +6997,7 @@ def export_monitor_list(df_cand, filename="rss_monitor_list.json"):
 
         # 3. JSON保存
         output_data = {
-            "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "target_codes": final_list
         }
         
@@ -7204,8 +7205,8 @@ def get_prev_close_db_first(conn: sqlite3.Connection, code: str, quotes_prev: fl
 def _jp_session_progress(dt: datetime | None = None) -> float:
     """場中の進捗率(0.0〜1.0)。東証 9:00–11:30 / 12:30–15:00 を300分=1.0で換算。"""
     if dt is None:
-        dt = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc) + datetime.timedelta(hours=9)  # JST
-    m = datetime.hour * 60 + datetime.minute
+        dt = dt_mod.datetime.now(dt_mod.timezone(dt_mod.timedelta(hours=9)))
+    m = dt.hour * 60 + dt.minute
     s1, e1, s2, e2 = 9*60, 11*60+30, 12*60+30, 15*60
     if m < s1: return 0.0
     if s1 <= m <= e1: return (m - s1) / 300.0
@@ -7502,7 +7503,7 @@ def _early_type_range_and_prev(conn, code: str, extra_closed):
     prev_tag = None
     for dt_s, detail in rows:
         tag = _parse_early_tag(detail)
-        d = datetime.datetime.strptime(dt_s[:10], "%Y-%m-%d").date()
+        d = datetime.strptime(dt_s[:10], "%Y-%m-%d").date()
         if cur_tag is None:
             cur_tag = tag
             cur_dates.append(d)
@@ -7657,7 +7658,7 @@ def setup_fin_logger(verbose: bool = False):
 
     log_dir = os.path.join(base_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"dilution_{datetime.datetime.now().strftime('%Y%m%d')}.log")
+    log_path = os.path.join(log_dir, f"dilution_{datetime.now().strftime('%Y%m%d')}.log")
 
     fmt = logging.Formatter("[%(asctime)s] %(levelname)s %(message)s")
 
@@ -7931,7 +7932,7 @@ def batch_update_all_financials(conn,
     # --------------------------
     # 前処理
     # --------------------------
-    one_year_ago = datetime.date.today() - datetime.timedelta(days=365)
+    one_year_ago = date.today() - datetime.timedelta(days=365)
     
     if set_wal:
         try: conn.execute("PRAGMA journal_mode=WAL;")
@@ -8017,7 +8018,7 @@ def batch_update_all_financials(conn,
                 to_fetch.append(s); continue
             try:
                 fd = datetime.datetime.strptime(fin_d, "%Y-%m-%d").date()
-                if (datetime.date.today() - fd).days >= 30:
+                if (date.today() - fd).days >= 30:
                     to_fetch.append(s)
             except:
                 to_fetch.append(s)
@@ -8030,7 +8031,7 @@ def batch_update_all_financials(conn,
         fetched_raw = {}
         if to_fetch:
             try:
-                tk = YQ(to_fetch, max_workers=8) # ワーカー8推奨
+                tk = Ticker(to_fetch, max_workers=8) # ワーカー8推奨
                 
                 # Modules取得
                 quotes = getattr(tk, "quotes", {}) or {}
@@ -8207,7 +8208,7 @@ def batch_update_all_financials(conn,
             ok_return = (div_1y > 0) or (buyback_4q < 0)
 
             # 行データ作成
-            today_iso = datetime.date.today().isoformat()
+            today_iso = date.today().isoformat()
             metrics_rows.append((
                 float(equity_ratio) if (equity_ratio is not None) else None,
                 float(ocf_recent_val) if (ocf_recent_val is not None) else None,
@@ -8350,7 +8351,7 @@ def _run_train_model():
 # ===== カブタン呼び出し
 
 def run_fundamental_daily(force: bool = False):
-    today = datetime.date.today()
+    today = date.today()
 
     # 1) mtimeで判定（中身は見ない）
     if not force and MARKER_FILE.exists():
@@ -8446,7 +8447,7 @@ def _yahoo_quote_url(code: str, market: str | None = None, conn: sqlite3.Connect
             cur.close()
 
         # 期間
-        now_jst = datetime.datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
+        now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
         since   = (now_jst - datetime.datetime.timedelta(days=int(days))).strftime("%Y-%m-%d 00:00:00")
 
         # 取得
@@ -8706,10 +8707,10 @@ def _auto_run_mode():
     if not AUTO_MODE:
         return RUN_SESSION.upper()
 
-    now = datetime.datetime.now(ZoneInfo("Asia/Tokyo")).time()
+    now = datetime.now(ZoneInfo("Asia/Tokyo")).time()
 
     # 場中（前場＋後場＋昼休みも含めて）を MIDDAY 扱いにする
-    if datetime.time(9, 0) <= now < datetime.time(15, 25):
+    if dt_mod.time(9, 0) <= now < dt_mod.time(15, 25):
         return "MIDDAY"
     else:
         return "EOD"
@@ -8722,7 +8723,7 @@ def send_to_line_rich(cand_list):
     LINE_ACCESS_TOKEN = '6T6NO+rKePlnC5OGVRQ+S/ezzk6XDIOZat5pT+4gNnJtN+bi9I6D14nSomUZz2BanNj9JrmFdQGvQ0mtyNdsgqAggeeEMvUejY0au1yfoFsHqOt9m3vlR3k+3sz9Xl3lHcZoVkt/WHoRGnKb/PdrDAdB04t89/1O/w1cDnyilFU='
     USER_ID = 'U0429f7522d8f5e59122beaa01c3ad6d6'
     
-    current_time = datetime.datetime.now().strftime('%Y/%m/%d %H:%M')
+    current_time = datetime.now().strftime('%Y/%m/%d %H:%M')
     
     def send_batch(title, header_color, stock_list):
         if not stock_list:
@@ -8895,7 +8896,7 @@ def sync_to_github_pages(repo_root: str, target_file: str):
             return
 
         # --- 5. git commit 実行 ---
-        msg = f"Update dashboard: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}"
+        msg = f"Update dashboard: {datetime.now():%Y-%m-%d %H:%M:%S}"
         res_commit = subprocess.run(
             ["git", "commit", "-m", msg], 
             cwd=repo_path, 
@@ -8923,7 +8924,7 @@ def sync_to_github_pages(repo_root: str, target_file: str):
             print(f"[git][ERROR] 'git push' failed.\nReason: {res_push.stderr.strip()}")
             return
 
-        print(f"[git] ✅ GitHub Pages successfully updated at {datetime.datetime.now():%H:%M:%S}")
+        print(f"[git] ✅ GitHub Pages successfully updated at {datetime.now():%H:%M:%S}")
 
     except Exception as e:
         print(f"[git][FATAL] Unexpected infrastructure error: {e}")
@@ -9059,8 +9060,8 @@ def main():
                 _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
                 _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
 
-                now = datetime.datetime.now().time()
-                if now < datetime.time(12,30):
+                now = datetime.now().time()
+                if now < dt_mod.time(12,30):
                     _timed_daily_once("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
                     try:
                         _timed_daily_once("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
@@ -9087,10 +9088,10 @@ def main():
             try:
                 try:
                     JST = ZoneInfo("Asia/Tokyo")
-                    _now = datetime.datetime.now(JST)
+                    _now = datetime.now(JST)
                 except Exception:
                     JST = None
-                    _now = datetime.datetime.now()  # フォールバック（ローカル時刻）
+                    _now = datetime.now()  # フォールバック（ローカル時刻）
 
                 if _now.hour == 19:  # and _now.minute == 0
                     print(f"[EOD@{_now}] run screener EOD batch")
@@ -9191,7 +9192,7 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
             except Exception:
                 return d.weekday() >= 5
         days = []
-        cur = datetime.date.today()
+        cur = date.today()
         # if today is holiday, walk back to nearest business day as d0
         while is_holiday(cur): 
             cur -= datetime.timedelta(days=1)
@@ -9239,9 +9240,9 @@ def fallback_fill_today_from_quotes(conn):
 
     # 15:30 以降のみ
     try:
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+        now = datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
     except Exception:
-        now = datetime.datetime.now()
+        now = datetime.now()
     t = now.time()
     if (t.hour, t.minute) < (15, 30):
         print("[LightEOD] fallback skipped (before 15:30)")
@@ -9343,7 +9344,7 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
         except Exception:
             return d.weekday() >= 5
     days = []
-    cur = datetime.date.today()
+    cur = date.today()
     if not is_holiday(cur):
         days.append(cur)
     while len(days) < 15:
@@ -9366,7 +9367,7 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
 
     # 欠損判定
     ph = pd.read_sql_query("SELECT 日付,コード FROM price_history WHERE 日付>=date('now','-40 day')", conn, parse_dates=["日付"])
-    ph["日付"] = ph["日付"].datetime.date
+    ph["日付"] = ph["日付"].dt.date
     have = set((str(c), d) for c,d in zip(ph["コード"], ph["日付"]))
     need_pairs = []
     for c in codes:
