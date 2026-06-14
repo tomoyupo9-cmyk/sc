@@ -419,7 +419,7 @@ def dumps_json_clean(obj,
             return list(x)
         if isinstance(x, (pathlib.Path, )):
             return str(x)
-        if isinstance(x, (datetime.datetime, datetime.date, datetime.time)):
+        if isinstance(x, (datetime, date, datetime.time)):
             try:
                 return x.isoformat()
             except Exception:
@@ -1922,7 +1922,7 @@ PRICE_GUARD_ENABLED = False  # ← しばらく挙動を見るために OFF
 
 # モデルのパス（環境に合わせて書き換えてください）
 MODEL_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
-TRAIN_SCRIPT_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\モデル学習.py"
+TRAIN_SCRIPT_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\モデル学習_catboost.py"
 def add_ai_analysis(conn, rows):
     """
     既存のスクリーニング結果(rows)を受け取り、AIスコア・判定・目標値を付与して返す関数
@@ -2378,181 +2378,183 @@ def phase_shortterm_enhancements(conn: sqlite3.Connection):
     - ATR(14) と since-signal を計算して latest_prices に反映（スキーマは既に整備済み前提）
     """
     _apply_shortterm_metrics(conn)
-
 # ==== Resistance lines (水平/斜め) : price_history → latest_prices ====
 
-
-# settings
 RES_LOOKBACK_DAYS = 90
-RES_TOUCH_BAND_PCT = 0.005
-RES_MIN_TOUCHES = 3
-RES_ZONE_MERGE_PCT = 0.003
-RES_ROUND_STEPS = (100, 1000, 5000, 10000)
-RES_ROUND_NEAR_PCT = 0.004
+RES_TOUCH_BAND_PCT = 0.015  # ±1.5%の幅でゾーンを形成
+RES_MIN_TOUCHES = 2         # 最低2回のタッチでゾーン候補
+RES_ZONE_MERGE_PCT = 0.02   # 2%以内のシードはマージ
 
-def _res__load_history(conn, code: str, lookback_days: int = RES_LOOKBACK_DAYS) -> pd.DataFrame:
-    q = """
-      SELECT 日付, 始値, 高値, 安値, 終値
-      FROM price_history
-      WHERE コード = ?
-        AND 日付 >= date((SELECT MAX(日付) FROM price_history WHERE コード = ?), '-' || ? || ' days')
-      ORDER BY 日付 ASC
-    """
-    df = pd.read_sql_query(q, conn, params=[code, code, int(lookback_days)], parse_dates=["日付"])
-    for c in ("始値","高値","安値","終値"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df.dropna(subset=["高値","安値","終値"])
-
-def _res__pivot_highs(df: pd.DataFrame, order: int = 3) -> pd.DataFrame:
+def _res__pivot_highs_lows(df: pd.DataFrame, is_support: bool = False, order: int = 3):
+    """谷（安値）または山（高値）のピボット点を抽出"""
     if df.empty: 
-        return df.iloc[0:0].copy()
-    hi = df["高値"].to_numpy()
+        return []
+    col = "安値" if is_support else "高値"
+    vals = df[col].to_numpy()
     n = len(df)
     mask = np.zeros(n, dtype=bool)
     for i in range(order, n - order):
-        left = hi[i - order:i]
-        right = hi[i + 1:i + 1 + order]
-        mask[i] = (hi[i] > left.max()) and (hi[i] > right.max())
-    out = df.loc[mask, ["日付","高値"]].copy()
-    return out
-
-def _res__merge_close_levels(levels, tol_pct: float):
-    if not levels:
-        return []
-    lv = sorted(levels)
-    merged = [[lv[0]]]
-    for x in lv[1:]:
-        anchor = float(np.mean(merged[-1]))
-        if abs(x - anchor) / (anchor if anchor else 1.0) <= tol_pct:
-            merged[-1].append(x)
+        left = vals[i - order:i]
+        right = vals[i + 1:i + 1 + order]
+        if is_support:
+            mask[i] = (vals[i] <= left.min()) and (vals[i] <= right.min())
         else:
-            merged.append([x])
-    return [float(np.mean(g)) for g in merged]
+            mask[i] = (vals[i] >= left.max()) and (vals[i] >= right.max())
+    return df.loc[mask, col].tolist()
 
-def _res__build_touch_zones(df: pd.DataFrame,
-                       band_pct: float = RES_TOUCH_BAND_PCT,
-                       min_touches: int = RES_MIN_TOUCHES,
-                       merge_pct: float = RES_ZONE_MERGE_PCT):
-    if df.empty:
-        return []
-    piv = _res__pivot_highs(df, order=3)["高値"].tolist()
-    heads = df["高値"].nlargest(10).tolist()
-    seeds = _res__merge_close_levels([*piv, *heads], merge_pct)
+def _res__build_touch_zones(df: pd.DataFrame, close_today: float, is_support: bool = False):
+    """過去の価格帯からタッチ数が多いゾーンを抽出（現在値距離ペナルティ考慮）"""
+    if df.empty: return []
+    
+    piv = _res__pivot_highs_lows(df, is_support, order=3)
+    heads = df["安値"].nsmallest(10).tolist() if is_support else df["高値"].nlargest(10).tolist()
+    seeds = sorted(list(set(piv + heads)))
+    
+    merged_seeds = []
+    if seeds:
+        cur_group = [seeds[0]]
+        for x in seeds[1:]:
+            if abs(x - np.mean(cur_group)) / max(1, np.mean(cur_group)) <= RES_ZONE_MERGE_PCT:
+                cur_group.append(x)
+            else:
+                merged_seeds.append(float(np.mean(cur_group)))
+                cur_group = [x]
+        merged_seeds.append(float(np.mean(cur_group)))
 
     out = []
-    for center in seeds:
-        lo, hi = center * (1 - band_pct), center * (1 + band_pct)
+    for center in merged_seeds:
+        lo, hi = center * (1 - RES_TOUCH_BAND_PCT), center * (1 + RES_TOUCH_BAND_PCT)
         touch_mask = (df["高値"] >= lo) & (df["安値"] <= hi)
         touches = int(touch_mask.sum())
-        if touches >= min_touches:
+        
+        if touches >= RES_MIN_TOUCHES:
+            # 💡 Tom提案のコアロジック：現在値からの距離ペナルティ
+            distance = abs(center - close_today) / close_today
+            score = touches / (1 + distance * 10)  # 遠いほどスコア激減
+            
             last_idx = np.where(touch_mask.values)[0][-1]
             out.append({
                 "price": float(center),
                 "touches": touches,
+                "score": score,
                 "last_date": pd.to_datetime(df.iloc[last_idx]["日付"]).date()
             })
-    if out:
-        out = sorted(out, key=lambda x: x["price"])
-        buckets, cur = [], [out[0]]
-        def _merge_bucket(bk):
-            prices = [x["price"] for x in bk]
-            return {
-                "price": float(np.mean(prices)),
-                "touches": int(max(x["touches"] for x in bk)),
-                "last_date": max(x["last_date"] for x in bk),
-            }
-        for z in out[1:]:
-            anchor = np.mean([x["price"] for x in cur])
-            if abs(z["price"] - anchor) / anchor <= merge_pct:
-                cur.append(z)
-            else:
-                buckets.append(_merge_bucket(cur)); cur = [z]
-        buckets.append(_merge_bucket(cur))
-        out = sorted(buckets, key=lambda x: (-x["touches"], -x["price"]))
+            
+    # 支持・抵抗でフィルタ（現在値より上か下か）
+    if is_support:
+        out = [z for z in out if z["price"] <= close_today]
+    else:
+        out = [z for z in out if z["price"] > close_today]
+
+    # スコア（タッチ数と近さのバランス）で降順ソート
+    out.sort(key=lambda x: -x["score"])
     return out
 
-def _res__nearest_round_levels(price: float, steps = RES_ROUND_STEPS, near_pct: float = RES_ROUND_NEAR_PCT):
-    info = []
-    if price is None: return info
-    for step in steps:
-        if step <= 0: 
-            continue
-        base = round(price / step) * step
-        diff_pct = abs(price - base) / price if price else float('inf')
-        info.append({
-            "step": step,
-            "round": float(base),
-            "near": bool(diff_pct <= near_pct),
-            "diff_pct": float(diff_pct if np.isfinite(diff_pct) else 999.0)
-        })
-    info.sort(key=lambda x: x["diff_pct"])
-    return info
+def derive_support_resistance_full(df: pd.DataFrame):
+    if df.empty or len(df) < 5:
+        return {}
+    
+    # 候補追加用の移動平均を計算
+    df = df.copy()
+    df["MA25"] = df["終値"].rolling(25, min_periods=1).mean()
+    df["MA75"] = df["終値"].rolling(75, min_periods=1).mean()
 
-def derive_resistance_horizontal(df: pd.DataFrame):
-    if df.empty:
-        return {"highest_high": None, "zones": [], "round_info": []}
-    highest_high = float(pd.to_numeric(df["高値"], errors="coerce").max())
-    zones = _res__build_touch_zones(df)
-    round_info = _res__nearest_round_levels(highest_high) if np.isfinite(highest_high) else []
+    current_price = float(df["終値"].iloc[-1])
+    res_hh = float(df["高値"].max())
+    sup_ll = float(df["安値"].min())
+    
+    high20 = float(df["高値"].tail(20).max())
+    low20  = float(df["安値"].tail(20).min())
+    high60 = float(df["高値"].tail(60).max())
+    low60  = float(df["安値"].tail(60).min())
+    ma25   = float(df["MA25"].iloc[-1])
+    ma75   = float(df["MA75"].iloc[-1])
+    
+    # ゾーン計算（スコア順で一番上がベスト）
+    res_zones = _res__build_touch_zones(df, current_price, is_support=False)
+    sup_zones = _res__build_touch_zones(df, current_price, is_support=True)
+    best_res = res_zones[0] if res_zones else None
+    best_sup = sup_zones[0] if sup_zones else None
+
+    # 適切な節目計算
+    if current_price < 500: step = 10
+    elif current_price < 2000: step = 50
+    elif current_price < 5000: step = 100
+    elif current_price < 10000: step = 500
+    else: step = 1000
+    res_round = math.ceil(current_price / step) * step
+    sup_round = math.floor(current_price / step) * step
+    if res_round == current_price: res_round += step
+    if sup_round == current_price: sup_round -= step
+
+    # トレンドライン抵抗
+    xs = np.arange(len(df), dtype=float)
+    ys_high = df["高値"].to_numpy(dtype=float)
+    slope_h, intercept_h = np.polyfit(xs, ys_high, 1)
+    res_line_today = float(slope_h * len(xs) + intercept_h)
+    
+    ys_low = df["安値"].to_numpy(dtype=float)
+    slope_l, intercept_l = np.polyfit(xs, ys_low, 1)
+    sup_line_today = float(slope_l * len(xs) + intercept_l)
+
+    # 💡 Tom提案のコアロジック２：多彩な候補から「最も近いもの」を選ぶ
+    res_candidates = [
+        best_res["price"] if best_res else None,
+        res_hh, high20, high60,
+        ma25 if ma25 > current_price else None,
+        ma75 if ma75 > current_price else None,
+        res_line_today, res_round
+    ]
+    res_candidates = [x for x in res_candidates if x is not None and x > current_price]
+    res_near = min(res_candidates, key=lambda x: abs(x - current_price)) if res_candidates else None
+
+    sup_candidates = [
+        best_sup["price"] if best_sup else None,
+        sup_ll, low20, low60,
+        ma25 if ma25 < current_price else None,
+        ma75 if ma75 < current_price else None,
+        sup_line_today, sup_round
+    ]
+    sup_candidates = [x for x in sup_candidates if x is not None and x < current_price]
+    sup_near = min(sup_candidates, key=lambda x: abs(x - current_price)) if sup_candidates else None
+
     return {
-        "highest_high": highest_high if np.isfinite(highest_high) else None,
-        "zones": zones,
-        "round_info": round_info
+        "Res_HH": res_hh,
+        "Res_Zone": best_res["price"] if best_res else None,
+        "Res_Zone_Touches": best_res["touches"] if best_res else None,
+        "Res_Zone_Last": str(best_res["last_date"]) if best_res else None,
+        "Res_Round": res_round,
+        "Res_Line_Today": res_line_today,
+        "Res_Nearest": res_near,
+        
+        "Sup_LL": sup_ll,
+        "Sup_Zone": best_sup["price"] if best_sup else None,
+        "Sup_Zone_Touches": best_sup["touches"] if best_sup else None,
+        "Sup_Zone_Last": str(best_sup["last_date"]) if best_sup else None,
+        "Sup_Round": sup_round,
+        "Sup_Nearest": sup_near,
     }
-
-def _res__linear_reg(y: np.ndarray):
-    n = len(y)
-    x = np.arange(n, dtype=float)
-    x_mean = x.mean(); y_mean = y.mean()
-    ss_xy = ((x - x_mean) * (y - y_mean)).sum()
-    ss_xx = ((x - x_mean) ** 2).sum()
-    slope = 0.0 if ss_xx == 0 else ss_xy / ss_xx
-    intercept = y_mean - slope * x_mean
-    yhat = slope * x + intercept
-    ss_res = ((y - yhat) ** 2).sum()
-    ss_tot = ((y - y_mean) ** 2).sum() if n > 1 else 0.0
-    r2 = 1 - ss_res/ss_tot if ss_tot > 0 else 0.0
-    return slope, intercept, r2
-
-def derive_trendline_resistance(df: pd.DataFrame, piv_order: int = 3, min_points:int = 3):
-    piv = _res__pivot_highs(df, order=piv_order)
-    if len(piv) < min_points:
-        return {"line_today": None, "r2": None, "n": len(piv)}
-    piv = piv.reset_index(drop=True)
-    y = piv["高値"].to_numpy(dtype=float)
-    slope, intercept, r2 = _res__linear_reg(y)
-    line_today = float(slope * len(y) + intercept)
-    return {"line_today": line_today, "r2": float(r2), "n": len(piv)}
 
 def _ensure_resistance_columns(conn):
     cur = conn.cursor()
     try:
         cols = [r[1] for r in cur.execute("PRAGMA table_info(latest_prices)")]
-        add = []
-        def need(c, typ): 
-            if c not in cols: add.append((c, typ))
-        need("Res_HH", "REAL")
-        need("Res_Zone", "REAL")
-        need("Res_Zone_Touches", "INTEGER")
-        need("Res_Zone_Last", "TEXT")
-        need("Res_Round", "REAL")
-        need("Res_Round_Step", "INTEGER")
-        need("Res_Round_Near", "INTEGER")
-        need("Res_Line_Today", "REAL")
-        need("Res_Line_R2", "REAL")
-        need("S_High_Status", "TEXT")
-        if add:
-            for c, typ in add:
-                try:
-                    cur.execute(f"ALTER TABLE latest_prices ADD COLUMN {c} {typ}")
-                except Exception:
-                    pass
-            conn.commit()
+        needs = [
+            "Res_HH", "Res_Zone", "Res_Zone_Touches", "Res_Zone_Last", 
+            "Res_Round", "Res_Round_Step", "Res_Round_Near", 
+            "Res_Line_Today", "Res_Line_R2", "Res_Nearest", "S_High_Status",
+            "Sup_LL", "Sup_Zone", "Sup_Zone_Touches", "Sup_Zone_Last", 
+            "Sup_Round", "Sup_Round_Step", "Sup_Round_Near",
+            "Sup_Line_Today", "Sup_Line_R2", "Sup_Nearest"
+        ]
+        for c in needs:
+            if c not in cols:
+                cur.execute(f"ALTER TABLE latest_prices ADD COLUMN {c} TEXT")
+        conn.commit()
     finally:
         cur.close()
 
 def phase_resistance_update(conn):
-    # サポレジ用のカラムを整備
     _ensure_resistance_columns(conn)
     _ensure_latest_prices_code_col(conn)
     _ensure_latest_prices_index_rows(conn)
@@ -2560,79 +2562,53 @@ def phase_resistance_update(conn):
     cur = conn.cursor()
     try:
         codes = [r[0] for r in cur.execute("SELECT DISTINCT コード FROM latest_prices")]
-        if not codes:
-            return
+        if not codes: return
             
         print(f"[resistance] {len(codes)}銘柄のサポレジを一括計算中...")
 
-        # --- BULK FETCH ---
-        lookback_days = RES_LOOKBACK_DAYS + 10  # 余裕を持たせる
+        lookback_days = RES_LOOKBACK_DAYS + 10
         q_date = f"SELECT date((SELECT MAX(日付) FROM price_history), '-{lookback_days} days')"
         try:
             start_date = cur.execute(q_date).fetchone()[0]
         except Exception:
             start_date = '2000-01-01'
         
-        q = """
+        df_all = pd.read_sql_query("""
             SELECT コード, 日付, 始値, 高値, 安値, 終値
-            FROM price_history
-            WHERE 日付 >= ?
-            ORDER BY コード, 日付 ASC
-        """
-        df_all = pd.read_sql_query(q, conn, params=[start_date], parse_dates=["日付"])
+            FROM price_history WHERE 日付 >= ? ORDER BY コード, 日付 ASC
+        """, conn, params=[start_date], parse_dates=["日付"])
         
         for c in ("始値","高値","安値","終値"):
             df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
         df_all = df_all.dropna(subset=["高値","安値","終値"])
         
         updates = []
-        # groupby で一気に処理（DBへのアクセスはゼロ）
         for code, df in df_all.groupby("コード", sort=False):
             df = df.tail(RES_LOOKBACK_DAYS)
-            if df.empty:
-                continue
+            if df.empty: continue
                 
             sh_val = ""
-            try:
-                sh_val = analyze_stop_high_status(df) 
-            except Exception:
-                pass
+            try: sh_val = analyze_stop_high_status(df) 
+            except Exception: pass
             
-            h = derive_resistance_horizontal(df)
-            t = derive_trendline_resistance(df)
-            hh = h["highest_high"]
-            z = (h["zones"][0] if h["zones"] else None)
-            z_price = float(z["price"]) if z else None
-            z_t = int(z["touches"]) if z else None
-            z_last = str(z["last_date"]) if z else None
-            r0 = (h["round_info"][0] if h["round_info"] else None)
-            r_round = float(r0["round"]) if r0 else None
-            r_step  = int(r0["step"]) if r0 else None
-            r_near  = int(1 if (r0 and r0["near"]) else 0)
-            line_today = t.get("line_today")
-            line_r2    = t.get("r2")
+            res_data = derive_support_resistance_full(df)
+            if not res_data: continue
             
-            updates.append(
-                (hh, z_price, z_t, z_last,
-                 r_round, r_step, r_near,
-                 line_today, line_r2, 
-                 sh_val,
-                 code)
-            )
+            updates.append((
+                res_data.get("Res_HH"), res_data.get("Res_Zone"), res_data.get("Res_Zone_Touches"), res_data.get("Res_Zone_Last"),
+                res_data.get("Res_Round"), res_data.get("Res_Line_Today"), res_data.get("Res_Nearest"),
+                res_data.get("Sup_LL"), res_data.get("Sup_Zone"), res_data.get("Sup_Zone_Touches"), res_data.get("Sup_Zone_Last"),
+                res_data.get("Sup_Round"), res_data.get("Sup_Nearest"), sh_val, code
+            ))
             
         if updates:
+            # 支持・抵抗をすべて更新
             cur.executemany("""
                 UPDATE latest_prices
-                   SET Res_HH = ?,
-                       Res_Zone = ?,
-                       Res_Zone_Touches = ?,
-                       Res_Zone_Last = ?,
-                       Res_Round = ?,
-                       Res_Round_Step = ?,
-                       Res_Round_Near = ?,
-                       Res_Line_Today = ?,
-                       Res_Line_R2 = ?,
-                       S_High_Status = ?
+                   SET Res_HH=?, Res_Zone=?, Res_Zone_Touches=?, Res_Zone_Last=?,
+                       Res_Round=?, Res_Line_Today=?, Res_Nearest=?,
+                       Sup_LL=?, Sup_Zone=?, Sup_Zone_Touches=?, Sup_Zone_Last=?,
+                       Sup_Round=?, Sup_Nearest=?, S_High_Status=?
                  WHERE コード = ?
             """, updates)
             conn.commit()
@@ -2786,22 +2762,22 @@ try:
 except Exception:
     class _WorkdaysShim:
         @staticmethod
-        def networkdays(start: datetime.date, end: datetime.date, holidays=None):
+        def networkdays(start: date, end: date, holidays=None):
             if holidays is None: holidays = []
             if start > end: start, end = end, start
             d, cnt = start, 0
             while d <= end:
                 if d.weekday() < 5 and d not in holidays:
                     cnt += 1
-                d += datetime.timedelta(days=1)
+                d += timedelta(days=1)
             return cnt
         @staticmethod
-        def workday(start: datetime.date, days: int, holidays=None):
+        def workday(start: date, days: int, holidays=None):
             if holidays is None: holidays = []
             step = 1 if days >= 0 else -1
             d, moved = start, 0
             while moved < abs(days):
-                d += datetime.timedelta(days=step)
+                d += timedelta(days=step)
                 if d.weekday() < 5 and d not in holidays:
                     moved += 1
             return d
@@ -2898,7 +2874,7 @@ def _trade_date_from_quote(q, extra_closed_path=EXTRA_CLOSED_PATH):
                 ts = int(ts)
             except Exception:
                 ts = int(float(ts))
-            t = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(JST)
+            t = datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(JST)
             return t.date().isoformat()
     except Exception:
         pass
@@ -2927,7 +2903,7 @@ def _safe_jsonable(val):
     if isinstance(val, (np.floating, np.integer)):
         return val.item()
     # 日付・日時
-    if isinstance(val, (pd.Timestamp, datetime.datetime, datetime.date, datetime.time)):
+    if isinstance(val, (pd.Timestamp, datetime, date, datetime.time)):
         return str(val)[:19]
     return val
 
@@ -2946,7 +2922,7 @@ def _load_extra_closed(path: str):
         pass
     return s
 
-def is_jp_market_holiday(d: datetime.date, extra_closed: set = None) -> bool:
+def is_jp_market_holiday(d: date, extra_closed: set = None) -> bool:
     if d.weekday() >= 5:
         return True
     if (d.month == 12 and d.day == 31) or (d.month == 1 and d.day in (2, 3)):
@@ -2961,17 +2937,17 @@ def is_jp_market_holiday(d: datetime.date, extra_closed: set = None) -> bool:
         pass
     return False
 
-def next_business_day_jp(d: datetime.date, extra_closed: set = None) -> datetime.date:
+def next_business_day_jp(d: date, extra_closed: set = None) -> date:
     cur = d
     while True:
-        cur += datetime.timedelta(days=1)
+        cur += timedelta(days=1)
         if not is_jp_market_holiday(cur, extra_closed):
             return cur
 
-def prev_business_day_jp(d: datetime.date, extra_closed: set = None) -> datetime.date:
+def prev_business_day_jp(d: date, extra_closed: set = None) -> date:
     cur = d
     while True:
-        cur -= datetime.timedelta(days=1)
+        cur -= timedelta(days=1)
         if not is_jp_market_holiday(cur, extra_closed):
             return cur
 
@@ -5400,12 +5376,12 @@ def _kabunews_fetch(code: str, name: str) -> list[dict]:
                 pass
             # だめなら ISO っぽい文字列も一応トライ
             try:
-                return datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+                return datetime.fromisoformat(s.replace("Z", "+00:00"))
             except Exception:
                 return None
 
         items.sort(
-            key=lambda it: (_parse_pub_dt(it.get("pub")) or datetime.datetime.min),
+            key=lambda it: (_parse_pub_dt(it.get("pub")) or datetime.min),
             reverse=True,  # 新しい順
         )
     except Exception as e:
@@ -5567,7 +5543,7 @@ def kabutan_news_fetch_bulk(pairs, per_symbol=None):
                 except Exception:
                     pass
                 try:
-                    return datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    return datetime.fromisoformat(s.replace("Z", "+00:00"))
                 except Exception:
                     return None
 
@@ -5582,7 +5558,7 @@ def kabutan_news_fetch_bulk(pairs, per_symbol=None):
                     deduped.append((t,l,p))
                 # ★ pub 日付で降順ソートしてから上位 per_symbol 件を切り出し
                 deduped.sort(
-                    key=lambda tpl: (_parse_pub_dt(tpl[2]) or datetime.datetime.min),
+                    key=lambda tpl: (_parse_pub_dt(tpl[2]) or datetime.min),
                     reverse=True,
                 )
                 out[c4] = deduped[:per_symbol]
@@ -6250,7 +6226,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     def _safe_jsonable(v):
         if v is None: return None
         try:
-            if isinstance(v, (datetime.date, datetime.datetime)): return str(v)
+            if isinstance(v, (date, datetime)): return str(v)
         except Exception:
             pass
         try:
@@ -6849,7 +6825,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         def _to_date(s):
             if not s: return None
             s = str(s)[:10]
-            try: return datetime.datetime.strptime(s, "%Y-%m-%d").date()
+            try: return datetime.strptime(s, "%Y-%m-%d").date()
             except ValueError: return None
         if cand_rows:
             dates = [d for d in (_to_date(r.get("シグナル更新日")) for r in cand_rows) if d]
@@ -6861,8 +6837,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                     except Exception:
                         return d.weekday() >= 5
                 def _next_business_day(d):
-                    d = d + datetime.timedelta(days=1)
-                    while _is_holiday(d): d += datetime.timedelta(days=1)
+                    d = d + timedelta(days=1)
+                    while _is_holiday(d): d += timedelta(days=1)
                     return d
                 meta["base_day"] = base.strftime("%Y-%m-%d")
                 meta["next_business_day"] = _next_business_day(base).strftime("%Y-%m-%d")
@@ -7469,7 +7445,7 @@ def _streak_start_for_kind(conn, code: str, kind: str, extra_closed) -> str | No
 
     def dstr(d): return d.strftime("%Y-%m-%d")
     try:
-        latest = datetime.datetime.strptime(rows[0][:10], "%Y-%m-%d").date()
+        latest = datetime.strptime(rows[0][:10], "%Y-%m-%d").date()
     except Exception:
         return None
 
@@ -7936,7 +7912,7 @@ def batch_update_all_financials(conn,
     # --------------------------
     # 前処理
     # --------------------------
-    one_year_ago = date.today() - datetime.timedelta(days=365)
+    one_year_ago = date.today() - timedelta(days=365)
     
     if set_wal:
         try: conn.execute("PRAGMA journal_mode=WAL;")
@@ -8021,7 +7997,7 @@ def batch_update_all_financials(conn,
             if not fin_d:
                 to_fetch.append(s); continue
             try:
-                fd = datetime.datetime.strptime(fin_d, "%Y-%m-%d").date()
+                fd = datetime.strptime(fin_d, "%Y-%m-%d").date()
                 if (date.today() - fd).days >= 30:
                     to_fetch.append(s)
             except:
@@ -8359,7 +8335,7 @@ def run_fundamental_daily(force: bool = False):
 
     # 1) mtimeで判定（中身は見ない）
     if not force and MARKER_FILE.exists():
-        mtime = datetime.datetime.fromtimestamp(MARKER_FILE.stat().st_mtime).date()
+        mtime = datetime.fromtimestamp(MARKER_FILE.stat().st_mtime).date()
         print(f"[fundamental] marker_mtime={mtime} today={today}")
         if mtime == today:
             print("[fundamental] 今日すでに実行済み → スキップ")
@@ -8452,7 +8428,7 @@ def _yahoo_quote_url(code: str, market: str | None = None, conn: sqlite3.Connect
 
         # 期間
         now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
-        since   = (now_jst - datetime.datetime.timedelta(days=int(days))).strftime("%Y-%m-%d 00:00:00")
+        since   = (now_jst - datetime.timedelta(days=int(days))).strftime("%Y-%m-%d 00:00:00")
 
         # 取得
         sql = """
@@ -9091,7 +9067,7 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
             return 0
 
         # 2) 直近3営業日を作る（今日基準で過去方向）
-        def is_holiday(d: datetime.date) -> bool:
+        def is_holiday(d: date) -> bool:
             try:
                 import jpholiday
                 return (d.weekday() >= 5) or jpholiday.is_holiday(d)
@@ -9101,10 +9077,10 @@ def eod_refresh_recent_3days(conn, batch_size: int = 60):
         cur = date.today()
         # if today is holiday, walk back to nearest business day as d0
         while is_holiday(cur): 
-            cur -= datetime.timedelta(days=1)
+            cur -= timedelta(days=1)
         days.append(cur)
         while len(days) < 3:
-            cur -= datetime.timedelta(days=1)
+            cur -= timedelta(days=1)
             if not is_holiday(cur):
                 days.append(cur)
         target_days = set(days)
@@ -9146,7 +9122,7 @@ def fallback_fill_today_from_quotes(conn):
 
     # 15:30 以降のみ
     try:
-        now = datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+        now = datetime.now(datetime.timezone(timedelta(hours=9)))  # JST
     except Exception:
         now = datetime.now()
     t = now.time()
@@ -9154,7 +9130,7 @@ def fallback_fill_today_from_quotes(conn):
         print("[LightEOD] fallback skipped (before 15:30)")
         return 0
 
-    def is_holiday(d: datetime.date) -> bool:
+    def is_holiday(d: date) -> bool:
         try:
             import jpholiday
             return (d.weekday() >= 5) or jpholiday.is_holiday(d)
@@ -9243,7 +9219,7 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
     """直近15営業日で price_history 欠損のみを補完（yfinance）。"""
 
     # 直近15営業日リスト
-    def is_holiday(d: datetime.date) -> bool:
+    def is_holiday(d: date) -> bool:
         try:
             import jpholiday
             return (d.weekday() >= 5) or jpholiday.is_holiday(d)
@@ -9254,7 +9230,7 @@ def gap_patrol_recent_15(conn, batch_size: int = 60):
     if not is_holiday(cur):
         days.append(cur)
     while len(days) < 15:
-        cur -= datetime.timedelta(days=1)
+        cur -= timedelta(days=1)
         if not is_holiday(cur):
             days.append(cur)
     target_days = set(days)

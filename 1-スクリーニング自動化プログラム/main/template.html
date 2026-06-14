@@ -1077,13 +1077,12 @@ function applyFreeze(tableId, uptoIdx){
     setTimeout(syncSize, 100); // レイアウト確定後の保険
   }
 
-  // ★候補一覧 + 明日用 両方に適用
+  // ★候補一覧のみ適用
   function mountTopScrollbar(){
-    ["tbl-candidate", "tbl-tmr"].forEach(function(id){
+    ["tbl-candidate"].forEach(function(id){
       mountTopScrollbarFor(id);
     });
   }
-
 
   // 初期化
   if (document.readyState === 'loading'){
@@ -1118,11 +1117,10 @@ function applyFreeze(tableId, uptoIdx){
 </script>
 
   <nav>
-    <a href="#" id="lnk-cand" class="active">候補一覧</a>
-    <a href="#" id="lnk-tmr">明日用</a>
-    <!-- <a href="#" id="lnk-preearn">決算(予測)</a>-->
+    <span style="font-weight:bold; color:var(--blue); font-size:16px;">スクリーニング結果</span>
     <span class="mini" style="margin-left:auto">build: {{ build_id }}</span>
-    <span id="nav-summary-anchor"></span></nav>
+    <span id="nav-summary-anchor"></span>
+  </nav>
 
   <div id="toolbar" class="toolbar">
     <div class="res-filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 4px">
@@ -2061,7 +2059,7 @@ function renderIndexSrSummary(){
       // ループ(metrics.forEach)の中で判定
       if (holderVal) {
           const h = (r["大株主"] || "").toLowerCase();
-          if (!h.includes(holderVal)) isHit = false;
+          if (!h.includes(holderVal)) return false; // ← ★変更
       }
 
       const tr = thRate(), tt = thTurn(), tv = thRvol(), tp = thProg(), ts = thScore();
@@ -2332,6 +2330,7 @@ function renderIndexSrSummary(){
         <td class="num">${r["AIスコア"] || "-"}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num">${r["AI目標値"] || "-"}</td>
+        <td style="text-align:center;"><button class="btn btn-prompt" data-code="${String(r["コード"]||"").padStart(4,"0")}" style="padding:2px 8px; font-size:11px;">生成</button></td>
         <td data-col="株探ニュース(3)" class="news-col" title="${escapeHtml(String(r["株探ニュース(3)"]||"").replace(/<[^>]*>/g, ""))}">${r["株探ニュース(3)"] || ""}</td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
@@ -2397,160 +2396,13 @@ function renderIndexSrSummary(){
     if (typeof installCandidateFolds === 'function') { try{ installCandidateFolds(); }catch(_){ } }
   }
 
-  // === Tomorrow logic START ===
-  function toKey(x){
-    if (x instanceof Date) {
-      const y=x.getFullYear(), m=('0'+(x.getMonth()+1)).slice(-2), d=('0'+x.getDate()).slice(-2);
-      return `${y}-${m}-${d}`;
-    }
-    const s = String(x ?? "").trim().slice(0,10).replace(/[./]/g,'-').replace(/\//g,'-');
-    const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-    if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
-    const dt = new Date(s);
-    if (isNaN(+dt)) return "";
-    const yy=dt.getFullYear(), mm=('0'+(dt.getMonth()+1)).slice(-2), dd=('0'+dt.getDate()).slice(-2);
-    return `${yy}-${mm}-${dd}`;
-  }
-  function latestUpdateDate(rows){
-    const ds = (rows||[]).map(r=>toKey(r?.["シグナル更新日"])).filter(Boolean);
-    return ds.sort().pop() || null;
-  }
-  function localDateStr(d){ const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), da=('0'+d.getDate()).slice(-2); return `${y}-${m}-${da}`; }
-  function prevBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()-1);}while([0,6].includes(dt.getDay())); return dt; }
-  function nextBusinessDay(d){ const dt=new Date(d); do{ dt.setDate(dt.getDate()+1);}while([0,6].includes(dt.getDay())); return dt; }
-  function _hasCandidateFlag(r){
-    return String(r?.["初動フラグ"]||"").includes("候補")
-        || String(r?.["右肩上がりフラグ"]||"").includes("候補")
-        || String(r?.["右肩早期フラグ"]||"").includes("候補");
-  }
-  function _pickTomorrowRows(src, baseKey){
-    if(!Array.isArray(src) || !baseKey) return [];
-    return src.filter(r => toKey(r?.["シグナル更新日"])===baseKey && _hasCandidateFlag(r));
-  }
-  function _computeBaseAndTargetFromLocalNow(){
-    const now = new Date();
-    const inFreeze = (now.getHours() < 14) || (now.getHours() === 14 && now.getMinutes() < 30);
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const baseDate = inFreeze ? prevBusinessDay(today) : today;
-    const targetDate = nextBusinessDay(baseDate);
-    return { inFreeze, baseDate, targetDate };
-  }
-  function renderTomorrow(rows){
-    const body = document.querySelector("#tbl-tmr tbody");
-    if (!body) return;
-    let html = "";
-    rows.forEach(r=>{
-      const rec = (r["推奨アクション"] || "").trim();
-      let recBadge = "";
-      if (rec === "エントリー有力") recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
-      else if (rec === "小口提案")   recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
-      else if (rec)                  recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
-      
-      // ★ ここから追加：三角スコア用の数値を整形してソートキーを作る
-      const g  = Number(r["tri_growth"] ?? 0) || 0;
-      const s2 = Number(r["tri_safety"] ?? 0) || 0;
-      const v2 = Number(r["tri_vol"] ?? 0) || 0;
-      const triSort = g * 10000 + s2 * 100 + (100 - v2);  // 上昇→安定→低ボラ優先
-
-      const isHit = isHitRow(r);
-      // ▼▼▼ 追加: S高の色判定 ▼▼▼
-      const shVal = String(r["S高"]||"");
-      let shStyle = "";
-      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";      // 赤太字
-      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; // グレー
-      // ▲▲▲
-      html += `<tr${isHit ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
-        <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
-        <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
-        <td>${escapeHtml(r["市場"] || "-")}</td>
-        <td><a href="${r["yahoo_url"]??"#"}" target="_blank" rel="noopener">Yahoo</a></td>
-        <td><a href="${r["x_url"]??"#"}" target="_blank" rel="noopener">X</a></td>
-        <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
-        <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
-        <td style="${shStyle}">${escapeHtml(shVal)}</td>
-        <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
-        <td class="num">${r["AI目標値"] || "-"}</td>
-        <td class="num">${r["売買代金(億)"]??""}</td>
-        <td>${financeLink(r["コード"])}${financeNote(r)}</td>
-        <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
-        <td class="num">${r["増資スコア"] ?? ""}</td>
-        <td class="reason-col">${escapeHtml(r["増資理由"] || "")}</td>
-        <td class="num">${r["右肩早期スコア"]??""}</td>
-        <td>${escapeHtml((r["右肩早期種別"]||"").trim())}</td>
-        <td>${isHit ? "当たり！(1)" : "外れ！(1)"}</td>
-        <td>${recBadge}</td>
-      </tr>`;
-    });
-    body.innerHTML = html;
-    wireDomSort("#tbl-tmr");
-    attachQHelpsToHead('#tbl-tmr');
-  }
-  function _sortTomorrow(rows){
-    return rows.slice().sort((a,b)=>{
-      const rank = (x)=> x==="エントリー有力" ? 2 : (x==="小口提案" ? 1 : 0);
-      const r = rank((b["推奨アクション"]||"").trim()) - rank((a["推奨アクション"]||"").trim());
-      if (r !== 0) return r;
-      const s = (+b["右肩早期スコア"]||0) - (+a["右肩早期スコア"]||0);
-      if (s !== 0) return s;
-      return (+b["売買代金(億)"]||0) - (+a["売買代金(億)"]||0);
-    });
-  }
-  function renderTomorrowWrapper(){
-    const { inFreeze, baseDate, targetDate } = _computeBaseAndTargetFromLocalNow();
-    const baseKey = toKey(baseDate);
-    const latestKey = latestUpdateDate(DATA_CAND);
-
-    let reason = `基準日の「候補」`;
-    let rows = _pickTomorrowRows(DATA_CAND, baseKey);
-
-    if (rows.length === 0 && latestKey && latestKey !== baseKey){
-      rows = _pickTomorrowRows(DATA_CAND, latestKey);
-      if (rows.length) reason = `最新日(${latestKey})の「候補」にフォールバック`;
-    }
-    if (rows.length === 0){
-      rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===baseKey);
-      if (rows.length) reason = `基準日(${baseKey})の全件（候補条件なし）`;
-    }
-    if (rows.length === 0 && latestKey){
-      rows = (DATA_CAND||[]).filter(r => toKey(r?.["シグナル更新日"])===latestKey);
-      if (rows.length) reason = `最新日(${latestKey})の全件（候補条件なし）`;
-    }
-    if (rows.length === 0){
-      rows = (DATA_CAND||[]).slice();
-      reason = `全体からのサンプル`;
-    }
-
-    // 基準日ロジックで決まった「明日用」候補（フィルタ前のベース）を保持
-    rows = _sortTomorrow(rows);
-    window.DATA_TMR = rows.slice();
-
-    const lbl = document.getElementById("tmr-label");
-    if (lbl){
-      const baseStr = localDateStr(baseDate);
-      const tgtStr  = localDateStr(nextBusinessDay(baseDate));
-      const freezeStr = inFreeze ? "ON" : "OFF";
-      lbl.textContent = `📅 ${tgtStr} 向け（基準日: ${baseStr} / 凍結: ${freezeStr} / 抽出: ${rows.length}件・${reason}）`;
-    }
-
-    // ツールバー条件を反映した行だけを描画
-    const filtered = (typeof applyFilter === "function") ? applyFilter(rows) : rows;
-    renderTomorrow(filtered);
-  }
-  // === Tomorrow logic END ===
-
 
   
-  // タブ
-  //function render(){ if (state.tab === "all") { renderAll(); return; } if (state.tab === "tmr") { renderTomorrowWrapper(); return; } renderCand(); }
-  function render(){
-    if (state.tab === "tmr"){
-      const base = (window.DATA_TMR && Array.isArray(window.DATA_TMR)) ? window.DATA_TMR : [];
-      const rows = (typeof applyFilter === "function") ? applyFilter(base) : base;
-      renderTomorrow(rows);
-      return;
-    }
+  function render() {
     renderCand();
   }
+  window.render = render; // ← この1行を追加
+  
 
   function fmtTime(ts){
     try{
@@ -2563,8 +2415,6 @@ function renderIndexSrSummary(){
       return String(ts ?? "");
     }catch(_){ return String(ts ?? ""); }
   }
-
-
 
   function _fmt2num(x){
     if (x === null || x === undefined) return "";
@@ -3262,58 +3112,8 @@ function renderIndexSrSummary(){
   $("#btn-ts")?.addEventListener("click",openTrendChart);
   $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
-  // タブ切替
-  function switchTab(to){
-    state.tab = to;
-    $$(".tab").forEach(el=>el.classList.add("hidden"));
-    $$("nav a").forEach(a=>a.classList.remove("active"));
-    if (to === "cand"){
-      $("#tab-candidate")?.classList.remove("hidden");
-      $("#lnk-cand")?.classList.add("active");
-      state.data = DATA_CAND.slice();
-      state.page = 1;
-      render();
-      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-candidate'); }catch(_){ } }
-      return;
-    }
-    if (to === "tmr"){
-      $("#tab-tmr")?.classList.remove("hidden");
-      $("#lnk-tmr")?.classList.add("active");
-      renderTomorrowWrapper();
-      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-tmr'); }catch(_){ } }
-      return;
-    }
-
-
-    if (to === "preearn"){
-      $("#tab-preearn")?.classList.remove("hidden");
-      $("#lnk-preearn")?.classList.add("active");
-      renderPreEarnings(DATA_PREEARN);
-      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-preearn'); }catch(_){ } }
-      return;
-    }
-  }
-  
-  
-  // ★ どのタブがアクティブかからテーブルIDを返す
-  function getActiveTableId(){
-    const tab = state && state.tab;
-    if (tab === "tmr")      return "tbl-tmr";
-    if (tab === "preearn")  return "tbl-preearn";
-    // "cand" や "all" などは候補テーブル扱い
-    return "tbl-candidate";
-  }
-  
-  
-  (function(){
-    const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all","lnk-preearn":"preearn" };
-    window.NAV_MAP = map;
-    Object.keys(map).forEach(id=>{
-      const a = document.getElementById(id);
-      if (!a) return;
-      a.addEventListener("click", (e)=>{ e.preventDefault(); switchTab(map[id]); });
-    });
-  })();
+  // 常に候補一覧テーブルを使う
+  function getActiveTableId() { return "tbl-candidate"; }
 
   // initial
   // 存在しない fold 関数の安全化
@@ -3339,9 +3139,12 @@ function renderIndexSrSummary(){
       const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
       DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
       DATA_PREEARN = Array.isArray(_preSrc)      ? _preSrc      : [];
+      
+      state.data = DATA_CAND.slice();
 
-      // ② まず候補タブを描画（テーブルがDOMに並ぶ）
-      switchTab("cand");
+      // ② テーブルを描画する
+      render();
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-candidate'); }catch(_){ } }
 
       // ③ テーブル描画後に市場チェックUIを生成（DOMフォールバックが効く）
       renderMarketCheckboxes();
@@ -3368,6 +3171,288 @@ function renderIndexSrSummary(){
   }
   document.removeEventListener('DOMContentLoaded', init);
   document.addEventListener('DOMContentLoaded', init);
+  
+  // === ★追加: プロンプト生成 (JSONコピー) ===
+function generatePromptJson(code) {
+  // state.data または window.DATA_CAND から対象銘柄を検索
+  const r = (window.state?.data || window.DATA_CAND || []).find(x => String(x["コード"]).padStart(4, "0") === code);
+  if (!r) return "";
+
+  const safeStr = (v) => (v != null ? String(v) : "");
+  const splitArray = (v) => v ? String(v).split(/[\/／]/).map(s => s.trim()).filter(Boolean) : [];
+
+  const obj = {
+    code: safeStr(r["コード"]).padStart(4, "0"),
+    name: safeStr(r["銘柄名"]),
+    market: safeStr(r["市場"]),
+    tob: safeStr(r["TOB"]),
+    themes: splitArray(r["関連テーマ"]),
+    yahoo: safeStr(r["yahoo_url"]),
+    x: safeStr(r["x_url"]),
+    triangle_score: safeStr(r["三角スコア"]),
+    ai_score: safeStr(r["AIスコア"]),
+    ai_judgement: safeStr(r["AI判定"]),
+    ai_target: safeStr(r["AI目標値"]),
+    news: splitArray(safeStr(r["株探ニュース(3)"]).replace(/<[^>]*>/g, "")),
+    price_now: safeStr(r["現在値"]),
+    price_prev: safeStr(r["前日終値"]),
+    price_diff: safeStr(r["前日円差"]),
+    price_diff_rate: safeStr(r["前日終値比率"]),
+    limit_up: safeStr(r["S高"]) || "-",
+    latest_theme: safeStr(r["最新テーマ"]),
+    high: safeStr(r["高値"]),
+    low: safeStr(r["安値"]),
+    ma5: safeStr(r["MA5"] ?? r["5日"] ?? r["５日"]),
+    ma25: safeStr(r["MA25"] ?? r["25日"] ?? r["２５日"]),
+    ma75: safeStr(r["MA75"] ?? r["75日"] ?? r["７５日"]),
+    volume: safeStr(r["出来高"]),
+    turnover_billion: safeStr(r["売買代金(億)"]),
+    finance_text: safeStr(r["財務コメント"]).replace(/<[^>]*>/g, ""),
+    finance_rank: safeStr(r["overall_alpha"]),
+    finance_score: safeStr(r["スコア"]),
+    progress: safeStr(r["進捗率"]),
+    pbr: safeStr(r["PBR"]),
+    cash: safeStr(r["現金同等物"]),
+    debt: safeStr(r["有利子負債"]),
+    major_holders: safeStr(r["大株主"]),
+    dilution_risk: safeStr(r["増資リスク"]),
+    dilution_score: safeStr(r["増資スコア"]),
+    dilution_reason: safeStr(r["増資理由"]),
+    initial_move_flag: safeStr(r["初動フラグ"]),
+    bottom_flag: safeStr(r["底打ちフラグ"]),
+    uptrend_flag: safeStr(r["右肩上がりフラグ"]),
+    early_uptrend_flag: safeStr(r["右肩早期フラグ"]),
+    early_uptrend_score: safeStr(r["右肩早期スコア"]),
+    early_uptrend_type: safeStr(r["右肩早期種別"]),
+    judge: safeStr(r["判定"]),
+    judge_reason: safeStr(r["判定理由"]),
+    action: safeStr(r["推奨アクション"]),
+    ratio: safeStr(r["推奨比率"]),
+    signal_date: safeStr(r["シグナル更新日"]),
+    resist_center: safeStr(r["抵抗帯中心"]),
+    resist_last: safeStr(r["抵抗最終日"]),
+    resist_near: safeStr(r["最寄り抵抗"]),
+    support_center: safeStr(r["支持帯中心"]),
+    support_last: safeStr(r["支持最終日"]),
+    support_near: safeStr(r["最寄り支持"]),
+    chart: safeStr(r["chart_url"]),
+    ma_signal: safeStr(r["移動平均"]),
+    bb_signal: safeStr(r["ボリバン"]),
+    gc: safeStr(r["GC"]),
+    three_roles: safeStr(r["三役"]),
+    rs5: safeStr(r["RS_5"]),
+    rs20: safeStr(r["RS_20"]),
+    growth_bias: safeStr(r["Growth_Bias"]),
+    market_flag: safeStr(r["地合いフラグ"]),
+    reverse_strong: safeStr(r["逆行強フラグ"]),
+    reverse_weak: safeStr(r["逆行弱フラグ"])
+  };
+  return JSON.stringify(obj, null, 2);
+}
+
+// === ★追加: AI解析結果表示用のモーダルCSSを動的追加 ===
+(function(){
+  if (!document.getElementById('ai-modal-style')) {
+    const style = document.createElement('style');
+    style.id = 'ai-modal-style';
+    style.innerHTML = `
+      #ai-modal-overlay {
+        display: none; position: fixed; z-index: 10000;
+        left: 0; top: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.4);
+        backdrop-filter: blur(2px);
+      }
+      #ai-modal-content {
+        position: absolute; top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        background: #fff; border: 1px solid #cbd5e1;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        padding: 20px; border-radius: 12px;
+        width: 600px; max-width: 90vw;
+        max-height: 80vh; display: flex; flex-direction: column;
+      }
+      #ai-modal-header {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 12px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px;
+      }
+      #ai-modal-title { font-weight: bold; font-size: 16px; color: var(--blue); }
+      #ai-modal-close {
+        cursor: pointer; font-weight: bold; color: #64748b;
+        background: #f1f5f9; padding: 4px 10px; border-radius: 6px;
+      }
+      #ai-modal-close:hover { background: #e2e8f0; color: #0f172a; }
+      #ai-modal-body {
+        flex: 1; overflow-y: auto; background: #f8fafc; color: #1e293b;
+        padding: 16px; border-radius: 6px; font-family: inherit; font-size: 14px;
+      }
+      /* 見やすくするためのカードデザイン用クラス */
+      .ai-summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+      .ai-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+      .ai-card-title { font-weight: bold; color: #0f172a; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+      .ai-score-large { font-size: 28px; font-weight: bold; color: #e11d48; text-align: center; line-height: 1.2; }
+      .ai-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; background: #e2e8f0; color: #334155; }
+      .ai-badge.bullish { background: #fef2f2; color: #e11d48; border: 1px solid #fecdd3; }
+      .ai-list { margin: 0; padding-left: 20px; color: #334155; font-size: 13px; }
+      .ai-list li { margin-bottom: 4px; }
+      @media (max-width: 768px) { .ai-summary-grid { grid-template-columns: 1fr; } }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // モーダルのDOMを生成
+  if (!document.getElementById('ai-modal-overlay')) {
+    const ov = document.createElement('div');
+    ov.id = 'ai-modal-overlay';
+    ov.innerHTML = `
+      <div id="ai-modal-content">
+        <div id="ai-modal-header">
+          <div id="ai-modal-title">AI解析結果</div>
+          <div id="ai-modal-close">閉じる</div>
+        </div>
+        <pre id="ai-modal-body"></pre>
+      </div>
+    `;
+    document.body.appendChild(ov);
+
+    // 閉じる処理
+    const closeParams = () => { ov.style.display = 'none'; };
+    document.getElementById('ai-modal-close').addEventListener('click', closeParams);
+    ov.addEventListener('click', (e) => { if (e.target === ov) closeParams(); });
+  }
+})();
+
+// === ★API通信 & ボタン制御ロジック ===
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".btn-prompt");
+  if (!btn) return;
+  e.preventDefault();
+  
+  const code = btn.getAttribute("data-code");
+  const jsonStr = generatePromptJson(code); // 前回作った関数を利用
+  if (!jsonStr) return;
+
+  // 1) ローディングUIに変更
+  const originalText = btn.textContent;
+  btn.textContent = "解析中...";
+  btn.style.backgroundColor = "var(--orange)";
+  btn.disabled = true;
+  btn.style.cursor = "wait";
+
+  try {
+    // 2) FastAPI へ POST 送信
+    const stockDataObj = JSON.parse(jsonStr); // 文字列からオブジェクトに戻す
+    
+    const response = await fetch("http://localhost:8000/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ data: stockDataObj }) // FastAPIが期待するフォーマット
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP Error: ${response.status}`);
+    }
+
+    // 3) 結果を取得
+    const resultJson = await response.json();
+
+    // 4) モーダルに結果を表示
+    const modal = document.getElementById('ai-modal-overlay');
+    const title = document.getElementById('ai-modal-title');
+    const body = document.getElementById('ai-modal-body');
+    
+    title.textContent = `AI解析結果: ${code} ${stockDataObj.name}`;
+
+    // --- 追加：結果を見やすいHTMLに組み立てる ---
+    const safeStr = (s) => s === null || s === undefined ? "-" : s;
+    const isBullish = (resultJson.stance || "").includes("強気") || (resultJson.action || "").includes("買い");
+    const scoreBreakdown = resultJson.score_breakdown || {};
+
+    let html = `
+      <div class="ai-summary-grid" style="grid-template-columns: 1fr;">
+        <div class="ai-card" style="display:flex; justify-content:space-around; align-items:center; flex-wrap:wrap; gap:8px; background:#fff;">
+          <div style="text-align:center;">
+            <div style="font-size:12px; color:#64748b;">総合スコア</div>
+            <div class="ai-score-large">${safeStr(resultJson.total_score)} <span style="font-size:14px; color:#64748b;">/ 100</span></div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:12px; color:#64748b;">判定 / スタンス</div>
+            <div style="font-size:16px; font-weight:bold; color:#0f172a; margin-top:4px;">
+              <span class="ai-badge ${isBullish ? 'bullish' : ''}">${safeStr(resultJson.rating)}</span>
+              ${safeStr(resultJson.stance)}
+            </div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:12px; color:#64748b;">推奨アクション</div>
+            <div style="font-size:16px; font-weight:bold; color:#e11d48; margin-top:4px;">${safeStr(resultJson.action)}</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:12px; color:#64748b;">打診比率</div>
+            <div style="font-size:16px; font-weight:bold; margin-top:4px;">${safeStr(resultJson.position_ratio)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ai-summary-grid">
+        <div class="ai-card">
+          <div class="ai-card-title">💡 評価の理由</div>
+          <ul class="ai-list">
+            ${(resultJson.reason || []).map(r => `<li>${r}</li>`).join('')}
+          </ul>
+        </div>
+        <div class="ai-card">
+          <div class="ai-card-title">📊 スコア内訳</div>
+          <table style="width:100%; font-size:13px; color:#334155; line-height:1.8;">
+            <tr><td>初動・勢い</td><td style="text-align:right; font-weight:bold;">${scoreBreakdown.initial || 0}</td></tr>
+            <tr><td>テーマ鮮度</td><td style="text-align:right; font-weight:bold;">${scoreBreakdown.themes || 0}</td></tr>
+            <tr><td>財務・増資</td><td style="text-align:right; font-weight:bold;">${scoreBreakdown.fundamentals || 0}</td></tr>
+            <tr><td>テクニカル</td><td style="text-align:right; font-weight:bold;">${scoreBreakdown.technical || 0}</td></tr>
+            <tr><td>支持・抵抗</td><td style="text-align:right; font-weight:bold;">${scoreBreakdown.support_resist || 0}</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="ai-summary-grid">
+        <div class="ai-card" style="border-left: 4px solid #10b981;">
+          <div class="ai-card-title">✅ 強気ポイント</div>
+          <ul class="ai-list">
+            ${(resultJson.key_points || []).map(k => `<li>${k}</li>`).join('')}
+          </ul>
+        </div>
+        <div class="ai-card" style="border-left: 4px solid #f43f5e;">
+          <div class="ai-card-title">⚠️ リスク要因</div>
+          <ul class="ai-list">
+            ${(resultJson.risk_factors || []).map(k => `<li>${k}</li>`).join('')}
+          </ul>
+        </div>
+      </div>
+    `;
+
+    body.innerHTML = html; // textContent ではなく innerHTML でHTMLとして流し込む
+    modal.style.display = 'block';
+
+    // 成功状態のボタンUI
+    btn.textContent = "完了";
+    btn.style.backgroundColor = "var(--green)";
+
+  } catch (err) {
+    console.error("API call failed:", err);
+    // 失敗状態のボタンUI
+    btn.textContent = "エラー";
+    btn.style.backgroundColor = "#e11d48"; // 赤
+  } finally {
+    // 2秒後にボタンを元の状態に戻す
+    setTimeout(() => { 
+      btn.textContent = originalText; 
+      btn.style.backgroundColor = ""; 
+      btn.disabled = false;
+      btn.style.cursor = "pointer";
+    }, 2000);
+  }
+});
+
+// === 追加ここまで ===
 
   // === ★追加: TOBポップアップ制御 ===
 (function(){
@@ -3441,6 +3526,7 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="AIスコア" data-type="num">AIスコア<span class="arrow"></span></th>
             <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
+            <th>プロンプト</th>
             <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
@@ -3502,59 +3588,6 @@ window.showTobHistory = function(btn, jsonStr) {
     </div>
   </section>
 
-  <section id="tab-tmr" class="tab hidden">
-    <div class="tbl-wrap">
-      <div id="tmr-label" style="margin:8px 0 4px;font-weight:800;font-size:16px;color:#0d3b66;"></div>
-      <table id="tbl-tmr" class="tbl">
-        <thead>
-          <tr>
-            <th class="sortable" data-col="コード" data-type="text">コード<span class="arrow"></span></th>
-            <th class="sortable" data-col="銘柄名" data-type="text">銘柄<span class="arrow"></span></th>
-            <th data-col="市場">市場</th>
-            <th>Yahoo</th>
-            <th>X</th>
-            <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
-            <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
-            <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
-            <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
-            <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
-            <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
-            <th>財務</th>
-            <th data-col="増資リスク">増資リスク</th>
-            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
-            <th class="reason-col" data-col="増資理由">理由</th>
-            <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
-            <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
-            <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
-            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
-
-  <section id="tab-preearn" class="tab hidden">
-     <div class="tbl-wrap">
-       <table id="tbl-preearn" class="tbl">
-         <thead>
-           <tr>
-             <th>銘柄</th>
-             <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
-             <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
-             <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
-             <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
-             <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
-             <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
-             <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
-             <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
-           </tr>
-         </thead>
-         <tbody id="preearn-body"></tbody>
-       </table>
-     </div>
-  </section>
 
 <script>
 document.addEventListener('DOMContentLoaded', function(){
