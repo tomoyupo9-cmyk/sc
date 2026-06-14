@@ -26,73 +26,6 @@
     margin:16px; color:var(--ink); background:#fff;
   }
 
-  /* ================================================================= */
-  /* 🔥 【クオンツ拡張】 スマホ実機・レスポンシブ文字拡大パッチ（1行集約版） */
-  /* ================================================================= */
-  @media (max-width: 768px) {
-    body {
-      margin: 6px 4px !important;
-    }
-
-    .tbl-wrap {
-      max-height: 85vh !important;
-      overflow-x: auto !important;
-      overflow-y: auto !important;
-      -webkit-overflow-scrolling: touch !important;
-    }
-
-    .tbl-wrap > table {
-      width: max-content !important;
-      min-width: 100% !important;
-    }
-
-    /* 文字は12px〜13pxで視認性を確保しつつ、上下の隙間を2pxに殺して縦潰し */
-    .tbl th, .tbl td {
-      font-size: 12px !important;  
-      padding: 2px 4px !important; /* 上下2px、左右4pxで完全にPC並みの薄さに */
-      line-height: 1.25 !important;
-      text-overflow: clip !important; 
-    }
-
-    #tbl-candidate thead th,
-    #tbl-allcols thead th,
-    #tbl-tmr thead th,
-    #tbl-preearn thead th {
-      font-size: 12px !important;
-      padding: 4px 4px !important;
-      background: color-mix(in oklab, var(--bg) 90%, black) !important;
-    }
-
-    .tbl tbody tr {
-      height: 22px !important; /* 行の高さを元の22pxに再固定して縦伸びを完全阻止 */
-    }
-
-    td[data-col="目標値"] {
-      font-size: 11px !important;
-      line-height: 1.25 !important;
-    }
-
-    nav {
-      gap: 4px !important;
-      margin-bottom: 8px !important;
-    }
-    nav a {
-      flex: 1 1 auto;
-      text-align: center;
-      padding: 8px 10px !important; 
-      font-size: 12px !important;
-      height: auto !important;
-      line-height: 1.2 !important;
-    }
-    
-    #q {
-      min-width: 100% !important;
-      height: 32px !important;
-      font-size: 12px !important;
-    }
-  }
-  /* ================================================================= */
-
   nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
   nav a{padding:6px 10px;border-radius:8px;text-decoration:none;background:#e1e8f0;color:#1f2d3d;font-weight:600}
   nav a.active{background:var(--blue);color:#fff}
@@ -828,13 +761,6 @@
     }
   }
 
-/* Squeeze列の装飾 */
-.squeeze-col { 
-  font-family: monospace; 
-  text-align: center; 
-  font-size: 11px;
-  color: #475569;
-}
 
 </style>
 
@@ -1194,6 +1120,7 @@ function applyFreeze(tableId, uptoIdx){
   <nav>
     <a href="#" id="lnk-cand" class="active">候補一覧</a>
     <a href="#" id="lnk-tmr">明日用</a>
+    <!-- <a href="#" id="lnk-preearn">決算(予測)</a>-->
     <span class="mini" style="margin-left:auto">build: {{ build_id }}</span>
     <span id="nav-summary-anchor"></span></nav>
 
@@ -1315,90 +1242,101 @@ function applyFreeze(tableId, uptoIdx){
     "AIスコア": "AIによる有望度評価（0-100点）。トレンド・RSI・乖離率・市場地合い等を総合分析。",
     "AI判定": "AIスコアが基準（70点）以上の場合に「★GO」を表示。買いシグナルの候補。",
     "AI目標値": "AI判定が「★GO」の場合の目標株価。現在値の+10%を目安に設定。",
-    "抵抗帯中心": "過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
-    "抵抗最終日": "直近で抵抗帯に触れた日。",
-    "最寄り抵抗": "現在値以上で最も近い抵抗。",
-    "支持帯中心": "過去データからタッチ回数が最も多い価格帯の中心（支持）。",
-    "支持最終日": "直近で支持帯に触れた日。",
-    "最寄り支持": "現在値以下で最も近い支持。",
-    "規定": "既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
-    "コード": "東証の銘柄コード（4桁、ETF等は例外あり）。",
-    "銘柄": "銘柄名。",
-    "現在値": "最新の株価（終値/スナップショット）。",
-    "前日終値": "その銘柄の前日の終値。基準価格となる。",
-    "高値": "当日の高値。",
-    "安値": "当日の安値。",
-    "5日": "単純移動平均（5日）。",
-    "25日": "単純移動平均（25日）。",
-    "75日": "単純移動平均（75日）。",
-    "抵抗HH": "過去N日(設定値)の最高値。",
-    "抵抗ゾーン": "タッチ回数最大の水平帯の中心値。",
-    "タッチ": "抵抗ゾーンへの到達回数。",
-    "最終": "抵抗ゾーンの最終タッチ日。",
-    "キリ番": "最高値に最も近い丸め値。",
-    "刻": "キリ番の刻み。",
-    "近": "最高値がキリ番に十分近いか。",
-    "斜め": "ピボット高値回帰の本日外挿値。",
-    "R²": "決定係数。",
-    "最近接抵抗": "現在値より上で最も近い抵抗。",
-    "前日比(円)": "当日の株価が前日終値から何円動いたか。",
-    "前日終値比率（％）": "【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
-    "出来高": "売買された株数。",
-    "売買代金(億)": "【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
-    "RVOL代金": "直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
-    "初動": "【シグナル】資金流入の初動。",
-    "底打ち": "【シグナル】反転兆候。",
-    "右肩": "【シグナル】右肩上がり。",
-    "早期": "右肩の“早期”局面。",
-    "早期S": "RVOL/代金/値動きの合成S。",
-    "財務スコア": "財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。",
-    "進捗率": "着手済み作業/想定全体の比率（%）。",
-    "増資リスク": "将来の増資・MSワラント等による希薄化リスクのラベル（高/中/低など）。",
-    "増資スコア": "増資リスクを0〜100で数値化した指標。値が高いほど希薄化リスクが高い。",
-    "判定": "最終判定。",
-    "判定理由": "候補にした根拠の要約。",
-    "推奨": "推奨ラベル。",
-    "推奨比率%": "推奨の強さ（%）。",
-    "更新": "シグナル最終更新日。",
-    "ブレイク": "高値更新＋出来高伴う上抜け。",
-    "ポケット": "押し目買い有利域。",
-    "20MAリバ": "20MA再突入。",
-    "200MAリクレイム": "200MAを回復し維持。",
-    "まとめ（優先度順）": "・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。",
-    "RS_5": "【相対強度5日】個別株の5日リターン − 対応指数（TOPX/GRT250）の5日リターン。正なら指数より強い。",
-    "RS_20": "【相対強度20日】個別株の20日リターン − 対応指数の20日リターン。中期の強さを示す。",
-    "Growth_Bias": "【グロース地合い】GRT250（グロース） − TOPX（大型）。正ならグロース資金優位の相場。",
-    "地合いフラグ": "+1=追い風（TOPXと日経平均が両方強い）、0=中立、-1=逆風（両方弱い）。市場環境全体の評価。",
-    "逆行強フラグ": "地合いが弱いのに個別株が強い状態。資金流入の強さを示す。",
-    "逆行弱フラグ": "地合いが強いのに個別株が弱い状態。逆風の可能性を示す。",
-    "指数サポレジ位置": "日経平均(^N225)・TOPIX(^TOPX)・スタンダード(1551) 等が、直近の「節目」のどこにいるかを表示します。\n\n●レジ直下：抵抗線がすぐ上にある状態\n　→ 天井が近く、叩き落とされるリスクあり（高値掴み注意）。\n　→ 勢いよく抜ければ「レジ抜け」となり上昇加速。\n\n●サポ直上：支持線がすぐ下にある状態\n　→ 下げ止まりやすく、押し目買いのチャンス。\n\n・レジ抜け：抵抗線を突破した強いゾーン（青天井）\n・サポ割れ：支持線を割り込んだ弱いゾーン（下落警戒）\n・レンジ内：上にも下にも動ける中間ゾーン",
-    "三角スコア": "Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n・▲(上昇)…トレンドとテーマ性。直近の株価推移・RS・出来高トレンドなどから「伸びやすさ」を評価しています。\n・◆(安定)…下落耐性と決算・財務の安定度。決算のブレや増資リスクが大きいほどスコアは低くなります。\n・■(ボラ)…ボラティリティの高さ。値動きが荒いほどスコアが高くなります（＝ハイボラ）。\n\nざっくりとした目安は以下です。\n・▲(上昇) 70以上：右肩〜ブレイク候補。押し目を優先的にチェック。\n・◆(安定) 60以上：ドローダウンが比較的浅く、崩れにくいゾーン。\nスコアは 0〜100。一般的には 70以上で強めです。\n\n-----------------------------------------------\n【三角スコア × ザラ場時間帯：最も勝ちやすい活用法】\n-----------------------------------------------\n\n◆▲（上昇）高い銘柄（70〜100）\n-----------------------------------------------\n● 最適時間帯：9:00〜9:30（寄り付き〜初動）\n・RS／出来高／買いアルゴなど「短期モメンタム」は寄り付きに最も現れる\n・寄り後10〜30秒で流れが決まることが多く、初動の判断に向く\n\n● エントリーの目安\n・寄り直後の強い連買い\n・VWAP 上維持\n・寄り付きギャップ +2〜4% の範囲\n\n-----------------------------------------------\n◆◆（安定）高い銘柄（70〜100）\n-----------------------------------------------\n● 最適時間帯：10:30〜11:30 / 13:00〜14:00\n・空売り機関／業績の安定性を反映しており「押し目で拾いやすい」\n・朝の騒乱を避け、落ち着いた時間帯に本領を発揮する\n\n● エントリーの目安\n・押し目 → 下ヒゲ → 高値切り上げの形\n・VWAP 回帰\n・中期右肩の継続確認\n\n-----------------------------------------------\n◆■（ボラ）高い銘柄（70〜100）\n-----------------------------------------------\n● 最適時間帯：9:00〜10:00 / 14:00〜14:30\n・値幅が出やすくデイトレ向き\n・“伸びる瞬間だけ” を取る戦略との相性が良い\n\n● エントリーの目安\n・1分足の出来高急増\n・板の食い上げ（連続成行）\n・伸び止まったら即撤退\n\n-----------------------------------------------\n【結論】\n● ▲（上昇）は“鮮度が命” → 寄り付き〜9:30\n● ◆（安定）は“押し目狙い” → 10:30〜14:00\n● ■（ボラ）は“瞬間勝負” → 9:00〜10:00 / 14:00〜14:30\n\n三角スコアは、時間帯と合わせて使うと最も威力を発揮します。\n・■(ボラ) 40〜70：デイトレ向きの「程よいボラ」。80以上はジェットコースター帯で、建玉サイズに注意。\n\n三角スコアだけで売買を決めるのではなく、「判定理由」「増資リスク」「ニュース」などとセットで、\n『伸びやすさ × 安定度 × ボラの程よさ』を一目で比較するための目安として使ってください。",
-    "VIXレジーム": "米国の恐怖指数 VIX の水準から、相場のボラティリティ環境をざっくり区分したものです。\n\n・低ボラ：VIX < 14。穏やかでリスクオン寄りの地合い。\n・通常レンジ：14〜20。平常モード。\n・警戒：20〜30。ボラ拡大中で、急落・乱高下に注意。\n・危険：30以上。高ボラ期で、パニック的な値動きが出やすいゾーン。\n\n指数サポレジ位置とセットで見ると、「価格の位置」と「ボラ環境」の両方を把握できます。",
-    "初動のみ": "資金流入の初動サインが出ている銘柄のみに絞り込む。",
-    "底打ちのみ": "下落トレンドからの転換兆候がある銘柄のみに絞り込む。",
-    "両立のみ": "初動と右肩上がりの両方の条件を満たす強い銘柄のみ表示。",
-    "右肩上がりのみ": "移動平均が右肩上がりを維持している安定上昇銘柄のみ表示。",
-    "早期のみ": "上昇トレンドの初期段階にある銘柄のみに絞り込む。",
-    "早期種別あり": "ブレイクやポケット等の早期シグナルが分類されているもののみ表示。",
-    "エントリー有力のみ": "AIの推奨アクションが「エントリー有力」の銘柄のみ表示。",
-    "小口提案のみ": "小口資金でもエントリー可能な提案銘柄のみを表示。",
-    "空売り機関なしのみ": "空売り機関の残高が確認されない、または少ない銘柄のみ表示。",
-    "割安（営利対時価10%以上）のみ": "営業利益/時価総額の比率が10%以上の割安銘柄のみを表示。",
-    "当たりのみ": "過去のシグナルで結果が出ている銘柄のみを表示。",
-    "RS強（RS_5 > 0）": "5日リターンが市場平均を上回っている相対的に強い銘柄のみ表示。",
-    "地合い：追い風（+1）": "市場環境全体が上昇トレンドにある場合に絞り込む。",
-    "地合い：逆風（-1）": "市場環境全体が下落トレンドにある場合に絞り込む。",
-    "逆行強": "市場が弱い中でも相対的に強く推移している銘柄を表示。",
-    "逆行弱": "市場が強いのに対し、相対的に弱い動きをしている銘柄を表示。",
-    "上昇率≥": "前日終値からの上昇率のフィルター。3.0を入力すると3%以上上昇した銘柄を表示。",
-    "売買代金≥": "当日の売買代金（億円）。デイトレ適性を測るための重要な流動性指標。",
-    "RVOL代金≥": "当日の売買代金が直近平均の何倍か。資金集中を示す重要な指標。",
-    "進捗率≥": "決算発表における進捗率フィルター。",
-    "財務スコア≥": "財務状況を総合点数化したフィルター。高いほど堅実。",
-    "株価≥": "現在値の下限フィルター。",
-    "～ ≤": "現在値の上限フィルター。",
-    "AIスコア≥": "AIが算出した有望度スコアの最低ライン。",
-    "▲(上昇) ≥": "トレンドの強さを示すスコアの上限フィルタ。"
+    "抵抗帯中心":"過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
+    "抵抗最終日":"直近で抵抗帯に触れた日。",
+    "最寄り抵抗":"現在値以上で最も近い抵抗。",
+    "支持帯中心":"過去データからタッチ回数が最も多い価格帯の中心（支持）。",
+    "支持最終日":"直近で支持帯に触れた日。",
+    "最寄り支持":"現在値以下で最も近い支持。",
+    "規定":"既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
+    "コード":"東証の銘柄コード（4桁、ETF等は例外あり）。",
+    "銘柄":"銘柄名。","現在値":"最新の株価（終値/スナップショット）。","前日終値":"その銘柄の前日の終値。基準価格となる。",
+    "高値":"当日の高値。","安値":"当日の安値。","5日":"単純移動平均（5日）。","25日":"単純移動平均（25日）。","75日":"単純移動平均（75日）。",
+    "抵抗HH":"過去N日(設定値)の最高値。","抵抗ゾーン":"タッチ回数最大の水平帯の中心値。","タッチ":"抵抗ゾーンへの到達回数。","最終":"抵抗ゾーンの最終タッチ日。",
+    "キリ番":"最高値に最も近い丸め値。","刻":"キリ番の刻み。","近":"最高値がキリ番に十分近いか。","斜め":"ピボット高値回帰の本日外挿値。","R²":"決定係数。",
+    "最近接抵抗":"現在値より上で最も近い抵抗。",
+    "前日比(円)":"当日の株価が前日終値から何円動いたか。",
+    "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
+    "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
+    "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
+    "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
+    "財務スコア":"財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。","進捗率":"着手済み作業/想定全体の比率（%）。",
+    "増資リスク":"将来の増資・MSワラント等による希薄化リスクのラベル（高/中/低など）。",
+    "増資スコア":"増資リスクを0〜100で数値化した指標。値が高いほど希薄化リスクが高い。",
+    "判定":"最終判定。","判定理由":"候補にした根拠の要約。","推奨":"推奨ラベル。","推奨比率%":"推奨の強さ（%）。","更新":"シグナル最終更新日。",
+    "ブレイク":"高値更新＋出来高伴う上抜け。","ポケット":"押し目買い有利域。","20MAリバ":"20MA再突入。","200MAリクレイム":"200MAを回復し維持。",
+    "まとめ（優先度順）":"・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。",
+    "RS_5":"【相対強度5日】個別株の5日リターン − 対応指数（TOPX/GRT250）の5日リターン。正なら指数より強い。",
+    "RS_20":"【相対強度20日】個別株の20日リターン − 対応指数の20日リターン。中期の強さを示す。",
+    "Growth_Bias":"【グロース地合い】GRT250（グロース） − TOPX（大型）。正ならグロース資金優位の相場。",
+    "地合いフラグ":"+1=追い風（TOPXと日経平均が両方強い）、0=中立、-1=逆風（両方弱い）。市場環境全体の評価。",
+    "逆行強フラグ":"地合いが弱いのに個別株が強い状態。資金流入の強さを示す。",
+    "逆行弱フラグ":"地合いが強いのに個別株が弱い状態。逆風の可能性を示す。",
+    "指数サポレジ位置": 
+      "日経平均(^N225)・TOPIX(^TOPX)・スタンダード(1551) 等が、直近の「節目」のどこにいるかを表示します。\n\n" +
+      "●レジ直下：抵抗線がすぐ上にある状態\n" +
+      "　→ 天井が近く、叩き落とされるリスクあり（高値掴み注意）。\n" +
+      "　→ 勢いよく抜ければ「レジ抜け」となり上昇加速。\n\n" +
+      "●サポ直上：支持線がすぐ下にある状態\n" +
+      "　→ 下げ止まりやすく、押し目買いのチャンス。\n\n" +
+      "・レジ抜け：抵抗線を突破した強いゾーン（青天井）\n" +
+      "・サポ割れ：支持線を割り込んだ弱いゾーン（下落警戒）\n" +
+      "・レンジ内：上にも下にも動ける中間ゾーン",
+        "三角スコア":"Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n" +
+    "・▲(上昇)…トレンドとテーマ性。直近の株価推移・RS・出来高トレンドなどから「伸びやすさ」を評価しています。\n" +
+    "・◆(安定)…下落耐性と決算・財務の安定度。決算のブレや増資リスクが大きいほどスコアは低くなります。\n" +
+    "・■(ボラ)…ボラティリティの高さ。値動きが荒いほどスコアが高くなります（＝ハイボラ）。\n\n" +
+    "ざっくりとした目安は以下です。\n" +
+    "・▲(上昇) 70以上：右肩〜ブレイク候補。押し目を優先的にチェック。\n" +
+    "・◆(安定) 60以上：ドローダウンが比較的浅く、崩れにくいゾーン。\n" +
+    "スコアは 0〜100。一般的には 70以上で強めです。\n\n" +
+    "-----------------------------------------------\n" +
+    "【三角スコア × ザラ場時間帯：最も勝ちやすい活用法】\n" +
+    "-----------------------------------------------\n\n" +
+    "◆▲（上昇）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：9:00〜9:30（寄り付き〜初動）\n" +
+    "・RS／出来高／買いアルゴなど「短期モメンタム」は寄り付きに最も現れる\n" +
+    "・寄り後10〜30秒で流れが決まることが多く、初動の判断に向く\n\n" +
+    "● エントリーの目安\n" +
+    "・寄り直後の強い連買い\n" +
+    "・VWAP 上維持\n" +
+    "・寄り付きギャップ +2〜4% の範囲\n\n" +
+    "-----------------------------------------------\n" +
+    "◆◆（安定）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：10:30〜11:30 / 13:00〜14:00\n" +
+    "・空売り機関／業績の安定性を反映しており「押し目で拾いやすい」\n" +
+    "・朝の騒乱を避け、落ち着いた時間帯に本領を発揮する\n\n" +
+    "● エントリーの目安\n" +
+    "・押し目 → 下ヒゲ → 高値切り上げの形\n" +
+    "・VWAP 回帰\n" +
+    "・中期右肩の継続確認\n\n" +
+    "-----------------------------------------------\n" +
+    "◆■（ボラ）高い銘柄（70〜100）\n" +
+    "-----------------------------------------------\n" +
+    "● 最適時間帯：9:00〜10:00 / 14:00〜14:30\n" +
+    "・値幅が出やすくデイトレ向き\n" +
+    "・“伸びる瞬間だけ” を取る戦略との相性が良い\n\n" +
+    "● エントリーの目安\n" +
+    "・1分足の出来高急増\n" +
+    "・板の食い上げ（連続成行）\n" +
+    "・伸び止まったら即撤退\n\n" +
+    "-----------------------------------------------\n" +
+    "【結論】\n" +
+    "● ▲（上昇）は“鮮度が命” → 寄り付き〜9:30\n" +
+    "● ◆（安定）は“押し目狙い” → 10:30〜14:00\n" +
+    "● ■（ボラ）は“瞬間勝負” → 9:00〜10:00 / 14:00〜14:30\n\n" +
+    "三角スコアは、時間帯と合わせて使うと最も威力を発揮します。\n" +
+    "・■(ボラ) 40〜70：デイトレ向きの「程よいボラ」。80以上はジェットコースター帯で、建玉サイズに注意。\n\n" +
+    "三角スコアだけで売買を決めるのではなく、「判定理由」「増資リスク」「ニュース」などとセットで、\n" +
+    "『伸びやすさ × 安定度 × ボラの程よさ』を一目で比較するための目安として使ってください。",
+    "VIXレジーム":"米国の恐怖指数 VIX の水準から、相場のボラティリティ環境をざっくり区分したものです。\n\n" +
+    "・低ボラ：VIX < 14。穏やかでリスクオン寄りの地合い。\n" +
+    "・通常レンジ：14〜20。平常モード。\n" +
+    "・警戒：20〜30。ボラ拡大中で、急落・乱高下に注意。\n" +
+    "・危険：30以上。高ボラ期で、パニック的な値動きが出やすいゾーン。\n\n" +
+    "指数サポレジ位置とセットで見ると、「価格の位置」と「ボラ環境」の両方を把握できます。"
   };
 
   window.DATACOL_TO_HELPKEY = {
@@ -1536,22 +1474,46 @@ function applyFreeze(tableId, uptoIdx){
       if(key) makeQ(th, key);
     });
   }
-  function attachQHelpsToToolbar() {
-    // ツールバー内にあるすべての label を取得して処理する
-    const labels = document.querySelectorAll('#toolbar label');
-    
-    labels.forEach(lb => {
-        // すでに「?」ボタンが付いている場合はスキップ（二重付与防止）
-        if (lb.querySelector('.qhelp')) return;
-
-        // labelの中のテキストを取得（余計な空白を除去）
-        const labelText = (lb.textContent || '').trim();
-        
-        // HELP_TEXT にそのラベル名が存在する場合のみ付与
-        if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, labelText)) {
-            makeQ(lb, labelText);
-        }
+  function attachQHelpsToToolbar(){
+    const resolveLabel = (inp) => {
+      if (!inp) return null;
+      let lb = inp.closest && inp.closest('label');
+      if (lb) return lb;
+      if (inp.labels && inp.labels.length) return inp.labels[0];
+      if (inp.id) {
+        lb = document.querySelector(`label[for="${inp.id}"]`);
+        if (lb) return lb;
+      }
+      let p = inp.previousElementSibling;
+      for (let i=0; i<3 && p; i++, p=p.previousElementSibling) { if (p.tagName === 'LABEL') return p; }
+      return inp.parentElement || null;
+    };
+    const pairs = [
+      ['#f_defaultset','規定'],
+      ['#th_rate','前日終値比率（％）'],
+      ['#th_turn','売買代金(億)'],
+      ['#th_rvol','RVOL代金'],
+      ['#th_progress','進捗率'],
+      ['#th_score','財務スコア'],
+      ['#th_pmin','現在値'],
+      ['#th_pmax','現在値'],
+    ];
+    pairs.forEach(([sel, key])=>{
+      const inp = document.querySelector(sel);
+      const lb  = resolveLabel(inp);
+      if (lb) makeQ(lb, key);
     });
+    if (window.HELP_TEXT) {
+      document.querySelectorAll('#toolbar .early-filter label').forEach(lb=>{
+        const key = (lb.textContent || '').trim();
+        if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) { if (!lb.querySelector('.qhelp')) makeQ(lb, key); }
+      });
+      document.querySelectorAll('#toolbar label').forEach(lb=>{
+        if (lb.querySelector('.qhelp')) return;
+        const key = (lb.textContent || '').trim();
+        if (Object.prototype.hasOwnProperty.call(window.HELP_TEXT, key)) { makeQ(lb, key); }
+      });
+    }
   }
 
   // copy link（単一コード）
@@ -2357,7 +2319,6 @@ function renderIndexSrSummary(){
         <td class="theme-col" data-col="関連テーマ" title="${escapeHtml(r["関連テーマ"]?.replace(/<[^>]*>/g, "") || "")}">${r["関連テーマ"] || ""}</td>
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
-        <td><button onclick="copyPrompt('${r['コード']}', '${r['銘柄名']}')" style="cursor:pointer; font-size:10px;">🚀</button></td>
         <td class="num triangle-cell" 
             data-col="三角スコア"
             data-growth="${g}" 
@@ -2371,7 +2332,6 @@ function renderIndexSrSummary(){
         <td class="num">${r["AIスコア"] || "-"}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num">${r["AI目標値"] || "-"}</td>
-        <td class="squeeze-col">${r["Squeeze_Label"] || "○○○"}</td>
         <td data-col="株探ニュース(3)" class="news-col" title="${escapeHtml(String(r["株探ニュース(3)"]||"").replace(/<[^>]*>/g, ""))}">${r["株探ニュース(3)"] || ""}</td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
@@ -2405,11 +2365,6 @@ function renderIndexSrSummary(){
         <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
         <td>${formatJudgeLabel(r)}</td>
         <td class="reason-col">${escapeHtml(r["判定理由"] || "")}</td>
-        <td data-col="目標値" data-sort="${r['rikaku_txt'] || ''}" style="font-size:11px; white-space:nowrap; padding:2px 4px !important;">
-          <span style="color:var(--ink); font-weight:600;">仕:${r['shikomi_txt']||'-'}</span> / 
-          <span style="color:var(--green); font-weight:700;">利:${r['rikaku_txt']||'-'}</span> / 
-          <span style="color:var(--orange);">損:${r['songiri_txt']||'-'}</span>
-        </td>
         <td>${recBadge}</td>
         <td class="num">${r["推奨比率"] ?? ""}</td>
         <td>${r["シグナル更新日"] || ""}</td>
@@ -2513,10 +2468,8 @@ function renderIndexSrSummary(){
         <td class="num" data-sort="${r['現在値_raw'] ?? ''}">${r['現在値'] ?? ''}</td>
         <td class="num" data-sort="${r['前日終値比率_raw'] ?? ''}">${r['前日終値比率'] ?? ''}</td>
         <td style="${shStyle}">${escapeHtml(shVal)}</td>
-        <td class="theme-col" data-col="最新テーマ" title="${escapeHtml(String(r["最新テーマ"] || ""))}">${escapeHtml(r["最新テーマ"] || "")}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num">${r["AI目標値"] || "-"}</td>
-        <td class="squeeze-col">${r["Squeeze_Label"] || "○○○"}</td>
         <td class="num">${r["売買代金(億)"]??""}</td>
         <td>${financeLink(r["コード"])}${financeNote(r)}</td>
         <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
@@ -2525,11 +2478,6 @@ function renderIndexSrSummary(){
         <td class="num">${r["右肩早期スコア"]??""}</td>
         <td>${escapeHtml((r["右肩早期種別"]||"").trim())}</td>
         <td>${isHit ? "当たり！(1)" : "外れ！(1)"}</td>
-        <td data-col="目標値" style="font-size:11px; white-space:nowrap; padding:2px 4px !important;">
-          <span style="color:var(--ink); font-weight:600;">仕:${r['shikomi_txt']||'-'}</span> / 
-          <span style="color:var(--green); font-weight:700;">利:${r['rikaku_txt']||'-'}</span> / 
-          <span style="color:var(--orange);">損:${r['songiri_txt']||'-'}</span>
-        </td>
         <td>${recBadge}</td>
       </tr>`;
     });
@@ -2647,7 +2595,77 @@ function renderIndexSrSummary(){
     });
   }
 
-  
+  function renderPreEarnings(rows){
+    function pickNameAndCode(rawName, rawCode){
+      const html = String(rawName ?? "");
+      let name = html.replace(/<[^>]*>/g,"").replace(/\s*\(\d{4}\)\s*$/,"").trim();
+      if (!name) name = String(rawName ?? "").trim();
+      let code = (rawCode ?? "").toString();
+      if (!/^\d{4}$/.test(code)){
+        const m1 = html.match(/\((\d{4})\)/);
+        if (m1) code = m1[1];
+      }
+      if (!/^\d{4}$/.test(code)){
+        const m2 = html.match(/quote\/(\d{4})\.T/i);
+        if (m2) code = m2[1];
+      }
+      return { name, code: /^\d{4}$/.test(code) ? code : "" };
+    }
+    const esc = (s)=>String(s??"").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
+
+    const tbl   = document.getElementById("tbl-preearn");
+    const thead = tbl?.querySelector("thead tr");
+    const tbody = document.getElementById("preearn-body");
+    if(!tbl||!thead||!tbody){ return; }
+
+    thead.innerHTML = `
+      <th>コード</th><th>銘柄</th><th>Yahoo</th>
+      <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
+      <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
+      <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
+      <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
+      <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
+      <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
+      <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
+      <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
+    `;
+
+    if(!rows?.length){
+      tbody.innerHTML = `<tr><td colspan="12" class="muted">データなし</td></tr>`;
+      wireDomSort("#tbl-preearn");
+      _formatTwoDecimals("#tbl-preearn");
+      attachQHelpsToHead('#tbl-preearn');
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r=>{
+      const rawName = r.name ?? r.symbol ?? r.銘柄 ?? "";
+      const rawCode = r.code ?? r.ticker ?? r.symbol ?? r.コード ?? "";
+      const { name, code } = pickNameAndCode(rawName, rawCode);
+      const code4   = code ? String(code).padStart(4,"0") : "";
+      const yahoo   = code4 ? `<a href="${yUrl(code4)}" target="_blank" rel="noopener">Yahoo</a>` : "";
+
+      return `<tr>
+        <td>${code4 ? codeLink(code4) : ""}</td>
+        <td>${escapeHtml(name)}</td>
+        <td>${yahoo}</td>
+        <td class="num">${_fmt2num(r.pre_score)}</td>
+        <td class="num">${_fmt2num(r.edge_score)}</td>
+        <td class="num">${_fmt2num(r.momentum_score)}</td>
+        <td class="reason-col"><div class="reason-box">${escapeHtml(r["スコア理由"] ?? "根拠薄め（暫定）")}</div></td>
+        <td class="hint-col"><div class="reason-box">${escapeHtml(r["予測ヒント"] ?? "（準備中）")}</div></td>
+        <td class="num">${_fmt2num(r["期待株価"]) || (_fmt2num(r.現在値) || "")}</td>
+        <td>${escapeHtml(r["修正見通し"] ?? "中立")}</td>
+        <td>${escapeHtml(r["過熱度"] ?? "中立")}</td>
+      </tr>`;
+    }).join("");
+
+    wireDomSort("#tbl-preearn");
+    _formatTwoDecimals("#tbl-preearn");
+    attachQHelpsToHead('#tbl-preearn');
+  }
+
   // help & modal
   function ensureHelpDom(){
     let bd=document.querySelector(".help-backdrop");
@@ -3266,6 +3284,14 @@ function renderIndexSrSummary(){
       return;
     }
 
+
+    if (to === "preearn"){
+      $("#tab-preearn")?.classList.remove("hidden");
+      $("#lnk-preearn")?.classList.add("active");
+      renderPreEarnings(DATA_PREEARN);
+      if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-preearn'); }catch(_){ } }
+      return;
+    }
   }
   
   
@@ -3280,7 +3306,7 @@ function renderIndexSrSummary(){
   
   
   (function(){
-    const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all" };
+    const map = { "lnk-cand":"cand","lnk-tmr":"tmr","lnk-all":"all","lnk-preearn":"preearn" };
     window.NAV_MAP = map;
     Object.keys(map).forEach(id=>{
       const a = document.getElementById(id);
@@ -3300,6 +3326,7 @@ function renderIndexSrSummary(){
       // ① RAWを読む（__DATA__ を同期パース）
       RAW = readRAW();
       
+
       // ★ ここで offer_codes → OFFER_SET を構築
       rebuildOfferSet();
       console.log(
@@ -3309,7 +3336,9 @@ function renderIndexSrSummary(){
         OFFER_SET.size
       );
       
-      DATA_CAND = Array.isArray(RAW.cand) ? RAW.cand : [];
+      const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
+      DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
+      DATA_PREEARN = Array.isArray(_preSrc)      ? _preSrc      : [];
 
       // ② まず候補タブを描画（テーブルがDOMに並ぶ）
       switchTab("cand");
@@ -3408,12 +3437,10 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="sortable" data-col="関連テーマ" data-type="text">関連テーマ<span class="arrow"></span></th>
             <th>Yahoo</th>
             <th>X</th>
-            <th>分析</th>
             <th class="num sortable" data-col="三角スコア" data-type="num">△Score<span class="arrow"></span></th>
             <th class="num sortable" data-col="AIスコア" data-type="num">AIスコア<span class="arrow"></span></th>
             <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
-            <th class="sortable" data-col="Squeeze" data-type="text">SQZ<span class="arrow"></span></th>
             <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
@@ -3446,8 +3473,7 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">右肩早期スコア<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
-            <th class="sortable" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
-            <th class="sortable" data-col="目標値" data-type="text" style="color:var(--orange);">目標値 (仕込/利確/損切)<span class="arrow"></span></th>
+            <th class="sortable reason-col" data-col="判定理由" data-type="text">判定理由<span class="arrow"></span></th>
             <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
             <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
             <th class="sortable" data-col="シグナル更新日" data-type="date">シグナル更新日<span class="arrow"></span></th>
@@ -3490,10 +3516,8 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
-            <th class="sortable" data-col="最新テーマ" data-type="text">最新テーマ<span class="arrow"></span></th>
             <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
-            <th class="sortable" data-col="Squeeze" data-type="text">SQZ<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
             <th>財務</th>
             <th data-col="増資リスク">増資リスク</th>
@@ -3502,13 +3526,34 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="右肩早期スコア" data-type="num">早期S<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="text">右肩早期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="判定" data-type="text">判定<span class="arrow"></span></th>
-            <th class="sortable" data-col="目標値" data-type="text" style="color:var(--orange);">目標値 (仕込/利確/損切)<span class="arrow"></span></th>
             <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
+  </section>
+
+
+  <section id="tab-preearn" class="tab hidden">
+     <div class="tbl-wrap">
+       <table id="tbl-preearn" class="tbl">
+         <thead>
+           <tr>
+             <th>銘柄</th>
+             <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
+             <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
+             <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
+             <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
+             <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
+             <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
+             <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
+           </tr>
+         </thead>
+         <tbody id="preearn-body"></tbody>
+       </table>
+     </div>
   </section>
 
 <script>
@@ -3635,60 +3680,6 @@ function kabuNewsCell(code){
     return items.join(" ・ ");
   }catch(_){ return ""; }
 }
-</script>
-<script>
-  window.copyPrompt = function(code, name) {
-    const rowData = window.__DATA__.cand.find(r => String(r.コード).padStart(4,"0") === String(code).padStart(4,"0"));
-    const prompt = `# ==============================================================================
-# QUANTS ANALYSIS PROMPT (PROFESSIONAL VERSION)
-# ==============================================================================
-
-[ROLE]
-あなたは世界トップクラスのクオンツエンジニアであり、現役のプロトレーダーです。
-提供された構造化データ(JSON)を読み解き、1ヶ月スイングの視点で論理的かつ冷徹な戦略を立案せよ。
-
-[INPUT DATA]
-${JSON.stringify(rowData, null, 2)}
-
-[THINKING PROCESS]
-回答を生成する前に、必ず以下のステップで思考を展開せよ：
-1. トレンド構造の分解: 移動平均とRS(相対強度)から、トレンドの「継続性」を判定せよ。
-2. ボラティリティ検知: ATRに基づき、ノイズ（一時的な揺れ）と有意な値動きを分別せよ。
-3. リスクの定量化: 支持/抵抗線を基に、エントリーの期待値（利幅/損失幅）を計算せよ。
-4. 戦略的結論: 1ヶ月スイングとしての優位性を論理的に導き出せ。
-
-[ANALYTICS REQUIREMENTS]
-分析には、以下の数値を必ず算出・明記すること：
-- トレンドバイアス: 短期/中期移動平均との乖離状況
-- 期待値シミュレーション: 現在値から目標価格(利確)までの上値余地と、損切りラインまでの下値リスクの比率（RR比）
-- 需給過熱度: RVOL（出来高急増倍率）と出来高推移による資金集中度
-
-[CONSTRAINTS]
-- 根拠のない推測（ハルシネーション）は厳禁。数値データのみに基づき判断せよ。
-- 回答は、「感情的な応援」ではなく「投資判断のためのファクトとロジック」で構成せよ。
-- 1ヶ月スイングに適さない場合は、その旨を明確に警告せよ。
-
-[OUTPUT FORMAT]
-出力は以下のJSON形式をベースにし、分析内容はMarkdownで補足せよ。
-
-\`\`\`json
-{
-  "ticker": "${code}",
-  "trend_score": <1-100>,
-  "volatility_score": <1-100>,
-  "risk_reward_ratio": <float>,
-  "strategy": "HOLD/BUY/SELL/WAIT"
-}
-\`\`\`
-
-## 分析レポート
-(ここに論理的な分析内容を記述せよ)
-# ==============================================================================`;
-
-    navigator.clipboard.writeText(prompt).then(() => {
-        alert("プロフェッショナル分析プロンプトをコピーしました！チャットに貼り付けてください。");
-    });
-};
 </script>
 </body>
 </html>

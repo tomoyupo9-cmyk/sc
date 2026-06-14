@@ -4315,7 +4315,7 @@ def phase_signal_detection(conn: sqlite3.Connection):
         part = codes[i:i+500]
         qmarks = ",".join("?" * len(part))
         df = pd.read_sql_query(f"""
-            SELECT コード, 日付, 終値, 高値, 安値, 出来高
+            SELECT コード, 日付, 始値, 終値, 高値, 安値, 出来高
             FROM price_history
             WHERE 日付 >= ? AND コード IN ({qmarks})
             ORDER BY コード, 日付
@@ -4347,6 +4347,10 @@ def phase_signal_detection(conn: sqlite3.Connection):
         # MA13 / MA26 一括計算（add_price_featuresで未計算の場合の保険）
         if "MA13" not in df.columns:
             df["MA13"] = grp["終値"].transform(lambda x: x.rolling(13).mean())
+        # ▼▼▼ これを追加 ▼▼▼
+        if "MA25" not in df.columns:
+            df["MA25"] = grp["終値"].transform(lambda x: x.rolling(25).mean())
+        # ▲▲▲ ここまで ▲▲▲
         if "MA26" not in df.columns:
             df["MA26"] = grp["終値"].transform(lambda x: x.rolling(26).mean())
             
@@ -4367,7 +4371,26 @@ def phase_signal_detection(conn: sqlite3.Connection):
             # --- 初動 ---
             vol_bai = (last["出来高"] / last["出来高_ma5"]) if last["出来高_ma5"] else 0
             price_ma5_ratio = last["終値"] / last["終値_ma5"] if last["終値_ma5"] else 0
-            shodou = "候補" if (vol_bai >= 2 and price_ma5_ratio >= 1.03 and zenhi > 0) else None
+            
+            # ① 既存ロジック：急騰ブレイク初動（出来高2倍以上、5日線から+3%以上乖離、前日比プラス）
+            cond_shodou_normal = (vol_bai >= 2 and price_ma5_ratio >= 1.03 and zenhi > 0)
+            
+            # ② 新規ロジック：25日線反転初動（押し目からの反発）
+            cond_shodou_reversal = False
+            if "MA25" in last and pd.notna(last["MA25"]) and pd.notna(last["始値"]):
+                ma25 = last["MA25"]
+                # 条件1: 安値が25日線に接近(上2%以内)、または下抜けしてタッチした
+                near_ma25 = (last["安値"] <= ma25 * 1.02)
+                # 条件2: 終値はしっかり25日線を上回って維持している
+                close_above = (last["終値"] > ma25)
+                # 条件3: 陽線である（反発の強い証拠：終値 > 始値）
+                is_yousen = (last["終値"] > last["始値"])
+                # 条件4: 出来高が伴っている（5日平均の1.5倍以上。急騰時より少し条件を緩和）
+                
+                cond_shodou_reversal = (near_ma25 and close_above and is_yousen and vol_bai >= 1.5)
+
+            # どちらか一方でも満たせば「候補」とする
+            shodou = "候補" if (cond_shodou_normal or cond_shodou_reversal) else None
 
             # --- 底打ち ---
             range_ok = False
@@ -5111,7 +5134,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "営業利益","増資リスク","増資スコア","増資理由","財務コメント",
         "スコア","進捗率","overall_alpha",
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
-        "支持帯中心","支持最終日","最寄り支持","関連テーマ"
+        "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ"
     ] if c in _df.columns]
 
     # ループ内で必ず yahoo/x を合成して rows に積む
@@ -5958,7 +5981,6 @@ def _attach_related_themes(df, kabutan_map, theme_names):
             pass
     return df
 
-
 def _parse_theme_date_for_screener(date_text):
     if not date_text:
         return None
@@ -5966,7 +5988,8 @@ def _parse_theme_date_for_screener(date_text):
     s = str(date_text).strip()
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
         try:
-            return datetime.datetime.strptime(s[:10], fmt).date()
+            # 【修正】dt_mod.datetime を使うことでインポート名の衝突によるクラッシュを完全に回避
+            return dt_mod.datetime.strptime(s[:10], fmt).date()
         except Exception:
             continue
     return None
@@ -5976,30 +5999,35 @@ def _load_latest_theme_map_for_screener(conn: sqlite3.Connection):
     latest_theme_map = {}
     try:
         cur = conn.cursor()
-        for code4, raw_date, theme_name in cur.execute(
-            "SELECT printf('%04d', CAST(s.コード AS INTEGER)) AS c4, "
-            "       s.取得日 AS date_text, "
-            "       m.theme_name "
-            "FROM stock_theme_kabutan s "
-            "JOIN theme_master m ON s.theme_id = m.theme_id "
-            "JOIN ( "
-            "    SELECT コード, MAX(取得日) AS latest_date "
-            "    FROM stock_theme_kabutan "
-            "    GROUP BY コード "
-            ") latest ON latest.コード = s.コード AND latest.latest_date = s.取得日"
-        ):
-            if not code4 or not raw_date or not theme_name:
+        # 【修正】SQL側での余計な型変換(CAST)をやめ、ROW_NUMBERで堅牢に最新のみ取得
+        sql = """
+            SELECT c4, date_text, theme_name FROM (
+                SELECT 
+                    s.コード AS c4,
+                    s.取得日 AS date_text,
+                    m.theme_name,
+                    ROW_NUMBER() OVER (PARTITION BY s.コード ORDER BY s.取得日 DESC) as rn
+                FROM stock_theme_kabutan s
+                JOIN theme_master m ON s.theme_id = m.theme_id
+            ) WHERE rn = 1
+        """
+        for code_raw, raw_date, theme_name in cur.execute(sql):
+            if not code_raw or not raw_date or not theme_name:
                 continue
+            
+            # 【修正】Python側で確実に4桁の文字列に整形してキーのズレを防ぐ
+            c4 = str(code_raw).strip().zfill(4)
+            
             date_obj = _parse_theme_date_for_screener(raw_date)
             if date_obj is None:
                 continue
-            latest_theme_map.setdefault(str(code4), {}).setdefault(date_obj, []).append(str(theme_name))
+            
+            latest_theme_map.setdefault(c4, {}).setdefault(date_obj, []).append(str(theme_name))
+            
         cur.close()
     except Exception as e:
-        try:
-            print("[theme][WARN] _load_latest_theme_map_for_screener failed:", e)
-        except Exception:
-            pass
+        print("[theme][WARN] _load_latest_theme_map_for_screener failed:", e)
+        
     return latest_theme_map
 
 
@@ -6011,23 +6039,26 @@ def _attach_latest_theme(df, latest_theme_map):
             return df
 
         def _fmt_date(dt):
-            return datetime.strftime("%Y/%m/%d") if dt else ""
+            # 【修正】datetime.strftime ではなく dt.strftime が正しい呼び出し方（TypeError回避）
+            return dt.strftime("%Y/%m/%d") if dt else ""
 
         latest_values = []
-        for code in df["コード"].astype(str).map(lambda x: x.zfill(4)):
+        # ここでDataFrame側のコードも確実に4桁にして突合
+        for code in df["コード"].astype(str).map(lambda x: x.strip().zfill(4)):
             entries = latest_theme_map.get(code)
             if not entries:
                 latest_values.append(None)
                 continue
+            
             latest_date = max(entries.keys())
             theme_name = sorted(set(entries[latest_date]))[0]
             latest_values.append(f"{_fmt_date(latest_date)} {theme_name}")
+            
         df["最新テーマ"] = latest_values
     except Exception as e:
-        try:
-            print("[theme][WARN] _attach_latest_theme failed:", e)
-        except Exception:
-            pass
+        # エラーが起きた場合は必ずコンソールに吐き出す
+        print(f"[theme][WARN] _attach_latest_theme failed: {e}")
+        
     return df
 
 # === [/THEME] ===========================================================
@@ -6314,37 +6345,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             print("[theme][WARN] attach to DataFrame failed:", _e)
         except Exception:
             pass
-
-    ######################################################################
-    #制限版
-    ######################################################################
-    # --- ▼ TEMP: 表示件数を最大100件に制限（cand/allを同期） ▼ ---
-    #_LIMIT = 10
-    # cand は並びを維持して先頭だけ
-    #df_cand = df_cand.head(_LIMIT).copy()
-
-    # all は cand に残した銘柄だけへ絞る（コードキーで同期）
-    #_codes = set(df_cand["コード"].astype(str).str.zfill(4))
-    #df_all = df_all[df_all["コード"].astype(str).str.zfill(4).isin(_codes)].copy()
-    # --- ▲ TEMPここまで ▲ ---
-    ######################################################################
-    #制限版
-    ######################################################################
-    ######################################################################
-    #制限版
-    ######################################################################
-    # --- ▼ TEMP: 表示件数を最大100件に制限（cand/allを同期） ▼ ---
-    #_LIMIT = 10
-    # cand は並びを維持して先頭だけ
-    #df_cand = df_cand.head(_LIMIT).copy()
-
-    # all は cand に残した銘柄だけへ絞る（コードキーで同期）
-    #_codes = set(df_cand["コード"].astype(str).str.zfill(4))
-    #df_all = df_all[df_all["コード"].astype(str).str.zfill(4).isin(_codes)].copy()
-    # --- ▲ TEMPここまで ▲ ---
-    ######################################################################
-    #制限版
-    ######################################################################
 
     # 4) 軽い整形
     _p("rename/round: start")
@@ -6715,7 +6715,11 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # 7.0) 前処理（ベクトル化は従来通り）
     df_cand = _vectorize_minimum_fields(df_cand)
     df_all  = _vectorize_minimum_fields(df_all)
-    _tick("vectorize_minimum_fields")
+    if latest_theme_map:
+        _attach_latest_theme(df_cand, latest_theme_map)
+        _attach_latest_theme(df_all, latest_theme_map)
+        
+    _tick("vectorize_minimum_fields + theme re-attach")
 
     # 7.0) レコード化：all を正として1回だけ計算
     all_rows = _prepare_rows(df_all, conn)
@@ -6950,7 +6954,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     
     # （例）この行を追記する
     # 完成した「最終リスト」を渡すように変更！
-    send_to_line_rich(data_obj["cand"]) 
+    
     print(f"[export] HTML書き出し: {html_path} ...")
     # ※お使いのスクリプトで最終的なデータが入っている変数名（df_cand や df_all、df_final など）に合わせて書き換えてください。
 
@@ -8714,104 +8718,6 @@ def _auto_run_mode():
         return "MIDDAY"
     else:
         return "EOD"
-def send_to_line_rich(cand_list):
-    """
-    極限削減版：「★GO」または推奨アクションが「有力」のものだけ通知
-    """
-
-    # --- 基本設定 ---
-    LINE_ACCESS_TOKEN = '6T6NO+rKePlnC5OGVRQ+S/ezzk6XDIOZat5pT+4gNnJtN+bi9I6D14nSomUZz2BanNj9JrmFdQGvQ0mtyNdsgqAggeeEMvUejY0au1yfoFsHqOt9m3vlR3k+3sz9Xl3lHcZoVkt/WHoRGnKb/PdrDAdB04t89/1O/w1cDnyilFU='
-    USER_ID = 'U0429f7522d8f5e59122beaa01c3ad6d6'
-    
-    current_time = datetime.now().strftime('%Y/%m/%d %H:%M')
-    
-    def send_batch(title, header_color, stock_list):
-        if not stock_list:
-            return
-        
-        stock_list = stock_list[:20]
-        chunk_size = 5
-        for i in range(0, len(stock_list), chunk_size):
-            chunk = stock_list[i : i + chunk_size]
-            rows = []
-            for row in chunk:
-                code = str(row.get('コード', ''))
-                name = str(row.get('銘柄名', '不明'))[:10]
-                score = str(row.get('AIスコア', '-'))
-                target = str(row.get('AI目標値', '-'))
-                action = str(row.get('推奨アクション', '-'))
-                yahoo_url = f"https://finance.yahoo.co.jp/quote/{code}.T/bbs"
-
-                rows.append({
-                    "type": "box", "layout": "horizontal", "margin": "sm", "spacing": "sm",
-                    "contents": [
-                        {"type": "box", "layout": "vertical", "flex": 4, "contents": [
-                            {"type": "text", "text": f"{code} {name}", "size": "sm", "weight": "bold"},
-                            {"type": "text", "text": f"目標: {target} / {action}", "size": "xxs", "color": "#888888"}
-                        ]},
-                        {"type": "text", "text": score, "flex": 1, "size": "sm", "weight": "bold", "color": "#ff3344", "align": "end", "gravity": "center"},
-                        {"type": "button", "flex": 1, "height": "sm", "style": "link", "action": {"type": "uri", "label": "📈", "uri": yahoo_url}}
-                    ]
-                })
-                rows.append({"type": "separator", "margin": "sm"})
-
-            payload = {
-                "to": USER_ID,
-                "messages": [{
-                    "type": "flex", "altText": title,
-                    "contents": {
-                        "type": "bubble", "size": "giga",
-                        "header": {
-                            "type": "box", "layout": "vertical", "backgroundColor": header_color, "paddingAll": "sm",
-                            "contents": [
-                                {"type": "text", "text": title, "color": "#ffffff", "weight": "bold", "size": "md"},
-                                {"type": "text", "text": f"該当 {len(stock_list)}件 ・ 出力: {current_time}", "color": "#ffffff", "size": "xxs"}
-                            ]
-                        },
-                        "body": {"type": "box", "layout": "vertical", "paddingAll": "md", "spacing": "sm", "contents": rows}
-                    }
-                }]
-            }
-            try:
-                res = requests.post('https://api.line.me/v2/bot/message/push', 
-                                    headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {LINE_ACCESS_TOKEN}'}, 
-                                    data=json.dumps(payload))
-                
-                if res.status_code != 200:
-                    print(f"[LINE] 送信失敗 ({res.status_code}): {res.text}")
-                else:
-                    print(f"[LINE] 送信成功: {title} ({i+1}〜{min(i+chunk_size, len(stock_list))}件目)")
-                    
-                time.sleep(0.3)
-            except Exception as e:
-                print(f"[LINE] ネットワークエラー: {e}")
-
-    # --- データの仕分けロジック ---
-    group_go = []
-    group_yuryoku = []
-
-    for r in cand_list:
-        ai_hantei = str(r.get('AI判定', ''))
-        action    = str(r.get('推奨アクション', ''))
-
-        # ① 「★GO」が含まれるか
-        if '★GO' in ai_hantei:
-            group_go.append(r)
-            
-        # ② アクションに「有力」が含まれるか（エントリー有力など）
-        # Noneや空欄対策
-        if action and action not in ('None', 'nan') and '有力' in action:
-            group_yuryoku.append(r)
-
-    # --- 送信実行 ---
-    if group_go:
-        send_batch("【最優先】AI判定＝GO", "#f1c40f", group_go) # 黄色
-        
-    if group_yuryoku:
-        send_batch("【最優先】有力銘柄", "#e74c3c", group_yuryoku) # 赤色
-
-    if not any([group_go, group_yuryoku]):
-        print("[LINE] 本日、通知対象となる銘柄はありませんでした（GO・有力のみ）。")
 
 def sync_to_github_pages(repo_root: str, target_file: str):
     """
