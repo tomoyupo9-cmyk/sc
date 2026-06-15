@@ -771,7 +771,7 @@ def _timed_daily_once(name, func, *args, **kwargs):
 
 
 _V5_N_DAYS = 90
-_V5_TOUCH_PCT = 0.005
+_V5_TOUCH_PCT = 0.03
 _V5_TOUCH_MIN = 3
 _V5_ROUND_STEPS = [1,5,10,50,100,500,1000,5000,10000]
 _V5_SWING_LOOKBACK = 60
@@ -838,27 +838,71 @@ def _v5_round_levels(p: float):
     out.sort(key=lambda x: (-x[0], x[2]))
     return out
 
-def _v5_hist_zone(values, band_ratio, touch_min):
+def _v5_hist_zone(
+    values,
+    band_ratio,
+    touch_min,
+    ref_price=None
+):
     vals = []
+
     for v in values:
         vv = _v5_num(v, None)
         if vv is not None:
             vals.append(vv)
+
     if not vals:
         return None
+
     vals.sort()
+
     best_center = None
     best_cnt = 0
+    best_score = -1
+
     for i, v in enumerate(vals):
-        hi = v * (1 + band_ratio)
+
+        hi = v + max(v * band_ratio, 30)
+
         j = i
-        while j + 1 < len(vals) and vals[j + 1] <= hi:
+
+        while (
+            j + 1 < len(vals)
+            and vals[j + 1] <= hi
+        ):
             j += 1
+
         cnt = j - i + 1
-        if cnt > best_cnt:
+
+        if cnt < touch_min:
+            continue
+
+        center = sum(vals[i:j+1]) / cnt
+
+        # ----------------------------
+        # 距離補正
+        # ----------------------------
+
+        if ref_price is not None:
+
+            distance = abs(center - ref_price) / ref_price
+            # 現在値から遠い帯を強く減点
+            score = cnt / (1 + distance * 20)
+
+        else:
+
+            score = cnt
+
+        if score > best_score:
+
+            best_score = score
             best_cnt = cnt
-            best_center = sum(vals[i:j+1]) / cnt
-    return (best_center, best_cnt) if best_cnt >= touch_min else None
+            best_center = center
+
+    if best_center is None:
+        return None
+
+    return (best_center, best_cnt)
 
 def _v5_linreg_today(xs, ys):
     xs2, ys2 = [], []
@@ -892,94 +936,287 @@ def _v5_fetch_ohlcv(conn, code):
         WHERE コード = ?
         ORDER BY 日付 ASC
     """, (str(code),))
-
-def _v5_calc(rows):
+    
+def _v5_calc(rows, code=None):
     keys = list(_V5_COLS.keys())
+
     if not rows:
         return {k: None for k in keys}
 
     rows = rows[-_V5_N_DAYS:]
+
     dates = [r[0] for r in rows]
     highs = [_v5_num(r[2], None) for r in rows]
     lows  = [_v5_num(r[3], None) for r in rows]
+
     close_today = _v5_num(rows[-1][4], None)
 
     res_hh = max([v for v in highs if v is not None], default=None)
-    sup_ll = min([v for v in lows  if v is not None], default=None)
+    sup_ll = min([v for v in lows if v is not None], default=None)
 
-    zr = _v5_hist_zone(highs, _V5_TOUCH_PCT, _V5_TOUCH_MIN)
-    zs = _v5_hist_zone(lows,  _V5_TOUCH_PCT, _V5_TOUCH_MIN)
-    res_zone, res_touch = (zr[0], zr[1]) if zr else (None, None)
-    sup_zone, sup_touch = (zs[0], zs[1]) if zs else (None, None)
+    # --------------------------------------------------
+    # 支持帯・抵抗帯は現在値基準で探索
+    # --------------------------------------------------
+
+    if close_today is not None:
+
+        highs_above = [
+            h for h in highs
+            if h is not None and h > close_today
+        ]
+
+        lows_below = [
+            l for l in lows
+            if l is not None and l < close_today
+        ]
+
+    else:
+        highs_above = []
+        lows_below = []
+
+    zr = _v5_hist_zone(
+        highs_above,
+        _V5_TOUCH_PCT,
+        _V5_TOUCH_MIN,
+        close_today
+    )
+
+    zs = _v5_hist_zone(
+        lows_below,
+        _V5_TOUCH_PCT,
+        _V5_TOUCH_MIN,
+        close_today
+    )
+
+    res_zone, res_touch = (
+        (zr[0], zr[1]) if zr else (None, None)
+    )
+
+    sup_zone, sup_touch = (
+        (zs[0], zs[1]) if zs else (None, None)
+    )
+
+    # --------------------------------------------------
+    # 最終接触日
+    # --------------------------------------------------
 
     res_last = None
-    sup_last = None
+
     if res_zone is not None:
+
         for i in range(len(rows) - 1, -1, -1):
+
             hi = highs[i]
+
             if hi is None:
                 continue
+
             if abs(hi - res_zone) <= res_zone * _V5_TOUCH_PCT:
                 res_last = dates[i]
                 break
+
+    sup_last = None
+
     if sup_zone is not None:
+
         for i in range(len(rows) - 1, -1, -1):
+
             lo = lows[i]
+
             if lo is None:
                 continue
+
             if abs(lo - sup_zone) <= sup_zone * _V5_TOUCH_PCT:
                 sup_last = dates[i]
                 break
 
+    # --------------------------------------------------
+    # キリ番
+    # --------------------------------------------------
+
     rl = _v5_round_levels(close_today)
-    step, nearest, _ = rl[0] if rl and rl[0][1] is not None else (None, None, None)
-    res_round_step = sup_round_step = step
-    res_round = sup_round = nearest
+
+    step, nearest, _ = (
+        rl[0]
+        if rl and rl[0][1] is not None
+        else (None, None, None)
+    )
+
+    res_round_step = step
+    sup_round_step = step
+
+    res_round = nearest
+    sup_round = nearest
 
     if close_today is None or nearest is None:
         near_flag = None
     else:
-        near_flag = 1 if abs(close_today - nearest) <= close_today * _V5_TOUCH_PCT else 0
+        near_flag = (
+            1
+            if abs(close_today - nearest)
+            <= close_today * _V5_TOUCH_PCT
+            else 0
+        )
+
+    # --------------------------------------------------
+    # 回帰線
+    # --------------------------------------------------
 
     sw = rows[-_V5_SWING_LOOKBACK:]
+
     xs = list(range(len(sw)))
+
     rh = [_v5_num(r[2], None) for r in sw]
     rl_ = [_v5_num(r[3], None) for r in sw]
+
     res_line_today, res_r2 = _v5_linreg_today(xs, rh)
     sup_line_today, sup_r2 = _v5_linreg_today(xs, rl_)
 
+    # --------------------------------------------------
+    # 20日・60日高安
+    # --------------------------------------------------
+
+    high20 = max(
+        [v for v in highs[-20:] if v is not None],
+        default=None
+    )
+
+    high60 = max(
+        [v for v in highs[-60:] if v is not None],
+        default=None
+    )
+
+    low20 = min(
+        [v for v in lows[-20:] if v is not None],
+        default=None
+    )
+
+    low60 = min(
+        [v for v in lows[-60:] if v is not None],
+        default=None
+    )
+
+    # --------------------------------------------------
+    # 最寄り支持・抵抗
+    # --------------------------------------------------
+
     if close_today is None:
+
         res_near = None
         sup_near = None
-    else:
-        up = [v for v in (res_hh, res_zone, res_round, res_line_today) if v is not None and v >= close_today]
-        dn = [v for v in (sup_ll, sup_zone, sup_round, sup_line_today) if v is not None and v <= close_today]
-        res_near = min(up) if up else None
-        sup_near = max(dn) if dn else None
 
+    else:
+
+        up_candidates = [
+
+            res_zone,
+            res_hh,
+            high20,
+            high60,
+            res_line_today,
+
+        ]
+
+        up_candidates = [
+
+            v
+            for v in up_candidates
+            if v is not None and v > close_today
+
+        ]
+
+        dn_candidates = [
+
+            sup_zone,
+            sup_ll,
+            low20,
+            low60,
+            sup_line_today,
+
+        ]
+
+        dn_candidates = [
+
+            v
+            for v in dn_candidates
+            if v is not None and v < close_today
+
+        ]
+
+        res_near = (
+            min(
+                up_candidates,
+                key=lambda x: abs(x - close_today)
+            )
+            if up_candidates
+            else None
+        )
+
+        sup_near = (
+            min(
+                dn_candidates,
+                key=lambda x: abs(x - close_today)
+            )
+            if dn_candidates
+            else None
+        )
+
+    if str(code) == "5074":
+
+        print("=" * 80)
+        print("DEBUG 5074")
+
+        print("close_today =", close_today)
+
+        print("highs_above =", highs_above[-20:])
+        print("lows_below  =", lows_below[-20:])
+
+        print("zr =", zr)
+        print("zs =", zs)
+
+        print("up_candidates =", up_candidates)
+        print("dn_candidates =", dn_candidates)
+
+        print("res_zone =", res_zone)
+        print("sup_zone =", sup_zone)
+
+        print("res_near =", res_near)
+        print("sup_near =", sup_near)
+
+        print("=" * 80)
+        
     return {
+
         "Res_HH": res_hh,
+
         "Res_Zone": res_zone,
         "Res_Zone_Touches": res_touch,
         "Res_Zone_Last": res_last,
+
         "Res_Round": res_round,
         "Res_Round_Step": res_round_step,
         "Res_Round_Near": near_flag,
+
         "Res_Line_Today": res_line_today,
         "Res_Line_R2": res_r2,
+
         "Res_Nearest": res_near,
+
         "Sup_LL": sup_ll,
+
         "Sup_Zone": sup_zone,
         "Sup_Zone_Touches": sup_touch,
         "Sup_Zone_Last": sup_last,
-        "Sup_Round": res_round,            # 丸めは上下同一ベース
-        "Sup_Round_Step": res_round_step,
+
+        "Sup_Round": sup_round,
+        "Sup_Round_Step": sup_round_step,
         "Sup_Round_Near": near_flag,
+
         "Sup_Line_Today": sup_line_today,
         "Sup_Line_R2": sup_r2,
+
         "Sup_Nearest": sup_near,
     }
-
 def _v5_update_latest(conn, latest):
     _v5_ensure_cols(conn, latest)
     code_col = _v5_unify_code(conn, latest)
@@ -991,7 +1228,7 @@ def _v5_update_latest(conn, latest):
     cur = conn.cursor()
     n = 0
     for code in codes:
-        vals = _v5_calc(_v5_fetch_ohlcv(conn, code))
+        vals = _v5_calc(_v5_fetch_ohlcv(conn, code),code)
         params = [vals[k] for k in _V5_COLS.keys()] + [code]
         cur.execute(sql, params)
         n += 1
@@ -2408,7 +2645,10 @@ def _res__build_touch_zones(df: pd.DataFrame, close_today: float, is_support: bo
     
     piv = _res__pivot_highs_lows(df, is_support, order=3)
     heads = df["安値"].nsmallest(10).tolist() if is_support else df["高値"].nlargest(10).tolist()
-    seeds = sorted(list(set(piv + heads)))
+    
+    # 💡 追加：直近のローソク足も強制的にシード(基準)に加え、急騰後の浅い押し目を取りこぼさないようにする
+    recent = df["安値"].tail(20).tolist() if is_support else df["高値"].tail(20).tolist()
+    seeds = sorted(list(set(piv + heads + recent)))
     
     merged_seeds = []
     if seeds:
@@ -2428,7 +2668,7 @@ def _res__build_touch_zones(df: pd.DataFrame, close_today: float, is_support: bo
         touches = int(touch_mask.sum())
         
         if touches >= RES_MIN_TOUCHES:
-            # 💡 Tom提案のコアロジック：現在値からの距離ペナルティ
+            # 現在値からの距離ペナルティ
             distance = abs(center - close_today) / close_today
             score = touches / (1 + distance * 10)  # 遠いほどスコア激減
             
@@ -6039,6 +6279,34 @@ def _attach_latest_theme(df, latest_theme_map):
 
 # === [/THEME] ===========================================================
 
+def _load_shinyo_map(conn: sqlite3.Connection):
+    """
+    最新の信用残データを取得して {コード4桁: {"売り残": v, "買い残": v, "倍率": v}} を返す
+    """
+    shinyo_map = {}
+    try:
+        cur = conn.cursor()
+        # 基準日が最新のものだけをJOINで取得
+        sql = """
+            SELECT s.コード, s.売り残, s.買い残, s.倍率
+            FROM stock_credit_margin s
+            INNER JOIN (
+                SELECT コード, MAX(基準日) as max_date 
+                FROM stock_credit_margin GROUP BY コード
+            ) latest ON s.コード = latest.コード AND s.基準日 = latest.max_date
+        """
+        for row in cur.execute(sql):
+            c4 = str(row["コード"]).strip().zfill(4)
+            shinyo_map[c4] = {
+                "売り残": row["売り残"],
+                "買い残": row["買い残"],
+                "倍率": row["倍率"]
+            }
+        cur.close()
+    except Exception as e:
+        print(f"[shinyo][WARN] _load_shinyo_map failed: {e}")
+    return shinyo_map
+
 
 ###############################################
 # === 相対強度RS計算ユーティリティ ====================
@@ -6321,6 +6589,25 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             print("[theme][WARN] attach to DataFrame failed:", _e)
         except Exception:
             pass
+    
+    #信用残データをDataFrameに結合
+    try:
+        shinyo_map = _load_shinyo_map(conn)
+        
+        def _attach_shinyo(df, s_map):
+            if "コード" not in df.columns: return df
+            # コードを4桁に揃えてマッピング
+            df["売り残"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("売り残", None))
+            df["買い残"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("買い残", None))
+            df["信用倍率"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("倍率", None))
+            return df
+
+        df_cand = _attach_shinyo(df_cand, shinyo_map)
+        df_all  = _attach_shinyo(df_all, shinyo_map)
+        _p("shinyo: attached to df_cand/df_all")
+    except Exception as _e:
+        print(f"[shinyo][WARN] attach to DataFrame failed: {_e}")
+    
 
     # 4) 軽い整形
     _p("rename/round: start")
@@ -8999,8 +9286,8 @@ def main():
                 print("[EOD][WARN]", e)
             # ===== 追記ここまで =====
             
-            # ★ 抵抗/支持を最終更新（過去のローソク足から計算するため1日1回で十分）
-            _timed_daily_once("resistance_update", phase_resistance_update, conn)
+            # ★ 抵抗/支持を最終更新（毎回確実に実行して最新のロジックを反映）
+            _timed("resistance_update", phase_resistance_update, conn)
         
             # (7.1) 財務コメント追加
             phase_sync_finance_comments(conn)

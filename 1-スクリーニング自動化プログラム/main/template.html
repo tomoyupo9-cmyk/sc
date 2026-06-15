@@ -1255,6 +1255,9 @@ function applyFreeze(tableId, uptoIdx){
     "最近接抵抗":"現在値より上で最も近い抵抗。",
     "前日比(円)":"当日の株価が前日終値から何円動いたか。",
     "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
+    "信用倍率": "信用買い残 ÷ 信用売り残。1を割ると売り長（将来の買い戻し圧力）、高いと買い長（将来の売り圧力）。",
+    "売り残": "信用売り残高（株数）。将来の買い戻し要因。",
+    "買い残": "信用買い残高（株数）。将来の売り要因。",
     "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
     "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
     "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
@@ -1340,6 +1343,9 @@ function applyFreeze(tableId, uptoIdx){
   window.DATACOL_TO_HELPKEY = {
     "コード":"コード","銘柄名":"銘柄","現在値":"現在値","前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
     "出来高":"出来高","売買代金(億)":"売買代金(億)",
+    "信用倍率":"信用倍率",
+    "売り残":"売り残",
+    "買い残":"買い残",
     "初動フラグ":"初動","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
     "判定":"判定","判定理由":"判定理由","推奨アクション":"推奨","推奨比率":"推奨比率%","シグナル更新日":"更新",
     "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日",
@@ -2337,6 +2343,9 @@ function renderIndexSrSummary(){
         <td class="num">${r["前日円差"] ?? ""}</td>
         <td class="num">${r["前日終値比率"] ?? ""}</td>
         <td style="${shStyle}">${escapeHtml(shVal)}</td>
+        <td class="num">${r["信用倍率"] != null ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
+        <td class="num">${r["売り残"] != null ? Number(r["売り残"]).toLocaleString() : "-"}</td>
+        <td class="num">${r["買い残"] != null ? Number(r["買い残"]).toLocaleString() : "-"}</td>
         <td class="theme-col" data-col="最新テーマ" title="${escapeHtml(String(r["最新テーマ"] || ""))}">${escapeHtml(r["最新テーマ"] || "")}</td>
         <td class="num">${r["高値"] ?? ""}</td>
         <td class="num">${r["安値"] ?? ""}</td>
@@ -3199,6 +3208,9 @@ function generatePromptJson(code) {
     price_diff: safeStr(r["前日円差"]),
     price_diff_rate: safeStr(r["前日終値比率"]),
     limit_up: safeStr(r["S高"]) || "-",
+    credit_ratio: safeStr(r["信用倍率"]),
+    credit_sell_balance: safeStr(r["売り残"]),
+    credit_buy_balance: safeStr(r["買い残"]),
     latest_theme: safeStr(r["最新テーマ"]),
     high: safeStr(r["高値"]),
     low: safeStr(r["安値"]),
@@ -3268,7 +3280,7 @@ function generatePromptJson(code) {
         background: #fff; border: 1px solid #cbd5e1;
         box-shadow: 0 10px 30px rgba(0,0,0,0.3);
         padding: 20px; border-radius: 12px;
-        width: 600px; max-width: 90vw;
+        width: 800px; max-width: 95vw;
         max-height: 80vh; display: flex; flex-direction: column;
       }
       #ai-modal-header {
@@ -3427,6 +3439,11 @@ document.addEventListener("click", async (e) => {
           </ul>
         </div>
       </div>
+      
+      <div style="margin-top:20px; border-top:1px dashed #cbd5e1; padding-top:16px;">
+        <div style="font-weight:bold; color:#64748b; margin-bottom:8px; font-size:13px;">▼ 送信元データ (Prompt JSON)</div>
+        <pre style="background:#0f172a; color:#e2e8f0; padding:12px; border-radius:8px; font-size:12px; margin:0; white-space: pre-wrap; word-break: break-all;">${jsonStr}</pre>
+      </div>
     `;
 
     body.innerHTML = html; // textContent ではなく innerHTML でHTMLとして流し込む
@@ -3438,6 +3455,25 @@ document.addEventListener("click", async (e) => {
 
   } catch (err) {
     console.error("API call failed:", err);
+    
+    // ★追加：エラー時（何も返ってこない場合）でも元JSONをしっかり表示する
+    const modal = document.getElementById('ai-modal-overlay');
+    const title = document.getElementById('ai-modal-title');
+    const body = document.getElementById('ai-modal-body');
+    
+    title.textContent = `通信/解析エラー: ${code}`;
+    let fallbackHtml = `
+      <div style="background:#fee2e2; color:#be123c; padding:12px; border-radius:6px; margin-bottom:16px; font-weight:bold;">
+        【エラー】解析結果が空、またはFastAPIと通信できませんでした。<br>
+        <span style="font-size:12px; font-weight:normal;">サーバーが起動しているか、またはAIからのレスポンス形式が崩れていないか確認してください。</span>
+      </div>
+      <div style="font-weight:bold; color:#64748b; margin-bottom:8px; font-size:13px;">▼ 送信元データ (Prompt JSON)</div>
+      <pre style="background:#0f172a; color:#e2e8f0; padding:12px; border-radius:8px; font-size:12px; margin:0; white-space: pre-wrap; word-break: break-all;">${jsonStr}</pre>
+    `;
+    
+    body.innerHTML = fallbackHtml;
+    modal.style.display = 'block';
+
     // 失敗状態のボタンUI
     btn.textContent = "エラー";
     btn.style.backgroundColor = "#e11d48"; // 赤
@@ -3533,6 +3569,9 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
+            <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
+            <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
             <th class="sortable" data-col="最新テーマ" data-type="text">最新テーマ<span class="arrow"></span></th>
             <th class="num sortable" data-col="高値" data-type="num">高値<span class="arrow"></span></th>
             <th class="num sortable" data-col="安値" data-type="num">安値<span class="arrow"></span></th>
