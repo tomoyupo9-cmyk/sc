@@ -6471,7 +6471,7 @@ def analyze_stop_high_status(hist_df):
 # === [/INJECTED] ===========================================================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
                                         include_log: bool=False, log_limit: int=2000):
-    """HTMLダッシュボード出力（1ファイル完結版：__DATA__ を <script type=application/json> と window.__DATA__ で埋め込む）"""
+    """HTMLダッシュボード出力（1ファイル完結版：二重管理を廃止した高速一本化モデル）"""
 
     try:
         from zoneinfo import ZoneInfo
@@ -6481,26 +6481,23 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     def _p(msg): print(f"[exportL] {msg}")
 
     def dumps_json_clean(obj, **kw):
-        kw.setdefault("ensure_ascii", False)      # 日本語そのまま
-        kw.setdefault("separators", (",", ":"))   # 軽量化
-        kw.setdefault("default", str)             # 日付等を文字列化
+        kw.setdefault("ensure_ascii", False)
+        kw.setdefault("separators", (",", ":"))
+        kw.setdefault("default", str)
         return json.dumps(obj, **kw)
 
     # 0) 事前
     t0 = time.perf_counter()
     _p("enter: phase_export_html_dashboard_offline")
 
-    # === ヘルパ ===
     def _safe_jsonable(v):
         if v is None: return None
         try:
             if isinstance(v, (date, datetime)): return str(v)
-        except Exception:
-            pass
+        except Exception: pass
         try:
             if isinstance(v, float) and (np.isnan(v) or np.isinf(v)): return None
-        except Exception:
-            pass
+        except Exception: pass
         return v
 
     def _records_safe(df: pd.DataFrame):
@@ -6520,10 +6517,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         _update_kabutan_theme_ranking(conn)
         _p("theme: _ensure_theme_tables + kabutan ranking updated")
     except Exception as _e:
-        try:
-            print("[theme][WARN] setup/update skipped:", _e)
-        except Exception:
-            pass
+        print("[theme][WARN] setup/update skipped:", _e)
 
     # 2) V5 収集（失敗しても継続）
     _p("V5: collect start")
@@ -6535,10 +6529,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         v5_rows = []
     _p(f"V5: collect done rows={len(v5_rows)} dt={( time.perf_counter()-t):.2f}s")
 
-    # 3) 候補・全カラム
+    # 3) メインデータの取得（★ df_cand に一本化）
     t = time.perf_counter()
-    _p("SQL: df_all/df_cand start")
-    df_all = pd.read_sql_query("""
+    _p("SQL: df_cand start")
+    df_cand = pd.read_sql_query("""
       SELECT s.*,
              lp.S_High_Status AS S高,
              lp.Res_HH   AS 直近高値90日,
@@ -6566,53 +6560,39 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         ON CAST(lp.コード AS TEXT) = CAST(s.コード AS TEXT)
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
-    df_all = ensure_news_cols(df_all)
-    _p(f"SQL: df_all/df_cand done shape={df_all.shape} dt={( time.perf_counter()-t):.2f}s")
+    df_cand = ensure_news_cols(df_cand)
+    _p(f"SQL: df_cand done shape={df_cand.shape} dt={( time.perf_counter()-t):.2f}s")
 
-    # df_cand は df_all から作成（現状は全件。必要に応じて「候補」絞り込みを追加）
-    df_cand = df_all.copy()
-
-    # 3) Kabutan 人気テーマ + 株探ニュースから『関連テーマ』列を付与
+    # --- テーマ付与 ---
     try:
         kabutan_map, theme_names = _load_theme_maps_for_screener(conn)
         latest_theme_map = _load_latest_theme_map_for_screener(conn)
         if kabutan_map or theme_names:
             _attach_related_themes(df_cand, kabutan_map, theme_names)
-            _attach_related_themes(df_all, kabutan_map, theme_names)
-            _p("theme: attached '関連テーマ' to df_cand/df_all")
+            _p("theme: attached '関連テーマ'")
         if latest_theme_map:
             _attach_latest_theme(df_cand, latest_theme_map)
-            _attach_latest_theme(df_all, latest_theme_map)
-            _p("theme: attached '最新テーマ' to df_cand/df_all")
+            _p("theme: attached '最新テーマ'")
     except Exception as _e:
-        try:
-            print("[theme][WARN] attach to DataFrame failed:", _e)
-        except Exception:
-            pass
+        print("[theme][WARN] attach to DataFrame failed:", _e)
     
-    #信用残データをDataFrameに結合
+    # --- 信用残データの結合 ---
     try:
         shinyo_map = _load_shinyo_map(conn)
-        
         def _attach_shinyo(df, s_map):
             if "コード" not in df.columns: return df
-            # コードを4桁に揃えてマッピング
             df["売り残"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("売り残", None))
             df["買い残"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("買い残", None))
             df["信用倍率"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("倍率", None))
             return df
-
         df_cand = _attach_shinyo(df_cand, shinyo_map)
-        df_all  = _attach_shinyo(df_all, shinyo_map)
-        _p("shinyo: attached to df_cand/df_all")
+        _p("shinyo: attached")
     except Exception as _e:
         print(f"[shinyo][WARN] attach to DataFrame failed: {_e}")
-    
 
     # 4) 軽い整形
     _p("rename/round: start")
     t_rename = time.perf_counter()
-
     try:
         ren = {"推奨": "推奨アクション", "推奨比率%": "推奨比率"}
         present = {k: v for k, v in ren.items() if k in df_cand.columns}
@@ -6623,11 +6603,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         if "判定理由" not in df_cand.columns:
             df_cand["判定理由"] = None
     except Exception as _e:
-        print("[rename][WARN-Bonly]", _e)
+        print("[rename][WARN]", _e)
 
     def _round2_inplace(df):
-        if df is None or df.empty:
-            return
+        if df is None or df.empty: return
         percent = ["前日終値比率","前日終値比率（％）","フォロー高値pct","最大逆行pct","リターン終値pct","推奨比率","ATR14%","進捗率"]
         money   = ["売買代金(億)","売買代金億","売買代金20日平均億","RVOL代金","時価総額億円"]
         price   = ["現在値","前日終値","前日円差","始値","高値","安値","終値"]
@@ -6637,47 +6616,22 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
 
     _round2_inplace(df_cand)
-    _round2_inplace(df_all)
     _p(f"rename/round: done dt={( time.perf_counter() - t_rename ): .2f}s")
 
-    ###############################################################
-    #  === RS_5 / RS_20 / Growth_Bias / 地合い / 逆行フラグ 追加 ===
-    ###############################################################
+    # --- RS_5 / RS_20 / Growth_Bias / 地合い / 逆行フラグ 追加 ---
     t_rs = time.perf_counter()
     _p("RS/GrowthBias: start")
 
-
-    # ------------------------------------------------------------
-    # 1) 指数の終値を price_history から取得するヘルパ
-    # ------------------------------------------------------------
-
     def _get_index_returns(conn, code, days_list=[1,5,20]):
-        """指数コードに対して、直近の騰落率（1日・5日・20日）を返す"""
-
-        # --- エイリアス対応（TOPIX 系だけ特別扱い）---
         aliases = [code]
         if code in ("^TOPX", "^TOPIX"):
-            # price_history に入っていそうな別名を全部見る
             aliases = ["^TOPX", "^TOPIX", "TOPIX", "998405.T"]
-
-        # IN 句を作成
         in_clause = ",".join(f"'{c}'" for c in aliases)
-
-        q = f"""
-            SELECT 日付, 終値
-            FROM price_history
-            WHERE コード IN ({in_clause})
-            ORDER BY 日付 ASC
-        """
+        q = f"SELECT 日付, 終値 FROM price_history WHERE コード IN ({in_clause}) ORDER BY 日付 ASC"
         df = pd.read_sql_query(q, conn)
-
-        if df.empty:
-            return {d: None for d in days_list}
-
-        # 日付でソートして、終値の推移から d 日前との騰落率を求める
+        if df.empty: return {d: None for d in days_list}
         df = df.sort_values("日付")
         out = {}
-
         try:
             last = df["終値"].iloc[-1]
             for d in days_list:
@@ -6688,244 +6642,124 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                     out[d] = None
         except Exception:
             out = {d: None for d in days_list}
-
         return out
 
-
-
-    # ------------------------------------------------------------
-    # 2) 銘柄ごとの対応指数を決める関数
-    # ------------------------------------------------------------
     def _resolve_index_symbol(row):
         m = str(row.get("市場") or "")
-        if "グロース" in m:
-            return "^GRT250"
-        if "東証" in m or "プライム" in m or "スタンダード" in m:
-            return "^TOPX"
+        if "グロース" in m: return "^GRT250"
         return "^TOPX"
 
-
-    # ------------------------------------------------------------
-    # 3) RS_5 / RS_20 を計算して df_all に追加
-    # ------------------------------------------------------------
-    # まず price_history から、各銘柄の 5日前/20日前 の終値を取得
     try:
-        q = """
-            SELECT
-                A.コード,
-                A.終値 AS 終値20日前
-            FROM price_history A
-            JOIN latest_prices L
-              ON L.コード = A.コード
-            WHERE A.日付 = (
-                SELECT 日付
-                FROM price_history
-                WHERE コード = A.コード
-                ORDER BY 日付 DESC
-                LIMIT 1 OFFSET 20
-            )
+        q20 = """
+            SELECT A.コード, A.終値 AS 終値20日前 FROM price_history A
+            JOIN latest_prices L ON L.コード = A.コード
+            WHERE A.日付 = (SELECT 日付 FROM price_history WHERE コード = A.コード ORDER BY 日付 DESC LIMIT 1 OFFSET 20)
         """
-        df_20 = pd.read_sql_query(q, conn)
+        df_20 = pd.read_sql_query(q20, conn)
 
-        q = """
-            SELECT
-                A.コード,
-                A.終値 AS 終値5日前
-            FROM price_history A
-            JOIN latest_prices L
-              ON L.コード = A.コード
-            WHERE A.日付 = (
-                SELECT 日付
-                FROM price_history
-                WHERE コード = A.コード
-                ORDER BY 日付 DESC
-                LIMIT 1 OFFSET 5
-            )
+        q5 = """
+            SELECT A.コード, A.終値 AS 終値5日前 FROM price_history A
+            JOIN latest_prices L ON L.コード = A.コード
+            WHERE A.日付 = (SELECT 日付 FROM price_history WHERE コード = A.コード ORDER BY 日付 DESC LIMIT 1 OFFSET 5)
         """
-        df_5 = pd.read_sql_query(q, conn)
+        df_5 = pd.read_sql_query(q5, conn)
 
-        df_all = df_all.merge(df_5, on="コード", how="left")
-        df_all = df_all.merge(df_20, on="コード", how="left")
+        df_cand = df_cand.merge(df_5, on="コード", how="left")
+        df_cand = df_cand.merge(df_20, on="コード", how="left")
     except Exception as _e:
         print("[RS][WARN] failed to load past prices", _e)
 
-    # 指数の騰落率をロード（1日＋5日＋20日）
     idx_cache = {}
     for sym in ["^TOPX", "^N225", "^GRT250"]:
         idx_cache[sym] = _get_index_returns(conn, sym, days_list=[1,5,20])
 
-    # RS計算
-    rs5 = []
-    rs20 = []
-    for _, r in df_all.iterrows():
+    rs5, rs20, rev_strong, rev_weak = [], [], [], []
+    topx1 = idx_cache["^TOPX"][1] if "^TOPX" in idx_cache else None
+
+    for _, r in df_cand.iterrows():
         idx = _resolve_index_symbol(r)
         idx5 = idx_cache[idx].get(5)
         idx20 = idx_cache[idx].get(20)
 
-        try:
-            st5 = (r["現在値"] - r["終値5日前"]) / r["終値5日前"] if r["終値5日前"] else None
-        except Exception:
-            st5 = None
-
-        try:
-            st20 = (r["現在値"] - r["終値20日前"]) / r["終値20日前"] if r["終値20日前"] else None
-        except Exception:
-            st20 = None
+        st5 = (r["現在値"] - r["終値5日前"]) / r["終値5日前"] if r.get("終値5日前") else None
+        st20 = (r["現在値"] - r["終値20日前"]) / r["終値20日前"] if r.get("終値20日前") else None
 
         rs5.append(st5 - idx5 if st5 is not None and idx5 is not None else None)
         rs20.append(st20 - idx20 if st20 is not None and idx20 is not None else None)
 
-    df_all["RS_5"] = rs5
-    df_all["RS_20"] = rs20
+        try: stock1 = (r["現在値"] - r["前日終値"]) / r["前日終値"]
+        except: stock1 = None
 
+        if stock1 is None or topx1 is None:
+            rev_strong.append(0); rev_weak.append(0)
+        else:
+            rev_strong.append(1 if topx1 < -0.015 and stock1 > 0.01 else 0)
+            rev_weak.append(1 if topx1 > 0.015 and stock1 < -0.01 else 0)
 
-    # ------------------------------------------------------------
-    # 4) Growth_Bias（グロース地合いバイアス）
-    # ------------------------------------------------------------
+    df_cand["RS_5"] = rs5
+    df_cand["RS_20"] = rs20
+    df_cand["逆行強フラグ"] = rev_strong
+    df_cand["逆行弱フラグ"] = rev_weak
+
     topx20 = idx_cache["^TOPX"][20]
     grt20 = idx_cache["^GRT250"][20]
-
-    if topx20 is not None and grt20 is not None:
-        growth_bias = grt20 - topx20
-    else:
-        growth_bias = None
-
-    df_all["Growth_Bias"] = growth_bias
-
-
-    # ------------------------------------------------------------
-    # 5) 地合いフラグ（TOPX＋N225）
-    # ------------------------------------------------------------
-    topx20 = idx_cache["^TOPX"][20]
     nikkei20 = idx_cache["^N225"][20]
+
+    df_cand["Growth_Bias"] = grt20 - topx20 if topx20 is not None and grt20 is not None else None
 
     def _market_flag(t, n):
         try:
-            if t > 0.02 and n > 0.02:
-                return 1
-            if t < -0.02 and n < -0.02:
-                return -1
+            if t > 0.02 and n > 0.02: return 1
+            if t < -0.02 and n < -0.02: return -1
             return 0
-        except Exception:
-            return 0
+        except: return 0
+    df_cand["地合いフラグ"] = _market_flag(topx20, nikkei20)
 
-    df_all["地合いフラグ"] = _market_flag(topx20, nikkei20)
-
-
-    # ------------------------------------------------------------
-    # 6) 逆行フラグ（指数と銘柄の当日比較）
-    # ------------------------------------------------------------
-    # 指数の当日騰落率（TOPXのみ利用）
-    topx1 = idx_cache["^TOPX"][1] if "^TOPX" in idx_cache else None
-
-    rev_strong = []
-    rev_weak = []
-
-    for _, r in df_all.iterrows():
-        try:
-            stock1 = (r["現在値"] - r["前日終値"]) / r["前日終値"]
-        except Exception:
-            stock1 = None
-
-        if stock1 is None or topx1 is None:
-            rev_strong.append(0)
-            rev_weak.append(0)
-            continue
-
-        # 逆行強（TOPX弱いのに個別が強い）
-        if topx1 < -0.015 and stock1 > 0.01:
-            rev_strong.append(1)
-        else:
-            rev_strong.append(0)
-
-        # 逆行弱（TOPX強いのに個別が弱い）
-        if topx1 > 0.015 and stock1 < -0.01:
-            rev_weak.append(1)
-        else:
-            rev_weak.append(0)
-
-    df_all["逆行強フラグ"] = rev_strong
-    df_all["逆行弱フラグ"] = rev_weak
     _p(f"RS/GrowthBias: done dt={( time.perf_counter() - t_rs ): .2f}s")
 
-
-    ###############################################################
-    # === パッチ終了 ===
-    ###############################################################
-
-
-    ###############################################################
-    # === [INJECTED] 株探ニュース(3) 列を追加（改行/省略なし・DB保存なし） ===
+    # --- 株探ニュース(3) ---
     try:
         _p("news: kabutan bulk start")
         t_news = time.perf_counter()
-
         if 'コード' in df_cand.columns and '銘柄名' in df_cand.columns:
-            
-            # --- 安全に列をチェックする関数 ---
             def _has_signal(col_name, keyword):
                 if col_name in df_cand.columns:
                     return df_cand[col_name].astype(str).fillna('').str.contains(keyword)
-                else:
-                    return pd.Series([False] * len(df_cand), index=df_cand.index)
+                return pd.Series([False] * len(df_cand), index=df_cand.index)
 
-            # 1. 存在するシグナル列だけを使って注目銘柄を絞り込む
             mask_focus = (
-                _has_signal('初動フラグ', '候補') |
-                _has_signal('底打ちフラグ', '候補') |
-                _has_signal('右肩上がりフラグ', '候補') |
-                _has_signal('右肩早期フラグ', '候補') |
+                _has_signal('初動フラグ', '候補') | _has_signal('底打ちフラグ', '候補') |
+                _has_signal('右肩上がりフラグ', '候補') | _has_signal('右肩早期フラグ', '候補') |
                 _has_signal('AI判定', '★GO')
             )
-            
-            # 2. 注目銘柄だけを一時的に切り出す
             df_focus = df_cand[mask_focus].copy()
-            
             if not df_focus.empty:
-                # 3. 激減した注目銘柄に対してのみ、ニュースを一括取得
-                news_ser_focus = kabutan_news_lines_bulk_for_dataframe(
-                    df_focus, code_col='コード', name_col='銘柄名'
-                )
+                news_ser_focus = kabutan_news_lines_bulk_for_dataframe(df_focus, code_col='コード', name_col='銘柄名')
                 df_focus['株探ニュース(3)'] = news_ser_focus
-                
-                # 4. 取得したニュースを、元の df_cand と df_all に合流させる
                 news_map = df_focus.set_index('コード')['株探ニュース(3)'].to_dict()
                 df_cand['株探ニュース(3)'] = df_cand['コード'].map(news_map).fillna("")
-                
-                # ★修正ポイント：df_allにも取得したニュースを反映させる！
-                if 'df_all' in locals() and 'コード' in df_all.columns:
-                    df_all['株探ニュース(3)'] = df_all['コード'].map(news_map).fillna("")
             else:
                 df_cand['株探ニュース(3)'] = ""
-                if 'df_all' in locals() and 'コード' in df_all.columns:
-                    df_all['株探ニュース(3)'] = ""
-
         _p(f"news: kabutan bulk done dt={( time.perf_counter() - t_news ): .2f}s")
     except Exception as _e_news:
         print('[news][WARN] 株探ニュース列の付与に失敗:', _e_news)
-    # === [/INJECTED] ===
-    ###############################################################
-    # === [/INJECTED] ===
 
-    # 5) ログ（省略可）
+    # 5) ログ
     t_log = time.perf_counter()
     _p(f"log: fetch start include_log={include_log}")
     if include_log:
         try:
             df_log = pd.read_sql_query(
-                f"SELECT 日時, コード, 種別, 詳細 FROM signals_log ORDER BY 日時 DESC, コード LIMIT {int(log_limit)}",
-                conn
+                f"SELECT 日時, コード, 種別, 詳細 FROM signals_log ORDER BY 日時 DESC, コード LIMIT {int(log_limit)}", conn
             )
         except Exception:
             df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
     else:
         df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
-    _p(f"log: fetch done shape={df_log.shape} dt={( time.perf_counter() - t_log ): .2f}s")
+    _p(f"log: fetch done dt={( time.perf_counter() - t_log ): .2f}s")
 
-    
-    # 6) フラグ装飾（略式）
+    # 6) フラグ装飾
     t_flags = time.perf_counter()
-    _p("flags: decorate start")
     def _mini(text): return "" if not text else f"&nbsp;<span class='mini'>{text}</span>"
     def _flag_with_since(flag, since):
         flag = (flag or "").strip()
@@ -6936,90 +6770,56 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         if prev_kind:  extras.append(f"prev: {prev_kind}")
         return _mini(" / ".join(extras)) if extras else ""
 
-    # ★ df_cand と df_all の両方に適用（存在チェック付き）
-    for _df in (df_cand, df_all):
-        if _df is None or getattr(_df, "empty", True): 
-            continue
-        _df["初動フラグ"]       = _df.apply(lambda r: _flag_with_since(r.get("初動フラグ"), r.get("初動開始日")), axis=1)
-        _df["底打ちフラグ"]     = _df.apply(lambda r: _flag_with_since(r.get("底打ちフラグ"), r.get("底打ち開始日")), axis=1)
-        _df["右肩上がりフラグ"] = _df.apply(lambda r: _flag_with_since(r.get("右肩上がりフラグ"), r.get("右肩開始日")), axis=1)
-        _df["右肩早期フラグ"]   = _df.apply(lambda r: _flag_with_since(r.get("右肩早期フラグ"), r.get("右肩早期開始日")), axis=1)
-        _df["右肩早期種別_mini"] = _df.apply(
+    if df_cand is not None and not df_cand.empty:
+        df_cand["初動フラグ"]       = df_cand.apply(lambda r: _flag_with_since(r.get("初動フラグ"), r.get("初動開始日")), axis=1)
+        df_cand["底打ちフラグ"]     = df_cand.apply(lambda r: _flag_with_since(r.get("底打ちフラグ"), r.get("底打ち開始日")), axis=1)
+        df_cand["右肩上がりフラグ"] = df_cand.apply(lambda r: _flag_with_since(r.get("右肩上がりフラグ"), r.get("右肩開始日")), axis=1)
+        df_cand["右肩早期フラグ"]   = df_cand.apply(lambda r: _flag_with_since(r.get("右肩早期フラグ"), r.get("右肩早期開始日")), axis=1)
+        df_cand["右肩早期種別_mini"] = df_cand.apply(
             lambda r: _early_kind_mini(r.get("右肩早期種別開始日"), r.get("右肩早期前回種別"))
-                      if (r.get("右肩早期種別") or "").strip() else "",
-            axis=1
+                      if (r.get("右肩早期種別") or "").strip() else "", axis=1
         )
         for c in ["初動開始日","底打ち開始日","右肩開始日","右肩早期開始日","右肩早期種別開始日","右肩早期前回種別"]:
-            if c in _df.columns:
-                _df.drop(columns=[c], inplace=True)
-
+            if c in df_cand.columns: df_cand.drop(columns=[c], inplace=True)
     _p(f"flags: decorate done dt={( time.perf_counter() - t_flags ): .2f}s")
 
-    # --- ensure KABU news column exists (for both cand/all) ---
-    try:
-        for _df in (df_cand, df_all):
-            if _df is not None and not getattr(_df, "empty", True):
-                if "株探ニュース(3)" not in _df.columns:
-                    _df["株探ニュース(3)"] = ""
-    except Exception as _e:
-        print("[warn] ensure 株探ニュース(3) column:", _e)
-
-
-
-    # 7) レコード化
-
+    # 7) レコード化（★ 二重管理を排除したストレート処理）
     _t0 = time.time()
-    def _tick(msg):
-        print(f"[timer] {msg}: {time.time()-_t0:.2f}s", flush=True)
-
+    def _tick(msg): print(f"[timer] {msg}: {time.time()-_t0:.2f}s", flush=True)
     _p("records_safe: start")
     _tick("enter")
 
-    # 7.0) 前処理（ベクトル化は従来通り）
     df_cand = _vectorize_minimum_fields(df_cand)
-    df_all  = _vectorize_minimum_fields(df_all)
     if latest_theme_map:
         _attach_latest_theme(df_cand, latest_theme_map)
-        _attach_latest_theme(df_all, latest_theme_map)
-        
-    _tick("vectorize_minimum_fields + theme re-attach")
+    _tick("vectorize_minimum_fields")
 
-    # 7.0) レコード化：all を正として1回だけ計算
-    all_rows = _prepare_rows(df_all, conn)
+    rows = _prepare_rows(df_cand, conn)
 
-    # === 🎯 【クオンツ拡張】 60日（2ヶ月）スイング・トレンドフォロー算出モデル ===
-    # 期間設定を60日に固定
-    DAYS_LOOKBACK = 60
-    
-    for r in all_rows:
+    # 🎯 60日（2ヶ月）スイング・トレンドフォロー算出モデル
+    for r in rows:
         try:
             _cur_px  = float(r.get("現在値") or r.get("終値") or 0)
-            # 90日ではなく60日の期間へ変更
             _res_hh  = float(r.get("直近高値60日") or r.get("Res_HH") or 0)
             _sup_ll  = float(r.get("直近安値60日") or r.get("Sup_LL") or 0)
             _atr_val = float(r.get("ATR14%") or r.get("ATR14") or r.get("ATR20") or 0)
             
-            # ATRの安全フォールバック（現在値の2.5%）
             if _atr_val <= 0 and _cur_px > 0:
                 _atr_val = _cur_px * 0.025
                 
             if _cur_px > 0:
-                # 1) 【仕込値】: 支持帯（サポ）の少し上、または現在値から1.5×ATR下の「押し目」を狙う
                 if _sup_ll > 0 and _sup_ll < _cur_px:
                     _shikomi = _sup_ll + (_atr_val * 0.2)
                 else:
                     _shikomi = _cur_px * 0.96 
                     
-                # 2) 【利確目標】: 60日高値への回帰。すでに高値圏なら 5×ATR 上へ設定
-                #    ※「1ヶ月以内の狙い」を意識して、少し早めの利確意識を強める（0.99倍）
                 if _res_hh > _cur_px and (_res_hh / _cur_px) >= 1.03:
                     _rikaku = _res_hh * 0.99
                 else:
                     _rikaku = _cur_px + (5 * _atr_val)
                     
-                # 3) 【損切ライン】: 60日最安値を割ったら機械的に撤退
                 if _sup_ll > 0:
-                    _songiri = _sup_ll - (_atr_val * 0.2) # 60日安値の少し下をガード
+                    _songiri = _sup_ll - (_atr_val * 0.2)
                 else:
                     _songiri = _shikomi - (2.5 * _atr_val)
                     
@@ -7030,99 +6830,44 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 r["shikomi_txt"] = r["rikaku_txt"] = r["songiri_txt"] = "-"
         except Exception:
             r["shikomi_txt"] = r["rikaku_txt"] = r["songiri_txt"] = "-"
-    # =========================================================================
-    # all_rows をコードで引けるようにインデックス化（同コード複数行にも対応）
 
-    def _code4(x):
-        try:
-            return str(x or "").zfill(4)
-        except Exception:
-            return ""
-
-    rows_by_code = defaultdict(list)  # type: ignore[var-annotated]
-    for r in all_rows:
-        rows_by_code[_code4(r.get("コード"))].append(r)
-
-    # cand は df_cand の順番を厳密維持しつつ all_rows から参照（無いものだけ最小限で再計算）
-    cand_rows = []
-    cand_codes_ordered = [ _code4(c) for c in df_cand["コード"].tolist() ] if "コード" in df_cand.columns else []
-
-    # 欠落コードを特定
-    missing_codes = [c for c in cand_codes_ordered if c and c not in rows_by_code]
-
-    # 欠落があれば、その分だけ最小限で _prepare_rows を実行
-    if missing_codes:
-        df_missing = df_cand[df_cand["コード"].astype(str).str.zfill(4).isin(missing_codes)] if "コード" in df_cand.columns else None
-        if df_missing is not None and not df_missing.empty:
-            missing_rows = _prepare_rows(df_missing, conn)
-            for r in missing_rows:
-                rows_by_code[_code4(r.get("コード"))].append(r)
-
-    # df_cand の並び通りに cand_rows を構築（同コード複数行もそのまま展開）
-    for c in cand_codes_ordered:
-        cand_rows.extend(rows_by_code.get(c, []))
-
-    # ログ用は従来通り
     log_rows = _records_safe(df_log)
     _tick("prepare_rows")
 
-    # 7.1) 高値/安値/MA(5/25/75) を price_history から一括付与
-    # ※ cand_rows は all_rows の dict を参照しているため、all_rows に付与すれば cand 側にも反映される
-    codes = sorted({ _code4(r.get("コード")) for r in all_rows if r.get("コード") })
-    print(f"[timer] preload_price_summaries: codes={{len(codes)}}", flush=True)
+    # 高値/安値/MA(5/25/75) を一括付与
+    def _code4(x): return str(x or "").zfill(4) if x else ""
+    codes = sorted({ _code4(r.get("コード")) for r in rows if r.get("コード") })
     summary_map = preload_price_summaries(conn, codes)
-    print(f"[timer] preload_price_summaries: map={{len(summary_map)}}", flush=True)
+    rows = enrich_rows_with_price_summary(rows, summary_map)
+    _tick("price_summary_enrich")
 
-    all_rows  = enrich_rows_with_price_summary(all_rows,  summary_map)
-    _tick("price_summary_enrich (load+merge)")
-
-    # 7.2) chart / 移動平均 / ボリバン / GC / 三役
-    # こちらも all_rows に対して1回でOK（cand_rows は参照を共有）
-    enhance_with_chart_flags(conn, all_rows)
-    # enhance_with_chart_flags(conn, cand_rows)  # 基本不要。別参照にしているなら有効化。
+    # chart / 移動平均 / ボリバン / GC / 三役
+    enhance_with_chart_flags(conn, rows)
     _tick("chart_flags_enhance")
     
-    # ==== ★★★ ここに追加：TOBデータの注入処理 ★★★ ====
+    # TOBデータの注入処理
     try:
-        print("[TOB] Loading TOB data...")
-        tob_map = load_tob_titles_map(180) # 定義した関数を呼び出し
-        
-        # all_rows にデータを注入（cand_rowsもこれを参照しているので反映されます）
-        for r in all_rows:
-            # コードを4桁文字列に揃える
-            c_raw = str(r.get("コード") or r.get("code") or "").strip()
-            c4 = c_raw.zfill(4) if c_raw.isdigit() else c_raw[:4]
-            
-            # リストをセット（無ければ空リスト）
+        tob_map = load_tob_titles_map(180)
+        for r in rows:
+            c4 = _code4(r.get("コード") or r.get("code"))
             r["tob_titles"] = tob_map.get(c4, [])
     except Exception as e:
         print(f"[TOB] inject failed: {e}")
-    # ==== ★★★ 追加ここまで ★★★ ====
-
-    # 欠損チェック
-    _need = ["高値","安値","5日","25日","75日","chart","移動平均","ボリバン","GC","三役"]
-    print("[debug][cand missing]", {k: sum(1 for r in cand_rows if not r.get(k)) for k in _need}, flush=True)
-    print("[debug][all  missing]", {k: sum(1 for r in all_rows  if not r.get(k)) for k in _need}, flush=True)
-    _tick("debug_missing_done")
-
 
     # 8) 軽量メタ等
     meta = {"base_day": None, "next_business_day": None}
     try:
         def _to_date(s):
             if not s: return None
-            s = str(s)[:10]
-            try: return datetime.strptime(s, "%Y-%m-%d").date()
-            except ValueError: return None
-        if cand_rows:
-            dates = [d for d in (_to_date(r.get("シグナル更新日")) for r in cand_rows) if d]
+            try: return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+            except: return None
+        if rows:
+            dates = [d for d in (_to_date(r.get("シグナル更新日")) for r in rows) if d]
             if dates:
                 base = max(dates)
                 def _is_holiday(d):
-                    try:
-                        return (d.weekday() >= 5) or jpholiday.is_holiday(d)
-                    except Exception:
-                        return d.weekday() >= 5
+                    try: return (d.weekday() >= 5) or jpholiday.is_holiday(d)
+                    except: return d.weekday() >= 5
                 def _next_business_day(d):
                     d = d + timedelta(days=1)
                     while _is_holiday(d): d += timedelta(days=1)
@@ -7131,26 +6876,19 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 meta["next_business_day"] = _next_business_day(base).strftime("%Y-%m-%d")
     except Exception:
         pass
-    
     _tick("base_day next_business_day done")
 
-    # -------------------------------------------------------
-    # ★追加: ここでAI判定を実行！
-    # （cand_rows はこの時点でスクリーニング済みの候補リストです）
-    # -------------------------------------------------------
+    # ★AI判定を実行
     print("[AI] 詳細分析を実行しています...")
     try:
-        # 定義済みの add_ai_analysis 関数を呼び出す
-        cand_rows = add_ai_analysis(conn, cand_rows)
+        rows = add_ai_analysis(conn, rows)
     except Exception as e:
         print(f"[AI] 分析に失敗しました: {e}")
-    # -------------------------------------------------------
-
 
     # 9) data オブジェクト
     offering_code_set = _load_offering_codes_from_db(conn, days=3650)
     data_obj = {
-        "cand": cand_rows,
+        "cand": rows,
         "logs": log_rows,
         "meta": meta,
         "offer_codes":  sorted(offering_code_set),
@@ -7159,7 +6897,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _tick("json clean done")
 
     # 10) テンプレ描画
-    template_dir = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\templates"
     _ensure_template_file(template_dir, overwrite=True)
     env = Environment(loader=FileSystemLoader(template_dir, encoding="utf-8"),
                       autoescape=select_autoescape(["html"]))
@@ -7172,35 +6909,31 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         build_id = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     tpl = env.get_template("dashboard.html")
-    html = tpl.render(
+    html_output = tpl.render(
         include_log=include_log,
-        data_json=data_json,   # 残っていても無害
+        data_json=data_json,
         generated_at=build_id,
         build_id=build_id
     )
-
     _tick("template done")
 
-    # 11) __DATA__ を <body> 直後にインライン注入（+ window.__DATA__）※関数側で両方入れる実装に統一
+    # 11) __DATA__ をインライン注入
     t_inject = time.perf_counter()
-    html = __inject_inline_data_json(html, data_obj)
+    html_output = __inject_inline_data_json(html_output, data_obj)
     _p(f"inject_inline_data_json: dt={( time.perf_counter() - t_inject ): .2f}s")
 
-
-    # 12) 書き出し（PlanA 後処理は存在すれば実行／なければ静かにスキップ）
+    # 12) 書き出し
     t_write = time.perf_counter()
     os.makedirs(os.path.dirname(html_path), exist_ok=True)
     
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-    # ここに追記してください！
+    # monitorリスト出力
     try:
         export_monitor_list(df_cand)
     except Exception as e:
         print(f"[monitor] export failed: {e}")
-    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
     
     with open(html_path, "w", encoding="utf-8", newline="") as f:
-        f.write(html)
+        f.write(html_output)
         if '_apply_planA_postprocess' in globals():
             try:
                 _apply_planA_postprocess(html_path, data_obj)
@@ -7209,18 +6942,13 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 pass
     _p(f"write+planA: dt={( time.perf_counter() - t_write ): .2f}s")
     
-    
-    # --- ここからGit同期を追加 ---
+    # --- Git同期 ---
     REPO_ROOT = r"C:\Users\sasit\Documents\GitHub\sc"
-    sync_to_github_pages(REPO_ROOT, html_path)
-    # --- ここまで ---
+    try:
+        sync_to_github_pages(REPO_ROOT, html_path)
+    except Exception as e:
+        print(f"[git] sync failed: {e}")
     
-    # （例）この行を追記する
-    # 完成した「最終リスト」を渡すように変更！
-    
-    print(f"[export] HTML書き出し: {html_path} ...")
-    # ※お使いのスクリプトで最終的なデータが入っている変数名（df_cand や df_all、df_final など）に合わせて書き換えてください。
-
     print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
 
 def export_monitor_list(df_cand, filename="rss_monitor_list.json"):

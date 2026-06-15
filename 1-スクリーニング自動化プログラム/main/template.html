@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="ja">
 <head>
-
 <meta http-equiv="Cache-Control" content="no-store">
 <meta http-equiv="Pragma" content="no-cache">
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>スクリーニング ダッシュボード</title>
 <style>
   :root{
@@ -12,15 +12,13 @@
     --ink:#1f2937; --muted:#6b7280; --bg:#f9fafb; --line:#e5e7eb;
     --blue:#0d3b66; --green:#15803d; --orange:#b45309; --yellow:#a16207;
     --hit:#ffe6ef; --rowhover:#f6faff;
-    /* scroll-pad 用（ここに統合） */
     --railW: 520px;
     --padFactor: 1.05;
     --padGutter: 16px;
-    --toolbarH: 0px;     /* ツールバー実測高（JSで上書き） */
-    --topScrollH: 16px;  /* 上部横スクロールバーの高さ */
+    --toolbarH: 0px;
+    --topScrollH: 16px;
   }
 
-  /* 全体 */
   body{
     font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans JP',sans-serif;
     margin:16px; color:var(--ink); background:#fff;
@@ -31,127 +29,27 @@
   nav a.active{background:var(--blue);color:#fff}
 
   .toolbar{display:flex;gap:14px;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
-  /* ★ 好きな位置で改行させるためのダミー要素 */
-  .toolbar .toolbar-break {
-    flex-basis: 100%;  /* ここで行を切る */
-    height: 0;         /* 見た目の余白はほぼ増やさない */
-  }
+  .toolbar .toolbar-break { flex-basis: 100%; height: 0; }
   .toolbar input[type="text"],.toolbar input[type="number"]{padding:6px 10px;border:1px solid #CCD;border-radius:8px;background:#fff}
   .toolbar input[type="number"]{width:80px}
   .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
 
-  /* ▼ 相場環境バー（指数サポレジ＋VIX） */
-  #toolbar .env-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    margin: 2px 0 6px;
-    font-size: 11px;
-  }
+  #toolbar .env-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0 6px; font-size: 11px; }
+  #toolbar .env-label { font-size: 11px; }
+  #toolbar .env-item { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; background: rgba(0,0,0,0.03); white-space: nowrap; }
+  #toolbar .env-item .qhelp { margin-left: 4px; }
 
-  #toolbar .env-label {
-    font-size: 11px;
-  }
+  .tbl-wrap{ position: relative; border-radius: 10px; overflow: auto; -webkit-overflow-scrolling: touch; background: #fff; box-shadow: 0 0 0 1px var(--line) inset; max-height: 70vh; }
+  .tbl-wrap > table{ table-layout: auto !important; width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; }
+  .tbl-wrap > table thead{ position: sticky; top: 0; z-index: 6; background: color-mix(in oklab, var(--bg) 94%, black); }
+  .tbl-wrap > table thead th{ position: sticky !important; top: 0 !important; z-index: 7; background: color-mix(in oklab, var(--bg) 94%, black); background-clip: padding-box; box-shadow: 0 1px 0 rgba(0,0,0,.06); white-space: nowrap; }
+  .tbl-wrap > table th, .tbl-wrap > table td{ white-space: nowrap; }
 
-  #toolbar .env-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: rgba(0,0,0,0.03);
-    white-space: nowrap;
-  }
+  #tbl-candidate th:nth-child(3), #tbl-candidate th:nth-child(4), #tbl-candidate th:nth-child(5), #tbl-candidate td:nth-child(3), #tbl-candidate td:nth-child(4), #tbl-candidate td:nth-child(5){ padding-left:2px; padding-right:2px; text-align:center; white-space:nowrap; }
+  #tbl-candidate td[data-col="株探ニュース"] .bert-pos-dot { color: #2563eb; margin-right: 2px; font-weight: bold; }
 
-  #toolbar .env-item .qhelp {
-    margin-left: 4px;
-  }
-
-
-/* テーブルラッパ（角丸＋縦横スクロール＋ヘッダー固定の基準） */
-.tbl-wrap{
-  position: relative;              /* ← sticky の基準にする */
-  border-radius: 10px;
-  overflow: auto;                  /* 縦横どちらもスクロール */
-  -webkit-overflow-scrolling: touch;
-  background: #fff;
-  box-shadow: 0 0 0 1px var(--line) inset;
-  max-height: 70vh;
-}
-
-/* テーブル（横に広がる／ズレ防止） */
-.tbl-wrap > table{
-  table-layout: auto !important;   /* fixed は使わない（列つぶれ防止） */
-  width: max-content;              /* コンテンツ幅に合わせる */
-  min-width: 100%;                 /* 画面より狭い時は100% */
-  border-collapse: separate;       /* sticky のにじみ防止 */
-  border-spacing: 0;
-}
-
-/* ヘッダー（thead も sticky） */
-.tbl-wrap > table thead{
-  position: sticky;
-  top: 0;
-  z-index: 6;
-  background: color-mix(in oklab, var(--bg) 94%, black);
-}
-
-/* ヘッダーセル（確実に固定） */
-.tbl-wrap > table thead th{
-  position: sticky !important;
-  top: 0 !important;
-  z-index: 7;                      /* thead より一段高く */
-  background: color-mix(in oklab, var(--bg) 94%, black);
-  background-clip: padding-box;    /* 角丸ラッパー内のにじみ防止 */
-  box-shadow: 0 1px 0 rgba(0,0,0,.06);
-  white-space: nowrap;             /* 見出しの折返し抑止（任意） */
-}
-
-/* セル：横スクロール前提で折返し抑止（必要なら列個別で解除） */
-.tbl-wrap > table th,
-.tbl-wrap > table td{
-  white-space: nowrap;
-}
-
-
-
-  /* 市場・Yahoo・X 列だけ更にタイトに（候補テーブル） */
-  #tbl-candidate th:nth-child(3),
-  #tbl-candidate th:nth-child(4),
-  #tbl-candidate th:nth-child(5),
-  #tbl-candidate td:nth-child(3),
-  #tbl-candidate td:nth-child(4),
-  #tbl-candidate td:nth-child(5){
-    padding-left:2px; padding-right:2px; text-align:center; white-space:nowrap;
-  }
-  
-/* 株探ニュース の BERTポジティブ用 ● を青く表示 */
-#tbl-candidate td[data-col="株探ニュース"] .bert-pos-dot,
-#tbl-allcols  td[data-col="株探ニュース"] .bert-pos-dot {
-  color: #2563eb;      /* 好きな青に調整OK */
-  margin-right: 2px;
-  font-weight: bold;
-}
-
-  .tbl{
-    border-collapse:collapse;
-    width:max-content;
-    background:#fff;
-    table-layout:fixed;
-    padding-right:var(--sticky-left-w);
-  }
-
-  .tbl th,.tbl td{
-    border-bottom:1px solid var(--line);
-    padding:2px 4px;
-    font-size:0.50em;
-    vertical-align:top;
-    box-sizing:border-box;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-    line-height:1.25;
-  }
-
+  .tbl{ border-collapse:collapse; width:max-content; background:#fff; table-layout:fixed; padding-right:var(--sticky-left-w); }
+  .tbl th,.tbl td{ border-bottom:1px solid var(--line); padding:2px 4px; font-size:0.50em; vertical-align:top; box-sizing:border-box; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25; }
   .tbl tbody tr{ height:22px; }
   .tbl tbody tr:nth-child(even){ background:#fcfdff; }
   .tbl tbody tr:hover{ background:var(--rowhover); }
@@ -159,35 +57,36 @@
   .tbl th.sortable .arrow{ margin-left:6px; font-size:11px; color:#666; }
   .num{ text-align:right; }
   .muted{ color:var(--muted); }
-  .hidden{ display:none; }
   .count{ margin-left:6px; color:var(--muted); }
   .pager{ display:flex; gap:8px; align-items:center; }
   tr.hit>td{ background:var(--hit); }
 
-  /* バッジ */
   .badge{ display:inline-flex; gap:6px; align-items:center; padding:2px 8px; border-radius:999px; font-size:12px; line-height:1; font-weight:700; }
   .b-green{ background:#e7f6ed; color:var(--green); border:1px solid #cceedd; }
   .b-orange{ background:#fff4e6; color:#b45309; border:1px solid #ffe2c2; }
   .b-yellow{ background:#fff9db; color:#a16207; border:1px solid #ffe9a8; }
   .b-gray{ background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
 
-  /* 推奨バッジ */
   .rec-badge{ display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; line-height:1; white-space:nowrap; }
   .rec-strong{ background:#e7f6ed; color:#166534; border:1px solid #cceedd; }
   .rec-small { background:#fff4e6; color:#9a3412; border:1px solid #ffe2c2; }
   .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
   .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor; }
 
-  /* ヘッダー固定（候補一覧 / 全カラム） */
-  #tbl-candidate thead th,
-  #tbl-allcols  thead th{
-    position: static !important; top: auto !important; top: 0; background:#fff; z-index:61;
-    border-bottom:2px solid #ccc;
-    font-size:0.75em; padding:3px 4px;
-    white-space:nowrap !important; word-break:keep-all !important; overflow-wrap:normal !important;
+  /* ★ ヘッダー固定を復活させるため position: sticky に変更 */
+  #tbl-candidate thead th{ 
+    position: sticky !important; 
+    top: 0 !important; 
+    background:#fff; 
+    z-index:61; 
+    border-bottom:2px solid #ccc; 
+    font-size:0.75em; 
+    padding:3px 4px; 
+    white-space:nowrap !important; 
+    word-break:keep-all !important; 
+    overflow-wrap:normal !important; 
   }
 
-  /* ヘルプ（小窓＋暗幕） */
   .help-backdrop{ position:fixed; inset:0; background:rgba(17,24,39,.45); z-index:9998; display:none; }
   .help-pop{ position:absolute; z-index:9999; background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.18); padding:12px 14px 14px; font-size:13px; line-height:1.55; display:none; width:clamp(720px, 90vw, 1200px); }
   .help-pop .help-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; font-weight:700;}
@@ -197,571 +96,141 @@
   .qhelp{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; margin-left:6px; border-radius:50%; border:1px solid #cbd5e1; font-size:12px; cursor:pointer; background:#eef2ff; color:#334155; font-weight:700; line-height:1;}
   .qhelp:hover{ background:#e0e7ff; }
 
-  /* 既定＝1行 */
-  #tbl-candidate td, #tbl-candidate th,
-  #tbl-allcols  td, #tbl-allcols  th{ white-space:nowrap; word-break:keep-all; overflow-wrap:normal; }
-
-  /* 長文だけ折返し許可 */
-  th.reason-col, td.reason-col,
-  .hint-col, .fn-note { white-space:normal !important; word-break:break-word !important; overflow-wrap:anywhere !important; }
-
+  #tbl-candidate td, #tbl-candidate th{ white-space:nowrap; word-break:keep-all; overflow-wrap:normal; }
+  th.reason-col, td.reason-col, .fn-note { white-space:normal !important; word-break:break-word !important; overflow-wrap:anywhere !important; }
   th.reason-col, td.reason-col{ font-size:0.78em; line-height:1.2; }
 
   .mini{ font-size:10px; color:var(--muted); }
-
-  /* コードコピーリンク */
   .copylink{ color:var(--blue); text-decoration:underline; cursor:pointer; }
   .copylink.ok{ color:var(--green); text-decoration:none; font-weight:700; }
 
-  /* 予測タブ：理由/ヒント強調 */
-  .reason-col,.hint-col {vertical-align: top;}
-  .reason-box{ display:inline-block; padding:6px 8px; border-radius:10px; background:#fff9db; line-height:1.4; white-space: pre-wrap; }
-
-  /* 財務コメント */
   .fn-note{ color:#b91c1c; font-weight:700; font-size:0.78em; margin-left:8px; white-space:pre-wrap; overflow:visible; text-overflow:clip; display:inline-block; max-width:clamp(600px, 60vw, 1200px); vertical-align:bottom; }
 
-  .tooltip, .popover { pointer-events:none; }
-  .reason-tags{ display:flex; flex-wrap:wrap; gap:6px; }
-  .reason-tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#eef2ff; border:1px solid #c7d2fe; color:#334155; white-space:nowrap; }
-
-  /* ボタンの色補正 */
   #copy-page{ color:#fff !important; text-decoration:none; }
-
-  /* 市場フィルタ */
   #market-filter label{ display:inline-flex; gap:6px; align-items:center; padding:2px 6px; border:1px solid var(--line); border-radius:8px; }
   #market-filter input[type="checkbox"]{ transform: translateY(0.5px); }
 
-  /* ===== Column fold (fixed width via <col>) ===== */
   #tbl-candidate{ table-layout: fixed; }
   #tbl-candidate col{ width:auto; }
   #tbl-candidate col.col-collapsed{ width:22px !important; }
 
-  /* 長文列は広め */
-  th[data-col="財務"], td[data-col="財務"],
-  th[data-col="理由"], td[data-col="理由"],
-  th[data-col="判定理由"], td[data-col="判定理由"],
-  th[data-col="注記"], td[data-col="注記"],
-  th[data-col="ニュース"], td[data-col="ニュース"]{
-    max-width:360px; white-space:normal; overflow-wrap:anywhere; word-break:break-word;
-  }
+  th[data-col="財務"], td[data-col="財務"], th[data-col="理由"], td[data-col="理由"], th[data-col="判定理由"], td[data-col="判定理由"], th[data-col="注記"], td[data-col="注記"], th[data-col="ニュース"], td[data-col="ニュース"]{ max-width:360px; white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
+  th[data-col="コード"], td[data-col="コード"], th[data-col="銘柄"], td[data-col="銘柄"]{ max-width:160px; }
 
-  /* コード/銘柄はやや広め */
-  th[data-col="コード"], td[data-col="コード"],
-  th[data-col="銘柄"], td[data-col="銘柄"]{ max-width:160px; }
-
-  /* === scroll-pad (extend horizontal scroll) === */
-  .scroll-pad{
-    min-width: calc(var(--railW) * var(--padFactor) + var(--padGutter));
-    width:     calc(var(--railW) * var(--padFactor) + var(--padGutter));
-    border:none !important; background:transparent !important; pointer-events:none; padding:0 !important;
-  }
-
-  /* === Plan B: セクション・カード + sticky + 区切り線 === */
-  .tabs { position: sticky; top: 0; z-index: 60; background: var(--bg); }
-  .tabs::after { content:""; display:block; height:2px; background: var(--line); opacity:0.9; }
+  .scroll-pad{ min-width: calc(var(--railW) * var(--padFactor) + var(--padGutter)); width: calc(var(--railW) * var(--padFactor) + var(--padGutter)); border:none !important; background:transparent !important; pointer-events:none; padding:0 !important; }
 
   #toolbar { position: static !important; top: auto !important; z-index: 55; background: var(--bg); }
-  #toolbar .toolbar-card {
-    border:1px solid var(--line); border-radius:12px; padding:10px; 
-    box-shadow:0 1px 4px rgba(0,0,0,.04), 0 0 0 1px var(--line) inset;
-    display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; 
-    margin-bottom:8px;
-  }
-  #toolbar .group {
-    border:1px solid var(--line); border-radius:10px; padding:8px; 
-    display:flex; flex-wrap:wrap; gap:6px; align-items:center; background:var(--bg);
-  }
+  #toolbar .toolbar-card { border:1px solid var(--line); border-radius:12px; padding:10px; box-shadow:0 1px 4px rgba(0,0,0,.04), 0 0 0 1px var(--line) inset; display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; margin-bottom:8px; }
+  #toolbar .group { border:1px solid var(--line); border-radius:10px; padding:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; background:var(--bg); }
   #toolbar .group .label { font-size:.78em; opacity:.8; margin-right:6px; }
   #toolbar { font-size: .9em; line-height: 1.2; }
 
-  /* 配置（左→右：checks, texts, selects, buttons） */
-  /* チェック群：横並び＋綺麗に折返し */
-  #toolbar .group.checks{
-    order: 1;
-    display: flex;              /* ← grid から変更 */
-    flex-wrap: wrap;            /* 要素単位で折返し */
-    gap: 8px 10px;              /* 行間 × 列間 */
-    align-items: center;
-  }
-
-  /* 各ラベルの見た目と改行挙動 */
-  #toolbar .group.checks label{
-    display: inline-flex;
-    gap: 6px;
-    align-items: center;
-    padding: 2px 6px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--bg);
-    white-space: nowrap;        /* 文字は折返さず、要素として回り込む */
-  }
-
-  /* チェックボックスの縦位置を微調整（任意） */
-  #toolbar .group.checks input[type="checkbox"]{
-    transform: translateY(0.5px);
-  }
-  
-
+  #toolbar .group.checks{ order: 1; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+  #toolbar .group.checks label{ display: inline-flex; gap: 6px; align-items: center; padding: 2px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); white-space: nowrap; }
+  #toolbar .group.checks input[type="checkbox"]{ transform: translateY(0.5px); }
   #toolbar .group.texts   { order: 2; display:flex; gap:6px; }
   #toolbar .group.selects { order: 3; display:flex; gap:6px; }
-
-  /* ← ラベルには枠を当てない（キャプションをチップ化しない） */
-  #toolbar .group.selects label{
-    display:inline-flex; gap:6px; align-items:center;
-    padding:0; border:0; background:transparent;
-  }
-
-  /* ← select 本体だけを丸枠に */
-  #toolbar .group.selects label > select,
-  #toolbar .group.selects > select{
-    height: 28px;
-    line-height: 28px;
-    border: 1px solid var(--line) !important;  /* ← 既存の上書きを防ぐ */
-    border-radius: 9999px !important;          /* ← しっかり丸枠に */
-    background: #fff;
-    padding: 0 24px 0 8px;   /* 右=矢印余白 */
-    vertical-align: middle;
-    appearance: auto;        /* ← ネイティブ矢印はそのまま */
-  }
-
-  /* キャプションと select の間を少し空ける */
+  #toolbar .group.selects label{ display:inline-flex; gap:6px; align-items:center; padding:0; border:0; background:transparent; }
+  #toolbar .group.selects label > select, #toolbar .group.selects > select{ height: 28px; line-height: 28px; border: 1px solid var(--line) !important; border-radius: 9999px !important; background: #fff; padding: 0 24px 0 8px; vertical-align: middle; appearance: auto; }
   #toolbar .group.selects label > select{ margin-left: 6px; }
-
   #toolbar .group.buttons { order: 4; margin-left:0; display:flex; gap:8px; align-items:center; }
-
-  /* 列名との区切り線（toolbarカードの下） */
   #toolbar::after { content:""; display:block; height:1px; background:var(--line); margin:6px 0 4px; }
-
-  /* フッターの左右2カラム（左=市場 / 右=件数+Pager） */
-  #toolbar .group.footer {
-    order: 5;
-    width: 100%;
-    display: flex;
-    gap: 8px;
-    justify-content: space-between;
-    align-items: center;
-    border: 1px dashed var(--line);
-    border-radius: 10px;
-    padding: 8px;
-    flex-wrap: wrap;
-  }
-
-
+  #toolbar .group.footer { order: 5; width: 100%; display: flex; gap: 8px; justify-content: space-between; align-items: center; border: 1px dashed var(--line); border-radius: 10px; padding: 8px; flex-wrap: wrap; }
   #toolbar .group.footer .footer-left  { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   #toolbar .group.footer .footer-ctrls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-
   #toolbar .group.footer .pager { display:flex; gap:8px; align-items:center; }
 
-  /* 市場フィルタ */
   #market-filter { margin: 0; }
   #market-filter .muted { margin-right: 6px; }
-
   table thead th { background: color-mix(in oklab, var(--bg) 94%, black); }
-
   #toolbar input[type="text"], #toolbar input[type="number"], #toolbar select { height: 28px; }
   #toolbar .btn { height: 30px; }
 
+  #mk_host{display:flex;flex-wrap:wrap;gap:8px}
+  #mk_host label.mk{display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border-color,#e5e7eb);border-radius:6px}
+  #mk_host input[type=checkbox]{margin-right:4px}
 
+  th[data-col="抵抗帯中心"], th[data-col="最寄り抵抗"], th[data-col="支持帯中心"], th[data-col="最寄り支持"], td[data-col="抵抗帯中心"], td[data-col="最寄り抵抗"], td[data-col="支持帯中心"], td[data-col="最寄り支持"] { text-align:right; }
 
+  .toolbar, .toolbar *, #toolbar, #toolbar * { font-size: 11px !important; line-height: 1.6; }
+  .toolbar select, .toolbar input, .toolbar button, .toolbar label { font-size: inherit !important; }
 
-/* injected market checkbox fix */
-#mk_host{display:flex;flex-wrap:wrap;gap:8px}
-#mk_host label.mk{display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border-color,#e5e7eb);border-radius:6px}
-#mk_host input[type=checkbox]{margin-right:4px}
-
-  /* 数値列 右寄せ（抵抗/支持） */
-  th[data-col="抵抗帯中心"], th[data-col="最寄り抵抗"],
-  th[data-col="支持帯中心"], th[data-col="最寄り支持"],
-  td[data-col="抵抗帯中心"], td[data-col="最寄り抵抗"],
-  td[data-col="支持帯中心"], td[data-col="最寄り支持"] { text-align:right; }
-
-  /* === [PATCH] Toolbar font-size unify (11px) === */
-  .toolbar, .toolbar *, #toolbar, #toolbar * { font-size: 11px !important;
-    line-height: 1.6;
-  }
-  /* Ensure selects and inputs inherit correctly (browser defaults can shrink text) */
-  .toolbar select, .toolbar input, .toolbar button, .toolbar label {
-    font-size: inherit !important;
-  }
-
-  /* === [PATCH v15] Top scrollbar right below header (Pattern 1) === */
   .table-wrap { position: relative; width: 100%; }
   .thead-only { table-layout: fixed; width: max-content; background:#fff; }
   .thead-only th { white-space:nowrap; }
   .xbar-top { overflow-x: auto; height: 16px; }
   .xbar-top-inner { height: 1px; }
   .body-scroll { overflow-x: auto; }
-  /* Keep body table styled the same */
   .body-scroll > table.tbl { table-layout: fixed; width: max-content; }
 
-  /* === [PATCH v16] minimize gap between toolbar footer and header row === */
   #toolbar { margin-bottom: 0 !important; }
   #toolbar .toolbar-card { margin-bottom: 2px !important; }
   .table-wrap { margin-top: 0 !important; }
-  /* Make the top scrollbar as thin as possible cross-browser */
-  .xbar-top { height: 8px !important; }
-  .xbar-top { scrollbar-width: thin; }               /* Firefox */
-  .xbar-top::-webkit-scrollbar { height: 8px; }      /* Chromium/WebKit */
-  /* Optional: reduce header-only table bottom spacing if any */
+  .xbar-top { height: 8px !important; scrollbar-width: thin; }
+  .xbar-top::-webkit-scrollbar { height: 8px; }
   .thead-only { margin-bottom: 0 !important; }
 
-  /* === [PATCH v19] Dropdown group: remove inner frame to keep a single card === */
-  #toolbar .group.selects {
-    border: none !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-    margin: 0 !important;
-  }
-  /* Tighten the label spacing inside selects group */
-  #toolbar .group.selects .label {
-    margin-right: 6px !important;
-    opacity: .8;
-  }
-  /* Keep each select block compact */
-  #toolbar .group.selects .select-block {
-    margin-right: 8px !important;
-  }
+  #toolbar .group.selects { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; margin: 0 !important; }
+  #toolbar .group.selects .label { margin-right: 6px !important; opacity: .8; }
+  #toolbar .group.selects .select-block { margin-right: 8px !important; }
 
-  /* === [PATCH v20] Keep OUTER .toolbar-card, remove INNER group frames (selects) === */
-  /* Ensure the OUTER card is visible even if inner is transparent */
-  #toolbar .toolbar-card {
-    background: #fff !important;
-    border: 1px solid var(--line) !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,.04) !important;
-  }
-  /* Remove inner frame ONLY for the selects groups */
-  #toolbar .toolbar-card .group.selects,
-  /* Fallback: any group that actually contains a <select> (modern Chromium supports :has) */
-  #toolbar .toolbar-card .group:has(select) {
-    border: none !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-    margin: 0 !important;
-  }
-  /* Slight spacing so the two dropdown blocks don't stick together too tightly */
+  #toolbar .toolbar-card { background: #fff !important; border: 1px solid var(--line) !important; box-shadow: 0 1px 2px rgba(0,0,0,.04) !important; }
+  #toolbar .toolbar-card .group.selects, #toolbar .toolbar-card .group:has(select) { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; margin: 0 !important; }
   #toolbar .toolbar-card .group.selects + .group.selects { margin-left: 8px !important; }
 
-  /* === [PATCH v22] Restore OUTER dropdown frame, remove only INNER group frame === */
-  /* Outer card must be visible */
-  #toolbar .toolbar-card {
-    background: #fff !important;
-    border: 1px solid var(--line) !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,.06) !important;
-    border-radius: 12px !important;
-    padding: 10px 12px !important;
-    margin-bottom: 6px !important;
-  }
-  /* Remove only the inner group box for selects */
-  #toolbar .toolbar-card .group.selects {
-    border: none !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-    margin: 0 !important;
-  }
-  /* Keep spacing between the two select blocks */
+  #toolbar .toolbar-card { background: #fff !important; border: 1px solid var(--line) !important; box-shadow: 0 1px 2px rgba(0,0,0,.06) !important; border-radius: 12px !important; padding: 10px 12px !important; margin-bottom: 6px !important; }
+  #toolbar .toolbar-card .group.selects { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; margin: 0 !important; }
   #toolbar .toolbar-card .group.selects + .group.selects { margin-left: 12px !important; }
-  /* Ensure the label/select controls keep normal borders */
-  #toolbar .toolbar-card .group.selects .select-block select {
-    border: 1px solid var(--line) !important;
-    background: #fff !important;
-  }
+  #toolbar .toolbar-card .group.selects .select-block select { border: 1px solid var(--line) !important; background: #fff !important; }
 
-  /* === [PATCH v23] Make toolbar <select> look like other pill-framed controls === */
-  #toolbar .group.selects .select-block select {
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    background: #fff;
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 6px 28px 6px 10px; /* room for arrow */
-    font-size: inherit;
-    line-height: 1.6;
-    min-height: 30px;
-  }
-  /* Add a simple dropdown arrow (pure CSS) */
-  #toolbar .group.selects .select-block {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-  }
-  #toolbar .group.selects .select-block::after {
-    content: "";
-    position: absolute;
-    right: 10px;
-    width: 0; height: 0;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid #6b7280; /* muted */
-    pointer-events: none;
-  }
-  /* Focus ring to match inputs */
-  #toolbar .group.selects .select-block select:focus {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(13,59,102,.12);
-    border-color: #c9d2dc;
-  }
-  /* Disabled look */
-  #toolbar .group.selects .select-block select:disabled {
-    background: #f3f4f6;
-    color: #9ca3af;
-    border-color: #e5e7eb;
-  }
+  #toolbar .group.selects .select-block select { appearance: none; -webkit-appearance: none; -moz-appearance: none; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 6px 28px 6px 10px; font-size: inherit; line-height: 1.6; min-height: 30px; }
+  #toolbar .group.selects .select-block { position: relative; display: inline-flex; align-items: center; }
+  #toolbar .group.selects .select-block::after { content: ""; position: absolute; right: 10px; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #6b7280; pointer-events: none; }
+  #toolbar .group.selects .select-block select:focus { outline: none; box-shadow: 0 0 0 2px rgba(13,59,102,.12); border-color: #c9d2dc; }
+  #toolbar .group.selects .select-block select:disabled { background: #f3f4f6; color: #9ca3af; border-color: #e5e7eb; }
 
-  /* === [PATCH v24] Smaller top tabs === */
-  .tabs nav { gap: 6px !important; margin-bottom: 8px !important; }
-  .tabs nav a {
-    font-size: 11px !important;
-    padding: 4px 8px !important;
-    border-radius: 6px !important;
-  }
+  :root{ --ctrl-h: 30px; --ctrl-pad-y: 6px; --ctrl-pad-x: 12px; --ctrl-radius: 8px; }
+  #toolbar .btn{ height: var(--ctrl-h) !important; padding: var(--ctrl-pad-y) var(--ctrl-pad-x) !important; border-radius: var(--ctrl-radius) !important; font-weight: 600 !important; }
 
-  /* === [PATCH v25] Top tabs: match toolbar buttons size === */
-  .tabs nav { gap: 6px !important; margin-bottom: 6px !important; }
-  .tabs nav a {
-    display: inline-flex !important;
-    align-items: center !important;
-    font-size: 11px !important;
-    font-weight: 600 !important;
-    padding: 6px 12px !important;
-    height: 30px !important;
-    border-radius: 8px !important;
-  }
+  #toolbar::after{ height: 1px !important; margin: 2px 0 2px !important; }
+  #toolbar .toolbar-card{ margin-bottom: 2px !important; }
+  .xbar-top{ height: 8px !important; }
+  #toolbar .group.footer{ gap: 6px !important; padding: 6px !important; border-radius: 8px !important; }
 
-  /* === [PATCH v26] Tabs size = .btn (equalize with "傾向グラフ") === */
-  :root{
-    --ctrl-h: 30px;
-    --ctrl-pad-y: 6px;
-    --ctrl-pad-x: 12px;
-    --ctrl-radius: 8px;
-  }
-  #toolbar .btn{
-    height: var(--ctrl-h) !important;
-    padding: var(--ctrl-pad-y) var(--ctrl-pad-x) !important;
-    border-radius: var(--ctrl-radius) !important;
-    font-weight: 600 !important;
-  }
-  /* 切替タブも .btn と同一寸法へ */
-  .tabs nav a{
-    height: var(--ctrl-h) !important;
-    padding: var(--ctrl-pad-y) var(--ctrl-pad-x) !important;
-    border-radius: var(--ctrl-radius) !important;
-    font-weight: 600 !important;
-    font-size: inherit !important; /* ボタンと同じフォントサイズへ（toolbarの .9em を踏襲） */
-    line-height: calc(var(--ctrl-h) - 2px) !important; /* 内側テキストの縦位置安定 */
-  }
+  .tri { padding: 2px 4px; margin-right: 3px; border-radius: 3px; color: #fff; }
+  .tri.good    { background-color: #2ecc71; }
+  .tri.normal  { background-color: #f1c40f; }
+  .tri.bad     { background-color: #e67e22; }
+  .tri.verybad { background-color: #e74c3c; }
 
+  .tob-btn { cursor: pointer; color: #fff; background: #f97316; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; white-space: nowrap; display: inline-block; user-select: none; }
+  .tob-btn:hover { opacity: 0.9; }
 
-  /* === [PATCH v27] Compact toolbar footer gap (shrink grey space) === */
-  /* 1) Thin the separator line and margins under the toolbar */
-  #toolbar::after{
-    height: 1px !important;
-    margin: 2px 0 2px !important;
-  }
-  /* 2) Reduce bottom margin of the outer toolbar card */
-  #toolbar .toolbar-card{
-    margin-bottom: 2px !important;
-  }
-  /* 3) Make the top horizontal scroll area slimmer */
-  .xbar-top{
-    height: 8px !important; /* was 16px */
-  }
-  /* 4) Footer group padding/gap slightly smaller */
-  #toolbar .group.footer{
-    gap: 6px !important;
-    padding: 6px !important;   /* was 8px */
-    border-radius: 8px !important;
-  }
+  #tob-modal-overlay { display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.1); }
+  #tob-modal-content { position: absolute; background: #fff; border: 1px solid #cbd5e1; box-shadow: 0 8px 24px rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; width: 340px; max-width: 90vw; max-height: 400px; overflow-y: auto; font-size: 12px; line-height: 1.5; color: #333; }
+  .tob-item { border-bottom: 1px solid #f1f5f9; padding: 6px 0; }
+  .tob-item:last-child { border-bottom: none; }
 
+  .theme-col { max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: help; }
+  td[data-col="株探ニュース(3)"] { max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: help; }
+  td[data-col="株探ニュース(3)"]:hover { white-space: normal; overflow: visible; text-overflow: clip; z-index: 999; position: relative; background: #fff; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: max-content; max-width: 600px; }
 
-  /* === [PATCH v28] Smaller tab label font === */
-  .tabs nav a{
-    font-size: 11px !important;   /* was inherit (≈16px) */
-    letter-spacing: 0.1px;        /* 文字詰め微調整 */
-  }
-
-.tri { padding: 2px 4px; margin-right: 3px; border-radius: 3px; color: #fff; }
-
-.tri.good    { background-color: #2ecc71; }  /* 緑 */
-.tri.normal  { background-color: #f1c40f; }  /* 黄 */
-.tri.bad     { background-color: #e67e22; }  /* 橙 */
-.tri.verybad { background-color: #e74c3c; }  /* 赤 */
-
-/* === ★変更: TOBポップアップ（body直下表示用） === */
-.tob-btn {
-  cursor: pointer;
-  color: #fff; background: #f97316;
-  padding: 2px 8px; border-radius: 4px;
-  font-size: 10px; font-weight: bold;
-  white-space: nowrap; display: inline-block;
-  user-select: none;
-}
-.tob-btn:hover { opacity: 0.9; }
-
-/* ポップアップ本体（画面最前面に固定） */
-#tob-modal-overlay {
-  display: none; position: fixed; z-index: 9999;
-  left: 0; top: 0; width: 100%; height: 100%;
-  background: rgba(0,0,0,0.1); /* 背景を少し暗くしてクリックで閉じるエリアにする */
-}
-#tob-modal-content {
-  position: absolute;
-  background: #fff; border: 1px solid #cbd5e1;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
-  padding: 12px; border-radius: 8px;
-  width: 340px; max-width: 90vw;
-  max-height: 400px; overflow-y: auto;
-  font-size: 12px; line-height: 1.5; color: #333;
-}
-.tob-item { border-bottom: 1px solid #f1f5f9; padding: 6px 0; }
-.tob-item:last-child { border-bottom: none; }
-/* === 変更ここまで === */
-
-  /* 関連テーマの幅制限と...表示 */
-  .theme-col {
-    max-width: 150px;        /* 幅を150pxに制限（画面に合わせて調整してください） */
-    white-space: nowrap;     /* 改行させない */
-    overflow: hidden;        /* はみ出しを隠す */
-    text-overflow: ellipsis; /* 末尾を ... にする */
-    cursor: help;            /* マウスカーソルを？マークっぽくする */
-  }
-  
-/* 株探ニュース(3) 用のスタイル */
-  td[data-col="株探ニュース(3)"] {
-    max-width: 250px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: help;
-  }
-  /* マウスオーバー時に全文を表示 */
-  td[data-col="株探ニュース(3)"]:hover {
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
-    z-index: 999;
-    position: relative;
-    background: #fff;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    width: max-content;
-    max-width: 600px;
-  }
-
-
-/* === スマホ用レスポンシブ対応 (Pure CSS) === */
   @media (max-width: 768px) {
-    body {
-      margin: 4px;
-    }
-    
-    /* ツールバー全体を縦積み・フル幅に */
-    #toolbar .toolbar-card {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      padding: 8px;
-    }
-
-    #toolbar .group {
-      width: 100%;
-      flex-direction: column;
-      align-items: stretch;
-      gap: 8px;
-      border: none !important;
-      padding: 0 !important;
-    }
-
-    /* チェックボックス群は2列のグリッド状に配置してタップ域を確保 */
-    #toolbar .group.checks {
-      flex-direction: row;
-      flex-wrap: wrap;
-      justify-content: space-between;
-    }
-    #toolbar .group.checks label {
-      flex: 1 1 48%; /* 2列にする */
-      padding: 12px 6px;
-      margin: 0;
-      font-size: 13px !important;
-      justify-content: flex-start;
-      box-sizing: border-box;
-    }
-
-    /* テキスト・数値入力、セレクトボックスをモバイルの標準高さ(40px以上)へ */
-    #toolbar .group.texts,
-    #toolbar .group.selects {
-      display: flex;
-      flex-direction: column;
-      width: 100%;
-    }
-    #toolbar input[type="text"], 
-    #toolbar input[type="number"], 
-    #toolbar select,
-    #toolbar .group.selects .select-block select {
-      width: 100%;
-      box-sizing: border-box;
-      height: 44px !important;
-      font-size: 14px !important;
-      padding: 8px 12px;
-    }
-
-    /* ボタン類は押し間違いを防ぐため太くフル幅に */
-    #toolbar .group.buttons {
-      flex-direction: column;
-      width: 100%;
-    }
-    #toolbar .btn {
-      width: 100%;
-      height: 48px !important;
-      font-size: 15px !important;
-      margin-top: 4px;
-    }
-
-    /* フッター（ページャー等）の折り返し最適化 */
-    #toolbar .group.footer {
-      flex-direction: column;
-      align-items: center;
-      gap: 12px !important;
-    }
-    #toolbar .group.footer .footer-left,
-    #toolbar .group.footer .footer-ctrls {
-      width: 100%;
-      justify-content: space-between;
-    }
-
-    /* タブナビゲーションの2列化 */
-    .tabs nav {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px !important;
-    }
-    .tabs nav a {
-      flex: 1 1 45%;
-      text-align: center;
-      justify-content: center;
-      height: 44px !important;
-      font-size: 14px !important;
-      line-height: 32px !important;
-    }
-
-    /* 検索ボックスのフル幅化強制 */
-    #q { 
-      min-width: 100% !important; 
-    }
-
-    /* 相場環境バーの微調整 */
-    #toolbar .env-row {
-      justify-content: space-between;
-    }
-    #toolbar .env-item {
-      font-size: 12px;
-      padding: 4px 8px;
-    }
+    body { margin: 4px; }
+    #toolbar .toolbar-card { display: flex; flex-direction: column; gap: 12px; padding: 8px; }
+    #toolbar .group { width: 100%; flex-direction: column; align-items: stretch; gap: 8px; border: none !important; padding: 0 !important; }
+    #toolbar .group.checks { flex-direction: row; flex-wrap: wrap; justify-content: space-between; }
+    #toolbar .group.checks label { flex: 1 1 48%; padding: 12px 6px; margin: 0; font-size: 13px !important; justify-content: flex-start; box-sizing: border-box; }
+    #toolbar .group.texts, #toolbar .group.selects { display: flex; flex-direction: column; width: 100%; }
+    #toolbar input[type="text"], #toolbar input[type="number"], #toolbar select, #toolbar .group.selects .select-block select { width: 100%; box-sizing: border-box; height: 44px !important; font-size: 14px !important; padding: 8px 12px; }
+    #toolbar .group.buttons { flex-direction: column; width: 100%; }
+    #toolbar .btn { width: 100%; height: 48px !important; font-size: 15px !important; margin-top: 4px; }
+    #toolbar .group.footer { flex-direction: column; align-items: center; gap: 12px !important; }
+    #toolbar .group.footer .footer-left, #toolbar .group.footer .footer-ctrls { width: 100%; justify-content: space-between; }
+    #q { min-width: 100% !important; }
+    #toolbar .env-row { justify-content: space-between; }
+    #toolbar .env-item { font-size: 12px; padding: 4px 8px; }
   }
-
-
 </style>
 
 <script id="freeze-cols">
@@ -797,29 +266,21 @@
     ui.appendChild(lab);
     ui.appendChild(sel);
 
-
-// --- UI を toolbar の「プルダウン枠」に必ず入れる ---
-function mountIntoToolbar(ui){
-  // ツールバーのグルーピングは別スクリプトで DOMContentLoaded 後に走るため、
-  // まだ .group.selects が無ければ少し待ってから再試行する
-  var target = document.querySelector('#toolbar .group.selects');
-  if (target) {
-    // 枠に合わせるため group コンテナで包む
-    var holder = document.createElement('div');
-    holder.className = 'group';
-    holder.style.display = 'flex';
-    holder.style.gap = '6px';
-    holder.style.alignItems = 'center';
-    holder.appendChild(ui);
-    target.appendChild(holder);
-  } else {
-    // 次フレームで再試行（最大数回でもOK：ここでは簡潔に1回）
-    requestAnimationFrame(function(){ mountIntoToolbar(ui); });
-  }
-}
-mountIntoToolbar(ui);
-
-
+    function mountIntoToolbar(ui){
+      var target = document.querySelector('#toolbar .group.selects');
+      if (target) {
+        var holder = document.createElement('div');
+        holder.className = 'group';
+        holder.style.display = 'flex';
+        holder.style.gap = '6px';
+        holder.style.alignItems = 'center';
+        holder.appendChild(ui);
+        target.appendChild(holder);
+      } else {
+        requestAnimationFrame(function(){ mountIntoToolbar(ui); });
+      }
+    }
+    mountIntoToolbar(ui);
 
     var ths = tbl.querySelectorAll("thead th");
     ths.forEach(function(th, i){
@@ -834,7 +295,6 @@ mountIntoToolbar(ui);
       var key = "freezeIdx:" + tableId;
       var saved = localStorage.getItem(key);
       if (saved !== null && saved !== "") sel.value = saved;
-      // 初回は適用しない（ユーザー操作時のみ固定を反映）
       clearFreeze(tableId);
       sel.addEventListener("change", function(e){
         var v = e.target.value;
@@ -857,46 +317,42 @@ mountIntoToolbar(ui);
     });
   }
 
-function applyFreeze(tableId, uptoIdx){
-  var tbl = document.getElementById(tableId);
-  if (!tbl) return;
-  clearFreeze(tableId);
-  if (uptoIdx === null || isNaN(uptoIdx)) return;
+  function applyFreeze(tableId, uptoIdx){
+    var tbl = document.getElementById(tableId);
+    if (!tbl) return;
+    clearFreeze(tableId);
+    if (uptoIdx === null || isNaN(uptoIdx)) return;
 
-  var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
-  var lefts = [];
-  var sum = 0;
-  for (var i=0;i<ths.length;i++){
-    lefts[i] = sum;
-    sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
+    var ths = Array.prototype.slice.call(tbl.querySelectorAll("thead th"));
+    var lefts = [];
+    var sum = 0;
+    for (var i=0;i<ths.length;i++){
+      lefts[i] = sum;
+      sum += ths[i].offsetWidth || ths[i].getBoundingClientRect().width || 0;
+    }
+
+    for (var col=0; col<=uptoIdx && col<ths.length; col++){
+      var left = lefts[col] + "px";
+      tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
+        th.style.position = "sticky";
+        th.style.left = left;
+        th.style.zIndex = "3";
+        th.style.background = "#fff";
+        th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
+      });
+      tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
+        td.style.position = "sticky";
+        td.style.left = left;
+        td.style.zIndex = "2";
+        td.style.background = "#fff";
+        td.style.boxShadow = "1px 0 0 rgba(0,0,0,0.06)";
+      });
+    }
+    try { window.dispatchEvent(new Event('resize')); } catch(_) {}
   }
-
-  for (var col=0; col<=uptoIdx && col<ths.length; col++){
-    var left = lefts[col] + "px";
-    tbl.querySelectorAll("thead th:nth-child("+(col+1)+")").forEach(function(th){
-      th.style.position = "sticky";
-      th.style.left = left;
-      th.style.zIndex = "3";
-      th.style.background = "#fff";
-      th.style.boxShadow = "1px 0 0 rgba(0,0,0,0.08)";
-    });
-    tbl.querySelectorAll("tbody td:nth-child("+(col+1)+")").forEach(function(td){
-      td.style.position = "sticky";
-      td.style.left = left;
-      td.style.zIndex = "2";
-      td.style.background = "#fff";
-      td.style.boxShadow = "1px 0 0 rgba(0,0,0,0.06)";
-    });
-  }
-
-  // ★ここを追加：固定列数が変わったら、sticky幅とスクロール余白を再計測
-  try { window.dispatchEvent(new Event('resize')); } catch(_) {}
-}
-
 
   document.addEventListener("DOMContentLoaded", function(){
     createFreezeUI("tbl-candidate", "固定列（候補一覧）：");
-    createFreezeUI("tbl-allcols", "固定列（全カラム）：");
   });
 })();
 </script>
@@ -921,31 +377,27 @@ function applyFreeze(tableId, uptoIdx){
     return row;
   }
   if (Array.isArray(g.DATA_CAND)) g.DATA_CAND = g.DATA_CAND.map(mapRow);
-  if (Array.isArray(g.DATA_ALL))  g.DATA_ALL  = g.DATA_ALL.map(mapRow);
 })(window);
 </script>
 
 <script>
-// === scroll-pad injector: allows scrolling further right so any column can align next to the fixed columns ===
 (function(g,d){
   function measureRailRight(table){
     try{
       var edge = 0;
       var ths = table.querySelectorAll('thead th');
       if (!ths || !ths.length) return 0;
-      // 先頭 5～8列くらいまで見て最大rightを採用（重い計算を避ける）
       var limit = Math.min(8, ths.length);
       for (var i=0; i<limit; i++){
         var th = ths[i];
         var rect = th.getBoundingClientRect();
-        var left = th.offsetLeft || 0;  // fallback
+        var left = th.offsetLeft || 0;
         var right = left + (th.offsetWidth || rect.width || 0);
         if (right > edge) edge = right;
       }
       return edge;
     }catch(e){ return 0; }
   }
-
 
   function ensurePadColumn(table){
     try{
@@ -962,7 +414,6 @@ function applyFreeze(tableId, uptoIdx){
     }catch(e){}
   }
 
-
   function update(){
     var table = d.getElementById('tbl-candidate');
     if (!table) return;
@@ -977,11 +428,9 @@ function applyFreeze(tableId, uptoIdx){
     try{
       update();
       g.addEventListener('resize', update);
-
       try{
         var table = d.getElementById('tbl-candidate');
         if (table && g.MutationObserver){
-          // 変化のバーストを1フレームにまとめて update()
           var ticking = false;
           function queueUpdate(){
             if (ticking) return;
@@ -990,30 +439,20 @@ function applyFreeze(tableId, uptoIdx){
               try { update(); } finally { ticking = false; }
             });
           }
-
-          // thead / tbody を両方監視
           var obs = new MutationObserver(queueUpdate);
           var targets = [ table.querySelector('thead'), table.querySelector('tbody') ].filter(Boolean);
           targets.forEach(function(t){
-            obs.observe(t, {
-              childList: true,
-              attributes: true,
-              characterData: true,
-              subtree: true
-            });
+            obs.observe(t, { childList: true, attributes: true, characterData: true, subtree: true });
           });
         }
       }catch(_){}
     }catch(e){ console.warn('[scroll-pad]', e); }
   });
-
 })(window, document);
 </script>
 
-
 <script id="top-hscroll">
 (function(){
-  // 1) ツールバー高さをCSS変数へ（sticky用・不要なら残してOK）
   function setToolbarOffset(){
     var tb = document.getElementById('toolbar');
     var h  = tb ? tb.offsetHeight : 0;
@@ -1023,13 +462,11 @@ function applyFreeze(tableId, uptoIdx){
   window.addEventListener('resize', setToolbarOffset);
   requestAnimationFrame(setToolbarOffset);
 
-  // 2) #tbl-candidate を含む横スクロール要素を取得（.tbl-wrap優先）
   function findScrollerFor(table){
     if (!table) return null;
     return table.closest('.tbl-wrap') || table.parentElement || null;
   }
 
-  // 3) 上部横スクロールバーを設置し、本体と双方向同期
   function mountTopScrollbarFor(tableId){
     var table = document.getElementById(tableId);
     if (!table) return;
@@ -1037,27 +474,22 @@ function applyFreeze(tableId, uptoIdx){
     var sc = findScrollerFor(table);
     if (!sc) return;
 
-    // 既に設置済みならスキップ
     if (sc.previousElementSibling && sc.previousElementSibling.classList.contains('xbar-top')) return;
 
-    // 既存CSSに合わせたクラス名で作成
     var topBar = document.createElement('div');
     topBar.className = 'xbar-top';
     var sizer = document.createElement('div');
     sizer.className = 'xbar-top-inner';
     topBar.appendChild(sizer);
 
-    // 本体スクローラの直前に設置
     sc.parentElement.insertBefore(topBar, sc);
 
-    // 総幅をテーブル側に合わせる
     function syncSize(){
       var w = table.scrollWidth || sc.scrollWidth || 0;
       sizer.style.width = w + 'px';
       topBar.scrollLeft = sc.scrollLeft;
     }
 
-    // 双方向同期（ループ防止ロック）
     var lock = false;
     topBar.addEventListener('scroll', function(){
       if (lock) return; lock = true; sc.scrollLeft = topBar.scrollLeft; lock = false;
@@ -1066,7 +498,6 @@ function applyFreeze(tableId, uptoIdx){
       if (lock) return; lock = true; topBar.scrollLeft = sc.scrollLeft; lock = false;
     });
 
-    // 初期同期 & サイズ変化追随
     syncSize();
     if (window.ResizeObserver){
       var ro = new ResizeObserver(syncSize);
@@ -1074,24 +505,21 @@ function applyFreeze(tableId, uptoIdx){
       ro.observe(table);
     }
     window.addEventListener('resize', syncSize);
-    setTimeout(syncSize, 100); // レイアウト確定後の保険
+    setTimeout(syncSize, 100); 
   }
 
-  // ★候補一覧のみ適用
   function mountTopScrollbar(){
     ["tbl-candidate"].forEach(function(id){
       mountTopScrollbarFor(id);
     });
   }
 
-  // 初期化
   if (document.readyState === 'loading'){
     document.addEventListener('DOMContentLoaded', mountTopScrollbar);
   } else {
     mountTopScrollbar();
   }
 
-  // 既存 render() 実行後にも軽く再同期（存在すれば）
   var _render = window.render;
   if (typeof _render === 'function'){
     window.render = function(){
@@ -1103,8 +531,6 @@ function applyFreeze(tableId, uptoIdx){
   }
 })();
 </script>
-
-<!-- ページ全体スクロール無効（削除） -->
 
 </head>
 <body>
@@ -1128,7 +554,6 @@ function applyFreeze(tableId, uptoIdx){
       <span class="muted" style="font-size:12px">近接ハイライト±</span>
       <input id="resNearPct" type="number" min="0" step="0.1" value="0.5" style="width:60px">% 
     </div>
-    <!-- ★ 相場環境バー（新） -->
     <div class="env-row">
       <span class="env-label muted">相場環境:</span>
       <span id="idx-sr-summary" class="env-item"></span>
@@ -1146,13 +571,11 @@ function applyFreeze(tableId, uptoIdx){
     <label><input type="checkbox" id="f_noshor"> 空売り機関なしのみ</label>
     <label><input type="checkbox" id="f_opratio"> 割安（営利対時価10%以上）のみ</label>
     <label><input type="checkbox" id="f_hit"> 当たりのみ</label>
-    <!-- === RS / 地合い / 逆行 フィルタ === -->
     <label><input type="checkbox" id="f_rsstrong"> RS強（RS_5 > 0）</label>
     <label><input type="checkbox" id="f_mkt_good"> 地合い：追い風（+1）</label>
     <label><input type="checkbox" id="f_mkt_bad"> 地合い：逆風（-1）</label>
     <label><input type="checkbox" id="f_revstrong"> 逆行強</label>
     <label><input type="checkbox" id="f_revweak"> 逆行弱</label>
-    <!-- === 株探ニュース フィルタ === -->
     <label style="margin-left:12px;">
       株探ニュース
       <input type="number" id="f_news_days" min="0" style="width:4em;" placeholder="日数">
@@ -1178,7 +601,6 @@ function applyFreeze(tableId, uptoIdx){
     
     <input type="text" id="f_holder" placeholder="大株主(Activists...)" style="width:140px; margin-left:8px;">
     
-    <!-- ★ この1行を追加：ここで flex の改行を強制 -->
     <span class="toolbar-break"></span>
     
     <label>株価≥ <input type="number" id="th_pmin" placeholder="下限" step="1" inputmode="decimal" autocomplete="off"></label>
@@ -1232,9 +654,6 @@ function applyFreeze(tableId, uptoIdx){
     <button class="btn" id="download-csv">CSVダウンロード</button>
   </div>
 
-
-
-<!-- ヘルプ定義＆マップ -->
 <script>
   window.HELP_TEXT = {
     "AIスコア": "AIによる有望度評価（0-100点）。トレンド・RSI・乖離率・市場地合い等を総合分析。",
@@ -1255,10 +674,10 @@ function applyFreeze(tableId, uptoIdx){
     "最近接抵抗":"現在値より上で最も近い抵抗。",
     "前日比(円)":"当日の株価が前日終値から何円動いたか。",
     "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
+    "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
     "信用倍率": "信用買い残 ÷ 信用売り残。1を割ると売り長（将来の買い戻し圧力）、高いと買い長（将来の売り圧力）。",
     "売り残": "信用売り残高（株数）。将来の買い戻し要因。",
     "買い残": "信用買い残高（株数）。将来の売り要因。",
-    "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
     "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
     "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
     "財務スコア":"財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。","進捗率":"着手済み作業/想定全体の比率（%）。",
@@ -1276,10 +695,10 @@ function applyFreeze(tableId, uptoIdx){
     "指数サポレジ位置": 
       "日経平均(^N225)・TOPIX(^TOPX)・スタンダード(1551) 等が、直近の「節目」のどこにいるかを表示します。\n\n" +
       "●レジ直下：抵抗線がすぐ上にある状態\n" +
-      "　→ 天井が近く、叩き落とされるリスクあり（高値掴み注意）。\n" +
-      "　→ 勢いよく抜ければ「レジ抜け」となり上昇加速。\n\n" +
+      "  → 天井が近く、叩き落とされるリスクあり（高値掴み注意）。\n" +
+      "  → 勢いよく抜ければ「レジ抜け」となり上昇加速。\n\n" +
       "●サポ直上：支持線がすぐ下にある状態\n" +
-      "　→ 下げ止まりやすく、押し目買いのチャンス。\n\n" +
+      "  → 下げ止まりやすく、押し目買いのチャンス。\n\n" +
       "・レジ抜け：抵抗線を突破した強いゾーン（青天井）\n" +
       "・サポ割れ：支持線を割り込んだ弱いゾーン（下落警戒）\n" +
       "・レンジ内：上にも下にも動ける中間ゾーン",
@@ -1376,11 +795,10 @@ function applyFreeze(tableId, uptoIdx){
   }
   function fint(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? String(Math.round(n)) : ""; }
   function f2(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? n.toFixed(2) : ""; }
-  function fd(v){ return v ? String(v).slice(0,10) : ""; }
 
   // ---- data ----
   let RAW = {};
-  let DATA_CAND = [], DATA_ALL = [], DATA_PREEARN = [];
+  let DATA_CAND = [];
   function readRAW(){
     try{
       const n = document.getElementById("__DATA__");
@@ -1392,21 +810,13 @@ function applyFreeze(tableId, uptoIdx){
   const $  = (s,r=document)=>r.querySelector(s);
   const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
   const num = (v)=>_toNumRaw(v);
-  const cmp = (a,b)=>{ if(a==null&&b==null) return 0; if(a==null) return -1; if(b==null) return 1;
-    const na=+a, nb=+b, da=new Date(a), db=new Date(b);
-    if(!Number.isNaN(na)&&!Number.isNaN(nb)) return na-nb;
-    if(!Number.isNaN(da)&&!Number.isNaN(db)) return da-db;
-    return String(a).localeCompare(String(b),"ja"); };
   const hasKouho = (v)=> String(v||"").includes("候補");
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
-
-
 
   // 市場フィルタ
   const LS_MK = "mk_filters_v1";
   function collectMarkets(){
-    // 1) まず JSON 側から収集
-    const srcs = [window.DATA_CAND, window.DATA_ALL, window.DATA_EARN, window.DATA_PREEARN];
+    const srcs = [window.DATA_CAND];
     const set = new Set();
     for (const arr of srcs){
       for (const r of (arr || [])){
@@ -1415,7 +825,6 @@ function applyFreeze(tableId, uptoIdx){
       }
     }
 
-    // 2) JSONに無ければ DOM 側（候補テーブルの3列目=市場）から推定
     if (!set.size){
       document.querySelectorAll('#tbl-candidate tbody tr td:nth-child(3)')
         .forEach(td => {
@@ -1424,7 +833,6 @@ function applyFreeze(tableId, uptoIdx){
         });
     }
 
-    // 表示順：既知→未知の並び（未知は五十音ソート）
     const order = ["東P","東S","東G","東M","札証","名証","福証","北証","指数","他"];
     const known=[], unknown=[];
     for (const s of set){
@@ -1550,7 +958,6 @@ function applyFreeze(tableId, uptoIdx){
   let OFFER_SET = new Set();
 
   function rebuildOfferSet(){
-    // RAW がまだ無ければ何もしない
     if (!RAW) {
       OFFER_SET = new Set();
       return;
@@ -1566,7 +973,6 @@ function applyFreeze(tableId, uptoIdx){
       : "";
   }
 
-  // デバッグ用フック（不要になったら消してOK）
   window.DEBUG_OFFER = {
     get RAW(){ return RAW; },
     get OFFER_SET(){ return OFFER_SET; },
@@ -1576,10 +982,8 @@ function applyFreeze(tableId, uptoIdx){
     }
   };
 
-
   // finance modal
   function openFinanceHtml(code){
-    closeAllTips();
     const back = ensureChartModal();
     const body = document.getElementById("__chart_body__");
     const src = `graph/finance_${String(code).padStart(4,"0")}.html`;
@@ -1621,7 +1025,6 @@ function applyFreeze(tableId, uptoIdx){
     if (!a) return;
     e.preventDefault();
     try{
-      closeAllTips();
       const back = ensureChartModal();
       const body = document.getElementById("__chart_body__");
 
@@ -1706,20 +1109,16 @@ function applyFreeze(tableId, uptoIdx){
   const MK_LIST = collectMarkets();
   const mkSet   = loadMkState(MK_LIST);
 
-
   function renderMarketCheckboxes(){
     const host = document.querySelector('#mk_host');
     const mkAll = document.querySelector('#mk_all');
     if (!host || !mkAll) return;
 
-    // JSON → 無ければ DOM から市場一覧を収集
     const MK_LIST = collectMarkets();
     const FALLBACK = ["東P","東S","東G","東M","札証","名証","福証","北証","指数","他"];
-    // データに無くても「指数」だけは必ず候補に追加する
     let LIST = MK_LIST.length ? MK_LIST.slice() : FALLBACK.slice();
     if (!LIST.includes("指数")) LIST.push("指数");
 
-    // 直前の選択状態：window.__mkSet があれば最優先、無ければ localStorage、なければ全ON
     let initialSet;
     if (window.__mkSet instanceof Set) {
       initialSet = new Set([...window.__mkSet].filter(k => LIST.includes(k)));
@@ -1728,7 +1127,6 @@ function applyFreeze(tableId, uptoIdx){
       try { raw = JSON.parse(localStorage.getItem('mk_filters_v1') || '{}'); } catch(_){}
       const saved = Array.isArray(raw.keys) ? raw.keys : [];
       initialSet = new Set(saved.filter(k => LIST.includes(k)));
-      // 空集合のとき：none=true なら全OFF維持、そうでなければ従来どおり全ON
       if (!initialSet.size && !raw.none) initialSet = new Set(LIST);
     }
 
@@ -1742,12 +1140,9 @@ function applyFreeze(tableId, uptoIdx){
          </label>`);
     });
 
-    // 適用関数：DOM表示に触らず「状態→再描画」で件数も同期させる
     const apply = () => {
       const onRaw = new Set(LIST.filter(mk => document.getElementById('mk_'+mk)?.checked));
       mkAll.checked = LIST.every(mk => onRaw.has(mk));
-
-      // 全OFFの場合は "__NONE__" セントネルで「何も通さない」状態を表現し、保存は none:true
       const on = (onRaw.size === 0) ? new Set(['__NONE__']) : onRaw;
       try {
         localStorage.setItem('mk_filters_v1',
@@ -1755,19 +1150,13 @@ function applyFreeze(tableId, uptoIdx){
         );
       } catch(_){}
       window.__mkSet = on;
-
-
-      // 2) 再描画（applyFilter が __mkSet を見て絞り込み、#count も更新される）
       try { if (window.state) window.state.page = 1; } catch(_){}
-      render();   // ← ローカル関数を直接呼ぶ
+      render();
     };
 
-
-    // イベント配線
     LIST.forEach(mk => {
       document.getElementById('mk_'+mk)?.addEventListener('change', () => {
         apply();
-        render();
       });
     });
     mkAll.addEventListener('change', () => {
@@ -1776,18 +1165,15 @@ function applyFreeze(tableId, uptoIdx){
         if (cb) cb.checked = mkAll.checked;
       });
       apply();
-      render();
     });
 
-    // 初期適用
     apply();
   }
 
   window.collectMarkets = collectMarkets;
   window.renderMarketCheckboxes = renderMarketCheckboxes;
 
-
-  // 抵抗/支持トグル（未実装時でも安全）
+  // 抵抗/支持トグル
   document.addEventListener('change', e=>{
     if (e.target.matches('.res-tog, #resNearPct')) { render(); }
   });
@@ -1814,50 +1200,35 @@ function applyFreeze(tableId, uptoIdx){
   function thPmax(){ const v=num($("#th_pmax")?.value); return Number.isNaN(v)?null:v; }
   function thAsmin(){ const v=num($("#th_asmin")?.value); return Number.isNaN(v)?null:v; }
   function thAsmax(){ const v=num($("#th_asmax")?.value); return Number.isNaN(v)?null:v; }
-  
   function thTriG(){ const v=num($("#th_tri_g")?.value); return Number.isNaN(v)?null:v; }
   function thTriS(){ const v=num($("#th_tri_s")?.value); return Number.isNaN(v)?null:v; }
   function thTriV(){ const v=num($("#th_tri_v")?.value); return Number.isNaN(v)?null:v; }
 
-  
   // ====== 指数サポレジ位置（TOPX / 日経平均） ======
   function _indexSrLabel(px, sup, res) {
     const p = num(px), s = num(sup), r = num(res);
     if (!Number.isFinite(p)) return "不明";
-
-    const eps = 0.003; // ±0.3% くらい
-
-    // サポ割れ / レジ抜け
+    const eps = 0.003;
     if (Number.isFinite(s) && p < s * (1 - eps)) return "サポ割れ";
     if (Number.isFinite(r) && p > r * (1 + eps)) return "レジ抜け";
-
-    // 直上 / 直下
     if (Number.isFinite(s) && Math.abs(p - s) / p <= eps) return "サポ直上";
     if (Number.isFinite(r) && Math.abs(r - p) / p <= eps) return "レジ直下";
-
-    // どちらかがあればレンジ内
     if (Number.isFinite(s) || Number.isFinite(r)) return "レンジ内";
-
     return "不明";
   }
 
-  // DATA_CAND の中から「指数」行を拾って TOPIX / 日経平均 をまとめる
   function buildIndexSrSummary(){
     if (!Array.isArray(DATA_CAND) || !DATA_CAND.length) return null;
-
     const idx = {};
     for (const r of DATA_CAND){
       const mk = String(r["市場"] || "").trim();
       if (mk !== "指数" && mk !== "INDEX" && String(r["コード"])=="1551") continue;
-
       const name = String(r["銘柄名"] || "");
       const code = String(r["コード"] || "");
       
       let key = null;
       if (!key && (name.includes("TOPIX") || name.includes("トピックス"))) key = "TOPIX";
       if (!key && (name.includes("日経")  || name.includes("225")))       key = "日経平均";
-      
-      // スタンダード(1551)を検出するロジック
       if (!key && (name.includes("スタンダード") || name.includes("Standard") || code == "1551")) key = "Standard";
       
       if (!key) continue;
@@ -1878,121 +1249,92 @@ function applyFreeze(tableId, uptoIdx){
     return idx;
   }
 
-function renderIndexSrSummary(){
-  const host = document.getElementById("idx-sr-summary");
-  if (!host) return;
+  function renderIndexSrSummary(){
+    const host = document.getElementById("idx-sr-summary");
+    if (!host) return;
+    const info = buildIndexSrSummary();
+    if (!info) { host.textContent = ""; return; }
 
-  const info = buildIndexSrSummary();
-  if (!info) { host.textContent = ""; return; }
-
-  const parts = [];
-  if (info.TOPIX) {
-    parts.push(`TOPIX: ${info.TOPIX.label}`);
-  }
-  if (info["日経平均"]) {
-    const item = info["日経平均"];
-    const lbl = item.label || "不明";
-    const p   = num(item.price);
-
-    // ★ラベルが不明でも価格があれば価格を表示
-    if (lbl === "不明" && Number.isFinite(p)) {
-      parts.push(`日経: ${p.toFixed(0)}`);
-    } else {
-      parts.push(`日経: ${lbl}`);
+    const parts = [];
+    if (info.TOPIX) {
+      parts.push(`TOPIX: ${info.TOPIX.label}`);
     }
+    if (info["日経平均"]) {
+      const item = info["日経平均"];
+      const lbl = item.label || "不明";
+      const p   = num(item.price);
+      if (lbl === "不明" && Number.isFinite(p)) {
+        parts.push(`日経: ${p.toFixed(0)}`);
+      } else {
+        parts.push(`日経: ${lbl}`);
+      }
+    }
+    if (info["Standard"]) {
+        parts.push(`Std: ${info.Standard.label}`);
+    }
+
+    if (!parts.length){
+      host.textContent = "";
+      return;
+    }
+
+    const text = parts.join(" / ");
+    const esc  = escapeHtml(text);
+    host.innerHTML = `${esc} <span class="qhelp" data-key="指数サポレジ位置">?</span>`;
   }
 
-
-  if (info["Standard"]) {
-      // スタンダード(1551)の表示。価格は桁が違うので「ラベル(MA判定など)」だけ出すのが無難
-      parts.push(`Std: ${info.Standard.label}`);
-  }
- 
-
-  if (!parts.length){
-    host.textContent = "";
-    return;
-  }
-
-  const text = parts.join(" / ");
-  const esc  = escapeHtml(text);
-  host.innerHTML = `${esc} <span class="qhelp" data-key="指数サポレジ位置">?</span>`;
-}
-
-
-
-  // ====== VIXレジーム（恐怖指数の相場モード） ======
+  // ====== VIXレジーム ======
   function _vixRegimeLabel(v){
     const x = num(v);
     if (!Number.isFinite(x)) return { regime:"不明", note:"-" };
-
     if (x < 14)  return { regime:"低ボラ", note:"穏やか・リスクオン寄り" };
     if (x < 20)  return { regime:"通常レンジ", note:"平常モード" };
     if (x < 30)  return { regime:"警戒", note:"ボラ拡大・リスクオフ注意" };
     return { regime:"危険", note:"高ボラ期・急変リスク大" };
   }
 
-  // DATA_CAND から VIX 行を拾う
   function buildVixRegime(){
     if (!Array.isArray(DATA_CAND) || !DATA_CAND.length) return null;
-
     for (const r of DATA_CAND){
       const mk   = String(r["市場"] || "").trim();
       if (mk !== "指数") continue;
-
       const name = String(r["銘柄名"] || "");
       const code = String(r["コード"] || "");
-
       if (!(name.toUpperCase().includes("VIX") || code.toUpperCase().includes("VIX")))
         continue;
-
       const rawPrice = r["現在値"] ?? r["終値"];
       const price = Number(rawPrice);
       if (!Number.isFinite(price)) continue;
-
       const ext = _vixRegimeLabel(price);
-
-      // ★ renderVixRegimeSummary が期待しているプロパティ名に合わせる
       return {
         name,
         code,
-        value: price,      // 生の VIX 値
-        label: ext.regime, // 「低ボラ」「通常レンジ」「警戒」など
+        value: price,
+        label: ext.regime,
         note:  ext.note
       };
     }
     return null;
   }
 
-
-
   function renderVixRegimeSummary(){
     const host = document.getElementById("vix-regime");
     if (!host) return;
-
-    const info = buildVixRegime();  // 今使っている関数名に合わせて
+    const info = buildVixRegime(); 
     if (!info) { host.textContent = ""; return; }
 
-    // info.label: 「低ボラ」「通常」「警戒」「危険」とか
-    // info.value: 生の VIX 値
     const label = info.label || "不明";
     const vixStr = Number.isFinite(info.value) ? info.value.toFixed(1) : "-";
-
     const text = `VIX: ${label} (${vixStr})`;
     const esc  = escapeHtml(text);
     host.innerHTML = `${esc} <span class="qhelp" data-key="VIXレジーム">?</span>`;
   }
 
-
-
-
-  // === RS / 地合い / 逆行 フィルタの変数定義 ===
   const f_rsstrong   = document.querySelector("#f_rsstrong");
   const f_mkt_good   = document.querySelector("#f_mkt_good");
   const f_mkt_bad    = document.querySelector("#f_mkt_bad");
   const f_revstrong  = document.querySelector("#f_revstrong");
   const f_revweak    = document.querySelector("#f_revweak");
-
 
   function getSelectedTypes(){
     const box = document.querySelector(".early-filter");
@@ -2008,18 +1350,14 @@ function renderIndexSrSummary(){
   }
 
   function applyFilter(rows){
-
-    // ★ 全OFF（__NONE__）なら即 全除外
     const ls = (window.__mkSet instanceof Set) ? window.__mkSet : mkSet;
     if (ls && ls.has('__NONE__')) return [];
 
     const q   = ($("#q")?.value||"").trim();
     const sel = getSelectedTypes();
     const useEarly = sel.length > 0;
-
-    // ★ 市場セットは「現在のUI状態(window.__mkSet)」を最優先で使用
     const liveSet = ls;
-    const mkList  = collectMarkets(); // 空でなければ市場フィルタ有効
+    const mkList  = collectMarkets(); 
 
     return rows.filter(r=>{
       const sh  = hasKouho(r["初動フラグ"]);
@@ -2058,14 +1396,11 @@ function renderIndexSrSummary(){
       const rvol  = num(r["RVOL代金"]);
       const prog  = num(r["進捗率"]);
       const score = num(r["スコア"]);
-
-      // 関数内で以下のように取得
       const holderVal = (document.getElementById("f_holder")?.value || "").toLowerCase();
 
-      // ループ(metrics.forEach)の中で判定
       if (holderVal) {
           const h = (r["大株主"] || "").toLowerCase();
-          if (!h.includes(holderVal)) return false; // ← ★変更
+          if (!h.includes(holderVal)) return false; 
       }
 
       const tr = thRate(), tt = thTurn(), tv = thRvol(), tp = thProg(), ts = thScore();
@@ -2073,20 +1408,16 @@ function renderIndexSrSummary(){
 
       if(pmin!=null && !(price>=pmin)) return false;
       if(pmax!=null && !(price<=pmax)) return false;
-
       if(tr!=null && !(rate>=tr)) return false;
       if(tt!=null && !(turn>=tt)) return false;
       if(tv!=null && !(rvol>=tv)) return false;
       if(tp!=null && !(prog>=tp)) return false;
       if(ts!=null && !(score>=ts)) return false;
       
-      // --- applyFilter 関数内に追加 ---
       const asmin = thAsmin(), asmax = thAsmax();
-      const aiScore = num(r["AIスコア"]); // ← ここで td に表示されている値を数値化
-
+      const aiScore = num(r["AIスコア"]); 
       if(asmin!=null && !(aiScore >= asmin)) return false;
       if(asmax!=null && !(aiScore <= asmax)) return false;
-      
       
       const triG = thTriG(), triS = thTriS(), triV = thTriV();
       const gr = Number(r["tri_growth"]  ?? 0);
@@ -2097,154 +1428,86 @@ function renderIndexSrSummary(){
       if (triS != null && !(sf >= triS)) return false;
       if (triV != null && !(vo >= triV)) return false;
 
-      // ★ 市場フィルタ（現在の選択セットを使用）
       const mkEmpty = !liveSet || liveSet.size === 0;
-      // 表記ゆらぎ吸収（東Ｇ/東Ｍ/東Ｐ/東Ｓ → 東G/M/P/S）
       const mk = String(r["市場"]||"").trim()
         .replace('東Ｇ','東G').replace('東Ｍ','東M')
         .replace('東Ｐ','東P').replace('東Ｓ','東S');
       if (mkList.length && !mkEmpty && !liveSet.has(mk)) return false;
 
-      // === RS 強（RS_5 > 0） ===
-      if (f_rsstrong?.checked) {
-        if (!(r["RS_5"] > 0)) return false;
-      }
+      if (f_rsstrong?.checked) { if (!(r["RS_5"] > 0)) return false; }
+      if (f_mkt_good?.checked) { if (String(r["地合いフラグ"]) !== "1") return false; }
+      if (f_mkt_bad?.checked)  { if (String(r["地合いフラグ"]) !== "-1") return false; }
+      if (f_revstrong?.checked){ if (String(r["逆行強フラグ"]) !== "1") return false; }
+      if (f_revweak?.checked)  { if (String(r["逆行弱フラグ"]) !== "1") return false; }
 
-      // === 地合い：追い風（+1） ===
-      if (f_mkt_good?.checked) {
-        if (String(r["地合いフラグ"]) !== "1") return false;
-      }
-
-      // === 地合い：逆風（-1） ===
-      if (f_mkt_bad?.checked) {
-        if (String(r["地合いフラグ"]) !== "-1") return false;
-      }
-
-      // === 逆行強（TOPX弱 + 個別強） ===
-      if (f_revstrong?.checked) {
-        if (String(r["逆行強フラグ"]) !== "1") return false;
-      }
-
-      // === 逆行弱（TOPX強 + 個別弱） ===
-      if (f_revweak?.checked) {
-        if (String(r["逆行弱フラグ"]) !== "1") return false;
-      }
-
-      // 勝ちやすい銘柄だけ表示（▲/◆/■）
       const f_goodonly = $("#f_goodonly");
       if (f_goodonly?.checked) {
-        const gr = Number(r["tri_growth"]  ?? 0);
-        const sf = Number(r["tri_safety"]  ?? 0);
-        const vo = Number(r["tri_vol"]     ?? 0);
-        // しきい値は後で微調整OK
         if (!(gr >= 70 && sf >= 70 && vo >= 60)) return false;
       }
 
-      // === TOB情報ありのみ表示 ===
       const f_tob_only = $("#f_tob_only");
       if (f_tob_only?.checked) {
         const tobVal = String(r["TOB"] || "").trim();
-        // 空文字、またはハイフンのみの場合は表示対象外とする
         if (tobVal === "" || tobVal === "-") return false;
       }
 
-      // === 株探ニュース絞り込み（日付 / 青●） ===
       const newsDaysEl = $("#f_news_days");
       const newsBlueEl = $("#f_news_bluepos");
       const newsDays = parseInt(newsDaysEl?.value ?? "", 10) || 0;
       const onlyBlue = !!newsBlueEl?.checked;
 
       if (newsDays > 0 || onlyBlue) {
-        // 株探ニュース(3) 列のHTML（aタグ・span含む）
         const html = String(r["株探ニュース(3)"] ?? "");
-
-        // セルが空なら、条件指定されているときは除外
-        if (!html) {
-          return false;
-        }
-
-        // 青●ありのみ
+        if (!html) return false;
         if (onlyBlue) {
-          // BERTポジティブ用 ● が含まれているか？
-          if (!html.includes("bert-pos-dot") && !html.includes("●")) {
-            return false;
-          }
+          if (!html.includes("bert-pos-dot") && !html.includes("●")) return false;
         }
-
-        // 日数フィルタ（YY/MM/DD 形式で埋まっている日付を拾う）
         if (newsDays > 0) {
-          // 今日は localDateStr で 00:00 に正規化
           const today   = new Date();
-          const todayKey = localDateStr(today);      // "YYYY-MM-DD"
+          const todayKey = localDateStr(today);
           const todayMs  = Date.parse(todayKey);
-
-          const re = /(\d{2})\/(\d{2})\/(\d{2})/g;   // 例: "25/12/04"
+          const re = /(\d{2})\/(\d{2})\/(\d{2})/g;
           let m, within = false;
-
           while ((m = re.exec(html)) !== null) {
-            let yy = parseInt(m[1], 10);  // 25
+            let yy = parseInt(m[1], 10);
             const mm = parseInt(m[2], 10) - 1;
             const dd = parseInt(m[3], 10);
-
-            // 2桁年 → 2000年代として扱う
             if (yy < 100) yy += 2000;
-
             const d = new Date(yy, mm, dd);
-            const diff = (todayMs - d.getTime()) / 86400000;  // 日数差
-
-            if (!Number.isNaN(diff) && diff >= 0 && diff <= newsDays) {
-              within = true;
-              break;
-            }
+            const diff = (todayMs - d.getTime()) / 86400000;
+            if (!Number.isNaN(diff) && diff >= 0 && diff <= newsDays) { within = true; break; }
           }
-
-          if (!within) {
-            return false;
-          }
+          if (!within) return false;
         }
       }
 
-
-
-      //検索 search
       if (q) {
         const keys = ["コード","銘柄名","関連テーマ","最新テーマ","判定理由","右肩早期種別",
                       "初動フラグ","底打ちフラグ","右肩上がりフラグ",
                       "右肩早期フラグ","推奨アクション","株探ニュース","株探ニュース(3)"];
-
         const fields = (k)=> {
           let s = String(r[k] ?? "");
-          // 株探ニュース(3) は aタグを含むのでテキストだけ抜き出す
-          if (k === "株探ニュース(3)") {
-            s = s.replace(/<[^>]*>/g, "");
-          }
+          if (k === "株探ニュース(3)") s = s.replace(/<[^>]*>/g, "");
           return s;
         };
-
-        const orGroups = String(q).split(/(?:\s+OR\s+|\s*\|\s*)/);  // OR / | で分割
-
+        const orGroups = String(q).split(/(?:\s+OR\s+|\s*\|\s*)/); 
         const ok = orGroups.some(group => {
-          const terms = group.trim().split(/[\u3000\s]+/).filter(Boolean); // 空白=AND（全角/半角）
-          // すべての語が、どれかのキーの“部分一致”でヒットすればOK
+          const terms = group.trim().split(/[\u3000\s]+/).filter(Boolean);
           return terms.every(t => keys.some(k => fields(k).includes(t)));
         });
-
         if (!ok) return false;
       }
       return true;
     });
   }
 
-
   function formatJudgeLabel(r){ return isHitRow(r) ? "当たり！(1)" : "外れ！(1)"; }
 
-  //三角スコア色付け関数
   function colorizeTriangleScores(){
     document.querySelectorAll(".triangle-cell").forEach(cell => {
       const g = parseInt(cell.dataset.growth || "0", 10);
       const s = parseInt(cell.dataset.safety || "0", 10);
       const v = parseInt(cell.dataset.vol || "0", 10);
-
       const spans = cell.querySelectorAll(".tri");
       spans.forEach((sp, idx) => {
         const score = idx === 0 ? g : (idx === 1 ? s : v);
@@ -2257,7 +1520,6 @@ function renderIndexSrSummary(){
     });
   }
 
-  // render: candidate
   function renderCand(){
     const body = document.querySelector("#tbl-candidate tbody");
     if(!body) return;
@@ -2278,20 +1540,16 @@ function renderIndexSrSummary(){
 
       const rec = (r["推奨アクション"] || "").trim();
       let recBadge = "";
-      if (rec === "エントリー有力")      recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
+      if (rec === "エントリー有力")     recBadge = '<span class="rec-badge rec-strong" title="エントリー有力"><span class="rec-dot"></span>有力</span>';
       else if (rec === "小口提案")        recBadge = '<span class="rec-badge rec-small" title="小口提案"><span class="rec-dot"></span>小口</span>';
       else if (rec)                       recBadge = `<span class="rec-badge rec-watch" title="${rec.replace(/"/g,'&quot;')}"><span class="rec-dot"></span>${escapeHtml(rec)}</span>`;
 
-      // ▼三角スコア用の数値をここで用意する
-      const g  = parseInt(r["tri_growth"]  ?? 0, 10);  // ▲(上昇)
-      const s2 = parseInt(r["tri_safety"]  ?? 0, 10);  // ◆(安定)
-      const v2 = parseInt(r["tri_vol"]     ?? 0, 10);  // ■(ボラ)
+      const g  = parseInt(r["tri_growth"]  ?? 0, 10);  
+      const s2 = parseInt(r["tri_safety"]  ?? 0, 10);  
+      const v2 = parseInt(r["tri_vol"]     ?? 0, 10);  
 
-      // ソート用キー（上昇優先 → 安定 → ボラ）
       const triSort = String(g * 10000 + s2 * 100 + v2).padStart(6, "0");
       
-      // ▼▼▼▼▼▼▼ ステップ3：ここに追加 ▼▼▼▼▼▼▼
-      // TOBセルの中身を作る（onclick版）
       const tobList = r.tob_titles || [];
       let tobHtml = "";
       if (tobList.length > 0) {
@@ -2305,15 +1563,12 @@ function renderIndexSrSummary(){
       } else {
           tobHtml = `<span style="color:#e2e8f0; font-size:10px;">-</span>`;
       }
-      // ▲▲▲▲▲▲▲ 追加ここまで ▲▲▲▲▲▲▲
 
       const isHitTr = isHitRow(r);
-      // ▼▼▼ 追加: S高の色判定 ▼▼▼
       const shVal = String(r["S高"]||"");
       let shStyle = "";
-      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";      // 赤太字
-      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; // グレー
-      // ▲▲▲
+      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";     
+      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; 
       
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
@@ -2387,7 +1642,6 @@ function renderIndexSrSummary(){
         <td>${r["ボリバン"] || ""}</td>
         <td>${r["GC"] || ""}</td>
         <td>${r["三役"] || ""}</td>
-        <!-- === RS / 地合い / 逆行 系 新列 === -->
         <td class="num">${f2(r["RS_5"])}</td>
         <td class="num">${f2(r["RS_20"])}</td>
         <td class="num">${f2(r["Growth_Bias"])}</td>
@@ -2454,78 +1708,6 @@ function renderIndexSrSummary(){
     });
   }
 
-  function renderPreEarnings(rows){
-    function pickNameAndCode(rawName, rawCode){
-      const html = String(rawName ?? "");
-      let name = html.replace(/<[^>]*>/g,"").replace(/\s*\(\d{4}\)\s*$/,"").trim();
-      if (!name) name = String(rawName ?? "").trim();
-      let code = (rawCode ?? "").toString();
-      if (!/^\d{4}$/.test(code)){
-        const m1 = html.match(/\((\d{4})\)/);
-        if (m1) code = m1[1];
-      }
-      if (!/^\d{4}$/.test(code)){
-        const m2 = html.match(/quote\/(\d{4})\.T/i);
-        if (m2) code = m2[1];
-      }
-      return { name, code: /^\d{4}$/.test(code) ? code : "" };
-    }
-    const esc = (s)=>String(s??"").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
-    const yUrl = (c4)=>`https://finance.yahoo.co.jp/quote/${c4}.T`;
-
-    const tbl   = document.getElementById("tbl-preearn");
-    const thead = tbl?.querySelector("thead tr");
-    const tbody = document.getElementById("preearn-body");
-    if(!tbl||!thead||!tbody){ return; }
-
-    thead.innerHTML = `
-      <th>コード</th><th>銘柄</th><th>Yahoo</th>
-      <th class="num sortable" data-col="pre_score" data-type="num">pre_score<span class="arrow"></span></th>
-      <th class="num sortable" data-col="edge_score" data-type="num">edge_score<span class="arrow"></span></th>
-      <th class="num sortable" data-col="momentum_score" data-type="num">momentum_score<span class="arrow"></span></th>
-      <th class="sortable reason-col" data-col="スコア理由" data-type="text">スコア理由<span class="arrow"></span></th>
-      <th class="sortable" data-col="予測ヒント" data-type="text">予測ヒント<span class="arrow"></span></th>
-      <th class="num sortable" data-col="期待株価" data-type="num">期待株価<span class="arrow"></span></th>
-      <th class="sortable" data-col="修正見通し" data-type="text">修正見通し<span class="arrow"></span></th>
-      <th class="sortable" data-col="過熱度" data-type="text">過熱度<span class="arrow"></span></th>
-    `;
-
-    if(!rows?.length){
-      tbody.innerHTML = `<tr><td colspan="12" class="muted">データなし</td></tr>`;
-      wireDomSort("#tbl-preearn");
-      _formatTwoDecimals("#tbl-preearn");
-      attachQHelpsToHead('#tbl-preearn');
-      return;
-    }
-
-    tbody.innerHTML = rows.map(r=>{
-      const rawName = r.name ?? r.symbol ?? r.銘柄 ?? "";
-      const rawCode = r.code ?? r.ticker ?? r.symbol ?? r.コード ?? "";
-      const { name, code } = pickNameAndCode(rawName, rawCode);
-      const code4   = code ? String(code).padStart(4,"0") : "";
-      const yahoo   = code4 ? `<a href="${yUrl(code4)}" target="_blank" rel="noopener">Yahoo</a>` : "";
-
-      return `<tr>
-        <td>${code4 ? codeLink(code4) : ""}</td>
-        <td>${escapeHtml(name)}</td>
-        <td>${yahoo}</td>
-        <td class="num">${_fmt2num(r.pre_score)}</td>
-        <td class="num">${_fmt2num(r.edge_score)}</td>
-        <td class="num">${_fmt2num(r.momentum_score)}</td>
-        <td class="reason-col"><div class="reason-box">${escapeHtml(r["スコア理由"] ?? "根拠薄め（暫定）")}</div></td>
-        <td class="hint-col"><div class="reason-box">${escapeHtml(r["予測ヒント"] ?? "（準備中）")}</div></td>
-        <td class="num">${_fmt2num(r["期待株価"]) || (_fmt2num(r.現在値) || "")}</td>
-        <td>${escapeHtml(r["修正見通し"] ?? "中立")}</td>
-        <td>${escapeHtml(r["過熱度"] ?? "中立")}</td>
-      </tr>`;
-    }).join("");
-
-    wireDomSort("#tbl-preearn");
-    _formatTwoDecimals("#tbl-preearn");
-    attachQHelpsToHead('#tbl-preearn');
-  }
-
-  // help & modal
   function ensureHelpDom(){
     let bd=document.querySelector(".help-backdrop");
     if(!bd){ bd=document.createElement("div"); bd.className="help-backdrop"; document.body.appendChild(bd); }
@@ -2544,7 +1726,7 @@ function renderIndexSrSummary(){
     const sy = window.scrollY||0; pp.style.top = `${sy+80}px`;
     requestAnimationFrame(()=>{ pp.style.left = `${Math.max(10,(document.documentElement.clientWidth - pp.offsetWidth)/2)}px`; });
   }
-  function closeAllTips(){ const t=document.querySelectorAll('.tooltip, .popover'); t.forEach(el=>el.remove()); }
+
   function ensureChartModal(){
     let bd=document.getElementById("__chart_back__");
     if(!bd){ bd=document.createElement("div"); bd.id="__chart_back__"; bd.className="help-backdrop"; document.body.appendChild(bd); }
@@ -2559,7 +1741,6 @@ function renderIndexSrSummary(){
     return bd;
   }
 
-  // charts (簡易)
   function drawBar(canvas, labels, values, title){
     const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
     ctx.clearRect(0,0,W,H);
@@ -2679,27 +1860,20 @@ function renderIndexSrSummary(){
     requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
   }
 
-
-// events
-  // 共通：ページ1に戻して再描画
   const applyAndRender = () => {
     state.page = 1;
     render();
   };
   
-
-  
-  // 株探ニュース 日数フィルタ
   const newsDaysInput = document.getElementById("f_news_days");
   if (newsDaysInput) {
     newsDaysInput.addEventListener("input", () => {
       const v = parseInt(newsDaysInput.value, 10);
-      state.news_days = Number.isFinite(v) && v > 0 ? v : 0;  // 0以下は無効扱い
+      state.news_days = Number.isFinite(v) && v > 0 ? v : 0; 
       applyAndRender();
     });
   }
 
-  // 株探ニュース 青●のみ
   const newsBlueChk = document.getElementById("f_news_bluepos");
   if (newsBlueChk) {
     newsBlueChk.addEventListener("change", () => {
@@ -2708,8 +1882,6 @@ function renderIndexSrSummary(){
     });
   }
 
-
-  // 件数・ページ送りは従来どおり
   $("#perpage")?.addEventListener("change",(e)=>{
     const v = parseInt(e.target.value,10);
     state.per = Number.isFinite(v) ? v : 500;
@@ -2723,15 +1895,12 @@ function renderIndexSrSummary(){
     state.page++; render();
   });
 
-  // ---- テキスト入力 (#q)：Enter / フォーカスアウトでだけ反映 ----
   const qEl = $("#q");
   if (qEl) {
-    // フォーカスアウト時
     qEl.addEventListener("change", (e) => {
       state.q = e.target.value || "";
       applyAndRender();
     });
-    // Enterキーで即反映
     qEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -2741,7 +1910,6 @@ function renderIndexSrSummary(){
     });
   }
 
-  // ---- 数値入力：change のときだけ反映 ----
   const numIds = [
     "th_rate","th_turn","th_rvol","th_progress","th_score","th_pmin","th_pmax",
     "th_tri_g","th_tri_s","th_tri_v","th_asmin", "th_asmax"
@@ -2754,11 +1922,9 @@ function renderIndexSrSummary(){
     });
   });
 
-  // ---- チェックボックス系：change で即時反映 ----
   const chkIds = [
     "f_shodou","f_tei","f_both","f_rightup","f_early","f_etype",
     "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit","f_goodonly",
-    // ↓ここを追加
     "f_rsstrong","f_mkt_good","f_mkt_bad","f_revstrong","f_revweak"
   ];
   chkIds.forEach(id => {
@@ -2769,8 +1935,6 @@ function renderIndexSrSummary(){
     });
   });
 
-
-  // 早期フィルタ（ブレイク／ポケット／20MAリバ／200MAリクレイム）もチェックボックスなので即時反映
   $$(".early-filter .ef-chk input").forEach(el=>{
     el.addEventListener("change", () => {
       applyAndRender();
@@ -2800,57 +1964,38 @@ function renderIndexSrSummary(){
     }
   }
 
-  // 現在の入力状態を全部吸い出す
   function collectBookmarkState() {
     const st = { text:{}, nums:{}, checks:{} };
-
-    // テキスト
     if (qEl) st.text.q = qEl.value || "";
-
-    // 数値
     numIds.forEach(id => {
       const el = $("#"+id);
       if (el) st.nums[id] = el.value || "";
     });
-
-    // チェックボックス（chkIds だけ）
     chkIds.forEach(id => {
       const el = $("#"+id);
       if (el) st.checks[id] = !!el.checked;
     });
-
-    // 早期フィルタ（idごとに保存）
     $$(".early-filter .ef-chk input").forEach(el=>{
       if (!el.id) return;
       st.checks[el.id] = !!el.checked;
     });
-
-    // 抵抗ネアのしきい値も一応保存
     const rn = $("#resNearPct");
     if (rn) st.nums.resNearPct = rn.value || "";
-
     return st;
   }
 
-  // 保存した状態を画面に反映
   function applyBookmarkState(st) {
     if (!st) return;
-
-    // テキスト
     if (qEl && st.text && typeof st.text.q === "string") {
       qEl.value = st.text.q;
       state.q   = st.text.q;
     }
-
-    // 数値
     if (st.nums) {
       Object.keys(st.nums).forEach(id => {
         const el = $("#"+id);
         if (el) el.value = st.nums[id] ?? "";
       });
     }
-
-    // チェックボックス
     if (st.checks) {
       Object.keys(st.checks).forEach(id => {
         const el = $("#"+id);
@@ -2859,29 +2004,20 @@ function renderIndexSrSummary(){
         }
       });
     }
-
     applyAndRender();
   }
 
-  // 全フィルタを「デフォルト」に戻す（解除ボタン用）
   function clearFiltersToDefault() {
-    // テキスト
     if (qEl) {
       qEl.value = "";
       state.q = "";
     }
-
-    // 数値は空文字に
     numIds.forEach(id => {
       const el = $("#"+id);
       if (el) el.value = "";
     });
-
-    // 抵抗ネアは初期値 0.5 に戻す（HTMLのvalue="0.5"に合わせている）
     const rn = $("#resNearPct");
     if (rn) rn.value = "0.5";
-
-    // チェック類は全部 OFF
     chkIds.forEach(id => {
       const el = $("#"+id);
       if (el) el.checked = false;
@@ -2889,11 +2025,9 @@ function renderIndexSrSummary(){
     $$(".early-filter .ef-chk input").forEach(el=>{
       el.checked = false;
     });
-
     applyAndRender();
   }
 
-  // セレクトの中身をマップから作り直す
   function rebuildBookmarkSelect(map, chosen) {
     const sel = $("#bm_select");
     if (!sel) return;
@@ -2902,14 +2036,12 @@ function renderIndexSrSummary(){
     opt0.value = "";
     opt0.textContent = "（ブックマーク選択）";
     sel.appendChild(opt0);
-
     Object.keys(map).sort().forEach(name => {
       const o = document.createElement("option");
       o.value = name;
       o.textContent = name;
       sel.appendChild(o);
     });
-
     if (chosen && map[chosen]) {
       sel.value = chosen;
     } else {
@@ -2917,18 +2049,14 @@ function renderIndexSrSummary(){
     }
   }
 
-  // ツールバーにブックマークUIを生やす
   function setupBookmarkUI() {
     const tb = document.getElementById("toolbar");
     if (!tb) return;
-
-    // すでにあれば再構築だけ
     if (document.getElementById("bm_save")) {
       const map = loadBookmarks();
       rebuildBookmarkSelect(map);
       return;
     }
-
     const wrap = document.createElement("span");
     wrap.className = "bookmark-ctrls";
     wrap.style.display = "inline-flex";
@@ -2954,7 +2082,6 @@ function renderIndexSrSummary(){
     let map = loadBookmarks();
     rebuildBookmarkSelect(map);
 
-    // 保存
     btnSave?.addEventListener("click", () => {
       const name = (nameInput?.value || "").trim();
       if (!name) {
@@ -2968,7 +2095,6 @@ function renderIndexSrSummary(){
       rebuildBookmarkSelect(map, name);
     });
 
-    // 呼び出し
     sel?.addEventListener("change", () => {
       const name = sel.value;
       if (!name) return;
@@ -2977,13 +2103,11 @@ function renderIndexSrSummary(){
       applyBookmarkState(st);
     });
 
-    // 解除（デフォルトに戻す＆セレクトを未選択に）
     btnClear?.addEventListener("click", () => {
       sel.value = "";
       clearFiltersToDefault();
     });
 
-    // 削除
     btnDelete?.addEventListener("click", () => {
       const name = sel?.value;
       if (!name || !map[name]) {
@@ -2998,48 +2122,33 @@ function renderIndexSrSummary(){
     });
   }
 
-  // 初期化
   setupBookmarkUI();
 
-
-  // ページ銘柄コピー（列名1行 + データ行）
   $("#copy-page")?.addEventListener("click", async (e)=>{
     e.preventDefault();
-
     const tbl = document.getElementById(getActiveTableId());
     if (!tbl || !tbl.tHead || !tbl.tBodies.length) return;
-
-    // --- CSVエスケープ（", 改行 を含む場合は二重引用） ---
     const csvEscape = (v)=>{
       let s = String(v ?? "");
       if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
       return s;
     };
-
-    // --- セルの表示値を取得（data-raw 優先、なければテキスト） ---
     const getCellValue = (td)=>{
       if (!td) return "";
       const raw = td.getAttribute("data-raw");
       if (raw != null) return raw;
       return (td.textContent || "").replace(/\s+/g, " ").trim();
     };
-
-    // 1) ヘッダー（列名）
     const headerCells = Array.from(tbl.tHead.rows[0].cells);
     const headerLine = headerCells
       .map(th => csvEscape(th.getAttribute("data-col") || (th.textContent || "").trim()))
       .join(",");
-
-    // 2) データ行（現在ページに描画されている tbody のみ）
     const bodyRows = Array.from(tbl.tBodies[0].rows);
     const dataLines = bodyRows.map(tr => {
       const tds = Array.from(tr.cells);
       return tds.map(td => csvEscape(getCellValue(td))).join(",");
     });
-
-    // 3) 連結してクリップボードへ
     const text = [headerLine, ...dataLines].join("\n");
-
     try{
       if (navigator.clipboard && window.isSecureContext !== false) {
         await navigator.clipboard.writeText(text);
@@ -3063,7 +2172,6 @@ function renderIndexSrSummary(){
     }
   });
 
-  // CSVダウンロード
   $("#download-page-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
     const tblId = getActiveTableId();
@@ -3078,19 +2186,16 @@ function renderIndexSrSummary(){
     const csv = lines.join("\n");
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
     const blob = new Blob([bom, csv], { type: "text/csv" });
-
     const pad = n => String(n).padStart(2, "0");
     const dt  = new Date();
     const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
     const filename = `screen_current_page_only_${y}${m}${d}_${H}${M}${S}.csv`;
-
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
   });
 
-  // CSVダウンロード
   $("#download-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
     const tblId = getActiveTableId();
@@ -3105,12 +2210,10 @@ function renderIndexSrSummary(){
     const csv = lines.join("\n");
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
     const blob = new Blob([bom, csv], { type: "text/csv" });
-
     const pad = n => String(n).padStart(2, "0");
     const dt  = new Date();
     const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
     const filename = `screen_current_${y}${m}${d}_${H}${M}${S}.csv`;
-
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
@@ -3121,22 +2224,14 @@ function renderIndexSrSummary(){
   $("#btn-ts")?.addEventListener("click",openTrendChart);
   $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
-  // 常に候補一覧テーブルを使う
   function getActiveTableId() { return "tbl-candidate"; }
 
-  // initial
-  // 存在しない fold 関数の安全化
   if (typeof window.installCandidateFolds !== 'function') window.installCandidateFolds = function(){};
   if (typeof window.installFoldsFor !== 'function') window.installFoldsFor = function(){};
 
-
   function init(){
     try{
-      // ① RAWを読む（__DATA__ を同期パース）
       RAW = readRAW();
-      
-
-      // ★ ここで offer_codes → OFFER_SET を構築
       rebuildOfferSet();
       console.log(
         "[init] offer_codes len =",
@@ -3145,26 +2240,15 @@ function renderIndexSrSummary(){
         OFFER_SET.size
       );
       
-      const _preSrc = RAW.preearn ?? RAW.pre ?? RAW.pre_rows ?? RAW.preearn_rows ?? RAW["pre-earnings"] ?? RAW.earnings_pre ?? [];
       DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
-      DATA_PREEARN = Array.isArray(_preSrc)      ? _preSrc      : [];
-      
       state.data = DATA_CAND.slice();
 
-      // ② テーブルを描画する
       render();
       if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-candidate'); }catch(_){ } }
 
-      // ③ テーブル描画後に市場チェックUIを生成（DOMフォールバックが効く）
       renderMarketCheckboxes();
-      
-      // ③.5 指数サポレジ位置サマリを表示
       renderIndexSrSummary();
-      
-      // ③.6 VIXレジームサマリを表示
       renderVixRegimeSummary();
-
-      // ④ ヘルプや表示微調整
       forceClearThresholds();
       document.querySelectorAll('#tbl-candidate td br')
         .forEach(br => br.replaceWith(' '));
@@ -3173,7 +2257,6 @@ function renderIndexSrSummary(){
       const navAnchor = document.getElementById('nav-summary-anchor') || document.querySelector('nav');
       if (navAnchor) makeQ(navAnchor, 'まとめ（優先度順）');
 
-      // ⑤ sticky幅・scroll-pad の再計測
       try{ if (typeof measureStickyWidth === 'function') measureStickyWidth(); }catch(_){}
       try{ window.dispatchEvent(new Event('resize')); }catch(_){}
     }catch(e){ try{ console.error('[init fatal]', e); }catch(_){} }
@@ -3181,9 +2264,7 @@ function renderIndexSrSummary(){
   document.removeEventListener('DOMContentLoaded', init);
   document.addEventListener('DOMContentLoaded', init);
   
-  // === ★追加: プロンプト生成 (JSONコピー) ===
 function generatePromptJson(code) {
-  // state.data または window.DATA_CAND から対象銘柄を検索
   const r = (window.state?.data || window.DATA_CAND || []).find(x => String(x["コード"]).padStart(4, "0") === code);
   if (!r) return "";
 
@@ -3262,7 +2343,6 @@ function generatePromptJson(code) {
   return JSON.stringify(obj, null, 2);
 }
 
-// === ★追加: AI解析結果表示用のモーダルCSSを動的追加 ===
 (function(){
   if (!document.getElementById('ai-modal-style')) {
     const style = document.createElement('style');
@@ -3297,7 +2377,6 @@ function generatePromptJson(code) {
         flex: 1; overflow-y: auto; background: #f8fafc; color: #1e293b;
         padding: 16px; border-radius: 6px; font-family: inherit; font-size: 14px;
       }
-      /* 見やすくするためのカードデザイン用クラス */
       .ai-summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
       .ai-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
       .ai-card-title { font-weight: bold; color: #0f172a; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
@@ -3311,7 +2390,6 @@ function generatePromptJson(code) {
     document.head.appendChild(style);
   }
 
-  // モーダルのDOMを生成
   if (!document.getElementById('ai-modal-overlay')) {
     const ov = document.createElement('div');
     ov.id = 'ai-modal-overlay';
@@ -3326,24 +2404,21 @@ function generatePromptJson(code) {
     `;
     document.body.appendChild(ov);
 
-    // 閉じる処理
     const closeParams = () => { ov.style.display = 'none'; };
     document.getElementById('ai-modal-close').addEventListener('click', closeParams);
     ov.addEventListener('click', (e) => { if (e.target === ov) closeParams(); });
   }
 })();
 
-// === ★API通信 & ボタン制御ロジック ===
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest(".btn-prompt");
   if (!btn) return;
   e.preventDefault();
   
   const code = btn.getAttribute("data-code");
-  const jsonStr = generatePromptJson(code); // 前回作った関数を利用
+  const jsonStr = generatePromptJson(code); 
   if (!jsonStr) return;
 
-  // 1) ローディングUIに変更
   const originalText = btn.textContent;
   btn.textContent = "解析中...";
   btn.style.backgroundColor = "var(--orange)";
@@ -3351,32 +2426,28 @@ document.addEventListener("click", async (e) => {
   btn.style.cursor = "wait";
 
   try {
-    // 2) FastAPI へ POST 送信
-    const stockDataObj = JSON.parse(jsonStr); // 文字列からオブジェクトに戻す
+    const stockDataObj = JSON.parse(jsonStr); 
     
     const response = await fetch("http://localhost:8000/analyze", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ data: stockDataObj }) // FastAPIが期待するフォーマット
+      body: JSON.stringify({ data: stockDataObj }) 
     });
 
     if (!response.ok) {
       throw new Error(`HTTP Error: ${response.status}`);
     }
 
-    // 3) 結果を取得
     const resultJson = await response.json();
 
-    // 4) モーダルに結果を表示
     const modal = document.getElementById('ai-modal-overlay');
     const title = document.getElementById('ai-modal-title');
     const body = document.getElementById('ai-modal-body');
     
     title.textContent = `AI解析結果: ${code} ${stockDataObj.name}`;
 
-    // --- 追加：結果を見やすいHTMLに組み立てる ---
     const safeStr = (s) => s === null || s === undefined ? "-" : s;
     const isBullish = (resultJson.stance || "").includes("強気") || (resultJson.action || "").includes("買い");
     const scoreBreakdown = resultJson.score_breakdown || {};
@@ -3446,17 +2517,15 @@ document.addEventListener("click", async (e) => {
       </div>
     `;
 
-    body.innerHTML = html; // textContent ではなく innerHTML でHTMLとして流し込む
+    body.innerHTML = html; 
     modal.style.display = 'block';
 
-    // 成功状態のボタンUI
     btn.textContent = "完了";
     btn.style.backgroundColor = "var(--green)";
 
   } catch (err) {
     console.error("API call failed:", err);
     
-    // ★追加：エラー時（何も返ってこない場合）でも元JSONをしっかり表示する
     const modal = document.getElementById('ai-modal-overlay');
     const title = document.getElementById('ai-modal-title');
     const body = document.getElementById('ai-modal-body');
@@ -3474,11 +2543,9 @@ document.addEventListener("click", async (e) => {
     body.innerHTML = fallbackHtml;
     modal.style.display = 'block';
 
-    // 失敗状態のボタンUI
     btn.textContent = "エラー";
-    btn.style.backgroundColor = "#e11d48"; // 赤
+    btn.style.backgroundColor = "#e11d48"; 
   } finally {
-    // 2秒後にボタンを元の状態に戻す
     setTimeout(() => { 
       btn.textContent = originalText; 
       btn.style.backgroundColor = ""; 
@@ -3488,47 +2555,37 @@ document.addEventListener("click", async (e) => {
   }
 });
 
-// === 追加ここまで ===
-
-  // === ★追加: TOBポップアップ制御 ===
 (function(){
-  // モーダル用のDOMを生成（一度だけ）
   if (!document.getElementById('tob-modal-overlay')) {
     const ov = document.createElement('div');
     ov.id = 'tob-modal-overlay';
     ov.innerHTML = '<div id="tob-modal-content"></div>';
     document.body.appendChild(ov);
 
-    // 背景クリックで閉じる
     ov.addEventListener('click', (e) => {
       if (e.target === ov) ov.style.display = 'none';
     });
   }
 })();
 
-// グローバル関数として公開（HTMLから onclick で呼ぶため）
 window.showTobHistory = function(btn, jsonStr) {
   try {
     const list = JSON.parse(decodeURIComponent(jsonStr));
     const ov = document.getElementById('tob-modal-overlay');
     const ct = document.getElementById('tob-modal-content');
     
-    // 中身を生成
     let html = `<div style="font-weight:bold; margin-bottom:8px; color:#f97316; border-bottom:2px solid #ffedd5; padding-bottom:4px;">TOB関連書類履歴 (${list.length})</div>`;
     html += list.map(item => `<div class="tob-item">${item}</div>`).join("");
     ct.innerHTML = html;
 
-    // 表示位置の計算（ボタンの近くに出す）
     const rect = btn.getBoundingClientRect();
     const scrollY = window.scrollY || document.documentElement.scrollTop;
     
-    // 基本はボタンの「右下」に出す
     let top = rect.bottom + 5 + scrollY;
     let left = rect.left;
 
-    // 画面からはみ出るようなら調整（簡易版）
     if (left + 340 > window.innerWidth) {
-        left = window.innerWidth - 350; // 右端に寄せる
+        left = window.innerWidth - 350;
     }
 
     ct.style.top = top + 'px';
@@ -3540,9 +2597,6 @@ window.showTobHistory = function(btn, jsonStr) {
     console.error("TOB view error:", e);
   }
 };
-// === 追加ここまで ===
-
-
 })();
 </script>
 
@@ -3613,7 +2667,6 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="sortable" data-col="ボリバン">ボリバン<span class="arrow"></span></th>
             <th class="sortable" data-col="GC">GC<span class="arrow"></span></th>
             <th class="sortable" data-col="三役">三役<span class="arrow"></span></th>
-            <!-- === RS / 地合い / 逆行 系 新列 === -->
             <th class="num sortable" data-col="RS_5" data-type="num">RS_5<span class="arrow"></span></th>
             <th class="num sortable" data-col="RS_20" data-type="num">RS_20<span class="arrow"></span></th>
             <th class="num sortable" data-col="Growth_Bias" data-type="num">GrowthBias<span class="arrow"></span></th>
@@ -3626,7 +2679,6 @@ window.showTobHistory = function(btn, jsonStr) {
       </table>
     </div>
   </section>
-
 
 <script>
 document.addEventListener('DOMContentLoaded', function(){
@@ -3668,7 +2720,9 @@ document.addEventListener('DOMContentLoaded', function(){
     }
 
     // 初期チェック群
-    if (n.classList.contains('early-filter')) { gChecks.appendChild(n); return; }
+    if (n.classList.contains('early-filter') || n.classList.contains('res-filters') || n.classList.contains('env-row')) { 
+      gChecks.appendChild(n); return; 
+    }
 
     // 件数バッジ・Pager・表示件数はフッター右側
     if (n.classList.contains('count'))       { gFooter.appendChild(n); return; }
@@ -3685,7 +2739,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
     // テキスト/数字入力
     if (n.tagName==='LABEL' && n.querySelector('input[type="text"], input[type="number"]')) { gTexts.appendChild(n); return; }
-    if (n.matches('input[type="text"], input[type="number"]'))                                { gTexts.appendChild(n); return; }
+    if (n.matches('input[type="text"], input[type="number"]'))                               { gTexts.appendChild(n); return; }
 
     // チェックボックス
     if (n.tagName==='LABEL' && n.querySelector('input[type="checkbox"]')) { gChecks.appendChild(n); return; }
@@ -3724,7 +2778,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // 2) 表示件数・前へ/次へ・件数バッジを右側へ集約
   const moves = [];
 
-  // よくある要素候補（必要に応じて追記OK）
+  // よくある要素候補
   footer.querySelectorAll('select#perpage, select[name="perpage"], .pager, .count').forEach(n => moves.push(n));
 
   // ラベル単体ノード（「表示件数」「前へ」「次へ」「件数」等）も拾う
@@ -3736,22 +2790,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
   moves.forEach(el => { if (el && el.parentElement !== ctrls) ctrls.appendChild(el); });
 });
-</script>
-
-
-<script>
-function kabuNewsCell(code){
-  try{
-    const map = (window.__KABUNEWS_MAP || {});
-    const arr = map[code] || [];
-    const items = arr.slice(0,3).map(x=>{
-      const t = String(x && x.title || "").replace(/"/g,"&quot;");
-      const href = (x && x.link) ? x.link : "#";
-      return `<a href="${href}" target="_blank" rel="noopener">${t}</a>`;
-    });
-    return items.join(" ・ ");
-  }catch(_){ return ""; }
-}
 </script>
 </body>
 </html>
