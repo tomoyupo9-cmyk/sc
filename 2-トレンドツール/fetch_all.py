@@ -54,10 +54,6 @@ except Exception:
         pass
 
 # --- 既存モジュール（環境のまま） ---
-from src.trends import fetch_trends
-from src.news import fetch_news
-from src.bbs import fetch_bbs_stats, fetch_leak_comments, fetch_tob_comments
-from src.discovery import build_universe
 from src.common import ensure_dir, dump_json, now_iso, load_config
 # --- ログ抑制パッチ（ここから追加） ---
 import logging
@@ -75,7 +71,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 ROOT = Path(__file__).resolve().parent
 OUT_DIR = ROOT / "out"
-OUT_BBS_DIR = ROOT / "out_bbs"
 DASH_DIR = ROOT / "dashboard"
 JST = timezone(timedelta(hours=9))
 
@@ -125,71 +120,7 @@ def _summarize_title_simple(title: str):
     label, score, hit_kw = _judge_sentiment(title)  # label: "positive"/"neutral"/"negative"
     return summary, label, hit_kw
 # ---------------------------------------------------------------------------
-def load_tob_from_bbs_lightweight(rows_to_check):
-    import requests
-    import time
-    import random
-    from datetime import datetime
 
-    # セッションを作成し、ブラウザに近いヘッダーを設定
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
-        "Referer": "https://finance.yahoo.co.jp/",
-    })
-
-    keywords = ["TOB", "買収", "公開買付", "親会社", "子会社化"]
-    results_rows = []
-    
-    # 100件は多いため、安全のために件数を絞ることを推奨（例: [:50]）
-    target_list = rows_to_check[:50] 
-    print(f"[Board-Check] 開始: {len(target_list)} 銘柄をスキャンします...")
-
-    for r in target_list:
-        code = str(r.get("ticker", ""))
-        if not code: continue
-        
-        url = f"https://finance.yahoo.co.jp/quote/{code}.T/bbs"
-        try:
-            # セッション経由でリクエスト
-            res = session.get(url, timeout=7)
-            res.raise_for_status()
-            
-            # --- サイレントブロック検知 ---
-            # 200 OKでも中身が「掲示板」でない（認証ページ等）場合は即座に中止
-            if "掲示板" not in res.text:
-                print(f"  [!] Yahoo掲示板からブロックされた可能性があります。処理を中断します。")
-                break
-
-            # キーワード判定
-            found = [kw for kw in keywords if kw in res.text]
-            if found:
-                results_rows.append({
-                    "ticker": code,
-                    "name": r.get("name", ""),
-                    "count": "検知", 
-                    "comments": [{"text": f"掲示板にてキーワード検知: {', '.join(found)}", "link": url, "sentiment": "neutral", "published": "最新"}]
-                })
-                print(f"  [Board-Check] Detected: {code} ({', '.join(found)})")
-            
-            # --- 修正案Bの核心: 間隔のランダム化 ---
-            # 2.0秒〜5.0秒の間でランダムに待機し、Bot判定を回避
-            wait_time = random.uniform(2.0, 5.0)
-            time.sleep(wait_time)
-            
-        except Exception as e:
-            print(f"  [Error] {code}: {str(e)[:50]}")
-            # エラーが連続する場合はIP制限の可能性があるため、少し長めに休む
-            time.sleep(10)
-            continue
-            
-    return {
-        "rows": results_rows, 
-        "total_tickers": len(results_rows), 
-        "generated_at": datetime.now().isoformat()
-    }
 # ------------------ TDnet: 取得 ------------------
 TDNET_LIST_JSON = "https://webapi.yanoshin.jp/webapi/tdnet/list/{date_from}-{date_to}.json"
 
@@ -827,8 +758,6 @@ def render_dashboard_html(payload: dict, api_base: str = "") -> str:
   <div class="tabs">
     <button class="tab" data-mode="earnings">決算</button>
     <button class="tab" data-mode="earnings_day">決算（日別）</button>
-    <button class="tab" data-mode="leak">漏れ？</button>
-    <button class="tab" data-mode="tob">TOB</button>
     <button class="tab" data-mode="tob_tdnet">TOB(TDNET)</button>
   </div>
   <span id="stamp" class="stamp"></span>
@@ -1089,49 +1018,7 @@ function render(j){
     return;
   }
 
-  // 共通: 検索系（漏れてる？ / TOB[掲示板]）レンダラ
-  function renderAggRows(agg){
-    const rows=(agg?.rows||[]).slice().sort((a,b)=> (b.count||0)-(a.count||0));
-    thead.innerHTML = `<tr>
-      <th>#</th><th>銘柄</th><th>件数</th><th>サンプル（最大6件）</th>
-    </tr>`;
-
-    if(!rows.length){
-      const tr=document.createElement("tr");
-      tr.innerHTML=`<td colspan="4" class="small">該当がありません。</td>`;
-      tbody.appendChild(tr);
-      return;
-    }
-    rows.forEach((r,idx)=>{
-      const tr=document.createElement("tr");
-      const t=(h)=>{const el=document.createElement("td"); el.innerHTML=h; tr.appendChild(el);};
-      const samples=(r.comments||[]).slice(0,6).map(c=>{
-        const lab = c.sentiment||"neutral";
-        const badgeCls = lab==="positive" ? "pos" : (lab==="negative"?"neg":"neu");
-        const text = esc(c.text||"");
-        const link = esc(c.link||"#");
-        const pub  = esc((c.published||"").toString());
-        return `<div class="newsitem">
-                  <a href="${link}" target="_blank" rel="noopener">${text}</a>
-                  <div class="src"><span class="badge ${badgeCls}">${lab}</span>　${pub}</div>
-                </div>`;
-      }).join("");
-      t(String(idx+1));
-      t(`${esc(r.name||r.ticker)} <span class="code">(${esc(r.ticker)})</span>`);
-      t(String(r.count||0));
-      t(`<div class="newslist">${samples}</div>`);
-      tbody.appendChild(tr);
-    });
-  }
-
-  if(MODE==="leak"){
-    renderAggRows((j.leak||{}));
-    return;
-  }
-  if(MODE==="tob"){
-    renderAggRows((j.tob||{}));
-    return;
-  }
+  
 
   // ★TDNET由来のTOB表示
   if(MODE==="tob_tdnet"){
@@ -1669,28 +1556,6 @@ def tdnet_items_to_earnings_rows(tdnet_items):
         print('[parallel] skipped:', _e)
     return rows
 
-# ------------------ スコア計算（総合/掲示板） ------------------
-def build_scores(rows, weights):
-    wt = float(weights.get("trends", 1.0))
-    wb = float(weights.get("bbs_growth", 1.0))
-    wn = float(weights.get("news", 1.0))
-
-    scores = []
-    for r in rows:
-        t = 0.0
-        try:
-            t = float((r.get("trends") or {}).get("latest", 0.0) or 0.0)
-        except Exception:
-            t = 0.0
-
-        b24 = int((r.get("bbs") or {}).get("posts_24h", 0) or 0)
-        b72 = int((r.get("bbs") or {}).get("posts_72h", 0) or 0)
-        bbs_growth = b24 / max(1, b72)
-        n = int((r.get("news") or {}).get("count_24h", 0) or 0)
-
-        score = wt * t + wb * bbs_growth + wn * n
-        scores.append(score)
-    return scores
 
 def build_bbs_scores(rows):
     out = []
@@ -2050,10 +1915,6 @@ def main():
     include_bbs_samples = bool((cfg.get("debug", {}) or {}).get("bbs_samples", False))
     bbs_max_samples = int((cfg.get("bbs", {}) or {}).get("max_samples", 20))
 
-    symbols = build_universe(cfg)
-
-    # ---- 総合/掲示板タブ ----
-    rows = []
 
     # ---- ★★★ 増分のチェックポイントを決定 ----
     conn = _get_db_conn()
@@ -2172,13 +2033,6 @@ def main():
         offerings_map = {}
 
     try:
-        for r in rows:
-            code4 = str(r.get("ticker") or "").zfill(4)
-            r["has_offering_history"] = bool(offerings_map.get(code4, False))
-    except Exception as e:
-        print("[offerings] annotate rows error:", e)
-
-    try:
         for r in earnings_for_dash:
             code4 = str(r.get("ticker") or "").zfill(4)
             r["has_offering_history"] = bool(offerings_map.get(code4, False))
@@ -2186,36 +2040,6 @@ def main():
         print("[offerings] annotate earnings error:", e)
     print(f"[earnings][dash] from DB last 30d = {len(earnings_for_dash)}")
     
-    # --- 掲示板検索：漏れてる？ / TOB(掲示板) ---
-    try:
-        leak = fetch_leak_comments(DB_PATH, max_pages=60)
-    except Exception as e:
-        print("[bbs_search][leak] error:", e)
-        leak = {"rows": [], "total_comments": 0, "total_tickers": 0, "generated_at": now_iso()}
-    # --- 掲示板検索：軽量モード（全銘柄の最新だけサッと見る） ---
-    try:
-        # 収集を止めた rows の代わりに、大元の symbols を渡す
-        tob_bbs = load_tob_from_bbs_lightweight(symbols)
-    except Exception as e:
-        print("[bbs_search][tob-light] error:", e)
-        tob_bbs = {"rows": [], "total_comments": 0, "total_tickers": 0, "generated_at": now_iso()}
-
-    # ▼▼ 追加：TDNETで既にTOBが決まっている銘柄を掲示板TOBタブから除外 ▼▼
-    try:
-        decided_codes = load_tob_codes_recent(days=180)  # 期間は必要に応じて
-        if isinstance(tob_bbs, dict) and "rows" in tob_bbs and isinstance(tob_bbs["rows"], list):
-            before = len(tob_bbs["rows"])
-            tob_bbs["rows"] = [
-                r for r in tob_bbs["rows"]
-                if str(r.get("ticker") or "").zfill(4) not in decided_codes
-            ]
-            # 件数を更新
-            tob_bbs["total_tickers"] = len(tob_bbs["rows"])
-            print(f"[TOB][filter] decided={len(decided_codes)} codes, rows {before} -> {len(tob_bbs['rows'])}")
-    except Exception as e:
-        print("[TOB][filter] error:", e)
-    # ▲▲ 追加ここまで ▲▲
-
     # --- ★TDNET TOBのダッシュボード用データ ---
     tob_for_dash = []
     try:
@@ -2225,27 +2049,21 @@ def main():
 
     output = {
         "generated_at": now_iso(),
-        "rows": [],
         "earnings": earnings_for_dash,
-        "leak": leak,
-        "tob": tob_bbs,         # 掲示板集計（TDNET決定済みを除外済み）
-        "tob_tdnet": tob_for_dash  # ★TDNET由来
+        "tob_tdnet": tob_for_dash       # ★TDNET由来
     }
 
     ensure_dir(OUT_DIR); ensure_dir(OUT_DIR / "history")
-    ensure_dir(OUT_BBS_DIR); ensure_dir(OUT_BBS_DIR / "history")
     dump_json(output, str(OUT_DIR / "data.json"))
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
     dump_json(output, str(OUT_DIR / "history" / f"{ts}.json"))
-    dump_json(output, str(OUT_BBS_DIR / "data.json"))
-    dump_json(output, str(OUT_BBS_DIR / "history" / f"{ts}.json"))
     print("[write]", (OUT_DIR / "data.json").resolve())
 
     ensure_dir(DASH_DIR)
     html_out = render_dashboard_html(output, api_base="")
     (DASH_DIR / "index.html").write_text(html_out, encoding="utf-8")
     print("[write]", (DASH_DIR / "index.html").resolve())
-    print(f"[OK] {len(rows)} symbols + earnings {len(earnings_for_dash)} (filtered) + TOB(TDNET) {len(tob_for_dash)} → data.json / index.html 更新完了")
+    print(f"[OK] earnings {len(earnings_for_dash)} (filtered) + TOB(TDNET) {len(tob_for_dash)} → data.json / index.html 更新完了")
 
 if __name__ == "__main__":
     try:
