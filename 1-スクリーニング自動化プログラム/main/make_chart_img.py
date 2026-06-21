@@ -48,10 +48,6 @@ def get_ticker_list(path):
 def process_single_stock(code):
     """1つの銘柄を処理するコア関数（並列実行）"""
     file_path = os.path.join(OUTPUT_DIR, f"{code}.png")
-    
-    # すでに存在する場合はスキップ
-    if os.path.exists(file_path):
-        return f"{code}: Skiped"
 
     options = Options()
     options.add_argument("--headless")
