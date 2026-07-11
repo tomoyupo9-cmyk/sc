@@ -51,7 +51,8 @@ def train():
     df['date'] = pd.to_datetime(df['日付'])
 
     # Lv.1
-    df['return_1d'] = df.groupby('コード')['close'].pct_change(1)
+    # ★修正：FutureWarning（警告）を消すために fill_method=None を追記しました
+    df['return_1d'] = df.groupby('コード')['close'].pct_change(1, fill_method=None)
     df['range'] = (df['high'] - df['low']) / df['close']
     df['body']  = (df['close'] - df['open']) / df['open']
     df['upper_shadow'] = (df['high'] - df[['close', 'open']].max(axis=1)) / df['close']
@@ -91,6 +92,34 @@ def train():
     df = df.merge(market_sentiment, on='date', how='left')
     df['relative_strength'] = df['return_1d'] - df['market_return']
 
+    # ★★★ ここから新規追加：アルゴ対策＆流動性特徴量 ★★★
+    print("   アルゴ対策と流動性の特徴量を計算中...")
+    
+    # 1. ストップ狩り完了フラグ
+    df['min_low_5d'] = df.groupby('コード')['low'].shift(1).rolling(5).min()
+    df['stop_hunt_reversal'] = (
+        (df['low'] < df['min_low_5d']) & 
+        (df['close'] > df['open']) & 
+        ((df['open'] - df['low']) > (df['close'] - df['open']))
+    ).astype(int)
+
+    # 2. 出来高の壁までの距離
+    df['is_max_vol'] = df['volume'] == df.groupby('コード')['volume'].transform(lambda x: x.rolling(20).max())
+    df['poc_20d_close'] = df['close'].where(df['is_max_vol']).groupby(df['コード']).ffill()
+    df['poc_20d_close'] = df['poc_20d_close'].fillna(df['close'])
+    df['dist_from_poc'] = (df['close'] - df['poc_20d_close']) / df['poc_20d_close']
+
+    # 3. 流動性クラスの追加（0:超小型, 1:中小型, 2:大型）
+    df['turnover'] = df['close'] * df['volume']
+    df['turnover_20d_avg'] = df.groupby('コード')['turnover'].transform(lambda x: x.rolling(20).mean())
+    conditions = [
+        (df['turnover_20d_avg'] < 100000000),
+        (df['turnover_20d_avg'] >= 100000000) & (df['turnover_20d_avg'] < 3000000000),
+        (df['turnover_20d_avg'] >= 3000000000)
+    ]
+    df['liquidity_class'] = np.select(conditions, [0, 1, 2], default=1)
+    # ★★★ 新規追加ここまで ★★★
+
     # 正解ラベル
     term = 10
     target_pct = 1.10
@@ -111,7 +140,9 @@ def train():
         'kairi_5', 'kairi_25', 'kairi_75',
         'rsi_14', 'bb_pos', 'vol_ratio',
         'perfect_order', 'trend_strong',
-        'market_return', 'market_sentiment', 'relative_strength'
+        'market_return', 'market_sentiment', 'relative_strength',
+        # ★追加：新しい特徴量をリストに含める
+        'stop_hunt_reversal', 'dist_from_poc', 'turnover_20d_avg', 'liquidity_class'
     ]
 
     print(f"3. AI学習開始（学習データ数: {len(df)}）...")
@@ -130,7 +161,8 @@ def train():
         random_seed=42
     )
 
-    model.fit(X_train, y_train)
+    # ★修正：流動性クラス（0,1,2）をカテゴリ変数として学習させるように cat_features を追加
+    model.fit(X_train, y_train, cat_features=['liquidity_class'])
 
     score = model.score(X_test, y_test)
     print(f"   テストデータでの正解率: {score:.2%}")

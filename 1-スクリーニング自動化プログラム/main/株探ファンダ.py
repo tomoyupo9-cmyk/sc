@@ -5,7 +5,7 @@
 # - 進捗率ログ (--log-progress, --log-file)
 # - 最新発表日でのスキップ：DBキャッシュ基準（HTTP前）【デフォルト有効】
 #   * ENABLE_DB_SKIP = True
-#   * SKIP_RECENT_DAYS_DEFAULT = 84 (=28日×3) にデフォルト設定
+#   * SKIP_RECENT_DAYS_DEFAULT = 1 にデフォルト設定
 # - 直近が異常終了ならスキップ無効（必ず再取得）
 # - DB書き込みのON/OFF (--no-db)
 #
@@ -69,7 +69,8 @@ JITTER_SEC = 0.3
 
 # DBスキップ：デフォルト有効（無効化は --no-db-skip）
 ENABLE_DB_SKIP = True
-SKIP_RECENT_DAYS_DEFAULT = 84
+#上方修正や予想修正に追いつくため
+SKIP_RECENT_DAYS_DEFAULT = 1
 
 # DBスキップ判定用ステータス分類
 BAD_LAST_STATUSES = {
@@ -190,14 +191,16 @@ def db_get_cached_announce(code: str) -> tuple[datetime | None, str | None]:
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cur = conn.cursor()
-        cur.execute("SELECT latest_announce_date, last_status FROM earnings_cache WHERE コード = ?", (code,))
+        # 修正: 決算発表日ではなく「最終更新日時(updated_at)」を取得する
+        cur.execute("SELECT updated_at, last_status FROM earnings_cache WHERE コード = ?", (code,))
         row = cur.fetchone()
         if not row or not row[0]:
             return (None, None)
         try:
-            dt = datetime.fromisoformat(row[0])
+            # ISOフォーマットからの復元を試みる
+            dt = datetime.fromisoformat(str(row[0]))
         except Exception:
-            dt = datetime.strptime(row[0], "%Y-%m-%d")
+            dt = datetime.strptime(str(row[0])[:10], "%Y-%m-%d")
         return (dt, row[1])
     except Exception:
         return (None, None)
@@ -268,6 +271,7 @@ def batch_record_to_sqlite(results: list[dict]):
             ("html_path", "TEXT"),
             ("updated_at","TEXT"),
             ("overall_alpha","TEXT"),          # ★ 追加列：アルファ評価
+            ("forecast_op", "REAL"),   # ★追加列：予想営業利益
         ]:
             try:
                 cur.execute(f"SELECT {col} FROM finance_notes LIMIT 1;")
@@ -288,18 +292,21 @@ def batch_record_to_sqlite(results: list[dict]):
                     res.get('out_html') or "",
                     ts,
                     res.get('overall_alpha') or None,   # ★ 追加
+                    res.get('forecast_op') or None,
                 ))
         if data_to_insert:
+            # ★修正: 列、プレースホルダの数、全角カンマの排除
             cur.executemany("""
-            INSERT INTO finance_notes (コード, 財務コメント, score, progress_percent, html_path, updated_at, overall_alpha)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO finance_notes (コード, 財務コメント, score, progress_percent, html_path, updated_at, overall_alpha, forecast_op)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(コード) DO UPDATE SET
               財務コメント    = excluded.財務コメント,
               score           = excluded.score,
               progress_percent= excluded.progress_percent,
               html_path       = excluded.html_path,
               updated_at      = excluded.updated_at,
-              overall_alpha   = excluded.overall_alpha;
+              overall_alpha   = excluded.overall_alpha,
+              forecast_op     = excluded.forecast_op;
             """, data_to_insert)
             conn.commit()
             print(f"[DB][INFO] {len(data_to_insert)}件の結果をSQLiteに一括記録しました。")
@@ -494,17 +501,13 @@ def log_progress_details(code: str, details: dict, log_path: str | None = None):
 
 def _safe_growth(latest, prev):
     if pd.isna(latest) or pd.isna(prev): return None
-    if prev == 0: return 100 if latest > 0 else (0 if latest == 0 else -100)
-    return ((latest - prev) / prev) * 100
+    if prev == 0: return 100.0 if latest > 0 else (0.0 if latest == 0 else -100.0)
+    # 分母を絶対値にすることで、赤字からの改善（黒転・赤字縮小）を正しくプラスのパーセンテージとして評価する
+    return ((latest - prev) / abs(prev)) * 100.0
 
 def _format_verdict_with_progress(qp, raw_verdict: str, score: int) -> str:
     """
     固定テンプレ版（常に8行、同じ順序）。
-      1: 【総合評価】…
-      2: [決算期/進捗…] or [進捗率 (情報不足)]
-      3: スコア … 点
-      4: --- 詳細 ---
-      5-8: 詳細本文（最大4行にトリム、足りなければ '（詳細なし）' でパディング）
     """
     overall_label = _get_overall_verdict_label(score)
 
@@ -514,6 +517,9 @@ def _format_verdict_with_progress(qp, raw_verdict: str, score: int) -> str:
         latest_label, progress, status, _ = qp
         if status == "OK":
             prog_header = f"[{latest_label}：進捗{progress}%]"
+        elif status == "1Q未発表(期ズレ)":
+            # ★ ポジティブな表現に変更
+            prog_header = f"[{latest_label}：今期予想発表済 (1Q待機)]"
         elif status in ("予想未発表", "予想ゼロ", "予想データ欠損", "会計期不一致"):
             prog_header = f"[{latest_label}：進捗率 ({status})]"
 
@@ -543,27 +549,43 @@ def judge_and_score_performance(df: pd.DataFrame) -> tuple[str, int]:
     comparison_period = "通期予想 vs 前期実績" if is_forecast else "直近実績 vs 前期実績 (通期予想データ欠損)"
     latest_sales, latest_op, latest_eps = df_latest.get("売上高"), df_latest.get("営業益"), df_latest.get("修正1株益")
     prev_sales, prev_op, prev_eps = df_prev.get("売上高"), df_prev.get("営業益"), df_prev.get("修正1株益")
+    
     op_growth = _safe_growth(latest_op, prev_op)
     eps_growth = _safe_growth(latest_eps, prev_eps)
     sales_growth = _safe_growth(latest_sales, prev_sales)
+    
     msgs, score = [f"（比較期間：{comparison_period}）"], 0
+
+    # 状態判定ヘルパー（赤字からの改善等を可視化）
+    def get_status_str(latest, prev):
+        if pd.isna(latest) or pd.isna(prev): return ""
+        if prev < 0 and latest > 0: return " (黒字転換🎉)"
+        if prev < 0 and latest < 0 and latest > prev: return " (赤字縮小✨)"
+        if prev > 0 and latest < 0: return " (赤字転落⚠️)"
+        if prev < 0 and latest < 0 and latest < prev: return " (赤字拡大🚨)"
+        return ""
+
     # EPS
     if eps_growth is not None:
-        if eps_growth > 20: score += 3; msgs.append(f"🟢 EPS成長率: {eps_growth:.1f}% (高成長)")
-        elif eps_growth > 10: score += 2; msgs.append(f"🟡 EPS成長率: {eps_growth:.1f}% (安定成長)")
-        elif eps_growth > 0: score += 1; msgs.append(f"⚪️ EPS成長率: {eps_growth:.1f}% (微増)")
-        elif eps_growth == 0: msgs.append("⚫️ EPS成長率: 0.0% (横ばい)")
-        else: score -= 2; msgs.append(f"🔴 EPS成長率: {eps_growth:.1f}% (減益注意)")
+        status_str = get_status_str(latest_eps, prev_eps)
+        if eps_growth > 20: score += 3; msgs.append(f"🟢 EPS成長率: {eps_growth:.1f}%{status_str or ' (高成長)'}")
+        elif eps_growth > 10: score += 2; msgs.append(f"🟡 EPS成長率: {eps_growth:.1f}%{status_str or ' (安定成長)'}")
+        elif eps_growth > 0: score += 1; msgs.append(f"⚪️ EPS成長率: {eps_growth:.1f}%{status_str or ' (微増)'}")
+        elif eps_growth == 0: msgs.append(f"⚫️ EPS成長率: 0.0%{status_str or ' (横ばい)'}")
+        else: score -= 2; msgs.append(f"🔴 EPS成長率: {eps_growth:.1f}%{status_str or ' (減益注意)'}")
     else:
         msgs.append("EPS成長率: データ欠損")
+        
     # 営業益
     if op_growth is not None:
-        if op_growth > 20: score += 2; msgs.append(f"🟢 営業益成長率: {op_growth:.1f}% (高成長)")
-        elif op_growth > 10: score += 1; msgs.append(f"🟡 営業益成長率: {op_growth:.1f}% (安定成長)")
-        elif op_growth < 0: score -= 1; msgs.append(f"🔴 営業益成長率: {op_growth:.1f}% (減益注意)")
-        else: msgs.append(f"⚪️ 営業益成長率: {op_growth:.1f}%")
+        status_str = get_status_str(latest_op, prev_op)
+        if op_growth > 20: score += 2; msgs.append(f"🟢 営業益成長率: {op_growth:.1f}%{status_str or ' (高成長)'}")
+        elif op_growth > 10: score += 1; msgs.append(f"🟡 営業益成長率: {op_growth:.1f}%{status_str or ' (安定成長)'}")
+        elif op_growth < 0: score -= 1; msgs.append(f"🔴 営業益成長率: {op_growth:.1f}%{status_str or ' (減益注意)'}")
+        else: msgs.append(f"⚪️ 営業益成長率: {op_growth:.1f}%{status_str}")
     else:
         msgs.append("営業益成長率: データ欠損")
+        
     # 売上高
     if sales_growth is not None:
         if sales_growth > 10: score += 1; msgs.append(f"🟢 売上高成長率: {sales_growth:.1f}% (高成長)")
@@ -571,8 +593,10 @@ def judge_and_score_performance(df: pd.DataFrame) -> tuple[str, int]:
         else: msgs.append(f"⚪️ 売上高成長率: {sales_growth:.1f}%")
     else:
         msgs.append("売上高成長率: データ欠損")
+        
     if (op_growth is not None and op_growth > 0) and (eps_growth is not None and eps_growth > 0):
-        msgs.insert(1, "💡 " + ("通期予想は増収増益の見込みです。" if is_forecast else "直近実績は増収増益でした。"))
+        msgs.insert(1, "💡 " + ("通期予想は増収・増益（または改善）の見込みです。" if is_forecast else "直近実績は増収・増益（または改善）でした。"))
+        
     return "\n".join(msgs), score
 
 def calc_progress_from_df_op(quarterly_df: pd.DataFrame, forecast_series: pd.Series):
@@ -582,7 +606,7 @@ def calc_progress_from_df_op(quarterly_df: pd.DataFrame, forecast_series: pd.Ser
       - 予想未発表: -3.0
       - 予想ゼロ:   -2.0
       - 予想データ欠損: -1.0
-      - 会計期不一致: -4.0
+      - 1Q未発表(期ズレ): -4.0
     """
     required_cols = ["営業益", "決算期"]
     if quarterly_df is None or quarterly_df.empty or any(c not in quarterly_df.columns for c in required_cols):
@@ -624,14 +648,16 @@ def calc_progress_from_df_op(quarterly_df: pd.DataFrame, forecast_series: pd.Ser
         return (latest_label, 0.0, "予想データ欠損", -1.0)
 
     if key_q != key_f:
-        return (latest_label, 0.0, "会計期不一致", -4.0)
+        # ★修正：ステータス名をマイルドな表現に変更
+        return (latest_label, 0.0, "1Q未発表(期ズレ)", -4.0)
 
     if float(full_op_val) < 0 or (float(latest_cumulative_op) < 0 and float(full_op_val) > 0):
         return (latest_label, 0.0, "予想データ欠損", -1.0)
 
     progress = float(latest_cumulative_op) / float(full_op_val) * 100.0
     if progress > 3000:
-        return (最新_label, 0.0, "予想データ欠損", -1.0)
+        # ★修正: 最新_label -> latest_label
+        return (latest_label, 0.0, "予想データ欠損", -1.0)
 
     return (latest_label, round(progress, 1), "OK", progress)
 
@@ -961,29 +987,20 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
 
     # ---- DBキャッシュ事前スキップ（HTTP前）----
     if use_db_skip and skip_days is not None and not force_refresh:
-        cached_dt, cached_status = db_get_cached_announce(code_full)
-        if cached_dt is not None:
+        cached_updated_at, cached_status = db_get_cached_announce(code_full)
+        if cached_updated_at is not None:
             if cached_status in BAD_LAST_STATUSES:
                 print(f"[DB-SKIP-BYPASS] {code_full}: last_status={cached_status} のためスキップせず取得へ。")
             else:
-                # 3か月/6か月スキップ（成功銘柄だけ6か月拡張）
-                SKIP_3M = int(skip_days or 84)
-                SKIP_6M = 168
-                delta_days = (datetime.now().date() - cached_dt.date()).days
+                # 修正: 最終取得日(updated_at)からの経過日数を計算
+                delta_days = (datetime.now().date() - cached_updated_at.date()).days
 
-                if cached_status in {"OK", "FETCHED"}:
-                    effective = SKIP_6M if delta_days >= SKIP_3M else SKIP_3M
-                elif cached_status in {"ANNOUNCE_ONLY", "EMPTY_QUARTERLY"}:
-                    effective = SKIP_3M
-                else:
-                    effective = SKIP_3M
-
-                if delta_days < effective:
-                    policy = "6m" if (cached_status in {"OK","FETCHED"} and effective == SKIP_6M) else "3m"
-                    print(f"[SKIP(DB)] {code_full}: last_status={cached_status}, latest={cached_dt.date()}, "
-                          f"{delta_days}d < {effective}d (policy={policy})")
+                # 単純に skip_days (7日) 未満ならスキップする
+                if delta_days < skip_days:
+                    print(f"[SKIP(DB)] {code_full}: last_status={cached_status}, updated={cached_updated_at.date()}, "
+                          f"{delta_days}d < {skip_days}d")
                     return {'status': 'SKIP', 'code': code_full,
-                            'message': f"db-recent-{cached_status}-{policy}", 'progress_percent': None}
+                            'message': f"db-recent-{cached_status}", 'progress_percent': None}
 
     async with semaphore:
         try:
@@ -1015,6 +1032,15 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
             overall_alpha = _get_overall_alpha(score)  # ★ スコアからアルファを確定
             qp = calc_progress_from_df_op(df_quarterly, df_forecast_row)
             progress_percent_db = qp[3] if qp is not None else None
+            
+            # --- ★ここから追加：予想営業益（百万円）の抽出 ---
+            forecast_op = None
+            if not df_forecast_row.empty and "営業益" in df_forecast_row:
+                try:
+                    forecast_op = float(str(df_forecast_row["営業益"]).replace(",", ""))
+                except Exception:
+                    pass
+            # --- 追加ここまで ---
 
             # 進捗式ログ
             _log_on = bool(getattr(opt, 'log_progress', False))

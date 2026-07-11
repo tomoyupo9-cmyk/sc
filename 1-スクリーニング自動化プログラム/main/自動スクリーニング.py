@@ -2156,233 +2156,154 @@ PRICE_GUARD_ENABLED = False  # ← しばらく挙動を見るために OFF
 # ==========================================
 # ★追加パーツ: AI予測ロジック
 # ==========================================
-
 # モデルのパス（環境に合わせて書き換えてください）
 MODEL_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
-TRAIN_SCRIPT_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\モデル学習_catboost.py"
+def calc_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    # ゼロ除算を避けるための処理
+    return 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
+
 def add_ai_analysis(conn, rows):
     """
-    既存のスクリーニング結果(rows)を受け取り、AIスコア・判定・目標値を付与して返す関数
-    【超高速化版】Pandasのベクトル化・groupby演算を使用し、計算結果は元コードと完全一致。
+    19特徴量対応モデルで分析し、55%以上のスコアで判定を出す統合版関数
     """
-    
     if not os.path.exists(MODEL_PATH):
-        print(f"[AI] モデルが見つかりません: {MODEL_PATH}")
+        print(f"[AI] モデルファイルが見つかりません: {MODEL_PATH}")
         return rows
 
-    # 対象銘柄がなければ何もしない
     target_codes = [r['コード'] for r in rows if r.get('現在値')]
     if not target_codes:
         return rows
 
-    print(f"[AI] {len(target_codes)}銘柄のAI分析を開始（超高速・一括計算モード）...")
+    print(f"[AI] {len(target_codes)}銘柄の分析を開始（19特徴量・3段階判定版）...")
 
     try:
         model = joblib.load(MODEL_PATH)
         
-        # --- 1. 市場全体の地合い計算 (Market Sentiment) ---
-        date_q = "SELECT MAX(日付) FROM price_history"
-        try:
-            latest_date_df = pd.read_sql(date_q, conn)
-            if latest_date_df.empty or latest_date_df.iloc[0, 0] is None:
-                latest_date = None
-            else:
-                latest_date = latest_date_df.iloc[0, 0]
-        except Exception:
-            latest_date = None
-
-        feat_market_sentiment = 0.5
-        feat_market_return = 0.0
-
-        if latest_date:
-            market_q = f"""
-                SELECT 終値, 始値
-                FROM price_history 
-                WHERE 日付 = '{latest_date}' AND 終値 > 0
-            """
-            df_market = pd.read_sql(market_q, conn)
-            
-            if not df_market.empty:
-                # 簡易的に始値比で騰落を判定
-                up_count = len(df_market[df_market['終値'] > df_market['始値']])
-                total = len(df_market)
-                feat_market_sentiment = up_count / total if total > 0 else 0.5
-                
-                # 平均騰落率（rowsの情報から推定）
-                pcts = []
-                for r in rows:
-                    val = r.get('前日終値比率')
-                    if val is not None and str(val).strip() != "":
-                        try:
-                            pcts.append(float(str(val).replace('%','')))
-                        except:
-                            pass
-                feat_market_return = sum(pcts)/len(pcts)/100.0 if pcts else 0.0
-
-        # --- 2. 個別銘柄のデータ準備 (SQLで銘柄順も保証) ---
-        codes_str = "'" + "','".join(target_codes) + "'"
-        hist_q = f"""
-            SELECT コード, 日付, 始値, 高値, 安値, 終値, 出来高
-            FROM price_history
-            WHERE コード IN ({codes_str})
-            ORDER BY コード ASC, 日付 ASC
-        """
-        df_hist_all = pd.read_sql(hist_q, conn)
-        df_hist_all['日付'] = pd.to_datetime(df_hist_all['日付'])
-
-        # ==============================================================
-        # 【超高速化パッチ】 全銘柄のテクニカル指標を一括計算（ベクトル処理）
-        # ==============================================================
-        # groupbyで銘柄ごとに区切って計算
-        grp = df_hist_all.groupby('コード', sort=False)
+        # 1. データの取得
+        codes_in = "'" + "','".join(target_codes) + "'"
+        hist_q = f"SELECT コード, 日付, 始値, 高値, 安値, 終値, 出来高 FROM price_history WHERE コード IN ({codes_in}) ORDER BY コード, 日付"
+        df = pd.read_sql(hist_q, conn)
+        df = df.rename(columns={'始値': 'open', '高値': 'high', '安値': 'low', '終値': 'close', '出来高': 'volume'})
         
-        # 移動平均・標準偏差
-        df_hist_all['ma5'] = grp['終値'].transform(lambda x: x.rolling(5).mean())
-        df_hist_all['ma20'] = grp['終値'].transform(lambda x: x.rolling(20).mean())
-        df_hist_all['ma25'] = grp['終値'].transform(lambda x: x.rolling(25).mean())
-        df_hist_all['ma75'] = grp['終値'].transform(lambda x: x.rolling(75).mean())
-        df_hist_all['std20'] = grp['終値'].transform(lambda x: x.rolling(20).std())
-        df_hist_all['ma_vol_5'] = grp['出来高'].transform(lambda x: x.rolling(5).mean())
+        # 2. 特徴量の計算
+        grp = df.groupby('コード', sort=False)
+        df['return_1d'] = grp['close'].pct_change(fill_method=None)
+        df['range'] = (df['high'] - df['low']) / df['close']
+        df['body'] = (df['close'] - df['open']) / df['close']
+        df['upper_shadow'] = (df['high'] - df[['open', 'close']].max(axis=1)) / df['close']
         
-        # RSI(14)の厳密な計算（元コードと完全一致＋ゼロ除算防止）
-        delta = grp['終値'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        
-        gain_ma = gain.groupby(df_hist_all['コード'], sort=False).transform(lambda x: x.rolling(14).mean())
-        loss_ma = loss.groupby(df_hist_all['コード'], sort=False).transform(lambda x: x.rolling(14).mean())
-        
-        rs = gain_ma / loss_ma
-        df_hist_all['rsi_14'] = 100 - (100 / (1 + rs))
-        # 無限大（ずっと上がり続けた場合）は100に、NaNは50にする
-        df_hist_all['rsi_14'].replace([np.inf, -np.inf], 100, inplace=True)
-        df_hist_all['rsi_14'] = df_hist_all['rsi_14'].fillna(50)
+        for p in [5, 25, 75]:
+            ma = grp['close'].transform(lambda x: x.rolling(p).mean())
+            df[f'kairi_{p}'] = (df['close'] - ma) / ma
 
-        # 各銘柄のデータ行数（75日あるかどうかの判定用）
-        df_hist_all['count'] = grp.cumcount() + 1
+        df['rsi_14'] = grp['close'].transform(lambda x: calc_rsi(x)).fillna(50)
+        ma20 = grp['close'].transform(lambda x: x.rolling(20).mean())
+        std20 = grp['close'].transform(lambda x: x.rolling(20).std())
+        df['bb_pos'] = (df['close'] - ma20) / (2 * std20.replace(0, 1))
+        df['vol_ratio'] = df['volume'] / grp['volume'].transform(lambda x: x.rolling(5).mean()).replace(0, 1)
         
-        # 各銘柄の「最新日の行だけ」を抽出し、検索をゼロにする
-        df_latest = df_hist_all.groupby('コード', sort=False).tail(1).set_index('コード')
-        # ==============================================================
+        df['min_low_5d'] = grp['low'].shift(1).rolling(5).min()
+        df['stop_hunt_reversal'] = ((df['low'] < df['min_low_5d']) & (df['close'] > df['open'])).astype(int)
+        
+        poc = df['close'].where(df['volume'] == grp['volume'].transform(lambda x: x.rolling(20).max())).groupby(df['コード']).ffill().fillna(df['close'])
+        df['dist_from_poc'] = (df['close'] - poc) / poc
+        
+        
+        # 1. 売買代金カラムを先に計算
+        df['turnover'] = df['close'] * df['volume']
+        # 2. transform を使って一括計算
+        df['turnover_20d_avg'] = grp['turnover'].transform(lambda x: x.rolling(20).mean())
+        # ----------------
+        df['liquidity_class'] = np.select([df['turnover_20d_avg'] < 1e8, df['turnover_20d_avg'] < 3e9], [0, 1], default=2)
+        
+        # モデルが期待するダミー特徴量
+        for col in ['perfect_order', 'trend_strong', 'market_return', 'market_sentiment', 'relative_strength']:
+            if col not in df.columns: df[col] = 0
 
-        # --- 3. 特徴量組み立て＆予測ループ（計算済みデータを引くだけ） ---
-        ai_inputs = []
-        valid_indices = []
+        df_latest = df.groupby('コード', sort=False).tail(1).set_index('コード')
 
-        for i, r in enumerate(rows):
+        # 3. 推論実行
+        features = [
+            'return_1d','range','body','upper_shadow','kairi_5','kairi_25','kairi_75',
+            'rsi_14','bb_pos','vol_ratio','perfect_order','trend_strong',
+            'market_return','market_sentiment','relative_strength',
+            'stop_hunt_reversal', 'dist_from_poc', 'turnover_20d_avg', 'liquidity_class'
+        ]
+        
+        X = df_latest[features].fillna(0)
+        probs = model.predict_proba(X)[:, 1]
+        scores = dict(zip(df_latest.index, probs)) # 高速計算されたスコアの辞書
+        
+        # 4. 結果反映（理想のIN株価 → 目標株価 表記）
+        for r in rows:
             code = r.get('コード')
-            
-            # --- 価格の安全な取得 ---
-            try:
-                raw_price = r.get('現在値')
-                if raw_price is None:
-                    price = 0
-                else:
-                    price = float(str(raw_price).replace(',', ''))
-            except Exception:
-                price = 0
-            
-            # ボロ株フィルタ
-            if price < 300:
+            # スコアが計算されていない銘柄はスキップ
+            if code not in scores:
                 r['AIスコア'] = '-'
                 r['AI判定'] = '-'
                 r['AI目標値'] = '-'
                 continue
-
-            # 最新データが存在するか、行数(データ期間)が十分かチェック
-            if code not in df_latest.index:
-                r['AIスコア'] = '-'
-                r['AI判定'] = '-'
-                r['AI目標値'] = '-' # 元コードの漏れを修正
-                continue
                 
-            row_latest = df_latest.loc[code]
-            if row_latest['count'] < 75: # データ不足
-                r['AIスコア'] = '-'
-                r['AI判定'] = '-'
-                r['AI目標値'] = '-' # 元コードの漏れを修正
-                continue
-
-            # 最新の計算済みデータを取得（探す処理はゼロ）
-            curr_o = row_latest['始値']
-            curr_h = row_latest['高値']
-            curr_l = row_latest['安値']
-            curr_c = row_latest['終値']
-            curr_v = row_latest['出来高']
+            prob = scores[code]
+            score_val = round(prob * 100, 1)
+            r['AIスコア'] = score_val
             
-            ma5 = row_latest['ma5']
-            ma20 = row_latest['ma20']
-            ma25 = row_latest['ma25']
-            ma75 = row_latest['ma75']
-            std20 = row_latest['std20']
-            feat_rsi = row_latest['rsi_14']
-            ma_vol_5 = row_latest['ma_vol_5']
-            
-            # --- 騰落率の安全な取得 ---
+            # 1) 現在値の取得
             try:
-                raw_pct = r.get('前日終値比率')
-                if raw_pct is None or str(raw_pct).strip() == "":
-                    feat_return = 0.0
-                else:
-                    pct_str = str(raw_pct).replace('%', '')
-                    feat_return = float(pct_str) / 100.0
+                p_val = float(str(r.get('現在値', 0)).replace(',', ''))
             except Exception:
-                feat_return = 0.0
-            
-            # RVOL
-            feat_vol_ratio = curr_v / ma_vol_5 if (pd.notna(ma_vol_5) and ma_vol_5 > 0) else 1.0
-
-            # 入力ベクトル（元コードと全く同じ構成）
-            feats = [
-                feat_return,                                
-                (curr_h - curr_l) / curr_c if curr_c else 0, 
-                (curr_c - curr_o) / curr_o if curr_o else 0, 
-                (curr_h - max(curr_c, curr_o)) / curr_c if curr_c else 0, 
-                (curr_c - ma5)/ma5 if pd.notna(ma5) and ma5 else 0,           
-                (curr_c - ma25)/ma25 if pd.notna(ma25) and ma25 else 0,        
-                (curr_c - ma75)/ma75 if pd.notna(ma75) and ma75 else 0,        
-                feat_rsi,                                   
-                (curr_c - ma20)/(2*std20) if pd.notna(std20) and std20 > 0 else 0, 
-                feat_vol_ratio,                             
-                1 if (pd.notna(ma5) and pd.notna(ma25) and pd.notna(ma75) and ma5>ma25 and ma25>ma75) else 0,       
-                1 if (pd.notna(ma5) and pd.notna(ma25) and curr_c>ma5 and curr_c>ma25) else 0,   
-                feat_market_return,                         
-                feat_market_sentiment,                      
-                feat_return - feat_market_return            
-            ]
-            ai_inputs.append(feats)
-            valid_indices.append(i)
-
-        # 一括予測実行
-        if ai_inputs:
-            cols = ['return_1d','range','body','upper_shadow','kairi_5','kairi_25','kairi_75',
-                    'rsi_14','bb_pos','vol_ratio','perfect_order','trend_strong',
-                    'market_return','market_sentiment','relative_strength']
-            X_pred = pd.DataFrame(ai_inputs, columns=cols)
-            X_pred = X_pred.fillna(0)
-            
-            probs = model.predict_proba(X_pred)[:, 1]
-            
-            for idx, prob in zip(valid_indices, probs):
-                score = round(prob * 100, 1)
-                r = rows[idx]
-                r['AIスコア'] = score
+                p_val = 0
                 
-                # 判定
-                try:
-                    p_val = float(str(r.get('現在値', 0)).replace(',', ''))
-                except:
-                    p_val = 0
-
-                if score >= 70:
-                    r['AI判定'] = '★GO'
-                    r['AI目標値'] = int(p_val * 1.10)
+            # 2) 理想のIN株価（押し目位置）の計算
+            # 優先順位：最寄り支持 > 支持帯中心 > 現在値の-4%
+            sup_near = r.get('最寄り支持')
+            sup_zone = r.get('支持帯中心')
+            try:
+                if sup_near and str(sup_near) not in ("None", "", "NaN", "nan"):
+                    ideal_in = int(float(str(sup_near).replace(',', '')))
+                elif sup_zone and str(sup_zone) not in ("None", "", "NaN", "nan"):
+                    ideal_in = int(float(str(sup_zone).replace(',', '')))
                 else:
-                    r['AI判定'] = '-'
-                    r['AI目標値'] = '-'
-    
+                    ideal_in = int(p_val * 0.96)
+            except Exception:
+                ideal_in = int(p_val * 0.96)
+
+            # 異常値の補正（INが現在値より高い、または0以下の場合は現在値にする）
+            if ideal_in > p_val or ideal_in <= 0:
+                ideal_in = int(p_val)
+                
+            # 3) 抵抗帯（目標）の取得
+            res_zone = r.get('抵抗帯中心')
+            try:
+                target = int(float(str(res_zone).replace(',', ''))) if str(res_zone) not in ("None", "", "NaN", "nan") else 0
+            except Exception:
+                target = 0
+            
+            # 4) 判定と表記の生成
+            if score_val >= 65:
+                r['AI判定'] = '★超強気'
+                # 超強気は勢い重視（飛び乗り想定）なので、IN = 現在値
+                tgt = int(p_val * 1.10) if p_val > 0 else 0
+                r['AI目標値'] = f"{int(p_val)}→{tgt}" if tgt > 0 else '-'
+            elif score_val >= 55:
+                r['AI判定'] = '△注目'
+                # 注目は押し目待ち想定なので、IN = 支持線(ideal_in)
+                if target > ideal_in:
+                    r['AI目標値'] = f"{ideal_in}→{target}"
+                else:
+                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし"
+            else:
+                r['AI判定'] = '◯様子見'
+                # 様子見でも、もしここまで落ちてきたらIN、という目安
+                if target > ideal_in:
+                    r['AI目標値'] = f"{ideal_in}→{target}"
+                else:
+                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし"
     except Exception as e:
-        print(f"[AI] エラー発生のためスキップ: {e}")
+        print(f"[AI] 分析エラー: {e}")
         
     return rows
 # ==========================================
@@ -3577,6 +3498,47 @@ def _update_screener_from_history(conn, codes):
         """, updated)
         conn.commit()
         
+def filter_valid_yahoo_codes(conn: sqlite3.Connection, codes: list) -> list:
+    """
+    地方市場（名証、札証、福証）を除外し、
+    Yahoo Financeでデータが取れる可能性が高いコードのみに絞り込む。
+    """
+    if not codes:
+        return []
+    
+    IGNORE_MARKETS = ["札", "札幌", "名", "名古屋", "福", "福岡", "S", "N", "F"]
+
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT コード, 市場 FROM screener')
+        market_map = {str(row[0]): str(row[1] or "") for row in cur.fetchall()}
+        cur.close()
+
+        filtered = []
+        for c in codes:
+            s_code = str(c)
+            
+            # 1. 末尾サフィックスで地方市場を除外
+            if s_code.endswith((".N", ".S", ".F")):
+                continue
+                
+            # 2. DBの市場名から地方市場を除外
+            mkt = market_map.get(s_code, "")
+            if any(kw in mkt for kw in IGNORE_MARKETS):
+                continue
+                
+            filtered.append(c)
+            
+        removed = len(codes) - len(filtered)
+        if removed > 0:
+            print(f"[filter] 地方市場を除外: {len(codes)} -> {len(filtered)}件 (-{removed})")
+            
+        return filtered
+    except Exception as e:
+        print(f"[filter] フィルタリング処理でエラー(無視して続行): {e}")
+        return codes
+
+
 def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
     """
     高速版:
@@ -3585,51 +3547,9 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
       - screener は price_history の直近2日から 前日終値比率/出来高/現在値 を更新
       - 時価総額は速度優先で更新しない（必要なら別フェーズで）
     """
-    # === ★追加: 地方市場・エラー銘柄の除外フィルタ ===
-    try:
-        # 1. 毎回エラーになる特定コード（上場廃止済みなど）
-        IGNORE_CODES = {"1738", "1777"}
-
-        # 2. 除外したい市場キーワード（札証、名証、福証）
-        # ※ここにキーワードを追加すれば、その市場は無視されます
-        IGNORE_MARKETS = ["札", "札幌", "名", "名古屋", "福", "福岡", "S", "N", "F"]
-
-        # DBから市場情報を取得してマッピング {コード: 市場名}
-        cur = conn.cursor()
-        cur.execute('SELECT コード, 市場 FROM screener')
-        market_map = {str(row[0]): str(row[1] or "") for row in cur.fetchall()}
-        cur.close()
-
-        filtered_codes = []
-        for c in codes:
-            s_code = str(c)
-
-            # (A) NGコードリストに含まれていたらスキップ
-            if s_code in IGNORE_CODES:
-                continue
-
-            # (B) 市場名に「札」「名」「福」などが含まれていたらスキップ
-            mkt = market_map.get(s_code, "")
-            if any(kw in mkt for kw in IGNORE_MARKETS):
-                continue
-            
-            # (C) コード末尾が .N .S .F ならスキップ（念のため）
-            if s_code.endswith(".N") or s_code.endswith(".S") or s_code.endswith(".F"):
-                continue
-
-            filtered_codes.append(c)
-
-        # ログ出し
-        removed_count = len(codes) - len(filtered_codes)
-        if removed_count > 0:
-            print(f"[filter] 地方市場・NG銘柄を除外しました: {len(codes)} -> {len(filtered_codes)}件 (-{removed_count})")
-        
-        # 対象コードを入れ替え
-        codes = filtered_codes
-
-    except Exception as e:
-        print(f"[filter] フィルタリング処理でエラー(無視して続行): {e}")
-    # === ★追加ここまで ===
+    # === ★追加: 共通フィルターで地方市場やエラー銘柄を綺麗に除外 ===
+    codes = filter_valid_yahoo_codes(conn, codes)
+    
     codes = [str(c) for c in codes]
     have = _codes_with_data(conn)
     exist_codes = [c for c in codes if c in have]
@@ -3640,7 +3560,6 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
     # 1) 既存銘柄: 2日分だけ一括取得（バッチ分割）
     for i in range(0, len(exist_codes), batch_size):
         chunk = exist_codes[i:i+batch_size]
-        #tickers_map = {c: f"{c}.T" for c in chunk}  # 日本株前提
         tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         
         # 念のため、解決後のシンボルが .T 以外なら除外する安全策も追加
@@ -3663,7 +3582,6 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
     # 2) 新規銘柄: 12ヶ月ぶんを一括取得（バッチ分割）
     for i in range(0, len(new_codes), batch_size):
         chunk = new_codes[i:i+batch_size]
-        #tickers_map = {c: f"{c}.T" for c in chunk}
         tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         
         safe_tickers = []
@@ -3744,6 +3662,7 @@ def update_market_cap_all(conn, batch_size=300, max_workers=8):
     - .T の日本株は JPY想定 → 億円に変換 (mcap/1e8)
     """
     codes = [str(r[0]) for r in conn.execute("SELECT コード FROM screener").fetchall()]
+    codes = filter_valid_yahoo_codes(conn, codes) # ★ここで除外！
     if not codes:
         print("[mcap] 対象なし")
         return
@@ -3822,6 +3741,8 @@ LEFT JOIN latest_prices lp
         cur.execute("SELECT コード FROM screener")
     codes = [str(r[0]) for r in cur.fetchall()]
     cur.close()
+    
+    codes = filter_valid_yahoo_codes(conn, codes) # ★ここで除外！
 
     if not codes:
         print("対象コードなし：intradayスナップショットスキップ")
@@ -6467,6 +6388,69 @@ def analyze_stop_high_status(hist_df):
 
     return ""
 
+class MarketEventCalendar:
+    """マクロ需給イベントを事前計算し、特定日のアラート状態を判定するクラス"""
+    
+    def __init__(self, year: int):
+        self.year = year
+        # jpholiday.holidays は (date, name) のタプルを返すので日付だけ抽出
+        self.holidays = set([d[0] for d in jpholiday.holidays(year)])
+        self.jbd = pd.offsets.CustomBusinessDay(holidays=list(self.holidays))
+        self.events = self._precompute_events()
+
+    def _get_last_business_day(self, month: int) -> pd.Timestamp:
+        """指定月の最終営業日を算出（前倒し）"""
+        if month == 12:
+            first_day_next = pd.Timestamp(date(self.year + 1, 1, 1))
+        else:
+            first_day_next = pd.Timestamp(date(self.year, month + 1, 1))
+        return first_day_next - self.jbd
+
+    def _get_nth_dow(self, month: int, weekday: int, n: int) -> pd.Timestamp:
+        """第n曜日を算出（weekday: 月=0, 金=4）"""
+        first_day = pd.Timestamp(date(self.year, month, 1))
+        offset = (weekday - first_day.weekday()) % 7
+        target_date = first_day + pd.Timedelta(days=offset + (n - 1) * 7)
+        # 祝日の場合は前倒し
+        while target_date.date() in self.holidays:
+            target_date -= pd.Timedelta(days=1)
+        return target_date
+
+    def _precompute_events(self):
+        events = []
+
+        # 1. SQ (毎月第2金曜、アラートは5営業日前から)
+        for month in range(1, 13):
+            sq_date = self._get_nth_dow(month, 4, 2)
+            alert_start = sq_date - (5 * self.jbd)
+            name = f"{'メジャー' if month in [3,6,9,12] else 'マイナー'}SQ"
+            events.append({"name": name, "start": alert_start, "end": sq_date, "type": "警戒"})
+
+        # 2. MSCIリバランス (2,5,8,11月末)
+        for month in [2, 5, 8, 11]:
+            msci_date = self._get_last_business_day(month)
+            events.append({"name": "MSCIリバランス", "start": msci_date - (15 * self.jbd), "end": msci_date, "type": "入替"})
+
+        # 3. ETF分配金捻出売り (7月上旬)
+        etf_base = pd.Timestamp(date(self.year, 7, 10))
+        while etf_base.weekday() >= 5 or etf_base.date() in self.holidays:
+            etf_base += pd.Timedelta(days=1)
+        peak_sell = etf_base - (2 * self.jbd)
+        july_first = pd.Timestamp(date(self.year, 7, 1))
+        events.append({"name": "ETF分配金換金売り", "start": july_first, "end": peak_sell, "type": "下落注意"})
+
+        return events
+
+    def get_alerts_for_date(self, target_date) -> list:
+        """指定日に該当するアラートを取得"""
+        t = pd.Timestamp(target_date)
+        active_alerts = []
+        for ev in self.events:
+            if ev["start"] <= t <= ev["end"]:
+                days_left = (ev["end"] - t).days
+                active_alerts.append(f"【{ev['type']}】{ev['name']} (目安:あと{days_left}日)")
+        return active_alerts
+
 
 # === [/INJECTED] ===========================================================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
@@ -6855,7 +6839,24 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         print(f"[TOB] inject failed: {e}")
 
     # 8) 軽量メタ等
-    meta = {"base_day": None, "next_business_day": None}
+    meta = {"base_day": None, "next_business_day": None, "market_alerts": []}
+    
+    # === ★追加: 需給イベントのアラート判定 ===
+    try:
+        # 強制的に「イベント発生日」の日付を指定
+        # 例: 2026年7月8日（ETF分配金換金売りの期間中）
+        test_today = date(2026, 7, 8) 
+        
+        cal = MarketEventCalendar(test_today.year)
+        meta["market_alerts"] = cal.get_alerts_for_date(test_today)
+        
+        #today_val = date.today()
+        #cal = MarketEventCalendar(today_val.year)
+        #meta["market_alerts"] = cal.get_alerts_for_date(today_val)
+    except Exception as e:
+        print(f"[EventAlert] 計算エラー: {e}")
+    # ==========================================
+
     try:
         def _to_date(s):
             if not s: return None
@@ -7006,137 +7007,73 @@ def export_monitor_list(df_cand, filename="rss_monitor_list.json"):
         print(f"[連携][ERROR] 監視リストの出力に失敗しました: {e}", flush=True)
 
 # ========= 営業利益 
-def update_operating_income_and_ratio(conn, batch_size=300, max_workers=12, use_quarterly=False):
+def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int = 300, max_workers: int = 12, use_quarterly: bool = False) -> None:
     """
-    既存カラムに合わせて保存：
-      - 営業利益（整数・単位=億円）
-      - 営利対時価（小数2桁・単位=%）
-
-    ※方針A版：
-      yahooquery には行かず、pl_quarter テーブルから
-      「直近4Qの営業利益合計」を使って計算する。
-      営業利益の単位は「百万円」を想定し、億円に変換して格納。
+    予想営業利益(Forward)を最優先とし、欠損する場合は直近4Q実績(TTM)で補完する。
+    営利対時価（小数2桁・単位=%）を算出して screener を更新。
     """
-
+    # 1. 会社予想 (Forward) の取得 (finance_notes テーブルから)
     try:
-        # 1) pl_quarter から必要なカラムだけ取得
-        pl = pd.read_sql_query("""
-            SELECT
-                コード,
-                決算期,
-                四半期,
-                営業利益
-            FROM pl_quarter
+        df_fwd = pd.read_sql_query("""
+            SELECT コード, forecast_op AS 営業利益_fwd 
+            FROM finance_notes 
+            WHERE forecast_op IS NOT NULL
         """, conn)
     except Exception as e:
-        print("[oper][WARN] pl_quarter 読み込みに失敗したためスキップ:", e)
-        return
+        print("[oper][WARN] finance_notes (予想値) 読み込み失敗:", e)
+        df_fwd = pd.DataFrame(columns=["コード", "営業利益_fwd"])
 
-    if pl.empty:
-        print("[oper] pl_quarter が空のためスキップ")
-        return
+    # 2. 直近4Q実績 (TTM) の取得 (既存の pl_quarter から)
+    try:
+        pl = pd.read_sql_query("SELECT コード, 決算期, 四半期, 営業利益 FROM pl_quarter", conn)
+        pl["決算期_ord"] = pd.to_datetime(pl["決算期"], errors="coerce")
+        pl = pl.dropna(subset=["決算期_ord"]).sort_values(["コード", "決算期_ord", "四半期"])
+        
+        def _sum_last4(group: pd.DataFrame) -> Optional[float]:
+            vals = group.tail(4)["営業利益"].dropna()
+            return float(vals.sum()) if not vals.empty else None
+            
+        df_ttm = pl.groupby("コード").apply(_sum_last4).rename("営業利益_ttm").reset_index()
+    except Exception as e:
+        print("[oper][WARN] pl_quarter (TTM) 読み込み失敗:", e)
+        df_ttm = pd.DataFrame(columns=["コード", "営業利益_ttm"])
 
-    # 日付として扱うためのソートキー
-    pl["決算期_ord"] = pd.to_datetime(pl["決算期"], errors="coerce")
-    pl = pl.dropna(subset=["決算期_ord"])
-
-    if pl.empty:
-        print("[oper] pl_quarter に有効な決算期が無いためスキップ")
-        return
-
-    # コード＋決算期＋四半期順でソート（古い→新しい）
-    pl = pl.sort_values(["コード", "決算期_ord", "四半期"])
-
-    # 2) コードごとに「直近4レコード分の営業利益合計」を計算
-    #    ※四半期データがそろっていない銘柄はあるので、その場合はある分だけの合計
-    def _sum_last4(group):
-        g = group.tail(4)
-        # 営業利益が NaN のものは 0 扱い（完全に無い銘柄は後で弾く）
-        vals = g["営業利益"].dropna()
-        if vals.empty:
-            return None
-        return float(vals.sum())
-
-    series_sum = pl.groupby("コード").apply(_sum_last4).rename("営業利益_sum")
-
-    # None（有効な営業利益が取れなかった銘柄）は除外
-    series_sum = series_sum.dropna()
-    if series_sum.empty:
-        print("[oper] 有効な営業利益が計算できずスキップ")
-        return
-
-    df_oper = series_sum.reset_index()
-
-    # 3) 単位変換：百万円 → 億円（想定）
-    #    ※もし pl_quarter.営業利益 が既に「億円」なら divisor を 1.0 に変更してください。
+    # 3. データ結合と優先適用 (Forward > TTM)
+    df_fwd["コード"] = df_fwd["コード"].astype(str)
+    df_ttm["コード"] = df_ttm["コード"].astype(str)
+    
+    df_oper = pd.merge(df_fwd, df_ttm, on="コード", how="outer")
+    
+    # 会社予想があれば採用、なければ実績で補完
+    df_oper["採用営業利益_百万円"] = df_oper["営業利益_fwd"].combine_first(df_oper["営業利益_ttm"])
+    df_oper = df_oper.dropna(subset=["採用営業利益_百万円"])
+    
+    # 億円換算 (既存ロジック踏襲)
     DIVISOR_TO_OKU = 1.0
+    df_oper["営業利益_億_int"] = (df_oper["採用営業利益_百万円"] / DIVISOR_TO_OKU).apply(lambda x: int(round(x)))
 
-    def _to_oku(x):
-        try:
-            return float(x) / DIVISOR_TO_OKU
-        except Exception:
-            return None
-
-    df_oper["営業利益_億"] = df_oper["営業利益_sum"].apply(_to_oku)
-
-    # 整数（億円）に丸める（端数は四捨五入）
-    def _round_int(x):
-        if x is None:
-            return None
-        try:
-            return int(round(float(x)))
-        except Exception:
-            return None
-
-    df_oper["営業利益_億_int"] = df_oper["営業利益_億"].apply(_round_int)
-
-    # 4) screener 側の時価総額を読み込み
+    # 4. 時価総額と結合して営利対時価を計算
     try:
-        sc = pd.read_sql_query("""
-            SELECT コード, 時価総額億円
-            FROM screener
-        """, conn)
+        sc = pd.read_sql_query("SELECT コード, 時価総額億円 FROM screener", conn)
+        sc["コード"] = sc["コード"].astype(str)
     except Exception as e:
-        print("[oper][WARN] screener 読み込みに失敗したためスキップ:", e)
+        print("[oper][WARN] screener 読み込み失敗:", e)
         return
 
-    if sc.empty:
-        print("[oper] screener が空のためスキップ")
-        return
-
-    # 5) join して「営利対時価 (%)」を計算
     df = df_oper.merge(sc, on="コード", how="inner")
 
-    def _calc_ratio(row):
+    def _calc_ratio(row: pd.Series) -> Optional[float]:
         op_oku = row.get("営業利益_億_int")
         mc_oku = row.get("時価総額億円")
-        try:
-            if op_oku is None:
-                return None
-            if mc_oku is None or float(mc_oku) <= 0:
-                return None
-            return round(float(op_oku) * 100.0 / float(mc_oku), 2)
-        except Exception:
+        if pd.isna(op_oku) or pd.isna(mc_oku) or float(mc_oku) <= 0: 
             return None
+        return round(float(op_oku) * 100.0 / float(mc_oku), 2)
 
     df["営利対時価_pct"] = df.apply(_calc_ratio, axis=1)
 
-    # 6) UPDATE 用のタプルリストを作成
-    updates = []
-    for _, r in df.iterrows():
-        code_str = str(r["コード"])
-        op_int   = r["営業利益_億_int"]
-        ratio    = r["営利対時価_pct"]
-
-        # 営業利益が None のものは UPDATE 対象から外す
-        if op_int is None:
-            continue
-
-        updates.append((
-            int(op_int),
-            float(ratio) if ratio is not None else None,
-            code_str,
-        ))
+    # 5. UPDATE実行
+    updates = [(int(r["営業利益_億_int"]), float(r["営利対時価_pct"]) if pd.notna(r["営利対時価_pct"]) else None, str(r["コード"])) 
+               for _, r in df.iterrows() if pd.notna(r["営業利益_億_int"])]
 
     if not updates:
         print("[oper] 更新対象レコードなし")
@@ -7150,7 +7087,7 @@ def update_operating_income_and_ratio(conn, batch_size=300, max_workers=12, use_
     """, updates)
     conn.commit()
 
-    print(f"[oper] 営業利益・営利対時価を更新しました rows={len(updates)}（pl_quarterベース）")
+    print(f"[oper] 予想優先で営業利益・営利対時価を更新しました rows={len(updates)}")
 
 # --- ここから: 前日終値アップデータ（履歴ベース／唯一の定義） ---
 # ---- 前日終値比率(%)＋現在値から前日終値を逆算してDB更新 ----
@@ -7952,6 +7889,7 @@ def batch_update_all_financials(conn,
     cur.close()
     
     codes = [str(r[0]) for r in rows]
+    codes = filter_valid_yahoo_codes(conn, codes) # ★ここで除外！
     raw_map = {str(r[0]): r[1] for r in rows}
     fin_date_map = {str(r[0]): r[2] for r in rows}
 
@@ -8013,7 +7951,7 @@ def batch_update_all_financials(conn,
                 to_fetch.append(s); continue
             try:
                 fd = datetime.strptime(fin_d, "%Y-%m-%d").date()
-                if (date.today() - fd).days >= 30:
+                if (date.today() - fd).days >= 7:
                     to_fetch.append(s)
             except:
                 to_fetch.append(s)
@@ -8315,32 +8253,6 @@ def _run_fetch_all(fetch_path: str | None = None,
                     os.remove(lock_path)
             except Exception:
                 pass
-
-
-def _run_train_model():
-    if not os.path.exists(TRAIN_SCRIPT_PATH):
-        raise FileNotFoundError(f"train script not found: {TRAIN_SCRIPT_PATH}")
-
-    py = sys.executable
-    cmd = [py, "-u", TRAIN_SCRIPT_PATH]
-
-    print(f"[train_model] 実行開始: {cmd}")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        universal_newlines=True,
-        bufsize=1
-    )
-
-    for line in proc.stdout:
-        print("[train_model]", line.rstrip())
-
-    rc = proc.wait()
-    if rc != 0:
-        raise RuntimeError(f"train_model 異常終了 rc={rc}")
-
-    print("[train_model] 正常終了")
 
 
 # ===== カブタン呼び出し
@@ -8859,19 +8771,6 @@ def main():
     # ---------------------------------------------------------------------
     t0 = time.time()
     print("=== 開始 ===")
-    
-    # -------------------------------------------------------
-    # ★追加: 起動時に学習スクリプトを叩いてモデルを更新
-    # -------------------------------------------------------
-
-    # 学習スクリプトのパス（ご自身の環境に合わせて修正してください）
-    
-    try:
-        _timed("train_model", _run_train_model)
-    except Exception as e:
-        print(f"[train_model][WARN] {e}")
-        print("既存モデルで続行")
-
 
     # (0) 付帯処理：空売り機関リストの更新
     try:
@@ -8884,18 +8783,18 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     # ▼ ここを追加：起動時にまず fetch_all を実行（DBに収集・保存させる）
-    try:
-        # 最新データの収集・保存【毎回】
-        _timed("fetch_all", _run_fetch_all,
-               # fetch_path=None → 自動解決。固定したければ絶対パスを渡す
-               FETCH_PATH,
-               # extra_args は fetch_all 側の引数仕様に合わせて適宜
-               extra_args=[],     # 例: ["--earnings-only", "--force"]
-               timeout_sec=None,  # 必要なら秒指定
-               use_lock=True)
-    except Exception as e:
-        # 収集に失敗してもダッシュボード生成自体は続行したいなら warn で握りつぶす
-        print(f"[fetch_all][WARN] {e}")
+    ######################################try:
+    ######################################    # 最新データの収集・保存【毎回】
+    ######################################    _timed("fetch_all", _run_fetch_all,
+    ######################################           # fetch_path=None → 自動解決。固定したければ絶対パスを渡す
+    ######################################           FETCH_PATH,
+    ######################################           # extra_args は fetch_all 側の引数仕様に合わせて適宜
+    ######################################           extra_args=[],     # 例: ["--earnings-only", "--force"]
+    ######################################           timeout_sec=None,  # 必要なら秒指定
+    ######################################           use_lock=True)
+    ######################################except Exception as e:
+    ######################################    # 収集に失敗してもダッシュボード生成自体は続行したいなら warn で握りつぶす
+    ######################################    print(f"[fetch_all][WARN] {e}")
 
     # (1) DB open & スキーマ保証
     conn = _get_db_conn()

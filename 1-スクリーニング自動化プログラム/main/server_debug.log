@@ -1,0 +1,92 @@
+2026-06-22 16:25:52,416 [INFO] Analyze request received: 不明
+2026-06-22 16:26:08,900 [INFO] Analysis success for 不明. Score: 75
+2026-06-22 16:26:37,692 [INFO] Analyze request received: 不明
+2026-06-22 16:26:49,620 [ERROR] JSONパースエラー: Invalid control character at: line 31 column 48 (char 795) | Raw出力: {
+  "rating": "A", 
+  "stance": "強気", 
+  "position_ratio": 0.7, 
+  "time_horizon_days": 5,
+  "target_price": 2667, 
+  "invalidation_price": 2300, 
+  "key_points": [
+    "ラサ工業の株価は強い上昇トレンドを示しており、直近の初動も良好。",
+    "最新テーマが「下水道」で、直近30日以内に更新された点も高評価。",
+    "財務状況は優良（A+）で増資リスクなし。業績予想も上向いている。",
+    "テクニカル指標では5日移動平均線をクリアしており、BBバンドでも±2の範囲内に収まっている。",
+    "抵抗帯が遠く、支持帯が近いため、短期的な上昇余地があると判断される。"
+  ],
+  "risk_factors": [
+    "株価が急騰しており、短期的には利益確定売りが出る可能性がある。",
+    "BBバンドの+2に達しているため、乖離拡大リスクがある。"
+  ],
+  "short_tag": "強気/ラサ工業/上昇トレンド",
+  "score_breakdown": {
+    "initial": 30, 
+    "themes": 15,
+    "fundamentals": 20,
+    "technical": 18,
+    "support_resist": 7
+  },
+  "total_score": 90,
+  "action": "買い", 
+  "reason": [
+    "初動・テーマ性・財務・テクニカル指標がすべて良好な結果を示している。",
+    "短期的な上昇余地があり、利益確定売りが出る可能性があるものの、全体的には強気の評価。
+  ]
+}
+2026-06-22 16:27:11,172 [INFO] Analyze request received: 不明
+2026-06-22 16:27:22,132 [INFO] Analysis success for 不明. Score: 76
+2026-06-22 16:31:39,402 [INFO] Analyze request received: 4022
+2026-06-22 16:31:51,825 [INFO] Analysis success for 4022. Score: 76
+2026-06-22 16:32:29,088 [INFO] Analyze request received: 5074
+2026-06-22 16:32:36,261 [INFO] Analysis success for 5074. Score: 68
+2026-06-23 07:10:32,593 [INFO] Analyze request received: 5074
+2026-06-23 07:10:54,094 [INFO] Analysis success for 5074. Score: 82
+2026-06-23 11:42:02,146 [INFO] Analyze request received: 5074
+2026-06-23 11:43:04,204 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+2026-06-23 11:44:36,833 [INFO] Analyze request received: 5074
+2026-06-23 11:45:38,892 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+2026-06-23 16:19:42,661 [INFO] Analyze request received: 285A
+2026-06-23 16:20:02,208 [INFO] Analysis success for 285A. Score: 49
+2026-06-24 00:00:08,322 [INFO] Analyze request received: 4022
+2026-06-24 00:00:25,749 [INFO] Analysis success for 4022. Score: 36
+2026-06-24 08:42:54,078 [INFO] Analyze request received: 5074
+2026-06-24 08:43:16,018 [INFO] Analysis success for 5074. Score: 78
+2026-07-05 13:13:57,043 [INFO] バックグラウンドでヤフ板分析を実行します。銘柄コード: 8439
+2026-07-05 13:13:57,131 [ERROR] 通信テスト.py の実行中にエラーが発生しました: None
+2026-07-05 13:14:31,179 [INFO] バックグラウンドでヤフ板分析を実行します。銘柄コード: 9201
+2026-07-05 13:14:31,237 [ERROR] 通信テスト.py の実行中にエラーが発生しました: None
+2026-07-05 13:39:29,088 [INFO] バックグラウンドでヤフ板分析を実行します。銘柄コード: 6976
+2026-07-05 13:39:55,048 [ERROR] 通信テスト.py の実行中にエラーが発生しました: None
+2026-07-05 13:39:59,765 [INFO] バックグラウンドでヤフ板分析を実行します。銘柄コード: 6976
+2026-07-05 13:40:25,852 [ERROR] 通信テスト.py の実行中にエラーが発生しました: None
+2026-07-05 17:59:19,748 [ERROR] ヤフ板分析スクリプト実行失敗: Command '['C:\\Users\\sasit\\AppData\\Local\\Programs\\Python\\Python310\\python.exe', 'D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\ヤフ板分析.py', '6525']' returned non-zero exit status 1.
+2026-07-05 17:59:28,342 [ERROR] ヤフ板分析スクリプト実行失敗: Command '['C:\\Users\\sasit\\AppData\\Local\\Programs\\Python\\Python310\\python.exe', 'D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\ヤフ板分析.py', '3436']' returned non-zero exit status 1.
+2026-07-05 18:00:41,633 [ERROR] ヤフ板分析スクリプト実行失敗: Command '['C:\\Users\\sasit\\AppData\\Local\\Programs\\Python\\Python310\\python.exe', 'D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\ヤフ板分析.py', '6976']' returned non-zero exit status 1.
+2026-07-05 18:01:56,692 [INFO] ヤフ板分析スクリプト正常終了: 9942
+2026-07-05 18:05:17,188 [ERROR] ヤフ板分析スクリプト実行失敗: Command '['C:\\Users\\sasit\\AppData\\Local\\Programs\\Python\\Python310\\python.exe', 'D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\ヤフ板分析.py', '6327']' returned non-zero exit status 1.
+2026-07-05 18:05:26,217 [ERROR] ヤフ板分析スクリプト実行失敗: Command '['C:\\Users\\sasit\\AppData\\Local\\Programs\\Python\\Python310\\python.exe', 'D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\ヤフ板分析.py', '6327']' returned non-zero exit status 1.
+2026-07-05 18:05:35,870 [ERROR] ヤフ板分析スクリプト実行失敗: Command '['C:\\Users\\sasit\\AppData\\Local\\Programs\\Python\\Python310\\python.exe', 'D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\ヤフ板分析.py', '141A']' returned non-zero exit status 1.
+2026-07-05 18:23:05,210 [ERROR] ヤフ板分析スクリプト実行失敗: Command '['C:\\Users\\sasit\\AppData\\Local\\Programs\\Python\\Python310\\python.exe', 'D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\ヤフ板分析.py', '141A']' returned non-zero exit status 1.
+2026-07-06 07:16:29,023 [INFO] ヤフ板分析スクリプト正常終了: 141A
+2026-07-06 07:19:56,506 [INFO] 古いレポートを削除しました: D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data\report_285A.html
+2026-07-06 07:43:59,808 [INFO] ヤフ板分析スクリプト正常終了: 285A
+2026-07-06 11:48:59,505 [INFO] Analyze request received: 285A
+2026-07-06 11:50:01,561 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
+2026-07-06 11:50:07,961 [INFO] Analyze request received: 285A
+2026-07-06 11:50:33,015 [INFO] Analysis success for 285A. Score: 27
+2026-07-11 12:45:46,814 [INFO] ヤフ板分析スクリプト正常終了: 6339
+2026-07-11 12:46:19,445 [INFO] Analyze request received: 6339
+2026-07-11 12:46:23,543 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x000001F8CC6245B0>: Failed to establish a new connection: [WinError 10061] 対象のコンピューターによって拒否されたため、接続できませんでした。'))
+2026-07-11 12:46:31,504 [INFO] Analyze request received: 6339
+2026-07-11 12:46:35,580 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x000001F8CC5C6380>: Failed to establish a new connection: [WinError 10061] 対象のコンピューターによって拒否されたため、接続できませんでした。'))
+2026-07-11 12:47:49,752 [INFO] Analyze request received: 6339
+2026-07-11 12:47:53,853 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x000001F8CC6249D0>: Failed to establish a new connection: [WinError 10061] 対象のコンピューターによって拒否されたため、接続できませんでした。'))
+2026-07-11 12:48:04,956 [INFO] Analyze request received: 5074
+2026-07-11 12:48:09,052 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x000001F8CC626950>: Failed to establish a new connection: [WinError 10061] 対象のコンピューターによって拒否されたため、接続できませんでした。'))
+2026-07-11 12:48:12,962 [INFO] Analyze request received: 5074
+2026-07-11 12:48:17,046 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x000001F8CC55E9E0>: Failed to establish a new connection: [WinError 10061] 対象のコンピューターによって拒否されたため、接続できませんでした。'))
+2026-07-11 14:55:05,855 [INFO] Analyze request received: 6339
+2026-07-11 14:55:18,225 [INFO] Analysis success for 6339. Score: 68
+2026-07-11 15:11:37,610 [INFO] Analyze request received: 6339
+2026-07-11 15:11:53,225 [INFO] Analysis success for 6339. Score: 45

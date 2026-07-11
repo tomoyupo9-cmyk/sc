@@ -1,0 +1,515 @@
+
+    <!DOCTYPE html>
+    <html lang="ja">
+    <head>
+        <meta charset="UTF-8">
+        <title>285A 大口戦術＆書き込みの質 マルチ分析レポート</title>
+        <style>
+            body { font-family: 'Helvetica Neue', Arial, sans-serif; background-color: #f0f2f5; color: #1e293b; margin: 0; padding: 20px; }
+            .container { max-width: 1200px; margin: 0 auto; background: white; padding: 35px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+            h1 { border-bottom: 4px solid #1e3a8a; padding-bottom: 12px; color: #1e3a8a; margin-top: 0; font-size: 24px; }
+            .meta-info { color: #64748b; font-size: 0.9em; margin-bottom: 25px; }
+            .summary-box { padding: 25px; border-radius: 8px; margin-bottom: 30px; line-7: 1.7; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); }
+            .dynamic-status { background-color: #fff1f2; border-left: 8px solid #f43f5e; color: #9f1239; }
+            .intent-label { font-size: 0.85em; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.8; margin-bottom: 5px; }
+            .intent-title { font-size: 1.4em; font-weight: 800; line-height: 1.4; }
+            .metrics { display: flex; gap: 15px; margin-bottom: 30px; }
+            .card { flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; padding: 18px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }
+            .card .title { font-size: 0.85em; color: #64748b; font-weight: 600; }
+            .card .value { font-size: 24px; font-weight: bold; color: #0f172a; margin-top: 6px; }
+            .highlight-orange { color: #ea580c !important; }
+            .highlight-blue { color: #2563eb !important; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; border-radius: 6px; overflow: hidden; }
+            th, td { padding: 14px 18px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+            th { background-color: #f1f5f9; color: #475569; font-weight: bold; font-size: 0.95em; }
+            tr:hover { background-color: #f8fafc; }
+            .badge { padding: 5px 10px; border-radius: 4px; font-size: 0.8em; font-weight: bold; display: inline-block; }
+            .badge-buy { background-color: #dcfce7; color: #15803d; }
+            .badge-sell { background-color: #fee2e2; color: #b91c1c; }
+            .badge-trap { background-color: #fef3c7; color: #d97706; border: 1px dashed #d97706; }
+            .vote-count { font-weight: bold; white-space: nowrap; font-family: monospace; font-size: 1.1em; }
+            .v-good { color: #16a34a; }
+            .v-bad { color: #dc2626; }
+            .comment-body { font-size: 0.95em; max-width: 550px; word-wrap: break-word; line-height: 1.5; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>📊 ヤフ板・大口の狙い＆書き込みの質 複合分析レポート (285A)</h1>
+            <div class="meta-info">生成日時: 2026/07/05 12:32:55 | 対象期間内の総スキャン数: 2000 件</div>
+            <div class="summary-box dynamic-status">
+                <div class="intent-label">🎯 解析された掲示板の現状・大口の狙い</div>
+                <div class="intent-title">⑧【イナゴパニックお祭り相場】突発的な材料等により、一般投資家が殺到してパニック化している制御不能状態</div>
+                <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.1); margin: 20px 0;">
+                <div class="intent-label">📋 スクリーニングシステム戦略分析ログ</div>
+                <ul style="margin: 5px 0 0 0; padding-left: 20px;">
+                    <li style='margin-bottom: 5px;'>【警告】ボタン統計に異常スパイク（しきい値 80.3票超）の投稿を 34 件検知。</li><li style='margin-bottom: 5px;'>【需給過熱】10分間に最大 57 件の書き込み。週明けは値幅が極限まで荒れるためエントリー要注意。</li>
+                </ul>
+            </div>
+            <div class="metrics">
+                <div class="card"><div class="title">期間内総投稿数</div><div class="value">2000 件</div></div>
+                <div class="card"><div class="title">最大流速 (10分ピーク)</div><div class="value highlight-orange">57 件</div></div>
+                <div class="card"><div class="title">平均文字数 (テキスト密度)</div><div class="value highlight-blue">86.0 文字</div></div>
+                <div class="card"><div class="title">ファクト分析密度スコア</div><div class="value">0.10</div></div>
+                <div class="card"><div class="title">ユーザー占有率 (多様性)</div><div class="value">0.34</div></div>
+            </div>
+            <h2 style="font-size: 18px; color: #1e3a8a; margin-top: 35px; border-left: 5px solid #1e3a8a; padding-left: 10px;">🚨 意図的な世論誘導（統計的アノマリー）を検出した投稿</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 140px;">投稿日時</th>
+                        <th style="width: 160px;">アカウント / 投稿ID</th>
+                        <th style="width: 170px;">工作偏向タイプ</th>
+                        <th style="width: 130px;">ボタン反応数</th>
+                        <th>投稿本文</th>
+                    </tr>
+                </thead>
+                <tbody>
+        <tr>
+            <td>2026/7/5 10:20</td>
+            <td><b>ワッショイ</b><br><small style='color:#888;'>ID: 1297141</small></td>
+            <td><span class='badge badge-trap'>サクラ売り煽り（逆張りの安心ハメ工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 35</span> / 
+                <span class='v-bad'>👎 54</span>
+            </td>
+            <td class='comment-body'>明日下がる？</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:59</td>
+            <td><b>mift/lu</b><br><small style='color:#888;'>ID: 1297083</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 72</span> / 
+                <span class='v-bad'>👎 12</span>
+            </td>
+            <td class='comment-body'>今月は、先月年高 112,700円超えてくんじゃない↗✨️↗✨️</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:53</td>
+            <td><b>地方の王　長谷川</b><br><small style='color:#888;'>ID: 1297069</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 63</span> / 
+                <span class='v-bad'>👎 32</span>
+            </td>
+            <td class='comment-body'>どうせ月曜日上がるのは確定<br />
+下がる事は無い<br />
+他の株はどうせ下がるが<br />
+<a href="https://finance.yahoo.co.jp/quote/285A.T">キオクシア</a>が下がる事は無い</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:51</td>
+            <td><b>yos*****</b><br><small style='color:#888;'>ID: 1297064</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 94</span> / 
+                <span class='v-bad'>👎 29</span>
+            </td>
+            <td class='comment-body'>月曜日<br />
+上げる&rarr;はい<br />
+下げる&rarr;いいえ</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:44</td>
+            <td><b>にに丸</b><br><small style='color:#888;'>ID: 1297050</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 68</span> / 
+                <span class='v-bad'>👎 23</span>
+            </td>
+            <td class='comment-body'>やばい！<br />
+月曜日買い気配だな！</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:40</td>
+            <td><b>1c7*****</b><br><small style='color:#888;'>ID: 1297036</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 98</span> / 
+                <span class='v-bad'>👎 5</span>
+            </td>
+            <td class='comment-body'>まったく眠れんかった。<br />
+あ〜何で金曜の朝売ってもうたんや😭<br />
+いや俺売ってないやろ。夢やろ。<br />
+もう一度アプリ見てみよ。<br />
+あ〜やっぱりないわ😨<br />
+もう一回金曜の朝に戻ってくれ〜<br />
+あ〜金もめちゃくちゃ減ってる。悔しい〜。<br />
+お金取り戻したい。お金取り戻したい。<br />
+悔しい〜悔しい〜<br />
+<a href="https://finance.yahoo.co.jp/quote/285A.T">キオクシア</a>買いなおしたい。<br />
+ちょっとでも安く買いなおしたい。<br />
+早く買いなおしたい〜<br />
+キオクシアの株が好決算発表に向けて上昇するまでに<br />
+早く買いなおしたい。<br />
+我慢できない〜。<br />
+ポチッ。<br />
+<br />
+こんな奴がわんさかいるのが月曜日の答え。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:32</td>
+            <td><b>vdn*****</b><br><small style='color:#888;'>ID: 1297025</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 65</span> / 
+                <span class='v-bad'>👎 30</span>
+            </td>
+            <td class='comment-body'>この株３万円で持ってる人いますか？</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:29</td>
+            <td><b>spiritualモメチン</b><br><small style='color:#888;'>ID: 1297010</small></td>
+            <td><span class='badge badge-trap'>サクラ売り煽り（逆張りの安心ハメ工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 35</span> / 
+                <span class='v-bad'>👎 47</span>
+            </td>
+            <td class='comment-body'>月曜日は金曜日上がった分<br />
+下がる可能性あるでしょ。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:18</td>
+            <td><b>tnm******</b><br><small style='color:#888;'>ID: 1296988</small></td>
+            <td><span class='badge badge-trap'>サクラ売り煽り（逆張りの安心ハメ工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 19</span> / 
+                <span class='v-bad'>👎 84</span>
+            </td>
+            <td class='comment-body'>明日はストップ安でしょう<br />
+<br />
+<br />
+アングル：<span data-themeid="54">中国</span>の新高性能ＡＩモデル登場、「ミニ・ディープシーク・ショック」か<br />
+ <br />
+<br />
+[北京／ベンガルール ２日 ロイター] - ２０２５年初頭に中国の<span data-themeid="1550">人工知能</span>（ＡＩ）企業ディープシークが低コストながら比較的高性能のモデルを発表して市場に衝撃を与えて以来、世界中のＡＩユーザーに２つの選択肢が与えられた。価格を抑えた中国製モデルか、それとも巨額の開発投資によって非常に高い性能を実現してきたオープンＡＩやアンソロピックといった米国勢か、という構図だ。<br />
+しかし先月に北京を拠点とするスタートアップの智譜ＡＩ（Zhipu AI）が披露した新モデル「ＧＬＭ－５．２」は、最終的​に米国側の優位性を消す形でこの格差を埋めるかもしれない。<br />
+<br />
+ＧＬＭ－５．２は、コーディング能力や、最小限の指示で複数の作業を実行するエージェント機能の面で高い評価を集めており、その性能は&zwnj;米国の最先端モデルに迫る一方で、コストは大幅に低い。このため業界では「ミニ・ディープシーク・ショック」が到来したとの声も出ている。<br />
+<br />
+開発者向けプラットフォーム「オープンルーター」の利用ランキングにおいて、ＧＬＭ－５．２は急速に順位を上げ、現在ではアンソロピックの複数モデルを上回る利用実績を記録。さらにクラウドデータ企業スノーフレイクのスリダー・ラマスワミ最高経営責任者（ＣＥＯ）や、著名投資家のマーク・アンドリーセン氏らもその性能を高く評価している。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:18</td>
+            <td><b>kei*****</b><br><small style='color:#888;'>ID: 1296987</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 110</span> / 
+                <span class='v-bad'>👎 40</span>
+            </td>
+            <td class='comment-body'>112700円超えはいつごろか？<br />
+今月末までには超える　　　はい<br />
+8月3日以降の決算報告後　　いいえ</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:14</td>
+            <td><b>k12*****</b><br><small style='color:#888;'>ID: 1296979</small></td>
+            <td><span class='badge badge-trap'>サクラ売り煽り（逆張りの安心ハメ工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 19</span> / 
+                <span class='v-bad'>👎 70</span>
+            </td>
+            <td class='comment-body'>近いうちに適正価格の3万円落ち着くから、信用買いの人は月曜逃げたほうがいい<br />
+<br />
+米国企業の多くが中華メモリ買えずに苦しんでるから、輸入解禁は既定路線だよ</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:12</td>
+            <td><b>kei*****</b><br><small style='color:#888;'>ID: 1296974</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 114</span> / 
+                <span class='v-bad'>👎 14</span>
+            </td>
+            <td class='comment-body'>一つだけ言えることは、<br />
+いずれは112,700円というこれまでの最高値は必ず超えるということ。<br />
+あれで終わるはずは無い。<br />
+<br />
+だから含み損を抱えたホルダーは、また6万円とかに下がっても、決して損切りせず最高値更新までガチホすること。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 9:10</td>
+            <td><b>ee7*****</b><br><small style='color:#888;'>ID: 1296964</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 10</span> / 
+                <span class='v-bad'>👎 77</span>
+            </td>
+            <td class='comment-body'><span data-themeid="812">半導体</span>なんて<span data-themeid="54">中国</span>製でよくない？</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 8:39</td>
+            <td><b>625*****</b><br><small style='color:#888;'>ID: 1296872</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 64</span> / 
+                <span class='v-bad'>👎 62</span>
+            </td>
+            <td class='comment-body'>明日、ストップ高だと思う人</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 6:30</td>
+            <td><b>PALADISE</b><br><small style='color:#888;'>ID: 1296622</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 33</span> / 
+                <span class='v-bad'>👎 64</span>
+            </td>
+            <td class='comment-body'>ワイの110600より上で握ってるツワモノおる？🦍🚀<br />
+上はい<br />
+下いいえ</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 6:10</td>
+            <td><b>047*****</b><br><small style='color:#888;'>ID: 1296600</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 112</span> / 
+                <span class='v-bad'>👎 30</span>
+            </td>
+            <td class='comment-body'>この暴落でもホールド&rarr;はい<br />
+この暴落で売却&rarr;いいえ</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 5:36</td>
+            <td><b>1e0*****</b><br><small style='color:#888;'>ID: 1296573</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 24</span> / 
+                <span class='v-bad'>👎 90</span>
+            </td>
+            <td class='comment-body'>10万円くらいでホールドしている人いるのかな？破産するしかないね</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 5:20</td>
+            <td><b>シュージンーコ</b><br><small style='color:#888;'>ID: 1296564</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 85</span> / 
+                <span class='v-bad'>👎 27</span>
+            </td>
+            <td class='comment-body'>ここの住人で<a href="https://finance.yahoo.co.jp/quote/285A.T">キオクシア</a>高値掴みの人いるの？</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 4:37</td>
+            <td><b>f1f*****</b><br><small style='color:#888;'>ID: 1296559</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 100</span> / 
+                <span class='v-bad'>👎 12</span>
+            </td>
+            <td class='comment-body'>前回の暴落時も<a href="https://finance.yahoo.co.jp/quote/285A.T">キオクシア</a>終了論者がこぞって書き込みしてましたな。<br />
+<br />
+2万前後行ったり来たりの時か。<br />
+フル無視かまして1万8千で3枚仕込んで本当に良かった。<br />
+<br />
+その後はご存じの通り、資産を増やせたのはあの時買えた人、、、的な内容ばかりになり。<br />
+<br />
+あん時の空気に似てますね。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 4:37</td>
+            <td><b>高みの見物</b><br><small style='color:#888;'>ID: 1296558</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 82</span> / 
+                <span class='v-bad'>👎 11</span>
+            </td>
+            <td class='comment-body'>ETFの売りは、アドバンや東エレなどの<br />
+寄与度が高い銘柄で、ここは関係ない。<br />
+逆に、資金はここに集まる可能性大。<br />
+いつ、上方修正が出てもおかしく無いので<br />
+決算までは、上げ予想で良い。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 4:14</td>
+            <td><b>keo*****</b><br><small style='color:#888;'>ID: 1296551</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 219</span> / 
+                <span class='v-bad'>👎 41</span>
+            </td>
+            <td class='comment-body'>今からでも大丈夫ですか？<br />
+はい👍<br />
+いいえ👎</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 3:59</td>
+            <td><b>トウシロー@Again</b><br><small style='color:#888;'>ID: 1296545</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 13</span> / 
+                <span class='v-bad'>👎 90</span>
+            </td>
+            <td class='comment-body'><span data-themeid="812">半導体</span><br />
+特にここ<br />
+邪魔くせー<br />
+市場から奪った金を戻せや</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 3:52</td>
+            <td><b>eef*****</b><br><small style='color:#888;'>ID: 1296543</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 98</span> / 
+                <span class='v-bad'>👎 2</span>
+            </td>
+            <td class='comment-body'>春の米国上場楽しみですな🎶</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 3:51</td>
+            <td><b>ミスター</b><br><small style='color:#888;'>ID: 1296541</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 11</span> / 
+                <span class='v-bad'>👎 75</span>
+            </td>
+            <td class='comment-body'>まだ大丈夫まだ大丈夫と<br />
+一生懸命脳内変換してるねw👴🏻<br />
+もう終わりなのわかる？<br />
+逃げ遅れた、君たちw🫵🏻👴🏻</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 1:48</td>
+            <td><b>買ったら下がる売ったら上がるマン</b><br><small style='color:#888;'>ID: 1296466</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 87</span> / 
+                <span class='v-bad'>👎 18</span>
+            </td>
+            <td class='comment-body'>まいった。ここ鬼強い<br />
+月曜は爆上でしょう</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 1:11</td>
+            <td><b>f98*****</b><br><small style='color:#888;'>ID: 1296434</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 32</span> / 
+                <span class='v-bad'>👎 62</span>
+            </td>
+            <td class='comment-body'>月曜が怖い。。もうおわりだ。。。。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 1:08</td>
+            <td><b>ビッキー</b><br><small style='color:#888;'>ID: 1296431</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 80</span> / 
+                <span class='v-bad'>👎 8</span>
+            </td>
+            <td class='comment-body'>まず今週、そして７月は<a href="https://finance.yahoo.co.jp/quote/285A.T">キオクシア</a>の株価が83300円から乱高下しながらも右肩上がりになるのか、そうでないのか？キオクシアはじめ今後のAI<span data-themeid="812">半導体</span>銘柄の正念場となる。暴落した米国の半導体銘柄の株価は今週戻し、復活するのか停滞するのか？復活してもらわないと日米国ともAI半導体に代わって先頭を走って市場をリードできる業種、銘柄はない。キオクシアの株価が20万、30万になれと願っているのではなく、10万はキープする銘柄であってほしい。キオクシアが崩れるようであれば日本の未来は明るくない。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 1:08</td>
+            <td><b>ビッキー</b><br><small style='color:#888;'>ID: 1296431</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 80</span> / 
+                <span class='v-bad'>👎 8</span>
+            </td>
+            <td class='comment-body'>まず今週、そして７月は<a href="https://finance.yahoo.co.jp/quote/285A.T">キオクシア</a>の株価が83300円から乱高下しながらも右肩上がりになるのか、そうでないのか？キオクシアはじめ今後のAI<span data-themeid="812">半導体</span>銘柄の正念場となる。暴落した米国の半導体銘柄の株価は今週戻し、復活するのか停滞するのか？復活してもらわないと日米国ともAI半導体に代わって先頭を走って市場をリードできる業種、銘柄はない。キオクシアの株価が20万、30万になれと願っているのではなく、10万はキープする銘柄であってほしい。キオクシアが崩れるようであれば日本の未来は明るくない。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 1:07</td>
+            <td><b>435*****</b><br><small style='color:#888;'>ID: 1296430</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 31</span> / 
+                <span class='v-bad'>👎 57</span>
+            </td>
+            <td class='comment-body'>来週、11万の半値、55000は無くもない。<br />
+耐えて上がるかは月曜にならんと誰にもわからん</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/5 0:22</td>
+            <td><b>kun*****</b><br><small style='color:#888;'>ID: 1296360</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 74</span> / 
+                <span class='v-bad'>👎 24</span>
+            </td>
+            <td class='comment-body'>祝！ついにやりました！世界の<a href="https://finance.yahoo.co.jp/quote/285A.T">キオクシア</a>です。週明け月曜日からS高の買い相場が続きます。驚異的高性能の新製品です。再度＼株価12万円超えです。</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/4 23:27</td>
+            <td><b>226*****</b><br><small style='color:#888;'>ID: 1296243</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 68</span> / 
+                <span class='v-bad'>👎 32</span>
+            </td>
+            <td class='comment-body'>月曜スト高ありそう</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/4 22:57</td>
+            <td><b>92c*****</b><br><small style='color:#888;'>ID: 1296177</small></td>
+            <td><span class='badge badge-buy'>買い嵌め込み（強気の心理操作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 56</span> / 
+                <span class='v-bad'>👎 28</span>
+            </td>
+            <td class='comment-body'>来週10万円は越えない気がするんだよな</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/4 22:56</td>
+            <td><b>92c*****</b><br><small style='color:#888;'>ID: 1296175</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 33</span> / 
+                <span class='v-bad'>👎 66</span>
+            </td>
+            <td class='comment-body'>月曜日は70000円代になる気がするんだよな</td>
+        </tr>
+        
+        <tr>
+            <td>2026/7/4 21:25</td>
+            <td><b>RRR</b><br><small style='color:#888;'>ID: 1295872</small></td>
+            <td><span class='badge badge-sell'>売り崩し（弱気の心理工作）</span></td>
+            <td class='vote-count'>
+                <span class='v-good'>👍 33</span> / 
+                <span class='v-bad'>👎 55</span>
+            </td>
+            <td class='comment-body'>サン🍆、更に上げてきた🤫<br />
+<br />
+月曜朝は買いの早押し大会ですね٩( ᐛ )و</td>
+        </tr>
+        </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    

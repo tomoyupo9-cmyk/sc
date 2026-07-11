@@ -73,7 +73,6 @@
   .rec-watch { background:#eef2f7; color:#475569; border:1px solid #dbe4ef; }
   .rec-dot{ display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor; }
 
-  /* ★ ヘッダー固定を復活させるため position: sticky に変更 */
   #tbl-candidate thead th{ 
     position: sticky !important; 
     top: 0 !important; 
@@ -205,6 +204,24 @@
 
   .tob-btn { cursor: pointer; color: #fff; background: #f97316; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; white-space: nowrap; display: inline-block; user-select: none; }
   .tob-btn:hover { opacity: 0.9; }
+  
+  /* ★ 追加：ヤフ板ボタン専用CSS */
+  .yabb-btn {
+    display: inline-block;
+    padding: 2px 8px;
+    background-color: #1e3a8a;
+    color: white !important;
+    border: none;
+    border-radius: 4px;
+    font-size: 10px !important;
+    font-weight: bold;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s;
+  }
+  .yabb-btn:hover { opacity: 0.9; }
 
   #tob-modal-overlay { display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.1); }
   #tob-modal-content { position: absolute; background: #fff; border: 1px solid #cbd5e1; box-shadow: 0 8px 24px rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; width: 340px; max-width: 90vw; max-height: 400px; overflow-y: auto; font-size: 12px; line-height: 1.5; color: #333; }
@@ -558,6 +575,7 @@
       <span class="env-label muted">相場環境:</span>
       <span id="idx-sr-summary" class="env-item"></span>
       <span id="vix-regime" class="env-item"></span>
+      <span id="market-alerts-container" style="display:inline-flex; gap:6px; flex-wrap:wrap;"></span>
     </div>
 
     <label><input type="checkbox" id="f_shodou"> 初動のみ</label>
@@ -608,6 +626,10 @@
 
     <label>AIスコア≥ <input type="number" id="th_asmin" placeholder="下限" step="0.1" inputmode="decimal" autocomplete="off"></label>
     <label>～ ≤ <input type="number" id="th_asmax" placeholder="上限" step="0.1" inputmode="decimal" autocomplete="off"></label>
+
+    <label>信用倍率≤ <input type="number" id="th_margin_ratio" placeholder="上限" step="0.1" inputmode="decimal" autocomplete="off"></label>
+    <label>売り残≥ <input type="number" id="th_sell_bal" placeholder="下限" step="1000" inputmode="decimal" autocomplete="off"></label>
+    <label>買い残≤ <input type="number" id="th_buy_bal" placeholder="上限" step="1000" inputmode="decimal" autocomplete="off"></label>
 
     <label>▲(上昇) ≥
       <input type="number" id="th_tri_g" placeholder="70" min="0" max="100" step="1" inputmode="decimal" autocomplete="off">
@@ -670,7 +692,7 @@
     "銘柄":"銘柄名。","現在値":"最新の株価（終値/スナップショット）。","前日終値":"その銘柄の前日の終値。基準価格となる。",
     "高値":"当日の高値。","安値":"当日の安値。","5日":"単純移動平均（5日）。","25日":"単純移動平均（25日）。","75日":"単純移動平均（75日）。",
     "抵抗HH":"過去N日(設定値)の最高値。","抵抗ゾーン":"タッチ回数最大の水平帯の中心値。","タッチ":"抵抗ゾーンへの到達回数。","最終":"抵抗ゾーンの最終タッチ日。",
-    "キリ番":"最高値に最も近い丸め値。","刻":"キリ番の刻み。","近":"最高値がキリ番に十分近いか。","斜め":"ピボット高値回帰の本日外挿値。","R²":"決定係数。",
+    "キリ番":"最高値に最も近い丸め値。","刻":"キリ番の刻み。","近":"最高値がキリ番に十分近いか。","斜め":"ピボット高値回帰の本日外軸値。","R²":"決定係数。",
     "最近接抵抗":"現在値より上で最も近い抵抗。",
     "前日比(円)":"当日の株価が前日終値から何円動いたか。",
     "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
@@ -702,7 +724,7 @@
       "・レジ抜け：抵抗線を突破した強いゾーン（青天井）\n" +
       "・サポ割れ：支持線を割り込んだ弱いゾーン（下落警戒）\n" +
       "・レンジ内：上にも下にも動ける中間ゾーン",
-        "三角スコア":"Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n" +
+    "三角スコア":"Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n" +
     "・▲(上昇)…トレンドとテーマ性。直近の株価推移・RS・出来高トレンドなどから「伸びやすさ」を評価しています。\n" +
     "・◆(安定)…下落耐性と決算・財務の安定度。決算のブレや増資リスクが大きいほどスコアは低くなります。\n" +
     "・■(ボラ)…ボラティリティの高さ。値動きが荒いほどスコアが高くなります（＝ハイボラ）。\n\n" +
@@ -909,6 +931,9 @@
       ['#th_score','財務スコア'],
       ['#th_pmin','現在値'],
       ['#th_pmax','現在値'],
+      ['#th_margin_ratio', '信用倍率'],
+      ['#th_sell_bal', '売り残'],
+      ['#th_buy_bal', '買い残'],
     ];
     pairs.forEach(([sel, key])=>{
       const inp = document.querySelector(sel);
@@ -1204,6 +1229,11 @@
   function thTriS(){ const v=num($("#th_tri_s")?.value); return Number.isNaN(v)?null:v; }
   function thTriV(){ const v=num($("#th_tri_v")?.value); return Number.isNaN(v)?null:v; }
 
+  // ★ 追加：信用関連のしきい値取得関数
+  function thMarginRatio(){ const v=num($("#th_margin_ratio")?.value); return Number.isNaN(v)?null:v; }
+  function thSellBal(){ const v=num($("#th_sell_bal")?.value); return Number.isNaN(v)?null:v; }
+  function thBuyBal(){ const v=num($("#th_buy_bal")?.value); return Number.isNaN(v)?null:v; }
+
   // ====== 指数サポレジ位置（TOPX / 日経平均） ======
   function _indexSrLabel(px, sup, res) {
     const p = num(px), s = num(sup), r = num(res);
@@ -1329,6 +1359,37 @@
     const esc  = escapeHtml(text);
     host.innerHTML = `${esc} <span class="qhelp" data-key="VIXレジーム">?</span>`;
   }
+  
+  // ====== マクロ需給イベントアラート ======
+  function renderMarketAlerts() {
+    const container = document.getElementById("market-alerts-container");
+    if (!container) return;
+    
+    // RAWデータから meta 情報を取得
+    const meta = (typeof RAW !== 'undefined' && RAW.meta) ? RAW.meta : (window.__DATA__ && window.__DATA__.meta);
+    
+    if (!meta || !meta.market_alerts || meta.market_alerts.length === 0) {
+      container.innerHTML = "";
+      return;
+    }
+
+    let html = "";
+    meta.market_alerts.forEach(alertText => {
+      // 下落注意や警戒などの文字が含まれていたら目立つ赤/オレンジにする
+      let badgeStyle = "background:#eef2f7; color:#475569; border:1px solid #dbe4ef;"; // デフォルトはグレー
+      if (alertText.includes("警戒") || alertText.includes("注意")) {
+        badgeStyle = "background:#fee2e2; color:#b91c1c; border:1px solid #fecaca;"; // 危険なイベントは赤
+      } else if (alertText.includes("入替")) {
+        badgeStyle = "background:#e0f2fe; color:#1d4ed8; border:1px solid #bae6fd;"; // 入替系は青
+      }
+      
+      html += `<span style="padding:2px 8px; border-radius:999px; font-size:11px; font-weight:bold; ${badgeStyle}">🚨 ${escapeHtml(alertText)}</span>`;
+    });
+    
+    container.innerHTML = html;
+  }
+  
+  
 
   const f_rsstrong   = document.querySelector("#f_rsstrong");
   const f_mkt_good   = document.querySelector("#f_mkt_good");
@@ -1418,6 +1479,15 @@
       const aiScore = num(r["AIスコア"]); 
       if(asmin!=null && !(aiScore >= asmin)) return false;
       if(asmax!=null && !(aiScore <= asmax)) return false;
+
+      // ★ 追加：信用関連の絞り込み判定
+      const tmr = thMarginRatio(), tsb = thSellBal(), tbb = thBuyBal();
+      const marginRatio = num(r["信用倍率"]);
+      const sellBal = num(r["売り残"]);
+      const buyBal = num(r["買い残"]);
+      if (tmr != null && !(marginRatio <= tmr)) return false;
+      if (tsb != null && !(sellBal >= tsb)) return false;
+      if (tbb != null && !(buyBal <= tbb)) return false;
       
       const triG = thTriG(), triS = thTriS(), triV = thTriV();
       const gr = Number(r["tri_growth"]  ?? 0);
@@ -1592,6 +1662,11 @@
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num">${r["AI目標値"] || "-"}</td>
         <td style="text-align:center;"><button class="btn btn-prompt" data-code="${String(r["コード"]||"").padStart(4,"0")}" style="padding:2px 8px; font-size:11px;">生成</button></td>
+        
+        <td style="text-align:center;">
+          <button class="yabb-btn" id="yabb_btn_${String(r["コード"]||"").padStart(4,"0")}" onclick="runYabbAnalysis('${String(r["コード"]||"").padStart(4,"0")}')">📊 ヤフ板分析</button>
+        </td>
+        
         <td data-col="株探ニュース(3)" class="news-col" title="${escapeHtml(String(r["株探ニュース(3)"]||"").replace(/<[^>]*>/g, ""))}">${r["株探ニュース(3)"] || ""}</td>
         <td class="num">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日終値"] ?? ""}</td>
@@ -1659,13 +1734,10 @@
     if (typeof installCandidateFolds === 'function') { try{ installCandidateFolds(); }catch(_){ } }
   }
 
-
-  
   function render() {
     renderCand();
   }
-  window.render = render; // ← この1行を追加
-  
+  window.render = render;
 
   function fmtTime(ts){
     try{
@@ -1912,7 +1984,8 @@
 
   const numIds = [
     "th_rate","th_turn","th_rvol","th_progress","th_score","th_pmin","th_pmax",
-    "th_tri_g","th_tri_s","th_tri_v","th_asmin", "th_asmax"
+    "th_tri_g","th_tri_s","th_tri_v","th_asmin", "th_asmax",
+    "th_margin_ratio", "th_sell_bal", "th_buy_bal" // ★追加
   ];
   numIds.forEach(id => {
     const el = $("#"+id);
@@ -2249,6 +2322,7 @@
       renderMarketCheckboxes();
       renderIndexSrSummary();
       renderVixRegimeSummary();
+      renderMarketAlerts(); // ★追加: アラートの描画を実行
       forceClearThresholds();
       document.querySelectorAll('#tbl-candidate td br')
         .forEach(br => br.replaceWith(' '));
@@ -2617,7 +2691,10 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
             <th>プロンプト</th>
+            
+            <th>ヤフ板工作分析</th>
             <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
+            
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値" data-type="num">前日終値<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
@@ -2790,6 +2867,51 @@ document.addEventListener('DOMContentLoaded', function () {
 
   moves.forEach(el => { if (el && el.parentElement !== ctrls) ctrls.appendChild(el); });
 });
+</script>
+
+<script>
+async function runYabbAnalysis(code) {
+  const btn = document.getElementById(`yabb_btn_${code}`);
+  if (!btn) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 分析中...';
+  
+  try {
+    const res = await fetch(`http://localhost:8000/run_yabb?code=${code}`);
+    if (!res.ok) throw new Error('分析開始に失敗');
+
+    const interval = setInterval(async () => {
+      try {
+        const checkRes = await fetch(`http://localhost:8000/check_yabb_status?code=${code}`);
+        const data = await checkRes.json();
+        
+        if (data.status === 'completed') {
+          clearInterval(interval);
+          btn.textContent = '🟢 レポートを開く';
+          btn.style.backgroundColor = '#16a34a';
+          btn.disabled = false;
+          btn.setAttribute('data-status', 'completed');
+          
+          // ★修正箇所：toUpperCase()に修正し、正しくURLを開けるように変更
+          window.open(`file:///D:/kabu/main/1-スクリーニング自動化プログラム/main/output_data/report_${code.toUpperCase()}.html`, '_blank');
+        }
+      } catch (e) {
+        clearInterval(interval);
+        alert('状態確認中にエラーが発生しました');
+        // ★修正箇所：未定義の関数を削除し、直接ボタンを元に戻す
+        btn.textContent = '📊 ヤフ板分析';
+        btn.disabled = false;
+      }
+    }, 2000);
+
+  } catch (err) {
+    alert('サーバーへの接続に失敗しました。サーバーが起動しているか確認してください。');
+    // ★修正箇所：未定義の関数を削除し、直接ボタンを元に戻す
+    btn.textContent = '📊 ヤフ板分析';
+    btn.disabled = false;
+  }
+}
 </script>
 </body>
 </html>
