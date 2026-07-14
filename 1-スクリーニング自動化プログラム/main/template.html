@@ -589,6 +589,7 @@
     <label><input type="checkbox" id="f_noshor"> 空売り機関なしのみ</label>
     <label><input type="checkbox" id="f_opratio"> 割安（営利対時価10%以上）のみ</label>
     <label><input type="checkbox" id="f_hit"> 当たりのみ</label>
+    <label><input type="checkbox" id="f_safety"> 需給安全のみ</label>
     <label><input type="checkbox" id="f_rsstrong"> RS強（RS_5 > 0）</label>
     <label><input type="checkbox" id="f_mkt_good"> 地合い：追い風（+1）</label>
     <label><input type="checkbox" id="f_mkt_bad"> 地合い：逆風（-1）</label>
@@ -698,6 +699,8 @@
     "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
     "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
     "信用倍率": "信用買い残 ÷ 信用売り残。1を割ると売り長（将来の買い戻し圧力）、高いと買い長（将来の売り圧力）。",
+    "需給安全": "信用倍率1.0～3.0 かつ 出来高OH(買い残÷20日平均出来高)3.0以下の、機関の標的になりにくい銘柄。",
+    "需給OH": "出来高オーバーハング（Days to Cover）。買い残が直近20日平均出来高の何日分あるか。3.0以下がノイズの少ない安全圏。",
     "売り残": "信用売り残高（株数）。将来の買い戻し要因。",
     "買い残": "信用買い残高（株数）。将来の売り要因。",
     "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
@@ -785,6 +788,8 @@
     "コード":"コード","銘柄名":"銘柄","現在値":"現在値","前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
     "出来高":"出来高","売買代金(億)":"売買代金(億)",
     "信用倍率":"信用倍率",
+    "需給安全フラグ":"需給安全",
+    "需給OH":"需給OH",
     "売り残":"売り残",
     "買い残":"買い残",
     "初動フラグ":"初動","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
@@ -1428,6 +1433,7 @@
       const etp = (String(r["右肩早期種別"]||"").trim().length>0);
       const ns  = String(r["空売り機関なし_flag"]||"0")==="1";
       const op  = String(r["営利対時価_flag"]||"0")==="1";
+      const isSafeDemand  = String(r["需給安全フラグ"]||"0")==="1";
       const hit = isHitRow(r);
 
       const rec = (String(r["推奨アクション"]||"").trim());
@@ -1444,6 +1450,7 @@
       if($("#f_smallpos")?.checked  && !recSmall)  return false;
       if($("#f_noshor")?.checked && !ns) return false;
       if($("#f_opratio")?.checked&& !op) return false;
+      if($("#f_safety")?.checked && !isSafeDemand) return false;
       if($("#f_hit")?.checked    && !hit) return false;
 
       if (useEarly){
@@ -1637,8 +1644,10 @@
       const isHitTr = isHitRow(r);
       const shVal = String(r["S高"]||"");
       let shStyle = "";
-      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";     
-      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;"; 
+      if(shVal.includes("〇")) shStyle="color:#e11d48;font-weight:bold;";
+      else if(shVal.includes("停止")) shStyle="color:#64748b;font-size:0.9em;";
+      
+      const sfBadge = r["需給安全フラグ"] == 1 ? '<span class="badge b-green">安全</span>' : '';
       
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
@@ -1674,6 +1683,8 @@
         <td class="num">${r["前日終値比率"] ?? ""}</td>
         <td style="${shStyle}">${escapeHtml(shVal)}</td>
         <td class="num">${r["信用倍率"] != null ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
+        <td class="num">${r["需給OH"] != null ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
+        <td style="text-align:center;">${sfBadge}</td>
         <td class="num">${r["売り残"] != null ? Number(r["売り残"]).toLocaleString() : "-"}</td>
         <td class="num">${r["買い残"] != null ? Number(r["買い残"]).toLocaleString() : "-"}</td>
         <td class="theme-col" data-col="最新テーマ" title="${escapeHtml(String(r["最新テーマ"] || ""))}">${escapeHtml(r["最新テーマ"] || "")}</td>
@@ -1995,10 +2006,11 @@
     });
   });
 
+  // chkIds リスト
   const chkIds = [
     "f_shodou","f_tei","f_both","f_rightup","f_early","f_etype",
     "f_recstrong","f_smallpos","f_noshor","f_opratio","f_hit","f_goodonly",
-    "f_rsstrong","f_mkt_good","f_mkt_bad","f_revstrong","f_revweak"
+    "f_rsstrong","f_mkt_good","f_mkt_bad","f_revstrong","f_revweak", "f_safety"
   ];
   chkIds.forEach(id => {
     const el = $("#"+id);
@@ -2701,6 +2713,8 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
             <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<span class="arrow"></span></th>
+            <th class="num sortable" data-col="需給OH" data-type="num">需給OH<span class="arrow"></span></th>
+            <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
             <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
             <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
             <th class="sortable" data-col="最新テーマ" data-type="text">最新テーマ<span class="arrow"></span></th>

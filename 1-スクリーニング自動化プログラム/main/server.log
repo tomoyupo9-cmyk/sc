@@ -2420,3 +2420,287 @@ INFO:     127.0.0.1:53435 - "OPTIONS /analyze HTTP/1.1" 200 OK
 2026-07-11 15:11:37,610 [INFO] Analyze request received: 6339
 2026-07-11 15:11:53,225 [INFO] Analysis success for 6339. Score: 45
 INFO:     127.0.0.1:53435 - "POST /analyze HTTP/1.1" 200 OK
+INFO:     Started server process [9972]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [35104]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [23184]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [22952]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [19808]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [4524]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [21400]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [22204]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [21600]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [11468]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [20304]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started server process [29828]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50101 - "GET /run_yabb?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+2026-07-14 14:23:40,721 [INFO] ヤフ板分析スクリプト正常終了: 6339
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50101 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60675 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57729 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54930 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57324 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62317 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51181 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53381 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60838 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54087 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62986 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63150 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52732 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49461 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53866 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61638 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62609 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61016 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57622 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57408 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57369 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50287 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55954 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59429 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62521 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57442 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57075 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57728 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58898 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52991 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50136 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51134 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64197 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64693 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61246 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49836 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50560 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54718 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54600 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50765 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60893 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56910 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60263 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49326 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55346 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59343 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53438 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63687 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52131 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54127 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61788 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52674 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61963 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55603 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62991 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49409 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61327 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57994 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60527 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54104 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56936 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62894 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54396 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56451 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65203 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50363 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61583 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53908 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49824 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65095 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50883 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52226 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55839 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62275 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52942 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52931 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63814 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50432 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63806 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59901 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64863 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62832 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51497 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62530 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64430 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61881 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53669 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62382 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50708 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55280 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52689 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62050 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49913 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58879 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50911 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50843 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63220 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51421 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50622 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63272 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60588 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62900 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58305 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51139 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63223 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56232 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54730 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65032 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60680 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50216 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61716 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57599 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54823 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55274 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53661 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57357 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59325 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59325 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59325 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59325 - "GET /check_yabb_status?code=6339 HTTP/1.1" 200 OK
+INFO:     Started server process [22244]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)

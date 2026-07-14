@@ -57,7 +57,7 @@ HEADERS = {
                    "AppleWebKit/537.36 (KHTML, like Gecko) "
                    "Chrome/126.0.0.0 Safari/537.36")
 }
-ASYNC_CONCURRENCY_LIMIT = 10
+ASYNC_CONCURRENCY_LIMIT = 7
 MASTER_CODES_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt"
 DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
 

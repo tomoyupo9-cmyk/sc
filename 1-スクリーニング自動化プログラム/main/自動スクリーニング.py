@@ -5263,6 +5263,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
     rows: list[dict] = []
 
     # ここに無い列は素通し対象から落ちる（=安全）
+    # _prepare_rows_fast 内
     cols_passthru = [c for c in [
         "コード","銘柄名","市場","現在値","前日終値","前日円差","前日終値比率",
         "出来高","時価総額億円","売買代金(億)","売買代金20日平均億",
@@ -5271,7 +5272,9 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "営業利益","増資リスク","増資スコア","増資理由","財務コメント",
         "スコア","進捗率","overall_alpha",
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
-        "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ"
+        "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
+        # ▼ 以下を追加
+        "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ"
     ] if c in _df.columns]
 
     # ループ内で必ず yahoo/x を合成して rows に積む
@@ -5332,7 +5335,7 @@ def _prepare_rows_safe(df, conn):
 
 
 # ==== [BULK PRICE SUMMARIES - TOP LEVEL] ================================
-def preload_price_summaries(conn, codes, window_days=120):
+def preload_price_summaries(conn, codes, window_days=180): # ← 120から180に延長してデータ不足を解消
     """対象コードをまとめて読み、直近の終値/高値/安値と MA5/25/75 を返す"""
     if not codes:
         return {}
@@ -5340,6 +5343,24 @@ def preload_price_summaries(conn, codes, window_days=120):
     start_date = (date.today() - timedelta(days=window_days)).isoformat()
     out = {}
     CH = 700
+    
+    # ▼ 追加：当日のライブ現在値をscreenerから取得（MA計算の末尾に結合するため）
+    live_prices = {}
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT コード, 現在値 FROM screener WHERE 現在値 IS NOT NULL")
+        for row in cur.fetchall():
+            c4 = str(row[0]).zfill(4)
+            # 現在値はカンマ区切り文字列の可能性があるので安全にパース
+            val = str(row[1]).replace(",", "")
+            try:
+                live_prices[c4] = float(val)
+            except ValueError:
+                pass
+        cur.close()
+    except Exception as e:
+        print(f"[bulkprice][WARN] live prices fetch failed: {e}")
+
     for i in range(0, len(codes), CH):
         part = codes[i:i+CH]
         ph = ",".join(["?"] * len(part))
@@ -5355,20 +5376,43 @@ def preload_price_summaries(conn, codes, window_days=120):
         except Exception as _e:
             print(f"[bulkprice][WARN] read_sql failed for chunk {i//CH}: {_e}")
             dfp = pd.DataFrame(columns=["コード","日付","終値","高値","安値"])
+        
         if dfp.empty:
             continue
+            
         for c in ("終値","高値","安値"):
             if c in dfp.columns:
                 dfp[c] = pd.to_numeric(dfp[c], errors="coerce")
+                
         for code, g in dfp.groupby("コード", sort=False):
-            g = g.sort_values("日付")
-            close = g["終値"]
-            ma5  = close.rolling(5,  min_periods=1).mean().iloc[-1] if not close.empty else None
-            ma25 = close.rolling(25, min_periods=1).mean().iloc[-1] if not close.empty else None
-            ma75 = close.rolling(75, min_periods=1).mean().iloc[-1] if not close.empty else None
+            c4 = str(code).zfill(4)
+            # 日付の重複を排除し、昇順ソートを確実にする
+            g = g.sort_values("日付").drop_duplicates(subset=["日付"], keep="last")
+            
+            # --- ▼当日の現在値をMA計算の末尾に連結（最新のチャートツールと同期させるための処理） ---
+            today_ts = pd.Timestamp(date.today())
+            live_px = live_prices.get(c4)
+            
+            if live_px is not None:
+                if not g.empty and g["日付"].iloc[-1].date() == today_ts.date():
+                    # 既に今日のデータがprice_historyにあれば終値を現在値で上書きして精度向上
+                    g.loc[g.index[-1], "終値"] = live_px
+                else:
+                    # 今日のデータがまだprice_historyになければ疑似行を末尾に追加
+                    new_row = pd.DataFrame({"コード": [c4], "日付": [today_ts], "終値": [live_px], "高値": [np.nan], "安値": [np.nan]})
+                    g = pd.concat([g, new_row], ignore_index=True)
+            
+            close = g["終値"].dropna()
+            
+            # min_periods を期間と一致させることで、上場直後などで期間不足の場合に異常値を出すのを防ぐ
+            ma5  = close.rolling(5,  min_periods=5).mean().iloc[-1] if len(close) >= 5 else None
+            ma25 = close.rolling(25, min_periods=25).mean().iloc[-1] if len(close) >= 25 else None
+            ma75 = close.rolling(75, min_periods=75).mean().iloc[-1] if len(close) >= 75 else None
+            
             last = g.iloc[-1] if len(g) > 0 else None
             prev = g.iloc[-2] if len(g) > 1 else None
-            out[str(code).zfill(4)] = {
+            
+            out[c4] = {
                 "last_date": None if last is None else str(last["日付"].date()),
                 "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
                 "last_high":  None if last is None or pd.isna(last["高値"]) else float(last["高値"]),
@@ -6391,10 +6435,18 @@ def analyze_stop_high_status(hist_df):
 class MarketEventCalendar:
     """マクロ需給イベントを事前計算し、特定日のアラート状態を判定するクラス"""
     
+    # 祝日データのキャッシュ（年をキーに保持）
+    _holiday_cache = {}
+    
     def __init__(self, year: int):
         self.year = year
-        # jpholiday.holidays は (date, name) のタプルを返すので日付だけ抽出
-        self.holidays = set([d[0] for d in jpholiday.holidays(year)])
+        
+        # jpholiday 1.0.0以降の仕様に合わせて year_holidays を使用し、キャッシュ化
+        if year not in self._holiday_cache:
+            # year_holidays は (date, name) のタプルを返すので日付だけ抽出
+            self._holiday_cache[year] = set([d[0] for d in jpholiday.year_holidays(year)])
+        self.holidays = self._holiday_cache[year]
+        
         self.jbd = pd.offsets.CustomBusinessDay(holidays=list(self.holidays))
         self.events = self._precompute_events()
 
@@ -6450,7 +6502,6 @@ class MarketEventCalendar:
                 days_left = (ev["end"] - t).days
                 active_alerts.append(f"【{ev['type']}】{ev['name']} (目安:あと{days_left}日)")
         return active_alerts
-
 
 # === [/INJECTED] ===========================================================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
@@ -6560,7 +6611,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     except Exception as _e:
         print("[theme][WARN] attach to DataFrame failed:", _e)
     
-    # --- 信用残データの結合 ---
+    # --- 信用残データの結合とクオンツ需給安全判定 ---
+    # --- 信用残データの結合とクオンツ需給安全判定 ---
     try:
         shinyo_map = _load_shinyo_map(conn)
         def _attach_shinyo(df, s_map):
@@ -6569,8 +6621,49 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             df["買い残"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("買い残", None))
             df["信用倍率"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("倍率", None))
             return df
+        
         df_cand = _attach_shinyo(df_cand, shinyo_map)
-        _p("shinyo: attached")
+        if 'df_all' in locals() and df_all is not df_cand:
+            df_all = _attach_shinyo(df_all, shinyo_map)
+
+        # -------------------------------------------------------------
+        # ▼ 追加: クオンツ需給安全判定（出来高OH計算とフィルタリング）
+        # -------------------------------------------------------------
+        def _add_margin_safety_metrics(df):
+            if not all(col in df.columns for col in ['買い残', '売り残', '現在値', '売買代金20日平均億']):
+                df['需給安全フラグ'] = 0
+                df['需給OH'] = np.nan
+                return df
+            
+            bb = pd.to_numeric(df['買い残'], errors='coerce').fillna(0)
+            bs = pd.to_numeric(df['売り残'], errors='coerce').fillna(0)
+            price = pd.to_numeric(df['現在値'], errors='coerce').fillna(0)
+            turn20 = pd.to_numeric(df['売買代金20日平均億'], errors='coerce').fillna(0)
+            
+            # 現在値と20日平均代金から20日平均出来高(株数)を逆算
+            v20 = np.where(price > 0, (turn20 * 1e8) / price, np.nan)
+            v20 = np.where(v20 == 0, np.nan, v20)
+            
+            # 信用倍率の再計算 (ゼロ除算保護)
+            df['信用倍率_calc'] = np.where(bs > 0, bb / bs, 999.9)
+            
+            # 出来高オーバーハング
+            df['需給OH'] = bb / v20
+            
+            # 安全圏の判定 (1.0 <= 信用倍率 <= 3.0 AND OH <= 3.0)
+            cond_ratio = df['信用倍率_calc'].between(1.0, 3.0)
+            cond_overhang = df['需給OH'] <= 3.0
+            
+            df['需給安全フラグ'] = np.where(cond_ratio & cond_overhang, 1, 0)
+            return df
+            
+        df_cand = _add_margin_safety_metrics(df_cand)
+        if 'df_all' in locals() and df_all is not df_cand:
+            df_all = _add_margin_safety_metrics(df_all)
+        # ▲ 追加ここまで
+        # -------------------------------------------------------------
+
+        _p("shinyo & safety_metrics: attached")
     except Exception as _e:
         print(f"[shinyo][WARN] attach to DataFrame failed: {_e}")
 
@@ -6845,14 +6938,14 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     try:
         # 強制的に「イベント発生日」の日付を指定
         # 例: 2026年7月8日（ETF分配金換金売りの期間中）
-        test_today = date(2026, 7, 8) 
+        #test_today = date(2026, 7, 8) 
         
-        cal = MarketEventCalendar(test_today.year)
-        meta["market_alerts"] = cal.get_alerts_for_date(test_today)
+        #cal = MarketEventCalendar(test_today.year)
+        #meta["market_alerts"] = cal.get_alerts_for_date(test_today)
         
-        #today_val = date.today()
-        #cal = MarketEventCalendar(today_val.year)
-        #meta["market_alerts"] = cal.get_alerts_for_date(today_val)
+        today_val = date.today()
+        cal = MarketEventCalendar(today_val.year)
+        meta["market_alerts"] = cal.get_alerts_for_date(today_val)
     except Exception as e:
         print(f"[EventAlert] 計算エラー: {e}")
     # ==========================================
