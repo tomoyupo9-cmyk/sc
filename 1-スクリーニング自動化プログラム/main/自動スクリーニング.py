@@ -6334,12 +6334,26 @@ def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFra
         """
         df_theme = pd.read_sql_query(query, conn)
         
-        # 2. screenerデータ(df_cand)から必要な列を抽出
+        # 2. screenerデータ(df_cand)のバリデーション
         if df_cand is None or df_cand.empty or "コード" not in df_cand.columns:
             return []
             
-        df_s = df_cand[['コード', '売買代金(億)', '初動フラグ', '右肩早期フラグ', '右肩上がりフラグ']].copy()
-        df_s['売買代金(億)'] = pd.to_numeric(df_s['売買代金(億)'], errors='coerce').fillna(0)
+        # カラム名の揺れ対応 ('売買代金億' がDB上の名前)
+        turnover_col = '売買代金億' if '売買代金億' in df_cand.columns else '売買代金(億)'
+        if turnover_col not in df_cand.columns:
+            return []
+
+        # 欠損カラムの安全確保
+        for c in ['初動フラグ', '右肩早期フラグ', '右肩上がりフラグ']:
+            if c not in df_cand.columns:
+                df_cand[c] = ""
+                
+        # 必要な列だけを抽出して計算用DataFrameを作成
+        df_s = df_cand[['コード', turnover_col, '初動フラグ', '右肩早期フラグ', '右肩上がりフラグ']].copy()
+        
+        # 結合キー(コード)の4桁ゼロ埋め統一と、数値計算用の型変換
+        df_s['コード'] = df_s['コード'].astype(str).str.strip().str.zfill(4)
+        df_s['売買代金(億)'] = pd.to_numeric(df_s[turnover_col], errors='coerce').fillna(0)
         
         # シグナル点灯フラグ（いずれかのフラグが"候補"となっているか）
         df_s['is_signaled'] = np.where(
@@ -6349,7 +6363,7 @@ def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFra
             1, 0
         )
         
-        # 3. マージと集計
+        # 3. マージと集計 (Inner Joinでテーマに属する銘柄のみ抽出)
         df_mrg = pd.merge(df_theme, df_s, on='コード', how='inner')
         if df_mrg.empty:
             return []
@@ -6362,14 +6376,15 @@ def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFra
             signaled_count=('is_signaled', 'sum')
         ).reset_index()
         
-        # 最低構成銘柄数フィルタ（3銘柄以上）
+        # 最低構成銘柄数フィルタ（3銘柄以上）ノイズ除去
         stats = stats[stats['active_stocks'] >= 3].copy()
+        if stats.empty:
+            return []
         
         # シグナル密度（点灯率）
         stats['signal_density'] = stats['signaled_count'] / stats['active_stocks']
         
-        # 真の資金流入スコア $S_T = \tilde{v}_T \times (1 + D_T)$
-        # 中央値にシグナル密度のブーストを掛ける
+        # 真の資金流入スコア = 中央値 × (1 + シグナル点灯率)
         stats['true_flow_score'] = (stats['median_turnover'] * (1 + stats['signal_density'])).round(1)
         
         # スコア順にソートし、上位30テーマを返す
