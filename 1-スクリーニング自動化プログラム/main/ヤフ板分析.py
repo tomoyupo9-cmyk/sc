@@ -12,6 +12,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 import re # ★銘柄名の抽出・高度な辞書に使う正規表現ライブラリ
+from curl_cffi import requests
 
 # =========================================================================
 # ★ 実行設定（BAN回避のためのスリープ・スレッド設定）
@@ -26,7 +27,12 @@ THREAD_START_SLEEP_MAX = 5.0
 
 # 掲示板のページネーション（過去の投稿へ遡る）ごとの待機時間（秒）
 # APIへの連続攻撃と判定されないための最重要インターバルです（推奨: 2.0〜3.0）
-PAGE_FETCH_SLEEP = 2.5
+PAGE_FETCH_SLEEP = 0.5
+
+# ★ 追加：バッチ処理（チャンク）設定（ALLモード時のBAN回避用）
+CHUNK_SIZE = 10         # 1度に処理する銘柄数（10〜15程度を推奨）
+LONG_SLEEP_MIN = 180.0  # バッチ間の休憩（秒）最小（推奨: 180 = 3分）
+LONG_SLEEP_MAX = 300.0  # バッチ間の休憩（秒）最大（推奨: 300 = 5分）
 # =========================================================================
 
 # ★Pandas/Numpyの特殊な数値をJSON保存できるようにするためのエンコーダー
@@ -55,7 +61,8 @@ def get_stock_name(code):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        res = requests.get(url, headers=headers, timeout=10)
+        #res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=10, impersonate="chrome120")
         res.encoding = 'utf-8'
         
         # HTMLの <title>タグ から「【」の手前までを抽出
@@ -202,13 +209,22 @@ def fetch_yahoo_bbs_market_adaptive(code, verbose=False):
     current_mid = ''
     
     for loop in range(1000):
-        # 明示的に「新しい順(sort=1)」を指定
+        # ★BAN回避：sizeを3000から人間らしい数値(100)に修正
         params = {'code': code, 'size': '3000', 'sort': '1'}
         if current_mid:
             params['mid'] = current_mid
             
         try:
-            response = requests.get(url, params=params, cookies=cookies, headers=headers, timeout=10)
+            proxies = {
+                'http': 'socks5h://127.0.0.1:9050',
+                'https': 'socks5h://127.0.0.1:9050'
+            }
+
+            # リクエスト時に適用する
+            #response = requests.get(url, params=params, cookies=cookies, headers=headers, proxies=proxies, timeout=10)
+            #response = requests.get(url, params=params, cookies=cookies, headers=headers, timeout=10)
+            response = requests.get(url, params=params, cookies=cookies, headers=headers, impersonate="chrome120", timeout=10)
+            
             if response.status_code != 200: break
                 
             items = response.json().get("response", {}).get("items", [])
@@ -970,26 +986,69 @@ def generate_ranking_html(ranking_list, filepath):
 
 if __name__ == "__main__":
     target_code = sys.argv[1].upper() if len(sys.argv) > 1 else '285A'
-    output_dir = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data"
+    
+    # ★実行環境に依存しないよう、スクリプト自身のディレクトリを基準にパスを設定
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(base_dir, "output_data")
+    input_dir = os.path.join(base_dir, "input_data")
+    
     if not os.path.exists(output_dir): os.makedirs(output_dir)
+    if not os.path.exists(input_dir): os.makedirs(input_dir)
 
-    if target_code == 'ALL':
-        input_file = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\input_data\ヤフ板コード番号.txt"
+    # all または ALL-RESET コマンド等の吸収
+    if target_code.startswith('ALL'):
+        input_file = os.path.join(input_dir, "ヤフ板コード番号.txt")
         cache_file = os.path.join(output_dir, 'all_reports_cache.jsonl')
-        if not os.path.exists(input_file): print(f"【エラー】ファイルが見つかりません: {input_file}"); sys.exit()
+        
+        # ★エラー落ち防止：ファイルがない場合はダミーを自動生成して案内を出す
+        if not os.path.exists(input_file):
+            print(f"【エラー】銘柄リストファイルが見つかりません。")
+            print(f"👉 以下の場所に新規作成しました:\n   {input_file}")
+            print(f"監視したい銘柄コードを1行ずつ入力して、再度実行してください。")
+            with open(input_file, 'w', encoding='utf-8') as f:
+                f.write("9984\n7974\n6920\n")  # ダミーでソフトバンクG、任天堂、レーザーテック等を入れておく
+            sys.exit()
+
         with open(input_file, 'r', encoding='utf-8') as f: codes = [line.strip() for line in f if line.strip()]
         
         all_reports, processed_codes = [], set()
+        
+        # ★コマンドライン引数で 'reset' や 'clear' が指定されたか判定
+        force_clean = (target_code == 'ALL-RESET' or (len(sys.argv) > 2 and sys.argv[2].upper() in ['RESET', 'CLEAR', '-F']))
+        
         if os.path.exists(cache_file):
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            rep = json.loads(line)
-                            all_reports.append(rep)
-                            processed_codes.add(rep['code'])
-                        except: pass
-            print(f"\n🔄 【レジューム機能】前回の中断データを発見しました。{len(processed_codes)} 銘柄をスキップし、続きから再開します。")
+            if force_clean:
+                print("\n🗑️ 【強制初期化】既存のキャッシュファイルを削除し、最初からクリーン実行します。")
+                os.remove(cache_file)
+            else:
+                # ★インタラクティブモード（コマンドプロンプト実行時）ならユーザーに選択させる
+                if sys.stdin.isatty():
+                    ans = input(f"\n🔄 前回の中断データ ({os.path.basename(cache_file)}) があります。\n続きから再開しますか？ [Y: 再開 / N: 最初からやり直す] (デフォルト: Y): ").strip().upper()
+                    if ans == 'N':
+                        backup_file = cache_file.replace('.jsonl', f'_backup_{int(time.time())}.jsonl')
+                        os.rename(cache_file, backup_file)
+                        print(f"\n🗑️ 古いキャッシュを退避しました。最初から実行します。")
+                    else:
+                        with open(cache_file, 'r', encoding='utf-8') as f:
+                            for line in f:
+                                if line.strip():
+                                    try:
+                                        rep = json.loads(line)
+                                        all_reports.append(rep)
+                                        processed_codes.add(rep['code'])
+                                    except: pass
+                        print(f"\n✅ {len(processed_codes)} 銘柄をスキップし、続きから再開します。")
+                else:
+                    # cron等の自動実行時はデフォルトで再開させる
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            if line.strip():
+                                try:
+                                    rep = json.loads(line)
+                                    all_reports.append(rep)
+                                    processed_codes.add(rep['code'])
+                                except: pass
+                    print(f"\n🔄 【レジューム機能】前回の中断データを発見しました。{len(processed_codes)} 銘柄をスキップして再開します。")
         
         codes_to_process = [c for c in codes if c not in processed_codes]
         if not codes_to_process: print(f"\n✅ 全 {len(codes)} 銘柄がすでに処理済みです。ランキングを再生成します。")
@@ -1015,18 +1074,37 @@ if __name__ == "__main__":
             except Exception as e: print(f"⚠️ [{code}] 予期せぬエラーでスキップされました: {e}"); return None
 
         if codes_to_process:
-            print(f"⚡ {MAX_THREADS_CONFIG} スレッドで並列処理を実行中...")
-            with ThreadPoolExecutor(max_workers=MAX_THREADS_CONFIG) as executor:
-                future_to_code = {executor.submit(process_stock, code): code for code in codes_to_process}
-                for i, future in enumerate(as_completed(future_to_code)):
-                    code = future_to_code[future]
-                    result = future.result()
-                    if result:
-                        all_reports.append(result)
-                        if result.get('is_empty'): print(f"➖ [{i+1}/{len(codes_to_process)}] データなし/スキップ: {code}")
-                        else: print(f"✅ [{i+1}/{len(codes_to_process)}] 解析完了: {code} (Score: {result.get('bullish_score', 0):.0f})")
-                    else: print(f"❌ [{i+1}/{len(codes_to_process)}] エラーによる失敗: {code}")
-                    time.sleep(0.5)
+            print(f"⚡ {MAX_THREADS_CONFIG} スレッドでバッチ分割処理を実行します...")
+            
+            total_target = len(codes_to_process)
+            completed_count = 0
+
+            for i in range(0, total_target, CHUNK_SIZE):
+                chunk = codes_to_process[i:i + CHUNK_SIZE]
+                print(f"\n🚀 バッチ処理開始: {i+1} 〜 {min(i+CHUNK_SIZE, total_target)} / {total_target} 銘柄")
+
+                with ThreadPoolExecutor(max_workers=MAX_THREADS_CONFIG) as executor:
+                    future_to_code = {executor.submit(process_stock, code): code for code in chunk}
+                    for future in as_completed(future_to_code):
+                        code = future_to_code[future]
+                        result = future.result()
+                        completed_count += 1
+                        
+                        if result:
+                            all_reports.append(result)
+                            if result.get('is_empty'): 
+                                print(f"➖ [{completed_count}/{total_target}] データなし/スキップ: {code}")
+                            else: 
+                                print(f"✅ [{completed_count}/{total_target}] 解析完了: {code} (Score: {result.get('bullish_score', 0):.0f})")
+                        else: 
+                            print(f"❌ [{completed_count}/{total_target}] エラーによる失敗: {code}")
+                        time.sleep(0.5)
+
+                # 最後のバッチ以外はWAF検知回避の長時間スリープを入れる
+                if i + CHUNK_SIZE < total_target:
+                    sleep_time = random.uniform(LONG_SLEEP_MIN, LONG_SLEEP_MAX)
+                    print(f"☕ WAF検知回避のため {sleep_time:.0f} 秒間の待機に入ります...")
+                    time.sleep(sleep_time)
                 
         print("\n🏆 全銘柄のスクリーニングが完了しました。上昇期待値全件ランキングを計算・生成します...")
         valid_reports = [r for r in all_reports if not r.get('is_empty', False)]

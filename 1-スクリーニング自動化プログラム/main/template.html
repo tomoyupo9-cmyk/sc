@@ -3025,7 +3025,8 @@ window.applyQuickSearch = function(keyword) {
         themes.forEach((t, idx) => {
           const turn = Number(t.total_turnover || 0);
           const count = Number(t.active_stocks || 1);
-          const avg = turn / count;
+          const median = Number(t.median_turnover || 0); // 中央値を取得
+          const score = Number(t.true_flow_score || 0);  // 真の旬スコア
           
           let rankHtml = `${idx + 1}`;
           if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
@@ -3040,7 +3041,10 @@ window.applyQuickSearch = function(keyword) {
               </td>
               <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
               <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
-              <td class="num" style="color:#64748b; font-size:16px;">${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
+              <td class="num" title="メガキャップのノイズを排除した中央値" style="color:#64748b; font-size:16px;">
+                ${median.toLocaleString('ja-JP', {maximumFractionDigits:1})} 
+                <span style="font-size:12px; color:var(--blue);"> (スコア: ${score.toFixed(1)})</span>
+              </td>
             </tr>
           `;
         });

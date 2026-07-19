@@ -6319,6 +6319,67 @@ def _attach_latest_theme(df, latest_theme_map):
         print(f"[theme][WARN] _attach_latest_theme failed: {e}")
         
     return df
+    
+def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFrame) -> list:
+    """
+    静的ノイズをクレンジングしたテーマランキングを計算し、辞書のリストで返す。
+    メガキャップによる平均流入の歪みを排除し、シグナル点灯密度で「真の旬」をスコアリングする。
+    """
+    try:
+        # 1. テーマ紐づけマスタの取得
+        query = """
+            SELECT printf('%04d', CAST(t.コード AS INTEGER)) AS コード, m.theme_name AS テーマ
+            FROM stock_theme_kabutan t
+            JOIN theme_master m ON t.theme_id = m.theme_id
+        """
+        df_theme = pd.read_sql_query(query, conn)
+        
+        # 2. screenerデータ(df_cand)から必要な列を抽出
+        if df_cand is None or df_cand.empty or "コード" not in df_cand.columns:
+            return []
+            
+        df_s = df_cand[['コード', '売買代金(億)', '初動フラグ', '右肩早期フラグ', '右肩上がりフラグ']].copy()
+        df_s['売買代金(億)'] = pd.to_numeric(df_s['売買代金(億)'], errors='coerce').fillna(0)
+        
+        # シグナル点灯フラグ（いずれかのフラグが"候補"となっているか）
+        df_s['is_signaled'] = np.where(
+            df_s['初動フラグ'].astype(str).str.contains('候補') | 
+            df_s['右肩早期フラグ'].astype(str).str.contains('候補') |
+            df_s['右肩上がりフラグ'].astype(str).str.contains('候補'), 
+            1, 0
+        )
+        
+        # 3. マージと集計
+        df_mrg = pd.merge(df_theme, df_s, on='コード', how='inner')
+        if df_mrg.empty:
+            return []
+            
+        # テーマ単位での集計（外れ値対策として中央値 median を採用）
+        stats = df_mrg.groupby('テーマ').agg(
+            total_turnover=('売買代金(億)', 'sum'),
+            median_turnover=('売買代金(億)', 'median'),
+            active_stocks=('コード', 'count'),
+            signaled_count=('is_signaled', 'sum')
+        ).reset_index()
+        
+        # 最低構成銘柄数フィルタ（3銘柄以上）
+        stats = stats[stats['active_stocks'] >= 3].copy()
+        
+        # シグナル密度（点灯率）
+        stats['signal_density'] = stats['signaled_count'] / stats['active_stocks']
+        
+        # 真の資金流入スコア $S_T = \tilde{v}_T \times (1 + D_T)$
+        # 中央値にシグナル密度のブーストを掛ける
+        stats['true_flow_score'] = (stats['median_turnover'] * (1 + stats['signal_density'])).round(1)
+        
+        # スコア順にソートし、上位30テーマを返す
+        stats = stats.sort_values(by='true_flow_score', ascending=False).head(30)
+        
+        return stats.to_dict(orient='records')
+        
+    except Exception as e:
+        print(f"[theme][WARN] robust ranking calculation failed: {e}")
+        return []
 
 # === [/THEME] ===========================================================
 
@@ -7048,26 +7109,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         sector_ranking_list = []
     # ==========================================
 
-    # === ★追加: テーマランキングの集計 ===
+    # === ★追加: テーマランキングの集計（ロバスト化版） ===
     try:
-        conn.execute("DROP VIEW IF EXISTS v_theme_ranking")
-        conn.execute("""
-            CREATE VIEW v_theme_ranking AS
-            SELECT 
-                m.theme_name AS テーマ, 
-                SUM(s.売買代金億) AS total_turnover,
-                COUNT(s.コード) AS active_stocks
-            FROM stock_theme_kabutan t
-            JOIN theme_master m ON t.theme_id = m.theme_id
-            JOIN screener s ON t.コード = s.コード
-            WHERE s.売買代金億 > 0
-            GROUP BY m.theme_name
-            ORDER BY total_turnover DESC;
-        """)
-        conn.commit()
-        theme_ranking_df = pd.read_sql_query("SELECT * FROM v_theme_ranking", conn)
-        theme_ranking_list = theme_ranking_df.to_dict(orient='records')
-        _p("theme ranking: calculated")
+        theme_ranking_list = calculate_robust_theme_ranking(conn, df_cand)
+        _p("theme ranking: calculated robustly")
     except Exception as e:
         print(f"[theme][WARN] ranking calculation failed: {e}")
         theme_ranking_list = []
