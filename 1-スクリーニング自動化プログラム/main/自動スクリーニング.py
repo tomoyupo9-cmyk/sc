@@ -2374,6 +2374,86 @@ def load_tob_titles_map(days=180):
     return out
 
 
+# ==============================================================
+# ★ 追加：正式なフェーズとして信用残とDTC (需給OH) をDBに永続化
+# ==============================================================
+def phase_update_margin_metrics(conn: sqlite3.Connection):
+    """
+    信用残データと需給OH（Days to Cover）を計算し、screenerを更新する。
+    これにより、HTML出力時だけでなく、AIや各種スコアリングロジックでこの指標を利用可能になる。
+    """
+    cur = conn.cursor()
+    
+    # 必要なカラムがscreenerテーブルにあるか確認し、なければ追加
+    for col, decl in [("信用倍率", "REAL"), ("売り残", "REAL"), ("買い残", "REAL"), ("需給OH", "REAL"), ("需給安全フラグ", "INTEGER")]:
+        try:
+            cur.execute(f'ALTER TABLE screener ADD COLUMN "{col}" {decl}')
+        except Exception:
+            pass
+            
+    # 最新の信用残データを stock_credit_margin テーブルから取得
+    try:
+        sql_margin = """
+            SELECT s.コード, s.売り残, s.買い残, s.倍率
+            FROM stock_credit_margin s
+            INNER JOIN (
+                SELECT コード, MAX(基準日) as max_date 
+                FROM stock_credit_margin GROUP BY コード
+            ) latest ON s.コード = latest.コード AND s.基準日 = latest.max_date
+        """
+        margin_df = pd.read_sql_query(sql_margin, conn)
+        margin_df['コード'] = margin_df['コード'].astype(str).str.zfill(4)
+    except Exception as e:
+        print(f"[margin][WARN] stock_credit_margin の読み込みに失敗しました: {e}")
+        return
+        
+    # 現在値と20日平均代金を screener から取得（Days to Cover の計算用）
+    sc_df = pd.read_sql_query("SELECT コード, 現在値, 売買代金20日平均億 FROM screener", conn)
+    sc_df['コード'] = sc_df['コード'].astype(str).str.zfill(4)
+    
+    df = pd.merge(sc_df, margin_df, on='コード', how='left')
+    
+    # ベクトル計算
+    bb = pd.to_numeric(df['買い残'], errors='coerce').fillna(0)
+    bs = pd.to_numeric(df['売り残'], errors='coerce').fillna(0)
+    price = pd.to_numeric(df['現在値'], errors='coerce').fillna(0)
+    turn20 = pd.to_numeric(df['売買代金20日平均億'], errors='coerce').fillna(0)
+    
+    # 現在値と20日平均代金から20日平均出来高(株数)を逆算
+    v20 = np.where(price > 0, (turn20 * 1e8) / price, np.nan)
+    v20 = np.where(v20 == 0, np.nan, v20)
+    
+    # 需給OH (Days to Cover) と信用倍率の計算
+    df['需給OH'] = bb / v20
+    df['信用倍率_calc'] = np.where(bs > 0, bb / bs, 999.9)
+    
+    # 安全圏の判定 (1.0 <= 信用倍率 <= 3.0 AND OH <= 3.0)
+    cond_ratio = df['信用倍率_calc'].between(1.0, 3.0)
+    cond_overhang = df['需給OH'] <= 3.0
+    df['需給安全フラグ'] = np.where(cond_ratio & cond_overhang, 1, 0)
+    
+    # DBへの UPDATE レコード作成
+    updates = []
+    for _, r in df.iterrows():
+        updates.append((
+            float(r['倍率']) if pd.notna(r['倍率']) else None,
+            float(r['売り残']) if pd.notna(r['売り残']) else None,
+            float(r['買い残']) if pd.notna(r['買い残']) else None,
+            float(r['需給OH']) if pd.notna(r['需給OH']) else None,
+            int(r['需給安全フラグ']) if pd.notna(r['需給安全フラグ']) else 0,
+            str(r['コード'])
+        ))
+        
+    if updates:
+        cur.executemany("""
+            UPDATE screener
+            SET 信用倍率=?, 売り残=?, 買い残=?, 需給OH=?, 需給安全フラグ=?
+            WHERE コード=?
+        """, updates)
+        conn.commit()
+    cur.close()
+    print(f"[margin] 需給OH・信用残データを正式に更新しました: {len(updates)} 銘柄")
+
 # ==== [Short-term Trading Enhancements] Derived Metrics (schema assumed) ====
 
 def _apply_shortterm_metrics(conn: sqlite3.Connection):
@@ -5042,7 +5122,15 @@ def _derive_triangle_scores(d):
         dist = (price - support) / price * 100
         if 0 <= dist <= 3:
             s += 8
-
+    
+    # ★ 追加：需給OH（DTC）による減点処理
+    oh = _to_float(d.get("需給OH"))
+    if oh is not None:
+        if oh >= 5.0:
+            s -= 15  # 5日分以上は上値が相当重いため大幅減点
+        elif oh >= 3.0:
+            s -= 5   # 3日分以上でやや重い
+    
     s = max(0, min(100, s))
 
     # ---------- 3) 短期ボラスコア（Vol ■） ----------
@@ -5263,7 +5351,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
     rows: list[dict] = []
 
     # ここに無い列は素通し対象から落ちる（=安全）
-    # _prepare_rows_fast 内
+    
     cols_passthru = [c for c in [
         "コード","銘柄名","市場","現在値","前日終値","前日円差","前日終値比率",
         "出来高","時価総額億円","売買代金(億)","売買代金20日平均億",
@@ -5273,8 +5361,8 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "スコア","進捗率","overall_alpha",
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
         "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
-        # ▼ 以下を追加
-        "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ"
+        "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ",
+        "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主"
     ] if c in _df.columns]
 
     # ループ内で必ず yahoo/x を合成して rows に積む
@@ -5335,7 +5423,7 @@ def _prepare_rows_safe(df, conn):
 
 
 # ==== [BULK PRICE SUMMARIES - TOP LEVEL] ================================
-def preload_price_summaries(conn, codes, window_days=180): # ← 120から180に延長してデータ不足を解消
+def preload_price_summaries(conn, codes, window_days=200): # ← 期間を200日に延長
     """対象コードをまとめて読み、直近の終値/高値/安値と MA5/25/75 を返す"""
     if not codes:
         return {}
@@ -5344,19 +5432,16 @@ def preload_price_summaries(conn, codes, window_days=180): # ← 120から180に
     out = {}
     CH = 700
     
-    # ▼ 追加：当日のライブ現在値をscreenerから取得（MA計算の末尾に結合するため）
+    # 当日のライブ現在値をscreenerから取得（MA計算の末尾に結合するため）
     live_prices = {}
     try:
         cur = conn.cursor()
         cur.execute("SELECT コード, 現在値 FROM screener WHERE 現在値 IS NOT NULL")
         for row in cur.fetchall():
             c4 = str(row[0]).zfill(4)
-            # 現在値はカンマ区切り文字列の可能性があるので安全にパース
             val = str(row[1]).replace(",", "")
-            try:
-                live_prices[c4] = float(val)
-            except ValueError:
-                pass
+            try: live_prices[c4] = float(val)
+            except ValueError: pass
         cur.close()
     except Exception as e:
         print(f"[bulkprice][WARN] live prices fetch failed: {e}")
@@ -5376,42 +5461,35 @@ def preload_price_summaries(conn, codes, window_days=180): # ← 120から180に
         except Exception as _e:
             print(f"[bulkprice][WARN] read_sql failed for chunk {i//CH}: {_e}")
             dfp = pd.DataFrame(columns=["コード","日付","終値","高値","安値"])
-        
         if dfp.empty:
             continue
-            
         for c in ("終値","高値","安値"):
             if c in dfp.columns:
                 dfp[c] = pd.to_numeric(dfp[c], errors="coerce")
-                
+        
         for code, g in dfp.groupby("コード", sort=False):
             c4 = str(code).zfill(4)
-            # 日付の重複を排除し、昇順ソートを確実にする
             g = g.sort_values("日付").drop_duplicates(subset=["日付"], keep="last")
             
-            # --- ▼当日の現在値をMA計算の末尾に連結（最新のチャートツールと同期させるための処理） ---
+            # ▼当日の現在値をMA計算の末尾に連結
             today_ts = pd.Timestamp(date.today())
             live_px = live_prices.get(c4)
-            
             if live_px is not None:
                 if not g.empty and g["日付"].iloc[-1].date() == today_ts.date():
-                    # 既に今日のデータがprice_historyにあれば終値を現在値で上書きして精度向上
                     g.loc[g.index[-1], "終値"] = live_px
                 else:
-                    # 今日のデータがまだprice_historyになければ疑似行を末尾に追加
                     new_row = pd.DataFrame({"コード": [c4], "日付": [today_ts], "終値": [live_px], "高値": [np.nan], "安値": [np.nan]})
                     g = pd.concat([g, new_row], ignore_index=True)
             
             close = g["終値"].dropna()
             
-            # min_periods を期間と一致させることで、上場直後などで期間不足の場合に異常値を出すのを防ぐ
+            # min_periods を期間と一致させ、データ不足時の異常値を防ぐ
             ma5  = close.rolling(5,  min_periods=5).mean().iloc[-1] if len(close) >= 5 else None
             ma25 = close.rolling(25, min_periods=25).mean().iloc[-1] if len(close) >= 25 else None
             ma75 = close.rolling(75, min_periods=75).mean().iloc[-1] if len(close) >= 75 else None
             
             last = g.iloc[-1] if len(g) > 0 else None
             prev = g.iloc[-2] if len(g) > 1 else None
-            
             out[c4] = {
                 "last_date": None if last is None else str(last["日付"].date()),
                 "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
@@ -6503,6 +6581,49 @@ class MarketEventCalendar:
                 active_alerts.append(f"【{ev['type']}】{ev['name']} (目安:あと{days_left}日)")
         return active_alerts
 
+# === [追加] セクター・マスタ統合とランキング計算ロジック ===
+def sync_sector_data(conn: sqlite3.Connection):
+    """JPX公式業種データを用いてscreenerテーブルのセクター列を同期"""
+    url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+    try:
+        # 注: 実行環境に xlrd がインストールされている必要がある
+        df = pd.read_excel(url)
+        df = df.rename(columns={'33業種区分': 'セクター'})
+        df['コード'] = df['コード'].astype(str).str.zfill(4)
+        
+        # カラム追加の安全対策
+        try:
+            conn.execute("ALTER TABLE screener ADD COLUMN セクター TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
+        df.to_sql("sector_temp", conn, if_exists="replace", index=False)
+        conn.execute("""
+            UPDATE screener SET セクター = (
+                SELECT セクター FROM sector_temp WHERE sector_temp.コード = screener.コード
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        print(f"[ERROR] Sector sync failed: {e}")
+
+def prepare_sector_ranking_view(conn: sqlite3.Connection):
+    """ダッシュボード集計用の View を作成"""
+    conn.execute("DROP VIEW IF EXISTS v_sector_ranking")
+    conn.execute("""
+        CREATE VIEW v_sector_ranking AS
+        SELECT 
+            セクター, 
+            SUM(売買代金億) as total_turnover,
+            COUNT(コード) as active_stocks
+        FROM screener
+        WHERE 売買代金億 > 0 AND セクター IS NOT NULL
+        GROUP BY セクター
+        ORDER BY total_turnover DESC;
+    """)
+    conn.commit()
+# ========================================================
+
 # === [/INJECTED] ===========================================================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
                                         include_log: bool=False, log_limit: int=2000):
@@ -6611,57 +6732,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     except Exception as _e:
         print("[theme][WARN] attach to DataFrame failed:", _e)
     
-    # --- 信用残データの結合とクオンツ需給安全判定 ---
-    # --- 信用残データの結合とクオンツ需給安全判定 ---
-    try:
-        shinyo_map = _load_shinyo_map(conn)
-        def _attach_shinyo(df, s_map):
-            if "コード" not in df.columns: return df
-            df["売り残"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("売り残", None))
-            df["買い残"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("買い残", None))
-            df["信用倍率"] = df["コード"].astype(str).map(lambda x: s_map.get(x.zfill(4), {}).get("倍率", None))
-            return df
-        
-        df_cand = _attach_shinyo(df_cand, shinyo_map)
-        if 'df_all' in locals() and df_all is not df_cand:
-            df_all = _attach_shinyo(df_all, shinyo_map)
-
-        # -------------------------------------------------------------
-        # ▼ 追加: クオンツ需給安全判定（出来高OH計算とフィルタリング）
-        # -------------------------------------------------------------
-        def _add_margin_safety_metrics(df):
-            if not all(col in df.columns for col in ['買い残', '売り残', '現在値', '売買代金20日平均億']):
-                df['需給安全フラグ'] = 0
-                df['需給OH'] = np.nan
-                return df
-            
-            bb = pd.to_numeric(df['買い残'], errors='coerce').fillna(0)
-            bs = pd.to_numeric(df['売り残'], errors='coerce').fillna(0)
-            price = pd.to_numeric(df['現在値'], errors='coerce').fillna(0)
-            turn20 = pd.to_numeric(df['売買代金20日平均億'], errors='coerce').fillna(0)
-            
-            # 現在値と20日平均代金から20日平均出来高(株数)を逆算
-            v20 = np.where(price > 0, (turn20 * 1e8) / price, np.nan)
-            v20 = np.where(v20 == 0, np.nan, v20)
-            
-            # 信用倍率の再計算 (ゼロ除算保護)
-            df['信用倍率_calc'] = np.where(bs > 0, bb / bs, 999.9)
-            
-            # 出来高オーバーハング
-            df['需給OH'] = bb / v20
-            
-            # 安全圏の判定 (1.0 <= 信用倍率 <= 3.0 AND OH <= 3.0)
-            cond_ratio = df['信用倍率_calc'].between(1.0, 3.0)
-            cond_overhang = df['需給OH'] <= 3.0
-            
-            df['需給安全フラグ'] = np.where(cond_ratio & cond_overhang, 1, 0)
-            return df
-            
-        df_cand = _add_margin_safety_metrics(df_cand)
-        if 'df_all' in locals() and df_all is not df_cand:
-            df_all = _add_margin_safety_metrics(df_all)
-        # ▲ 追加ここまで
-        # -------------------------------------------------------------
 
         _p("shinyo & safety_metrics: attached")
     except Exception as _e:
@@ -6821,19 +6891,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     except Exception as _e_news:
         print('[news][WARN] 株探ニュース列の付与に失敗:', _e_news)
 
-    # 5) ログ
-    t_log = time.perf_counter()
-    _p(f"log: fetch start include_log={include_log}")
-    if include_log:
-        try:
-            df_log = pd.read_sql_query(
-                f"SELECT 日時, コード, 種別, 詳細 FROM signals_log ORDER BY 日時 DESC, コード LIMIT {int(log_limit)}", conn
-            )
-        except Exception:
-            df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
-    else:
-        df_log = pd.DataFrame(columns=["日時","コード","種別","詳細"])
-    _p(f"log: fetch done dt={( time.perf_counter() - t_log ): .2f}s")
 
     # 6) フラグ装飾
     t_flags = time.perf_counter()
@@ -6908,7 +6965,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         except Exception:
             r["shikomi_txt"] = r["rikaku_txt"] = r["songiri_txt"] = "-"
 
-    log_rows = _records_safe(df_log)
+    
     _tick("prepare_rows")
 
     # 高値/安値/MA(5/25/75) を一括付与
@@ -6979,13 +7036,51 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     except Exception as e:
         print(f"[AI] 分析に失敗しました: {e}")
 
-    # 9) data オブジェクト
+    # === ★追加: セクターランキングの集計 ===
+    try:
+        sync_sector_data(conn)
+        prepare_sector_ranking_view(conn)
+        sector_ranking_df = pd.read_sql_query("SELECT * FROM v_sector_ranking", conn)
+        sector_ranking_list = sector_ranking_df.to_dict(orient='records')
+        _p("sector ranking: calculated")
+    except Exception as e:
+        print(f"[sector][WARN] ranking calculation failed: {e}")
+        sector_ranking_list = []
+    # ==========================================
+
+    # === ★追加: テーマランキングの集計 ===
+    try:
+        conn.execute("DROP VIEW IF EXISTS v_theme_ranking")
+        conn.execute("""
+            CREATE VIEW v_theme_ranking AS
+            SELECT 
+                m.theme_name AS テーマ, 
+                SUM(s.売買代金億) AS total_turnover,
+                COUNT(s.コード) AS active_stocks
+            FROM stock_theme_kabutan t
+            JOIN theme_master m ON t.theme_id = m.theme_id
+            JOIN screener s ON t.コード = s.コード
+            WHERE s.売買代金億 > 0
+            GROUP BY m.theme_name
+            ORDER BY total_turnover DESC;
+        """)
+        conn.commit()
+        theme_ranking_df = pd.read_sql_query("SELECT * FROM v_theme_ranking", conn)
+        theme_ranking_list = theme_ranking_df.to_dict(orient='records')
+        _p("theme ranking: calculated")
+    except Exception as e:
+        print(f"[theme][WARN] ranking calculation failed: {e}")
+        theme_ranking_list = []
+    # ==========================================
+
+    # 9) data オブジェクトに組み込む
     offering_code_set = _load_offering_codes_from_db(conn, days=3650)
     data_obj = {
         "cand": rows,
-        "logs": log_rows,
         "meta": meta,
         "offer_codes":  sorted(offering_code_set),
+        "sector_ranking": sector_ranking_list,
+        "theme_ranking": theme_ranking_list # ★追加
     }
     data_json = dumps_json_clean(data_obj)
     _tick("json clean done")
@@ -7457,6 +7552,64 @@ def apply_composite_score(conn: sqlite3.Connection,
     cur.executemany("UPDATE screener SET 合成スコア=? WHERE コード=?", up)
     conn.commit()
     cur.close()
+
+def apply_fair_value_metrics(conn: sqlite3.Connection):
+    """市場区分ごとのPER/PBR中央値を用いて適正株価と割安度を動的に計算"""
+    try:
+        conn.execute("ALTER TABLE screener ADD COLUMN 適正株価 REAL")
+        conn.execute("ALTER TABLE screener ADD COLUMN 割安度 REAL")
+    except Exception:
+        pass # 既に存在する場合はスキップ
+
+    df = pd.read_sql_query("SELECT コード, 市場, 現在値, EPS, BPS FROM screener", conn)
+    if df.empty: return
+
+    for c in ["現在値", "EPS", "BPS"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # 実績値から個別のPER/PBRを逆算 (負値は除外)
+    df["PER"] = np.where(df["EPS"] > 0, df["現在値"] / df["EPS"], np.nan)
+    df["PBR"] = np.where(df["BPS"] > 0, df["現在値"] / df["BPS"], np.nan)
+
+    # 市場区分を正規化
+    df["市場区分"] = df["市場"].astype(str).apply(
+        lambda x: "プライム" if "プライム" in x or "東P" in x 
+        else ("スタンダード" if "スタンダード" in x or "東S" in x 
+        else ("グロース" if "グロース" in x or "東G" in x else "その他"))
+    )
+
+    # 市場区分ごとの中央値を計算（外れ値に強いロバスト推定）
+    medians = df.groupby("市場区分")[["PER", "PBR"]].median()
+
+    def calc_fair_value(row):
+        market = row["市場区分"]
+        if market not in medians.index: return np.nan
+        
+        med_per, med_pbr = medians.loc[market, "PER"], medians.loc[market, "PBR"]
+        target_per = row["EPS"] * med_per if pd.notna(row["EPS"]) and row["EPS"] > 0 and pd.notna(med_per) else np.nan
+        target_pbr = row["BPS"] * med_pbr if pd.notna(row["BPS"]) and row["BPS"] > 0 and pd.notna(med_pbr) else np.nan
+        
+        targets = [t for t in [target_per, target_pbr] if pd.notna(t)]
+        return np.mean(targets) if targets else np.nan
+
+    df["適正株価"] = df.apply(calc_fair_value, axis=1)
+    df["割安度"] = np.where((df["適正株価"] > 0) & (df["現在値"] > 0), (df["適正株価"] / df["現在値"] - 1.0) * 100.0, np.nan)
+
+    updates = []
+    for _, r in df.iterrows():
+        if pd.notna(r["適正株価"]) or pd.notna(r["割安度"]):
+            updates.append((
+                round(r["適正株価"], 1) if pd.notna(r["適正株価"]) else None,
+                round(r["割安度"], 2) if pd.notna(r["割安度"]) else None,
+                str(r["コード"])
+            ))
+
+    if updates:
+        cur = conn.cursor()
+        cur.executemany("UPDATE screener SET 適正株価=?, 割安度=? WHERE コード=?", updates)
+        conn.commit()
+        cur.close()
+        print(f"[quant] 適正株価/割安度を更新しました: {len(updates)} 銘柄")
 
 def _parse_early_tag(detail: str) -> str | None:
     if detail is None:
@@ -7970,7 +8123,8 @@ def batch_update_all_financials(conn,
         ("配当1年合計", "REAL"), ("自社株買い4Q合計", "REAL"),
         ("増資リスク", "INTEGER"), ("増資スコア", "REAL"), ("増資理由", "TEXT"),
         # ★追加カラム
-        ("PBR", "REAL"), ("現金同等物", "REAL"), ("有利子負債", "REAL"), ("大株主", "TEXT")
+        ("PBR", "REAL"), ("現金同等物", "REAL"), ("有利子負債", "REAL"), ("大株主", "TEXT"),
+        ("EPS", "REAL"), ("BPS", "REAL"), ("ROE", "REAL")  # ←ここを追加
     ]:
         try:
             conn.execute(f'ALTER TABLE screener ADD COLUMN "{name}" {decl}')
@@ -7996,7 +8150,6 @@ def batch_update_all_financials(conn,
     def commit_batch(metrics_rows, flags_rows):
         nonlocal updated_rows, flags_set
         if metrics_rows:
-            # ★SQLに PBR, 現金, 負債, 大株主 を追加
             conn.executemany("""
                 UPDATE screener SET
                   "自己資本比率"      = ?,
@@ -8009,19 +8162,15 @@ def batch_update_all_financials(conn,
                   "PBR"               = ?,
                   "現金同等物"        = ?,
                   "有利子負債"        = ?,
-                  "大株主"            = ?
+                  "大株主"            = ?,
+                  "EPS"               = ?,
+                  "BPS"               = ?,
+                  "ROE"               = ?
                 WHERE "コード" = ?
             """, metrics_rows)
             conn.commit()
             updated_rows += len(metrics_rows)
             log.info(f"[commit.metrics] rows={len(metrics_rows)} total_updated={updated_rows}")
-        if flags_rows:
-            conn.executemany("""
-                UPDATE screener SET "増資リスク"=?, "増資スコア"=?, "増資理由"=? WHERE "コード"=?
-            """, flags_rows)
-            conn.commit()
-            flags_set += len(flags_rows)
-            log.info(f"[commit.flags] rows={len(flags_rows)} total_flags={flags_set}")
 
     # --------------------------
     # メインループ
@@ -8061,8 +8210,10 @@ def batch_update_all_financials(conn,
                 
                 # Modules取得
                 quotes = getattr(tk, "quotes", {}) or {}
-                # ★追加: key_stats (PBR用)
                 ks = getattr(tk, "key_stats", {}) or {}
+                
+                try: fd_data = tk.financial_data  # ←追加: ROE用
+                except: fd_data = {}
                 
                 try: bs = tk.balance_sheet()
                 except: bs = None
@@ -8070,23 +8221,23 @@ def batch_update_all_financials(conn,
                 except: cf = None
                 try: divs = tk.dividends()
                 except: divs = None
-                # ★追加: 大株主
                 try: mh = tk.major_holders
                 except: mh = None
 
                 for s in to_fetch:
                     q = quotes.get(s) if isinstance(quotes, dict) else quotes
-                    # ★追加
                     k = ks.get(s) if isinstance(ks, dict) else ks
+                    f_dat = fd_data.get(s) if isinstance(fd_data, dict) else fd_data  # ←追加
+                    
                     b = bs.get(s) if isinstance(bs, dict) else bs
                     cflow = cf.get(s) if isinstance(cf, dict) else cf
                     d = divs.get(s) if isinstance(divs, dict) else divs
-                    # ★追加
                     m = mh.get(s) if (mh and isinstance(mh, dict)) else None
                     
                     fetched_raw[s] = {
                         "quotes": q, 
                         "key_stats": k, 
+                        "financial_data": f_dat,  # ←追加
                         "balance_sheet": b, 
                         "cashflow": cflow, 
                         "dividends": d,
@@ -8130,9 +8281,20 @@ def batch_update_all_financials(conn,
                     mc = q.get("marketCap") or q.get("market_cap") or q.get("regularMarketMarketCap")
                     marketCap = _safe_num(mc)
 
-                    # --- ★追加: key_stats (PBR) ---
+                    # --- key_stats & financial_data (PBR, EPS, BPS, ROE) ---
                     k = sym_raw.get("key_stats") or {}
+                    f_dat = sym_raw.get("financial_data") or {}
+                    
                     pbr = _safe_num(k.get("priceToBook"))
+                    
+                    # ▼ ここから追加 ▼
+                    eps = _safe_num(k.get("trailingEps"))
+                    if eps is None: eps = _safe_num(k.get("forwardEps"))
+                    bps = _safe_num(k.get("bookValue"))
+                    
+                    roe_raw = _safe_num(f_dat.get("returnOnEquity"))
+                    roe = roe_raw * 100.0 if roe_raw is not None else None
+                    # ▲ ここまで追加 ▲
 
                     # --- balance_sheet ---
                     bsobj = sym_raw.get("balance_sheet")
@@ -8248,6 +8410,10 @@ def batch_update_all_financials(conn,
                 float(cash) if cash is not None else None,
                 float(debt) if debt is not None else None,
                 str(holders_str) if holders_str else "",
+                # ▼ 以下3行を追加
+                float(eps) if eps is not None else None,
+                float(bps) if bps is not None else None,
+                float(roe) if roe is not None else None,
                 # WHERE句
                 c
             ))
@@ -8938,6 +9104,7 @@ def main():
                 _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
                 _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
                 _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                _timed("update_margin_metrics", phase_update_margin_metrics, conn)
                 _timed("derive_update", phase_derive_update, conn)
                 _timed("signal_detection", phase_signal_detection, conn)
                 _timed("update_since_dates", phase_update_since_dates, conn)
@@ -8948,6 +9115,7 @@ def main():
                 _timed_daily_once("refresh_full_history_for_insufficient", refresh_full_history_for_insufficient, conn, codes, batch_size=200)
                 _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
                 _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                _timed("update_margin_metrics", phase_update_margin_metrics, conn)
 
                 now = datetime.now().time()
                 if now < dt_mod.time(12,30):
@@ -8993,9 +9161,11 @@ def main():
                            200,      # chunk_size
                            False,    # force_refresh
                            True)     # verbose
+                    _timed_daily_once("apply_fair_value_metrics", apply_fair_value_metrics, conn)
 
                     _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
                     _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
+                    _timed("update_margin_metrics", phase_update_margin_metrics, conn)
                     _timed("derive_update", phase_derive_update, conn)
                     _timed("signal_detection", phase_signal_detection, conn)
                     _timed("update_since_dates", phase_update_since_dates, conn)

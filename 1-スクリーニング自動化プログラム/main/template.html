@@ -649,8 +649,8 @@
 
 
     <input type="text" id="q" placeholder="全文検索（コード/銘柄/関連テーマ/最新テーマ/判定理由など）" style="min-width:240px">
-    <button class="btn" id="btn-stats">傾向グラフ</button>
-    <button class="btn" id="btn-ts">推移グラフ</button>
+    <button class="btn" id="btn-sector" style="background-color: var(--green);">📊 セクター資金流入</button>
+    <button class="btn" id="btn-theme" style="background-color: var(--orange);">🔥 テーマ資金流入</button>
 
     <span class="pager">
       <label>表示件数
@@ -708,6 +708,10 @@
     "財務スコア":"財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。","進捗率":"着手済み作業/想定全体の比率（%）。",
     "増資リスク":"将来の増資・MSワラント等による希薄化リスクのラベル（高/中/低など）。",
     "増資スコア":"増資リスクを0〜100で数値化した指標。値が高いほど希薄化リスクが高い。",
+    "PBR": "株価純資産倍率。1倍割れは解散価値を下回る割安水準。",
+    "EPS": "1株当たり純利益。PER（株価収益率）計算の分母。",
+    "BPS": "1株当たり純資産。PBR計算の分母。",
+    "ROE": "自己資本利益率(%)。資本効率の高さを示し、高いほどPBRが高く評価される。",
     "判定":"最終判定。","判定理由":"候補にした根拠の要約。","推奨":"推奨ラベル。","推奨比率%":"推奨の強さ（%）。","更新":"シグナル最終更新日。",
     "ブレイク":"高値更新＋出来高伴う上抜け。","ポケット":"押し目買い有利域。","20MAリバ":"20MA再突入。","200MAリクレイム":"200MAを回復し維持。",
     "まとめ（優先度順）":"・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。",
@@ -804,6 +808,9 @@
     "逆行強フラグ":"逆行強フラグ",
     "逆行弱フラグ":"逆行弱フラグ",
     "進捗率":"進捗率",
+    "EPS":"EPS",
+    "BPS":"BPS",
+    "ROE":"ROE",
     "増資リスク":"増資リスク",
     "増資スコア":"増資スコア",
     "三角スコア": "三角スコア",
@@ -1079,7 +1086,8 @@
     }
   });
 
-  // DOM sort
+  // DOM sort (Shiftキーでマルチソート対応)
+  let sortCriteria = []; // [{colIndex: 5, dir: 'asc', typ: 'num'}, ...]
   function wireDomSort(tableSelector){
     const table = document.querySelector(tableSelector); if(!table) return;
     const ths = Array.from(table.querySelectorAll('thead th.sortable'));
@@ -1094,39 +1102,79 @@
       const n = parseFloat(t);
       return Number.isFinite(n) ? n : NaN;
     };
+    
     ths.forEach((th)=>{
       if (th.__wiredSort) return;
       th.__wiredSort = true;
       th.style.cursor = 'pointer';
-      th.addEventListener('click', ()=>{
+      th.title = "Shift+クリックで複数条件のソート（AND）が可能です";
+      
+      th.addEventListener('click', (e)=>{
         const colIndex = th.cellIndex;
-        const dirPrev = th.dataset.dir;
-        ths.forEach(h=>{ h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
-        const dir = (dirPrev === 'asc') ? 'desc' : 'asc';
-        th.dataset.dir = dir;
         const typ = th.dataset.type || 'text';
+        
+        const existingIdx = sortCriteria.findIndex(c => c.colIndex === colIndex);
+        let dir = 'desc'; // 初回クリック時は降順を優先(実務的に数値が高いものを見たいため)
+        
+        if (existingIdx !== -1) {
+            dir = sortCriteria[existingIdx].dir === 'asc' ? 'desc' : 'asc';
+            sortCriteria.splice(existingIdx, 1);
+        }
+
+        // Shiftキーが押されていなければリセット（単一ソート）
+        if (!e.shiftKey) {
+            sortCriteria = [];
+        }
+        
+        // 最後にクリックされたものを最優先（配列の先頭）に追加
+        sortCriteria.unshift({ colIndex, dir, typ });
+        
         const rows = Array.from(table.querySelectorAll('tbody tr'));
         rows.sort((r1, r2)=>{
-          const aRaw = cellVal(r1.children[colIndex]).trim();
-          const bRaw = cellVal(r2.children[colIndex]).trim();
-          if (typ === 'num'){
-            const aKey = toNum(aRaw), bKey = toNum(bRaw);
-            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
-              return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
+            for (let crit of sortCriteria) {
+                const aRaw = cellVal(r1.children[crit.colIndex]).trim();
+                const bRaw = cellVal(r2.children[crit.colIndex]).trim();
+                let cmp = 0;
+                
+                if (crit.typ === 'num'){
+                    const aKey = toNum(aRaw), bKey = toNum(bRaw);
+                    const aIsNum = !Number.isNaN(aKey), bIsNum = !Number.isNaN(bKey);
+                    if (aIsNum && bIsNum) cmp = aKey - bKey;
+                    else if (aIsNum) cmp = -1; // 数値を空欄より上位に
+                    else if (bIsNum) cmp = 1;
+                } else if (crit.typ === 'date'){
+                    const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
+                    const aIsDate = !Number.isNaN(aKey), bIsDate = !Number.isNaN(bKey);
+                    if (aIsDate && bIsDate) cmp = aKey - bKey;
+                    else if (aIsDate) cmp = -1;
+                    else if (bIsDate) cmp = 1;
+                } else {
+                    cmp = String(aRaw).toLowerCase().localeCompare(String(bRaw).toLowerCase(), 'ja');
+                }
+                
+                if (cmp !== 0) {
+                    return crit.dir === 'asc' ? cmp : -cmp;
+                }
             }
-          } else if (typ === 'date'){
-            const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
-            if (!Number.isNaN(aKey) && !Number.isNaN(bKey)){
-              return dir==='asc' ? (aKey-bKey) : (bKey-aKey);
-            }
-          }
-          const sa = String(aRaw).toLowerCase();
-          const sb = String(bRaw).toLowerCase();
-          return dir==='asc' ? sa.localeCompare(sb,'ja') : sb.localeCompare(sa,'ja');
+            return 0;
         });
+        
         const tb = table.querySelector('tbody');
         rows.forEach(r=>tb.appendChild(r));
-        const arrow = th.querySelector('.arrow'); if (arrow) arrow.textContent = (dir==='asc'?'▲':'▼');
+        
+        // UI(矢印と優先順位)の更新
+        ths.forEach(h => { h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
+        sortCriteria.forEach((crit, i) => {
+            const h = ths.find(hx => hx.cellIndex === crit.colIndex);
+            if (h) {
+                h.dataset.dir = crit.dir;
+                const arr = h.querySelector('.arrow');
+                if (arr) {
+                    const orderBadge = sortCriteria.length > 1 ? `(${i+1})` : '';
+                    arr.textContent = (crit.dir === 'asc' ? '▲' : '▼') + orderBadge;
+                }
+            }
+        });
       });
     });
   }
@@ -1559,9 +1607,9 @@
       }
 
       if (q) {
-        const keys = ["コード","銘柄名","関連テーマ","最新テーマ","判定理由","右肩早期種別",
-                      "初動フラグ","底打ちフラグ","右肩上がりフラグ",
-                      "右肩早期フラグ","推奨アクション","株探ニュース","株探ニュース(3)"];
+        const keys = ["コード","銘柄名","関連テーマ","最新テーマ","セクター","判定理由","右肩早期種別",
+              "初動フラグ","底打ちフラグ","右肩上がりフラグ",
+              "右肩早期フラグ","推奨アクション","株探ニュース","株探ニュース(3)"];
         const fields = (k)=> {
           let s = String(r[k] ?? "");
           if (k === "株探ニュース(3)") s = s.replace(/<[^>]*>/g, "");
@@ -1700,6 +1748,11 @@
         <td class="num">${r["スコア"] ?? ""}</td>
         <td class="num">${r["進捗率"] ?? ""}</td>
         <td class="num">${r["PBR"] ? Number(r["PBR"]).toFixed(2) : "-"}</td>
+        <td class="num">${r["EPS"] ?? "-"}</td>
+        <td class="num">${r["BPS"] ?? "-"}</td>
+        <td class="num">${r["ROE"] ? Number(r["ROE"]).toFixed(1) : "-"}</td>
+        <td class="num">${r["適正株価"] ? Number(r["適正株価"]).toFixed(0) : "-"}</td>
+        <td class="num" style="${r["割安度"] > 0 ? 'color:#e11d48;font-weight:bold;' : ''}">${r["割安度"] ? Number(r["割安度"]).toFixed(1) : "-"}</td>
         <td class="num">${r["現金同等物"] ? Math.round(r["現金同等物"]/100000000).toLocaleString() : "-"}</td>
         <td class="num">${r["有利子負債"] ? Math.round(r["有利子負債"]/100000000).toLocaleString() : "-"}</td>
         <td class="theme-col" title="${escapeHtml(r["大株主"]||"")}">${escapeHtml(r["大株主"]||"-")}</td>
@@ -1824,124 +1877,6 @@
     return bd;
   }
 
-  function drawBar(canvas, labels, values, title){
-    const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
-    ctx.clearRect(0,0,W,H);
-    ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
-    ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
-    const nums = values.map(v => (v === "" || v == null ? NaN : +v));
-    const finite = nums.filter(Number.isFinite);
-    if (!finite.length) { ctx.fillText("データなし（欠損）", pad, H/2); return; }
-    const max = Math.max(1, ...finite);
-    const bw  = (W - pad*2) / labels.length * 0.7;
-    labels.forEach((lb, i) => {
-      const v = Number.isFinite(nums[i]) ? nums[i] : 0;
-      const x = pad + (i + 0.15) * (W - pad*2) / labels.length;
-      const h = (H - pad*2) * (v / max);
-      ctx.fillStyle = "#4a90e2";
-      if (h > 0) ctx.fillRect(x, H - pad - h, bw, h);
-      ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
-      ctx.fillText(lb, x, H - pad + 14);
-      ctx.fillText(String(v), x, H - pad - h - 4);
-    });
-  }
-  function drawLine(canvas, labels, values, title){
-    const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, pad = 40;
-    ctx.clearRect(0,0,W,H);
-    ctx.fillStyle = "#000"; ctx.font = "14px system-ui"; ctx.fillText(title, pad, 24);
-    ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();
-    const nums = values.map(v => (v === "" || v == null ? NaN : +v));
-    const finite = nums.filter(Number.isFinite);
-    if (!finite.length) { ctx.fillText("データなし（欠損）", pad, H/2); return; }
-    const max = Math.max(1, ...finite);
-    const min = Math.min(0, ...finite);
-    const step = (W - pad*2) / Math.max(1, labels.length - 1);
-    ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 2; ctx.beginPath();
-    nums.forEach((v, i) => {
-      const val = Number.isFinite(v) ? v : 0;
-      const x = pad + i * step;
-      const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    if (labels.length === 1) { const x = pad; const val = Number.isFinite(nums[0]) ? nums[0] : 0;
-      const y = H - pad - (H - pad*2) * ((val - min) / (max - min || 1));
-      ctx.fillStyle = "#4a90e2"; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fill(); }
-    ctx.fillStyle = "#333"; ctx.font = "12px system-ui";
-    labels.forEach((lb, i) => { const x = pad + i * step; ctx.fillText(lb, x - 10, H - pad + 14); });
-  }
-
-  function openStatsChart(){
-    const back = ensureChartModal(), body = $("#__chart_body__");
-    const rows = applyFilter(state.data);
-    const rvolBuckets=["<1","1-2","2-3","3-5","5+"], rvolCnt=[0,0,0,0,0];
-    const turnBuckets=["<5","5-10","10-50","50-100","100+"], turnCnt=[0,0,0,0,0];
-    rows.forEach(r=>{
-      const rvol = num(r["RVOL代金"]);
-      if(!Number.isNaN(rvol)){ if(rvol<1)rvolCnt[0]++; else if(rvol<2)rvolCnt[1]++; else if(rvol<3)rvolCnt[2]++; else if(rvol<5)rvolCnt[3]++; else rvolCnt[4]++; }
-      const turn = num(r["売買代金(億)"]);
-      if(!Number.isNaN(turn)){ if(turn<5)turnCnt[0]++; else if(turn<10)turnCnt[1]++; else if(turn<50)turnCnt[2]++; else if(turn<100)turnCnt[3]++; else turnCnt[4]++; }
-    });
-    body.innerHTML = `<h3>傾向グラフ（表示中データ）</h3><canvas id="cv1" style="width:100%;height:340px;"></canvas><canvas id="cv2" style="width:100%;height:340px;margin-top:16px;"></canvas>`;
-    const c1 = body.querySelector("#cv1"), c2 = body.querySelector("#cv2");
-    const fit = ()=>{
-      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
-      [c1,c2].forEach(cv=>{
-        cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
-        cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
-        const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
-      });
-      drawBar(c1, rvolBuckets, rvolCnt, "RVOL代金の分布");
-      drawBar(c2, turnBuckets, turnCnt, "売買代金(億)の分布");
-    };
-    if (window.__stats_fit__) window.removeEventListener("resize", window.__stats_fit__);
-    window.__stats_fit__ = fit;
-    window.addEventListener("resize", fit, { passive:true });
-    fit();
-    back.style.display="block";
-    const box = document.getElementById("__chart_box__"); box.style.display="block";
-    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
-    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
-  }
-
-  function openTrendChart(){
-    const back = ensureChartModal(), body = $("#__chart_body__");
-    let src = [];
-    try { const RAW = JSON.parse(document.getElementById("__DATA__").textContent || "{}"); if (Array.isArray(RAW.hist) && RAW.hist.length) src = RAW.hist; } catch(_) {}
-    if (!src.length) src = applyFilter(state.data);
-    const byDay = new Map();
-    src.forEach(r=>{
-      const d = String(r["シグナル更新日"]||r["日付"]||r["日時"]||"").slice(0,10);
-      if(!d) return;
-      const hit = isHitRow(r) ? 1 : 0;
-      const o = byDay.get(d) || {tot:0,hit:0};
-      o.tot++; o.hit += hit;
-      byDay.set(d,o);
-    });
-    const days = Array.from(byDay.keys()).sort();
-    const rate = days.map(d=>{ const o = byDay.get(d)||{tot:0,hit:0}; return o.tot ? Math.round(1000*o.hit/o.tot)/10 : 0; });
-    body.innerHTML = `<h3>推移グラフ（日別 当たり率 %）</h3><canvas id="cv3" style="width:100%;height:340px;"></canvas>`;
-    const cv = body.querySelector("#cv3");
-    const fit = ()=>{
-      const cssW = body.clientWidth || 900, cssH = 340, dpr = window.devicePixelRatio || 1;
-      cv.width = Math.floor(cssW*dpr); cv.height = Math.floor(cssH*dpr);
-      cv.style.width = cssW+"px"; cv.style.height = cssH+"px";
-      const ctx = cv.getContext("2d"); if (ctx && ctx.setTransform) ctx.setTransform(dpr,0,0,dpr,0,0);
-      drawLine(cv, days, rate, "当たり率（%）");
-    };
-    if (window.__trend_fit__) window.removeEventListener("resize", window.__trend_fit__);
-    window.__trend_fit__ = fit;
-    window.addEventListener("resize", fit, {passive:true});
-    fit();
-    back.style.display="block";
-    const box = document.getElementById("__chart_box__"); box.style.display="block";
-    const sy = window.scrollY||0; box.style.top = `${sy+80}px`;
-    requestAnimationFrame(()=>{ box.style.left = `${Math.max(10,(document.documentElement.clientWidth - box.offsetWidth)/2)}px`; });
-  }
 
   const applyAndRender = () => {
     state.page = 1;
@@ -2305,8 +2240,6 @@
     setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
   });
 
-  $("#btn-stats")?.addEventListener("click",openStatsChart);
-  $("#btn-ts")?.addEventListener("click",openTrendChart);
   $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
   function getActiveTableId() { return "tbl-candidate"; }
@@ -2391,6 +2324,9 @@ function generatePromptJson(code) {
     finance_score: safeStr(r["スコア"]),
     progress: safeStr(r["進捗率"]),
     pbr: safeStr(r["PBR"]),
+    eps: safeStr(r["EPS"]),
+    bps: safeStr(r["BPS"]),
+    roe: safeStr(r["ROE"]),
     cash: safeStr(r["現金同等物"]),
     debt: safeStr(r["有利子負債"]),
     major_holders: safeStr(r["大株主"]),
@@ -2730,6 +2666,11 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="財務スコア" data-type="num">財務スコア<span class="arrow"></span></th>
             <th class="num sortable" data-col="進捗率" data-type="num">進捗率<span class="arrow"></span></th>
             <th class="num sortable" data-col="PBR" data-type="num">PBR<span class="arrow"></span></th>
+            <th class="num sortable" data-col="EPS" data-type="num">EPS<span class="arrow"></span></th>
+            <th class="num sortable" data-col="BPS" data-type="num">BPS<span class="arrow"></span></th>
+            <th class="num sortable" data-col="ROE" data-type="num">ROE(%)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="適正株価" data-type="num">適正株価<span class="arrow"></span></th>
+            <th class="num sortable" data-col="割安度" data-type="num">割安度(%)<span class="arrow"></span></th>
             <th class="num sortable" data-col="現金同等物" data-type="num">現金(億)<span class="arrow"></span></th>
             <th class="num sortable" data-col="有利子負債" data-type="num">負債(億)<span class="arrow"></span></th>
             <th data-col="大株主">大株主</th>
@@ -2926,6 +2867,191 @@ async function runYabbAnalysis(code) {
     btn.disabled = false;
   }
 }
+
+// ==========================================
+// ★追加: ランキングからのワンクリック検索ヘルパー
+// ==========================================
+window.applyQuickSearch = function(keyword) {
+  const sectorModal = document.getElementById('sector-modal-overlay');
+  if (sectorModal) sectorModal.style.display = 'none';
+  const themeModal = document.getElementById('theme-modal-overlay');
+  if (themeModal) themeModal.style.display = 'none';
+
+  const qEl = document.getElementById("q");
+  if (qEl) qEl.value = keyword;
+
+  if (window.state) {
+    window.state.q = keyword;
+    window.state.page = 1;
+  }
+  if (window.render) window.render();
+};
+
+// ==========================================
+// ★追加: セクター・テーマ別資金流入ランキングモーダル
+// ==========================================
+(function(){
+  // モーダル用DOMの生成
+  if (!document.getElementById('sector-modal-overlay')) {
+    const ov = document.createElement('div');
+    ov.id = 'sector-modal-overlay';
+    ov.style.cssText = 'display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.4); backdrop-filter:blur(2px);';
+    ov.innerHTML = `
+      <div id="sector-modal-content" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:#fff; border:1px solid #cbd5e1; box-shadow:0 10px 30px rgba(0,0,0,0.3); padding:24px; border-radius:12px; width:800px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:2px solid #e2e8f0; padding-bottom:12px;">
+          <div style="font-weight:bold; font-size:20px; color:var(--blue);">📊 セクター別資金流入ランキング (直近EODベース)</div>
+          <div id="sector-modal-close" style="cursor:pointer; font-weight:bold; color:#64748b; background:#f1f5f9; padding:6px 16px; border-radius:6px; font-size:15px;">閉じる</div>
+        </div>
+        <div style="flex:1; overflow-y:auto; font-size:16px;">
+          <table class="tbl" style="width:100%; table-layout:auto;">
+            <thead style="position:sticky; top:0; background:#f8fafc; z-index:1;">
+              <tr style="height:40px;">
+                <th style="text-align:center; font-size:15px;">順位</th>
+                <th style="text-align:left; font-size:15px;">セクター (東証33業種)</th>
+                <th class="num" style="font-size:15px;">売買代金 (億円)</th>
+                <th class="num" style="font-size:15px;">銘柄数</th>
+                <th class="num" title="1銘柄あたりの平均売買代金" style="font-size:15px;">平均流入 (億円)</th>
+              </tr>
+            </thead>
+            <tbody id="sector-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(ov);
+
+    // 閉じるイベント
+    const closeParams = () => { ov.style.display = 'none'; };
+    document.getElementById('sector-modal-close').addEventListener('click', closeParams);
+    ov.addEventListener('click', (e) => { if (e.target === ov) closeParams(); });
+  }
+
+  // ボタンクリックイベントのバインド
+  document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btn-sector")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      
+      // データオブジェクトの取得（RAW または window.__DATA__）
+      const rawData = (typeof RAW !== 'undefined' && Object.keys(RAW).length) ? RAW : (window.__DATA__ || {});
+      const sectors = rawData.sector_ranking || [];
+      const tbody = document.getElementById("sector-tbody");
+      
+      if (!sectors.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:16px; color:var(--muted);">データがまだ計算されていません（Python側のEODバッチ実行をお待ちください）</td></tr>';
+      } else {
+        let html = "";
+        sectors.forEach((s, idx) => {
+          const turn = Number(s.total_turnover || 0);
+          const count = Number(s.active_stocks || 1);
+          const avg = turn / count;
+          
+          // 上位3位のメダル装飾
+          let rankHtml = `${idx + 1}`;
+          if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
+          if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
+          if (idx === 2) rankHtml = `<span style="font-size:22px;">🥉</span> 3`;
+
+          html += `
+            <tr style="height:44px;">
+              <td style="text-align:center; font-weight:bold; font-size:16px;">${rankHtml}</td>
+              <td style="font-weight:bold; color:var(--blue); font-size:16px;">
+                <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${s.セクター}'); return false;" title="このセクターで絞り込み">${s.セクター}</a>
+              </td>
+              <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
+              <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
+              <td class="num" style="color:#64748b; font-size:16px;">${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
+            </tr>
+          `;
+        });
+        tbody.innerHTML = html;
+      }
+      
+      document.getElementById('sector-modal-overlay').style.display = 'block';
+    });
+  });
+})();
+
+// ==========================================
+// ★追加: テーマ別資金流入ランキングモーダル
+// ==========================================
+(function(){
+  // モーダル用DOMの生成
+  if (!document.getElementById('theme-modal-overlay')) {
+    const ov = document.createElement('div');
+    ov.id = 'theme-modal-overlay';
+    ov.style.cssText = 'display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.4); backdrop-filter:blur(2px);';
+    ov.innerHTML = `
+      <div id="theme-modal-content" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:#fff; border:1px solid #cbd5e1; box-shadow:0 10px 30px rgba(0,0,0,0.3); padding:24px; border-radius:12px; width:800px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:2px solid #e2e8f0; padding-bottom:12px;">
+          <div style="font-weight:bold; font-size:20px; color:var(--orange);">🔥 テーマ別資金流入ランキング (直近EODベース)</div>
+          <div id="theme-modal-close" style="cursor:pointer; font-weight:bold; color:#64748b; background:#f1f5f9; padding:6px 16px; border-radius:6px; font-size:15px;">閉じる</div>
+        </div>
+        <div style="flex:1; overflow-y:auto; font-size:16px;">
+          <table class="tbl" style="width:100%; table-layout:auto;">
+            <thead style="position:sticky; top:0; background:#f8fafc; z-index:1;">
+              <tr style="height:40px;">
+                <th style="text-align:center; font-size:15px;">順位</th>
+                <th style="text-align:left; font-size:15px;">テーマ名</th>
+                <th class="num" style="font-size:15px;">売買代金 (億円)</th>
+                <th class="num" style="font-size:15px;">銘柄数</th>
+                <th class="num" title="1銘柄あたりの平均売買代金" style="font-size:15px;">平均流入 (億円)</th>
+              </tr>
+            </thead>
+            <tbody id="theme-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(ov);
+
+    const closeParams = () => { ov.style.display = 'none'; };
+    document.getElementById('theme-modal-close').addEventListener('click', closeParams);
+    ov.addEventListener('click', (e) => { if (e.target === ov) closeParams(); });
+  }
+
+  // ボタンクリックイベントのバインド
+  document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btn-theme")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      
+      const rawData = (typeof RAW !== 'undefined' && Object.keys(RAW).length) ? RAW : (window.__DATA__ || {});
+      const themes = rawData.theme_ranking || [];
+      const tbody = document.getElementById("theme-tbody");
+      
+      if (!themes.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:16px; color:var(--muted);">データがまだ計算されていません</td></tr>';
+      } else {
+        let html = "";
+        themes.forEach((t, idx) => {
+          const turn = Number(t.total_turnover || 0);
+          const count = Number(t.active_stocks || 1);
+          const avg = turn / count;
+          
+          let rankHtml = `${idx + 1}`;
+          if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
+          if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
+          if (idx === 2) rankHtml = `<span style="font-size:22px;">🥉</span> 3`;
+
+          html += `
+            <tr style="height:44px;">
+              <td style="text-align:center; font-weight:bold; font-size:16px;">${rankHtml}</td>
+              <td style="font-weight:bold; color:var(--orange); font-size:16px;">
+                <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${t.テーマ}'); return false;" title="このテーマで絞り込み">${t.テーマ}</a>
+              </td>
+              <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
+              <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
+              <td class="num" style="color:#64748b; font-size:16px;">${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
+            </tr>
+          `;
+        });
+        tbody.innerHTML = html;
+      }
+      document.getElementById('theme-modal-overlay').style.display = 'block';
+    });
+  });
+})();
+
+
 </script>
 </body>
 </html>
