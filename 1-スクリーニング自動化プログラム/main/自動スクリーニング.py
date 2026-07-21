@@ -476,6 +476,7 @@ def _open_db(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.execute("PRAGMA busy_timeout=60000;")
     conn.row_factory = sqlite3.Row
+
     return conn
 
 def _get_db_conn() -> sqlite3.Connection:
@@ -690,8 +691,16 @@ def _ensure_latest_prices_index_rows(conn):
         except Exception:
             pass
 
-# ===== 日次実行ログユーティリティ（同日スキップ） =====
+def setup_database_indexes(conn: sqlite3.Connection) -> None:
+    """テーブル構築後、または初期化フェーズで明示的に呼び出すインデックス作成関数"""
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_code_date ON price_history(コード, 日付);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_code_date ON signals_log(コード, 日時);")
+    except sqlite3.OperationalError as e:
+        print(f"[DB Setup] インデックス作成をスキップしました: {e}")
+
 def ensure_runlog_schema(conn):
+    """日次実行ログテーブルの作成と、システム全体のインデックス最適化を担う"""
     conn.execute("""
     CREATE TABLE IF NOT EXISTS run_log (
       phase       TEXT NOT NULL,
@@ -704,7 +713,8 @@ def ensure_runlog_schema(conn):
     );
     """)
     conn.commit()
-
+    # テーブル作成後に安全にインデックスを構築
+    setup_database_indexes(conn)
 
 try:
     __JST = ZoneInfo("Asia/Tokyo")
@@ -2379,13 +2389,17 @@ def load_tob_titles_map(days=180):
 # ==============================================================
 def phase_update_margin_metrics(conn: sqlite3.Connection):
     """
-    信用残データと需給OH（Days to Cover）を計算し、screenerを更新する。
-    これにより、HTML出力時だけでなく、AIや各種スコアリングロジックでこの指標を利用可能になる。
+    信用残データと需給OH（Days to Cover）、および踏み上げ期待スコアを計算し、
+    screenerテーブルを更新する。
     """
     cur = conn.cursor()
     
     # 必要なカラムがscreenerテーブルにあるか確認し、なければ追加
-    for col, decl in [("信用倍率", "REAL"), ("売り残", "REAL"), ("買い残", "REAL"), ("需給OH", "REAL"), ("需給安全フラグ", "INTEGER")]:
+    columns_to_ensure = [
+        ("信用倍率", "REAL"), ("売り残", "REAL"), ("買い残", "REAL"), 
+        ("需給OH", "REAL"), ("需給安全フラグ", "INTEGER"), ("踏み上げ期待スコア", "REAL")
+    ]
+    for col, decl in columns_to_ensure:
         try:
             cur.execute(f'ALTER TABLE screener ADD COLUMN "{col}" {decl}')
         except Exception:
@@ -2407,13 +2421,13 @@ def phase_update_margin_metrics(conn: sqlite3.Connection):
         print(f"[margin][WARN] stock_credit_margin の読み込みに失敗しました: {e}")
         return
         
-    # 現在値と20日平均代金を screener から取得（Days to Cover の計算用）
+    # 現在値と20日平均代金を screener から取得
     sc_df = pd.read_sql_query("SELECT コード, 現在値, 売買代金20日平均億 FROM screener", conn)
     sc_df['コード'] = sc_df['コード'].astype(str).str.zfill(4)
     
     df = pd.merge(sc_df, margin_df, on='コード', how='left')
     
-    # ベクトル計算
+    # ベクトル計算の前処理
     bb = pd.to_numeric(df['買い残'], errors='coerce').fillna(0)
     bs = pd.to_numeric(df['売り残'], errors='coerce').fillna(0)
     price = pd.to_numeric(df['現在値'], errors='coerce').fillna(0)
@@ -2427,10 +2441,19 @@ def phase_update_margin_metrics(conn: sqlite3.Connection):
     df['需給OH'] = bb / v20
     df['信用倍率_calc'] = np.where(bs > 0, bb / bs, 999.9)
     
-    # 安全圏の判定 (1.0 <= 信用倍率 <= 3.0 AND OH <= 3.0)
+    # 安全圏の判定
     cond_ratio = df['信用倍率_calc'].between(1.0, 3.0)
     cond_overhang = df['需給OH'] <= 3.0
     df['需給安全フラグ'] = np.where(cond_ratio & cond_overhang, 1, 0)
+    
+    # 【追加】踏み上げ（ショートスクイーズ）期待スコアの計算
+    cond_sq_high = (df['信用倍率_calc'] <= 1.0) & (bs >= 50000)
+    cond_sq_mid  = (df['信用倍率_calc'] <= 2.0) & (bs >= 10000)
+    df['踏み上げ期待スコア'] = np.select(
+        [cond_sq_high, cond_sq_mid, df['信用倍率_calc'] <= 3.0],
+        [100.0, 75.0, 40.0],
+        default=0.0
+    )
     
     # DBへの UPDATE レコード作成
     updates = []
@@ -2441,19 +2464,20 @@ def phase_update_margin_metrics(conn: sqlite3.Connection):
             float(r['買い残']) if pd.notna(r['買い残']) else None,
             float(r['需給OH']) if pd.notna(r['需給OH']) else None,
             int(r['需給安全フラグ']) if pd.notna(r['需給安全フラグ']) else 0,
+            float(r['踏み上げ期待スコア']) if pd.notna(r['踏み上げ期待スコア']) else 0.0,
             str(r['コード'])
         ))
         
     if updates:
         cur.executemany("""
             UPDATE screener
-            SET 信用倍率=?, 売り残=?, 買い残=?, 需給OH=?, 需給安全フラグ=?
+            SET 信用倍率=?, 売り残=?, 買い残=?, 需給OH=?, 需給安全フラグ=?, 踏み上げ期待スコア=?
             WHERE コード=?
         """, updates)
         conn.commit()
     cur.close()
-    print(f"[margin] 需給OH・信用残データを正式に更新しました: {len(updates)} 銘柄")
-
+    print(f"[margin] 需給OH・踏み上げ期待スコアを更新しました: {len(updates)} 銘柄")
+    
 # ==== [Short-term Trading Enhancements] Derived Metrics (schema assumed) ====
 
 def _apply_shortterm_metrics(conn: sqlite3.Connection):
@@ -5361,7 +5385,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "スコア","進捗率","overall_alpha",
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
         "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
-        "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ",
+        "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ", "踏み上げ期待スコア",
         "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主"
     ] if c in _df.columns]
 
@@ -6320,42 +6344,43 @@ def _attach_latest_theme(df, latest_theme_map):
         
     return df
     
+
 def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFrame) -> list:
     """
-    静的ノイズをクレンジングしたテーマランキングを計算し、辞書のリストで返す。
-    メガキャップによる平均流入の歪みを排除し、シグナル点灯密度で「真の旬」をスコアリングする。
+    静的ノイズをクレンジングしたテーマランキングを計算。平均騰落率を内包させる。
     """
     try:
-        # 1. テーマ紐づけマスタの取得
         query = """
             SELECT printf('%04d', CAST(t.コード AS INTEGER)) AS コード, m.theme_name AS テーマ
             FROM stock_theme_kabutan t
             JOIN theme_master m ON t.theme_id = m.theme_id
+            WHERE t.theme_id IN (
+                SELECT DISTINCT theme_id 
+                FROM stock_theme_kabutan 
+                WHERE 取得日 >= date('now', '-30 days')
+            )
         """
         df_theme = pd.read_sql_query(query, conn)
         
-        # 2. screenerデータ(df_cand)のバリデーション
         if df_cand is None or df_cand.empty or "コード" not in df_cand.columns:
             return []
             
-        # カラム名の揺れ対応 ('売買代金億' がDB上の名前)
         turnover_col = '売買代金億' if '売買代金億' in df_cand.columns else '売買代金(億)'
         if turnover_col not in df_cand.columns:
             return []
 
-        # 欠損カラムの安全確保
-        for c in ['初動フラグ', '右肩早期フラグ', '右肩上がりフラグ']:
+        # ★ 修正: DBのカラム名である '前日終値比率' を使用する
+        for c in ['初動フラグ', '右肩早期フラグ', '右肩上がりフラグ', '前日終値比率']:
             if c not in df_cand.columns:
                 df_cand[c] = ""
                 
-        # 必要な列だけを抽出して計算用DataFrameを作成
-        df_s = df_cand[['コード', turnover_col, '初動フラグ', '右肩早期フラグ', '右肩上がりフラグ']].copy()
-        
-        # 結合キー(コード)の4桁ゼロ埋め統一と、数値計算用の型変換
+        df_s = df_cand[['コード', turnover_col, '初動フラグ', '右肩早期フラグ', '右肩上がりフラグ', '前日終値比率']].copy()
         df_s['コード'] = df_s['コード'].astype(str).str.strip().str.zfill(4)
         df_s['売買代金(億)'] = pd.to_numeric(df_s[turnover_col], errors='coerce').fillna(0)
         
-        # シグナル点灯フラグ（いずれかのフラグが"候補"となっているか）
+        # ★ 修正: テキスト形式のパーセンテージ等が含まれる可能性を考慮し安全に数値化
+        df_s['前日終値比率'] = pd.to_numeric(df_s['前日終値比率'].astype(str).str.replace(r'[^\d\.\-]', '', regex=True), errors='coerce').fillna(0.0)
+        
         df_s['is_signaled'] = np.where(
             df_s['初動フラグ'].astype(str).str.contains('候補') | 
             df_s['右肩早期フラグ'].astype(str).str.contains('候補') |
@@ -6363,33 +6388,26 @@ def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFra
             1, 0
         )
         
-        # 3. マージと集計 (Inner Joinでテーマに属する銘柄のみ抽出)
         df_mrg = pd.merge(df_theme, df_s, on='コード', how='inner')
         if df_mrg.empty:
             return []
             
-        # テーマ単位での集計（外れ値対策として中央値 median を採用）
         stats = df_mrg.groupby('テーマ').agg(
             total_turnover=('売買代金(億)', 'sum'),
             median_turnover=('売買代金(億)', 'median'),
             active_stocks=('コード', 'count'),
-            signaled_count=('is_signaled', 'sum')
+            signaled_count=('is_signaled', 'sum'),
+            avg_return=('前日終値比率', 'mean')
         ).reset_index()
         
-        # 最低構成銘柄数フィルタ（3銘柄以上）ノイズ除去
         stats = stats[stats['active_stocks'] >= 3].copy()
         if stats.empty:
             return []
         
-        # シグナル密度（点灯率）
         stats['signal_density'] = stats['signaled_count'] / stats['active_stocks']
-        
-        # 真の資金流入スコア = 中央値 × (1 + シグナル点灯率)
         stats['true_flow_score'] = (stats['median_turnover'] * (1 + stats['signal_density'])).round(1)
         
-        # スコア順にソートし、上位30テーマを返す
         stats = stats.sort_values(by='true_flow_score', ascending=False).head(30)
-        
         return stats.to_dict(orient='records')
         
     except Exception as e:
@@ -6684,14 +6702,15 @@ def sync_sector_data(conn: sqlite3.Connection):
         print(f"[ERROR] Sector sync failed: {e}")
 
 def prepare_sector_ranking_view(conn: sqlite3.Connection):
-    """ダッシュボード集計用の View を作成"""
+    """ダッシュボード集計用の View を作成（平均騰落率をインクルード）"""
     conn.execute("DROP VIEW IF EXISTS v_sector_ranking")
     conn.execute("""
         CREATE VIEW v_sector_ranking AS
         SELECT 
             セクター, 
             SUM(売買代金億) as total_turnover,
-            COUNT(コード) as active_stocks
+            COUNT(コード) as active_stocks,
+            AVG(CAST(前日終値比率 AS REAL)) as avg_return
         FROM screener
         WHERE 売買代金億 > 0 AND セクター IS NOT NULL
         GROUP BY セクター
@@ -9102,18 +9121,18 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     # ▼ ここを追加：起動時にまず fetch_all を実行（DBに収集・保存させる）
-    ######################################try:
-    ######################################    # 最新データの収集・保存【毎回】
-    ######################################    _timed("fetch_all", _run_fetch_all,
-    ######################################           # fetch_path=None → 自動解決。固定したければ絶対パスを渡す
-    ######################################           FETCH_PATH,
-    ######################################           # extra_args は fetch_all 側の引数仕様に合わせて適宜
-    ######################################           extra_args=[],     # 例: ["--earnings-only", "--force"]
-    ######################################           timeout_sec=None,  # 必要なら秒指定
-    ######################################           use_lock=True)
-    ######################################except Exception as e:
-    ######################################    # 収集に失敗してもダッシュボード生成自体は続行したいなら warn で握りつぶす
-    ######################################    print(f"[fetch_all][WARN] {e}")
+    try:
+        # 最新データの収集・保存【毎回】
+        _timed("fetch_all", _run_fetch_all,
+               # fetch_path=None → 自動解決。固定したければ絶対パスを渡す
+               FETCH_PATH,
+               # extra_args は fetch_all 側の引数仕様に合わせて適宜
+               extra_args=[],     # 例: ["--earnings-only", "--force"]
+               timeout_sec=None,  # 必要なら秒指定
+               use_lock=True)
+    except Exception as e:
+        # 収集に失敗してもダッシュボード生成自体は続行したいなら warn で握りつぶす
+        print(f"[fetch_all][WARN] {e}")
 
     # (1) DB open & スキーマ保証
     conn = _get_db_conn()
