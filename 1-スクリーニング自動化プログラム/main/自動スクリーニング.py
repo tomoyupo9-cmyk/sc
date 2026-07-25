@@ -1275,7 +1275,7 @@ def _is_trading_session_now(now=None):
     if not _is_jp_business_day(now.date()):
         return False
     t = now.time()
-    return (time(9,0) <= t <= time(11,30)) or (time(12,30) <= t <= time(15,30))
+    return (dt_mod.time(9,0) <= t <= dt_mod.time(11,30)) or (dt_mod.time(12,30) <= t <= dt_mod.time(15,30))
 
 def _ensure_override_table(conn):
     try:
@@ -1368,86 +1368,65 @@ def _get_last_two_closes(conn, code: str):
     """
     price_history から「最後の二つの“異なる営業日”」の終値を返す。
     足りなければ自動で取得してDBにUPSERTしてから再読込。
-      - yahooquery → yfinance → stooq の順にフォールバック
-      - 期間は 6mo → 3mo → 1mo の順に短縮
-      - 取得できなければ yahoo_symbol_override を自動更新（HISTORY_NONE/NONE）
-    戻り値: (cur_date, cur_close, prev_date, prev_close) or (None, None, None, None)
     """
-
-
-    # --- helpers ---
     def _num(v):
         try:
-            if v is None or (isinstance(v, float) and math.isnan(v)):
-                return None
+            if v is None or (isinstance(v, float) and math.isnan(v)): return None
             return float(str(v).replace(',', ''))
         except Exception:
             return None
 
     def _build_symbol(_code: str) -> str:
-        # resolve_yahoo_symbol があれば使う。無ければ "<code>.T"
-        try:
-            return resolve_yahoo_symbol(_code, conn, True)  # type: ignore[name-defined]
-        except Exception:
-            return _code if _code.upper().endswith(".T") else f"{_code}.T"
+        try: return resolve_yahoo_symbol(_code, conn, True)
+        except Exception: return _code if _code.upper().endswith(".T") else f"{_code}.T"
 
     def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         """yahooquery/yfinance/stooq の DataFrame を price_history 形式へ正規化"""
-        if df is None or (hasattr(df, "empty") and df.empty):
-            return pd.DataFrame()
-        # MultiIndex(symbol,date) をはがす
+        if df is None or (hasattr(df, "empty") and df.empty): return pd.DataFrame()
         if hasattr(df, "index") and isinstance(df.index, pd.MultiIndex):
             names = [n or "" for n in (df.index.names or [])]
             if "date" in names:
                 df = df.reset_index()
-                if "date" in df.columns:
-                    df = df.set_index("date")
+                if "date" in df.columns: df = df.set_index("date")
             else:
                 df = df.reset_index(drop=True)
-        # date 列が残っているなら index にする
         if hasattr(df, "columns") and "date" in df.columns:
-            try:
-                df = df.set_index("date")
-            except Exception:
-                pass
-        # yfinance 型（列が英語）
-        colmap = {
-            "Open": "始値", "High": "高値", "Low": "安値", "Close": "終値", "Volume": "出来高",
-            "open": "始値", "high": "高値", "low": "安値", "close": "終値", "volume": "出来高",
-        }
+            try: df = df.set_index("date")
+            except Exception: pass
+            
+        colmap = {"Open": "始値", "High": "高値", "Low": "安値", "Close": "終値", "Volume": "出来高",
+                  "open": "始値", "high": "高値", "low": "安値", "close": "終値", "volume": "出来高"}
         for k, v in list(colmap.items()):
-            if hasattr(df, "columns") and k in df.columns and v not in df.columns:
-                df[v] = df[k]
-        # yahooquery 型（たまに close / volume のみ）
+            if hasattr(df, "columns") and k in df.columns and v not in df.columns: df[v] = df[k]
         if hasattr(df, "columns"):
-            if "close" in df.columns and "終値" not in df.columns:
-                df["終値"] = df["close"]
-            if "volume" in df.columns and "出来高" not in df.columns:
-                df["出来高"] = df["volume"]
-        # index->日付列
+            if "close" in df.columns and "終値" not in df.columns: df["終値"] = df["close"]
+            if "volume" in df.columns and "出来高" not in df.columns: df["出来高"] = df["volume"]
+            
         if hasattr(df, "index"):
             try:
                 s = pd.Series(df.index)
                 s = pd.to_datetime(s, utc=True, errors="coerce").datetime.tz_convert("Asia/Tokyo").dt.date
-                df = df.copy()
-                df["日付"] = s.values
+                df = df.copy(); df["日付"] = s.values
             except Exception:
-                try:
-                    s = pd.to_datetime(df.index, errors="coerce").date
-                    df["日付"] = s
-                except Exception:
-                    df["日付"] = pd.to_datetime(df.index).date
-        # 必須列フィルタ
+                try: df["日付"] = pd.to_datetime(df.index, errors="coerce").date
+                except Exception: df["日付"] = pd.to_datetime(df.index).date
+                
         need = ["日付", "終値"]
-        if not all(c in df.columns for c in need):
-            return pd.DataFrame()
+        if not all(c in df.columns for c in need): return pd.DataFrame()
         out = df[["日付", "終値"] + ([c for c in ("高値", "安値", "出来高") if c in df.columns])].copy()
+        
+        # ★追加：9:00前なら、APIが返してきた「今日」のデータを未来データとして削除する
+        now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+        if now_jst.time() < dt_mod.time(9, 0):
+            out = out[out["日付"] < now_jst.date()]
+        else:
+            out = out[out["日付"] <= now_jst.date()]
+            
         out = out.sort_values("日付", ascending=False)
         return out
 
-    # DB 読み
     try:
-        q = "SELECT 日付, 終値 FROM price_history WHERE コード=? ORDER BY 日付 DESC"
+        q = "SELECT 日付, 終値 FROM price_history WHERE コード=? ORDER BY 日付 DESC LIMIT 2"
         params = (str(code).strip(),)
         df = pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
         code_raw = str(code).strip()
@@ -1457,87 +1436,60 @@ def _get_last_two_closes(conn, code: str):
         if df.empty:
             print(f"[price-guard][DEBUG] price_history empty for code={code_raw} → re-fetching ...")
             sym = _build_symbol(code_raw)
-
             fetched = False
-            # 1) yahooquery → 6mo/3mo/1mo
+            
             if Ticker is not None:
                 try:
                     yq = Ticker(sym, validate=True)
                     for p in ("6mo", "3mo", "1mo"):
-                        _hist = yq.history(period=p, interval="1d")
-                        _norm = _normalize_df(_hist)
+                        _norm = _normalize_df(yq.history(period=p, interval="1d"))
                         if _norm is not None and not _norm.empty:
-                            # UPSERT into price_history
                             cur = conn.cursor()
                             for _, r in _norm.iterrows():
-                                cur.execute(
-                                    "INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
-                                    (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None)
-                                )
+                                cur.execute("INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
+                                            (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None))
                             conn.commit()
-                            n = len(_norm)
-                            print(f"[price-guard][INFO] yahooquery {p}: inserted {n} rows for {code_raw}")
-                            fetched = n > 0
-                            break
-                except Exception as e:
-                    print(f"[price-guard][WARN] yahooquery failed for {sym}: {e}")
+                            fetched = True; break
+                except Exception: pass
 
-            # 2) yfinance フォールバック
             if not fetched and yfinance is not None:
                 try:
                     for p in ("6mo", "3mo", "1mo"):
+                        # ★修正: auto_adjust=False
                         _hist = yfinance.download(sym, period=p, interval="1d", auto_adjust=False, progress=False, threads=False)
                         _norm = _normalize_df(_hist)
                         if _norm is not None and not _norm.empty:
                             cur = conn.cursor()
                             for _, r in _norm.iterrows():
-                                cur.execute(
-                                    "INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
-                                    (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None)
-                                )
+                                cur.execute("INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
+                                            (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None))
                             conn.commit()
-                            n = len(_norm)
-                            print(f"[price-guard][INFO] yfinance {p}: inserted {n} rows for {code_raw}")
-                            fetched = n > 0
-                            break
-                except Exception as e:
-                    print(f"[price-guard][WARN] yfinance failed for {sym}: {e}")
+                            fetched = True; break
+                except Exception: pass
 
-            # 3) Stooq フォールバック
             if not fetched:
                 try:
-
                     stq_sym = f"{code4}.jp" if is_numeric else f"{code_raw}.jp"
-                    _st = _pdr.DataReader(stq_sym, "stooq")
-                    _st_norm = _normalize_df(_st)
+                    _st_norm = _normalize_df(_pdr.DataReader(stq_sym, "stooq"))
                     if _st_norm is not None and not _st_norm.empty:
                         cur = conn.cursor()
                         for _, r in _st_norm.iterrows():
-                            cur.execute(
-                                "INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
-                                (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None)
-                            )
+                            cur.execute("INSERT OR REPLACE INTO price_history(コード, 日付, 終値) VALUES (?, ?, ?)",
+                                        (code_raw, str(r["日付"]), float(r["終値"]) if r["終値"] is not None else None))
                         conn.commit()
-                        n = len(_st_norm)
-                        print(f"[price-guard][INFO] stooq: inserted {n} rows for {code_raw} ({stq_sym})")
-                        fetched = n > 0
-                except Exception as e:
-                    print(f"[price-guard][WARN] stooq failed for {code_raw}: {e}")
+                        fetched = True
+                except Exception: pass
 
             if not fetched:
                 _override_set_auto_none_or_history(conn, code_raw, sym)
 
-            # 再読込
             df = pd.read_sql_query(q, conn, params=params, parse_dates=["日付"])
 
         if df.empty:
-            print(f"[price-guard][ERROR] price_history still empty after re-fetch for {code_raw}")
             return None, None, None, None
 
-        # 直近2営業日の終値
         cur_date = pd.to_datetime(df.iloc[0]["日付"]).date()
         cur_close = _num(df.iloc[0]["終値"])
-
         prev_date = None
         prev_close = None
         for i in range(1, len(df)):
@@ -1545,16 +1497,12 @@ def _get_last_two_closes(conn, code: str):
             if d != cur_date:
                 prev_date = d
                 prev_close = _num(df.iloc[i]["終値"])
-                if prev_close is None:
-                    continue
-                break
+                if prev_close is not None: break
 
         return cur_date, cur_close, prev_date, prev_close
-
     except Exception as _e:
         print(f"[price-guard][ERROR] _get_last_two_closes failed for {code}: {_e}")
         return None, None, None, None
-
 
 def _vectorize_minimum_fields(df):
     try:
@@ -1629,10 +1577,19 @@ def _apply_price_fields(conn, row: dict, code: str,
     - 場中かつ live_price が与えられたら「現在値のみ」ライブ、前日はDB由来
     - 前日が取れなければ前日系は空欄
     """
+    # ★修正1：失われていたデータベースからの終値取得を復元
     cur_d, cur_c, prev_d, prev_c = _get_last_two_closes(conn, code)
-    use_live = (not force_eod) and _is_trading_session_now() and isinstance(live_price, (int, float))
+    
+    # ★修正2：9:00前（0:00〜8:59）は絶対にライブ価格を適用しない
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+    is_morning_before_open = now_jst.time() < time(9, 0)
+    is_session = _is_trading_session_now()
+    
+    use_live = (not force_eod) and is_session and not is_morning_before_open and isinstance(live_price, (int, float))
+    
+    # 場中でない（休場・早朝）場合は、必ずDBの最新確定値（cur_c）を現在値とする
     cur_val = (float(live_price) if use_live else (float(cur_c) if cur_c is not None else None))
-
+    
     row["現在値_raw"] = cur_val if cur_val is not None else None
     row["現在値"]     = _fmt_int(cur_val)
     row["前日終値"]   = _fmt_int(prev_c)
@@ -2255,6 +2212,7 @@ def add_ai_analysis(conn, rows):
                 r['AIスコア'] = '-'
                 r['AI判定'] = '-'
                 r['AI目標値'] = '-'
+                r['AI目標値_raw'] = -999999 # ソートで沈めるためのダミー値
                 continue
                 
             prob = scores[code]
@@ -2268,7 +2226,6 @@ def add_ai_analysis(conn, rows):
                 p_val = 0
                 
             # 2) 理想のIN株価（押し目位置）の計算
-            # 優先順位：最寄り支持 > 支持帯中心 > 現在値の-4%
             sup_near = r.get('最寄り支持')
             sup_zone = r.get('支持帯中心')
             try:
@@ -2281,7 +2238,6 @@ def add_ai_analysis(conn, rows):
             except Exception:
                 ideal_in = int(p_val * 0.96)
 
-            # 異常値の補正（INが現在値より高い、または0以下の場合は現在値にする）
             if ideal_in > p_val or ideal_in <= 0:
                 ideal_in = int(p_val)
                 
@@ -2293,25 +2249,31 @@ def add_ai_analysis(conn, rows):
                 target = 0
             
             # 4) 判定と表記の生成
+            diff_val = None
             if score_val >= 65:
                 r['AI判定'] = '★超強気'
-                # 超強気は勢い重視（飛び乗り想定）なので、IN = 現在値
                 tgt = int(p_val * 1.10) if p_val > 0 else 0
-                r['AI目標値'] = f"{int(p_val)}→{tgt}" if tgt > 0 else '-'
+                if tgt > 0:
+                    diff_val = tgt - int(p_val)
+                    r['AI目標値'] = f"{int(p_val)}→{tgt} (+{diff_val}円)"
+                else:
+                    r['AI目標値'] = '-'
             elif score_val >= 55:
                 r['AI判定'] = '△注目'
-                # 注目は押し目待ち想定なので、IN = 支持線(ideal_in)
                 if target > ideal_in:
-                    r['AI目標値'] = f"{ideal_in}→{target}"
+                    diff_val = target - ideal_in
+                    r['AI目標値'] = f"{ideal_in}→{target} (+{diff_val}円)"
                 else:
-                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし"
+                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし (+???円)"
             else:
                 r['AI判定'] = '◯様子見'
-                # 様子見でも、もしここまで落ちてきたらIN、という目安
                 if target > ideal_in:
-                    r['AI目標値'] = f"{ideal_in}→{target}"
+                    diff_val = target - ideal_in
+                    r['AI目標値'] = f"{ideal_in}→{target} (+{diff_val}円)"
                 else:
-                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし"
+                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし (+???円)"
+                    
+            r['AI目標値_raw'] = diff_val if diff_val is not None else -999999
     except Exception as e:
         print(f"[AI] 分析エラー: {e}")
         
@@ -3532,6 +3494,14 @@ def _to_long_history(df_wide: pd.DataFrame, codes_map) -> pd.DataFrame:
 
     # 日付→date
     df["日付"] = pd.to_datetime(df["日付"]).dt.date
+    
+    # ★追加：9:00前なら、APIが返してきた「今日」のデータを未来データとして削除する
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+    if now_jst.time() < dt_mod.time(9, 0):
+        df = df[df["日付"] < now_jst.date()]
+    else:
+        df = df[df["日付"] <= now_jst.date()]
+
     # 重複除去（同一日・同一コード）
     df = df.drop_duplicates(subset=["コード","日付"], keep="last")
     return df.sort_values(["コード","日付"])
@@ -3651,8 +3621,7 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
       - screener は price_history の直近2日から 前日終値比率/出来高/現在値 を更新
       - 時価総額は速度優先で更新しない（必要なら別フェーズで）
     """
-    # === ★追加: 共通フィルターで地方市場やエラー銘柄を綺麗に除外 ===
-    codes = filter_valid_yahoo_codes(conn, codes)
+    codes = filter_valid_yahoo_codes(conn, codes) # ★ここで除外！
     
     codes = [str(c) for c in codes]
     have = _codes_with_data(conn)
@@ -3666,7 +3635,6 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
         chunk = exist_codes[i:i+batch_size]
         tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         
-        # 念のため、解決後のシンボルが .T 以外なら除外する安全策も追加
         safe_tickers = []
         for c, sym in tickers_map.items():
             if sym.endswith(".T"): # 東証のみ許可
@@ -3676,6 +3644,7 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
             continue
 
         try:
+            # ★修正: auto_adjust=False
             df_wide = yfinance.download(safe_tickers, period="2d", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
             df_add = _to_long_history(df_wide, tickers_map)
             total_added += _upsert_price_history(conn, df_add)
@@ -3697,6 +3666,7 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
             continue
 
         try:
+            # ★修正: auto_adjust=False
             df_wide = yfinance.download(safe_tickers, period="12mo", interval="1d", group_by="ticker", threads=True, auto_adjust=False)
             df_add = _to_long_history(df_wide, tickers_map)
             total_added += _upsert_price_history(conn, df_add)
@@ -3709,7 +3679,6 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
     apply_auto_metrics_eod(conn)
     apply_composite_score(conn)
     print(f"[refresh] 追記 {total_added} 行 / 銘柄 {len(codes)} 件（既存{len(exist_codes)}・新規{len(new_codes)}）")
-    
 # ==== 時価総額取得
 
 # ===== 全銘柄の時価総額を一括更新 =====
@@ -5386,6 +5355,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
         "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
         "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ", "踏み上げ期待スコア",
+        "AI目標値", "AI目標値_raw",
         "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主"
     ] if c in _df.columns]
 

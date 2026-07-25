@@ -649,6 +649,7 @@
 
 
     <input type="text" id="q" placeholder="全文検索（コード/銘柄/関連テーマ/最新テーマ/判定理由など）" style="min-width:240px">
+    <button class="btn" id="btn-multi-sort" style="background-color: var(--blue);">⇅ 高度なソート</button> <!-- ★追加 -->
     <button class="btn" id="btn-sector" style="background-color: var(--green);">📊 セクター資金流入</button>
     <button class="btn" id="btn-theme" style="background-color: var(--orange);">🔥 テーマ資金流入</button>
 
@@ -680,8 +681,22 @@
 <script>
   window.HELP_TEXT = {
     "AIスコア": "AIによる有望度評価（0-100点）。トレンド・RSI・乖離率・市場地合い等を総合分析。",
-    "AI判定": "AIスコアが基準（70点）以上の場合に「★GO」を表示。買いシグナルの候補。",
-    "AI目標値": "AI判定が「★GO」の場合の目標株価。現在値の+10%を目安に設定。",
+    "AI判定": "AIの強気度合い（スコア）に応じたトレード戦略（飛び乗りか、押し目待ちか）を示します。\n\n" +
+              "【1. ★超強気（AIスコア65以上）】\n" +
+              "モメンタム（勢い）が非常に強く、押し目を作らずに飛んでいく可能性が高いとAIが判断した状態です。\n" +
+              "・IN価格: 「現在値」。押し目を待たずに順張り（飛び乗り）で入ることを想定。\n\n" +
+              "【2. △注目（55〜64） / ◯様子見（54以下）】\n" +
+              "まだ明確な急騰トレンドに入っていない、あるいは一度調整（押し目）を作る可能性が高いと判断した状態です。\n" +
+              "・IN価格: 下落した際に反発しやすい「サポート（支持線）」を以下の優先順位で探し、そこで待ち伏せます。\n" +
+              "  ① 最寄り支持: 現在値のすぐ下にある最も強い支持線。\n" +
+              "  ② 支持帯中心: 過去に何度も株価が止まった価格帯の中心。\n" +
+              "  ③ どちらも無い場合は、「現在値の −4%」 を機械的な押し目として設定します。",
+    "AI目標値": "AIが算出した利益確定の目標ラインと、IN価格からの期待リターン（+円）です。\n\n" +
+                "【★超強気 の場合】\n" +
+                "短期的な過熱のピーク目安として、機械的に「現在値の＋10%」の位置を利益確定ラインとします。\n\n" +
+                "【△注目 / ◯様子見 の場合】\n" +
+                "過去に上値を抑え付けられた「抵抗帯中心（レジスタンス）」を目標株価とします。\n" +
+                "※目標となる抵抗帯が存在しない、またはIN価格より下にある場合は「青天井」または「真空地帯」とみなし、『抵抗帯なし』と表示します。",
     "抵抗帯中心":"過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
     "抵抗最終日":"直近で抵抗帯に触れた日。",
     "最寄り抵抗":"現在値以上で最も近い抵抗。",
@@ -1086,97 +1101,209 @@
     }
   });
 
-  // DOM sort (Shiftキーでマルチソート対応)
-  let sortCriteria = []; // [{colIndex: 5, dir: 'asc', typ: 'num'}, ...]
-  function wireDomSort(tableSelector){
-    const table = document.querySelector(tableSelector); if(!table) return;
-    const ths = Array.from(table.querySelectorAll('thead th.sortable'));
-    const cellVal = (td)=>{
-      if (!td) return '';
-      const ds = td.getAttribute ? td.getAttribute('data-sort') : null;
-      return (ds !== null && ds !== '') ? ds : (td.textContent || '');
-    };
-    const toNum = (s)=>{
-      let t = String(s ?? '').trim().replace(/\s|[円％%]/g,'');
-      if (t.indexOf('.') === -1 && /^-?\d+,\d+$/.test(t)) t = t.replace(',', '.'); else t = t.replace(/,/g,'');
-      const n = parseFloat(t);
-      return Number.isFinite(n) ? n : NaN;
-    };
-    
-    ths.forEach((th)=>{
-      if (th.__wiredSort) return;
-      th.__wiredSort = true;
-      th.style.cursor = 'pointer';
-      th.title = "Shift+クリックで複数条件のソート（AND）が可能です";
-      
-      th.addEventListener('click', (e)=>{
-        const colIndex = th.cellIndex;
-        const typ = th.dataset.type || 'text';
-        
-        const existingIdx = sortCriteria.findIndex(c => c.colIndex === colIndex);
-        let dir = 'desc'; // 初回クリック時は降順を優先(実務的に数値が高いものを見たいため)
-        
-        if (existingIdx !== -1) {
-            dir = sortCriteria[existingIdx].dir === 'asc' ? 'desc' : 'asc';
-            sortCriteria.splice(existingIdx, 1);
-        }
+  // DOM sort (モーダル対応・マルチソート)
+  let sortCriteria = []; // グローバルでソート条件を管理
+  let sortableColumns = []; // モーダル用の列情報をキャッシュ
 
-        // Shiftキーが押されていなければリセット（単一ソート）
-        if (!e.shiftKey) {
-            sortCriteria = [];
-        }
-        
-        // 最後にクリックされたものを最優先（配列の先頭）に追加
-        sortCriteria.unshift({ colIndex, dir, typ });
-        
-        const rows = Array.from(table.querySelectorAll('tbody tr'));
-        rows.sort((r1, r2)=>{
-            for (let crit of sortCriteria) {
-                const aRaw = cellVal(r1.children[crit.colIndex]).trim();
-                const bRaw = cellVal(r2.children[crit.colIndex]).trim();
-                let cmp = 0;
-                
-                if (crit.typ === 'num'){
-                    const aKey = toNum(aRaw), bKey = toNum(bRaw);
-                    const aIsNum = !Number.isNaN(aKey), bIsNum = !Number.isNaN(bKey);
-                    if (aIsNum && bIsNum) cmp = aKey - bKey;
-                    else if (aIsNum) cmp = -1; // 数値を空欄より上位に
-                    else if (bIsNum) cmp = 1;
-                } else if (crit.typ === 'date'){
-                    const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
-                    const aIsDate = !Number.isNaN(aKey), bIsDate = !Number.isNaN(bKey);
-                    if (aIsDate && bIsDate) cmp = aKey - bKey;
-                    else if (aIsDate) cmp = -1;
-                    else if (bIsDate) cmp = 1;
-                } else {
-                    cmp = String(aRaw).toLowerCase().localeCompare(String(bRaw).toLowerCase(), 'ja');
-                }
-                
-                if (cmp !== 0) {
-                    return crit.dir === 'asc' ? cmp : -cmp;
-                }
-            }
-            return 0;
-        });
-        
-        const tb = table.querySelector('tbody');
-        rows.forEach(r=>tb.appendChild(r));
-        
-        // UI(矢印と優先順位)の更新
-        ths.forEach(h => { h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
-        sortCriteria.forEach((crit, i) => {
-            const h = ths.find(hx => hx.cellIndex === crit.colIndex);
-            if (h) {
-                h.dataset.dir = crit.dir;
-                const arr = h.querySelector('.arrow');
-                if (arr) {
-                    const orderBadge = sortCriteria.length > 1 ? `(${i+1})` : '';
-                    arr.textContent = (crit.dir === 'asc' ? '▲' : '▼') + orderBadge;
-                }
-            }
-        });
+  // 実際のソート処理（既存の処理を独立した関数に切り出し）
+  function performTableSort() {
+      const table = document.querySelector("#tbl-candidate");
+      if (!table || sortCriteria.length === 0) return;
+
+      const ths = Array.from(table.querySelectorAll('thead th.sortable'));
+      const tb = table.querySelector('tbody');
+      const rows = Array.from(tb.querySelectorAll('tr'));
+
+      const cellVal = (td) => {
+          if (!td) return '';
+          const ds = td.getAttribute('data-sort');
+          return (ds !== null && ds !== '') ? ds : (td.textContent || '');
+      };
+      const toNum = (s) => {
+          let t = String(s ?? '').trim().replace(/\s|[円％%]/g,'');
+          if (t.indexOf('.') === -1 && /^-?\d+,\d+$/.test(t)) t = t.replace(',', '.'); else t = t.replace(/,/g,'');
+          const n = parseFloat(t);
+          return Number.isFinite(n) ? n : NaN;
+      };
+
+      rows.sort((r1, r2) => {
+          for (let crit of sortCriteria) {
+              const aRaw = cellVal(r1.children[crit.colIndex]).trim();
+              const bRaw = cellVal(r2.children[crit.colIndex]).trim();
+              let cmp = 0;
+              
+              if (crit.typ === 'num'){
+                  const aKey = toNum(aRaw), bKey = toNum(bRaw);
+                  const aIsNum = !Number.isNaN(aKey), bIsNum = !Number.isNaN(bKey);
+                  if (aIsNum && bIsNum) cmp = aKey - bKey;
+                  else if (aIsNum) cmp = crit.dir === 'asc' ? -1 : 1; 
+                  else if (bIsNum) cmp = crit.dir === 'asc' ? 1 : -1;
+              } else if (crit.typ === 'date'){
+                  const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
+                  const aIsDate = !Number.isNaN(aKey), bIsDate = !Number.isNaN(bKey);
+                  if (aIsDate && bIsDate) cmp = aKey - bKey;
+                  else if (aIsDate) cmp = crit.dir === 'asc' ? -1 : 1; 
+                  else if (bIsDate) cmp = crit.dir === 'asc' ? 1 : -1;
+              } else {
+                  cmp = String(aRaw).toLowerCase().localeCompare(String(bRaw).toLowerCase(), 'ja');
+              }
+              
+              if (cmp !== 0) {
+                  return crit.dir === 'asc' ? cmp : -cmp;
+              }
+          }
+          return 0;
       });
-    });
+
+      rows.forEach(r => tb.appendChild(r));
+
+      // UI(矢印と優先順位)の更新
+      ths.forEach(h => { h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
+      sortCriteria.forEach((crit, i) => {
+          const h = ths.find(hx => hx.cellIndex === crit.colIndex);
+          if (h) {
+              h.dataset.dir = crit.dir;
+              const arr = h.querySelector('.arrow');
+              if (arr) {
+                  const orderBadge = sortCriteria.length > 1 ? `(${i+1})` : '';
+                  arr.textContent = (crit.dir === 'asc' ? '▲' : '▼') + orderBadge;
+              }
+          }
+      });
+  }
+
+  // 既存の wireDomSort をオーバーライド
+  function wireDomSort(tableSelector){
+      const table = document.querySelector(tableSelector); if(!table) return;
+      const ths = Array.from(table.querySelectorAll('thead th.sortable'));
+      
+      // モーダル用に列情報をキャッシュ
+      sortableColumns = ths.map(th => ({
+          index: th.cellIndex,
+          name: th.textContent.replace('▲', '').replace('▼', '').replace(/\\(\\d+\\)/, '').trim(),
+          type: th.dataset.type || 'text'
+      }));
+      
+      ths.forEach((th)=>{
+          if (th.__wiredSort) return;
+          th.__wiredSort = true;
+          th.style.cursor = 'pointer';
+          th.title = "クリックでソート（高度なソートはツールバーのボタンから）";
+          
+          // シングルクリックソート（Shiftの挙動も一応残しておく）
+          th.addEventListener('click', (e)=>{
+              const colIndex = th.cellIndex;
+              const typ = th.dataset.type || 'text';
+              const existingIdx = sortCriteria.findIndex(c => c.colIndex === colIndex);
+              let dir = 'desc';
+              
+              if (existingIdx !== -1) {
+                  dir = sortCriteria[existingIdx].dir === 'asc' ? 'desc' : 'asc';
+                  sortCriteria.splice(existingIdx, 1);
+              }
+              if (!e.shiftKey) {
+                  sortCriteria = [];
+              }
+              sortCriteria.unshift({ colIndex, dir, typ });
+              performTableSort(); // 共通関数を呼び出し
+          });
+      });
+      
+      // モーダルUIの初期化処理を呼び出す
+      initSortModal();
+  }
+
+  // === モーダルUI制御ロジック ===
+  function initSortModal() {
+      const btnOpen = document.getElementById('btn-multi-sort');
+      const modal = document.getElementById('sort-modal-overlay');
+      const btnClose = document.getElementById('sort-modal-close');
+      const btnAdd = document.getElementById('btn-add-sort-cond');
+      const btnApply = document.getElementById('btn-apply-sort');
+      const container = document.getElementById('sort-conditions-container');
+
+      if(btnOpen && !btnOpen.dataset.wired && modal) {
+          btnOpen.dataset.wired = "1";
+          btnOpen.addEventListener('click', (e) => {
+              e.preventDefault();
+              modal.style.display = 'block';
+              
+              // 現在の sortCriteria に合わせてモーダル内の行を構築
+              container.innerHTML = '';
+              if (sortCriteria.length === 0) {
+                  addSortConditionRow(); // 空なら1行追加
+              } else {
+                  sortCriteria.forEach(crit => {
+                      addSortConditionRow(crit.colIndex, crit.dir);
+                  });
+              }
+          });
+
+          btnClose.addEventListener('click', () => modal.style.display = 'none');
+          modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+          
+          btnAdd.addEventListener('click', () => addSortConditionRow());
+
+          btnApply.addEventListener('click', () => {
+              const rows = Array.from(container.children);
+              sortCriteria = rows.map(row => {
+                  const colSelect = row.querySelector('.col-select');
+                  const dirSelect = row.querySelector('.dir-select');
+                  const selectedOption = colSelect.options[colSelect.selectedIndex];
+                  return {
+                      colIndex: parseInt(colSelect.value, 10),
+                      dir: dirSelect.value,
+                      typ: selectedOption.dataset.type
+                  };
+              });
+              performTableSort(); // ソート実行
+              modal.style.display = 'none';
+          });
+      }
+  }
+
+  // モーダル内にプルダウン行を追加
+  function addSortConditionRow(defaultColIndex = null, defaultDir = 'desc') {
+      const container = document.getElementById('sort-conditions-container');
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; gap:8px; align-items:center; background:#f8fafc; padding:8px; border-radius:8px; border:1px solid #e2e8f0;';
+      
+      // 列選択プルダウン
+      const select = document.createElement('select');
+      select.className = 'col-select';
+      select.style.cssText = 'flex:1; padding:6px; border:1px solid #cbd5e1; border-radius:6px;';
+      sortableColumns.forEach(col => {
+          // 列名が空でないものだけをプルダウンの選択肢に追加
+          if (col.name) {
+            const opt = document.createElement('option');
+            opt.value = col.index;
+            opt.dataset.type = col.type;
+            opt.textContent = col.name;
+            if (col.index === defaultColIndex) opt.selected = true;
+            select.appendChild(opt);
+          }
+      });
+
+      // 昇順降順トグル
+      const dirSelect = document.createElement('select');
+      dirSelect.className = 'dir-select';
+      dirSelect.style.cssText = 'padding:6px; border:1px solid #cbd5e1; border-radius:6px;';
+      dirSelect.innerHTML = `<option value="desc" ${defaultDir==='desc'?'selected':''}>降順 ▼</option>
+                             <option value="asc" ${defaultDir==='asc'?'selected':''}>昇順 ▲</option>`;
+
+      // 削除ボタン
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '✖ 削除';
+      delBtn.style.cssText = 'padding:6px 12px; cursor:pointer; background:#fff; border:1px solid #cbd5e1; border-radius:6px; color:#ef4444; font-weight:bold; font-size:12px;';
+      delBtn.addEventListener('click', () => {
+          row.remove();
+          if(container.children.length === 0) addSortConditionRow(); // 最低1行は残す
+      });
+
+      row.appendChild(select);
+      row.appendChild(dirSelect);
+      row.appendChild(delBtn);
+      container.appendChild(row);
   }
 
   // state
@@ -1697,6 +1824,9 @@
       
       const sfBadge = r["需給安全フラグ"] == 1 ? '<span class="badge b-green">安全</span>' : '';
       
+      const sqScore = Number(r["踏み上げ期待スコア"] ?? 0);
+      const sqBadge = sqScore > 0 ? `<span style="color:#e11d48; font-weight:bold;">${sqScore}</span>` : '-';
+      
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
         <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
@@ -1717,7 +1847,7 @@
         </td>
         <td class="num">${r["AIスコア"] || "-"}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
-        <td class="num">${r["AI目標値"] || "-"}</td>
+        <td class="num" data-sort="${r['AI目標値_raw'] ?? -999999}">${r["AI目標値"] || "-"}</td>
         <td style="text-align:center;"><button class="btn btn-prompt" data-code="${String(r["コード"]||"").padStart(4,"0")}" style="padding:2px 8px; font-size:11px;">生成</button></td>
         
         <td style="text-align:center;">
@@ -1733,6 +1863,7 @@
         <td class="num">${r["信用倍率"] != null ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
         <td class="num">${r["需給OH"] != null ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
         <td style="text-align:center;">${sfBadge}</td>
+        <td class="num" style="text-align:center;">${sqBadge}</td>
         <td class="num">${r["売り残"] != null ? Number(r["売り残"]).toLocaleString() : "-"}</td>
         <td class="num">${r["買い残"] != null ? Number(r["買い残"]).toLocaleString() : "-"}</td>
         <td class="theme-col" data-col="最新テーマ" title="${escapeHtml(String(r["最新テーマ"] || ""))}">${escapeHtml(r["最新テーマ"] || "")}</td>
@@ -2620,6 +2751,35 @@ window.showTobHistory = function(btn, jsonStr) {
   }
 };
 })();
+
+// === ここから追加：高度なソート用モーダルHTMLの挿入 ===
+(function(){
+  if (!document.getElementById('sort-modal-overlay')) {
+    const ov = document.createElement('div');
+    ov.id = 'sort-modal-overlay';
+    ov.style.cssText = 'display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.4); backdrop-filter:blur(2px);';
+    ov.innerHTML = `
+      <div id="sort-modal-content" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:#fff; border:1px solid #cbd5e1; box-shadow:0 10px 30px rgba(0,0,0,0.3); padding:24px; border-radius:12px; width:450px; max-width:95vw; display:flex; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:2px solid #e2e8f0; padding-bottom:12px;">
+          <div style="font-weight:bold; font-size:16px; color:var(--blue);">高度な複数列ソート</div>
+          <div id="sort-modal-close" style="cursor:pointer; font-weight:bold; color:#64748b; background:#f1f5f9; padding:4px 12px; border-radius:6px; font-size:14px;">閉じる</div>
+        </div>
+        
+        <div style="font-size:12px; color:#64748b; margin-bottom:12px;">上から順番に優先してソートされます。</div>
+        <div id="sort-conditions-container" style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px; max-height:40vh; overflow-y:auto;">
+          <!-- 動的にプルダウン行が追加される -->
+        </div>
+        
+        <div style="display:flex; justify-content:space-between;">
+          <button class="btn" id="btn-add-sort-cond" style="background-color: var(--orange); padding:4px 12px; font-size:12px;">＋ 列を追加</button>
+          <button class="btn" id="btn-apply-sort" style="background-color: var(--green);">適用してソート</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(ov);
+  }
+})();
+// === 追加ここまで ===
 </script>
 
   <section id="tab-candidate" class="tab">
@@ -2651,6 +2811,7 @@ window.showTobHistory = function(btn, jsonStr) {
             <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<span class="arrow"></span></th>
             <th class="num sortable" data-col="需給OH" data-type="num">需給OH<span class="arrow"></span></th>
             <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
+            <th class="num sortable" data-col="踏み上げ期待スコア" data-type="num">踏み上げ<span class="arrow"></span></th> <!-- ← ここに追加 -->
             <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
             <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
             <th class="sortable" data-col="最新テーマ" data-type="text">最新テーマ<span class="arrow"></span></th>
@@ -2908,6 +3069,7 @@ window.applyQuickSearch = function(keyword) {
               <tr style="height:40px;">
                 <th style="text-align:center; font-size:15px;">順位</th>
                 <th style="text-align:left; font-size:15px;">セクター (東証33業種)</th>
+                <th class="num" style="font-size:15px;">平均騰落率</th> <!-- ★追加 -->
                 <th class="num" style="font-size:15px;">売買代金 (億円)</th>
                 <th class="num" style="font-size:15px;">銘柄数</th>
                 <th class="num" title="1銘柄あたりの平均売買代金" style="font-size:15px;">平均流入 (億円)</th>
@@ -2944,8 +3106,9 @@ window.applyQuickSearch = function(keyword) {
           const turn = Number(s.total_turnover || 0);
           const count = Number(s.active_stocks || 1);
           const avg = turn / count;
+          const avgRet = Number(s.avg_return || 0); // バックエンドから受け取った平均値
           
-          // 上位3位のメダル装飾
+          const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
           let rankHtml = `${idx + 1}`;
           if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
           if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
@@ -2957,6 +3120,8 @@ window.applyQuickSearch = function(keyword) {
               <td style="font-weight:bold; color:var(--blue); font-size:16px;">
                 <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${s.セクター}'); return false;" title="このセクターで絞り込み">${s.セクター}</a>
               </td>
+              <!-- ★追加：平均騰落率セル -->
+              <td class="num" style="color:${retColor}; font-weight:bold; font-size:16px;">${avgRet > 0 ? '+' : ''}${avgRet.toFixed(2)}%</td>
               <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
               <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
               <td class="num" style="color:#64748b; font-size:16px;">${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
@@ -2992,6 +3157,7 @@ window.applyQuickSearch = function(keyword) {
               <tr style="height:40px;">
                 <th style="text-align:center; font-size:15px;">順位</th>
                 <th style="text-align:left; font-size:15px;">テーマ名</th>
+                <th class="num" style="font-size:15px;">平均騰落率</th> <!-- ★追加 -->
                 <th class="num" style="font-size:15px;">売買代金 (億円)</th>
                 <th class="num" style="font-size:15px;">銘柄数</th>
                 <th class="num" title="1銘柄あたりの平均売買代金" style="font-size:15px;">平均流入 (億円)</th>
@@ -3025,9 +3191,11 @@ window.applyQuickSearch = function(keyword) {
         themes.forEach((t, idx) => {
           const turn = Number(t.total_turnover || 0);
           const count = Number(t.active_stocks || 1);
-          const median = Number(t.median_turnover || 0); // 中央値を取得
-          const score = Number(t.true_flow_score || 0);  // 真の旬スコア
+          const median = Number(t.median_turnover || 0);
+          const score = Number(t.true_flow_score || 0);
+          const avgRet = Number(t.avg_return || 0); // バックエンドから受け取った平均値
           
+          const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
           let rankHtml = `${idx + 1}`;
           if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
           if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
@@ -3039,6 +3207,8 @@ window.applyQuickSearch = function(keyword) {
               <td style="font-weight:bold; color:var(--orange); font-size:16px;">
                 <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${t.テーマ}'); return false;" title="このテーマで絞り込み">${t.テーマ}</a>
               </td>
+              <!-- ★追加：平均騰落率セル -->
+              <td class="num" style="color:${retColor}; font-weight:bold; font-size:16px;">${avgRet > 0 ? '+' : ''}${avgRet.toFixed(2)}%</td>
               <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
               <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
               <td class="num" title="メガキャップのノイズを排除した中央値" style="color:#64748b; font-size:16px;">
