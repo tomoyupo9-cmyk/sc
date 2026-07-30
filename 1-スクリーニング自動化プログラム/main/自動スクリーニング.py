@@ -25,7 +25,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Iterable, Literal, Optional, Union
 import urllib.parse
 from urllib.parse import quote
 import warnings
@@ -661,12 +661,8 @@ def _ensure_latest_prices_code_col(conn):
             
 def _ensure_latest_prices_index_rows(conn):
     """
-    screener にある『指数』行（市場='指数'）を
-    latest_prices に追加する。
-    
-    latest_prices は「コード TEXT PRIMARY KEY」「日付 TEXT NOT NULL」なので、
-    挿入時に「コード」「日付」は必ずセットで入れる必要がある。
-    終値・現在値・Res_*・Sup_* は後工程で埋まる。
+    screener にある行のうち、latest_prices に未登録のものを追加する。
+    （市場='指数'だけでなく、INDEXや全銘柄を対象にすることでサポレジ計算漏れを防ぐ）
     """
     try:
         cur = conn.cursor()
@@ -676,8 +672,7 @@ def _ensure_latest_prices_index_rows(conn):
                 s.コード,
                 COALESCE(s.更新日, date('now','localtime')) AS 日付
             FROM screener AS s
-            WHERE s.市場 = '指数'
-              AND NOT EXISTS (
+            WHERE NOT EXISTS (
                   SELECT 1 FROM latest_prices lp
                   WHERE lp.コード = s.コード
               )
@@ -1319,7 +1314,9 @@ def _probe_realtime_quote(sym: str) -> bool:
         fi = getattr(t, "fast_info", None)
         if fi:
             for k in ("last_price", "regular_market_price", "last_trade_price"):
-                v = fi.get(k) if hasattr(fi, "get") else None
+                v = getattr(fi, k, None)
+                if v is None and hasattr(fi, "get"):
+                    v = fi.get(k) # 古いバージョンのyfinance用フォールバック
                 if _is_ok(v):
                     return True
     except Exception:
@@ -1645,6 +1642,8 @@ def _fetch_live_price_map(conn,codes):
         if isinstance(price, dict):
             # Newer yahooquery returns nested dict
             for sym, p in price.items():
+                if not isinstance(p, dict):
+                    continue  # 値が文字列(エラー)の場合はスキップ
                 try:
                     code4 = sym.split(".")[0]
                     v = p.get("regularMarketPrice")
@@ -1982,6 +1981,7 @@ KARA_URI_NASHI_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プ
 # --- RUN settings ---
 # ======== 実行モード ========
 RUN_SESSION = "EOD"
+#RUN_SESSION = "MIDDAY"
 
 # --- AUTO settings ---
 # 機能フラグ（ON/OFF）
@@ -2219,61 +2219,85 @@ def add_ai_analysis(conn, rows):
             score_val = round(prob * 100, 1)
             r['AIスコア'] = score_val
             
-            # 1) 現在値の取得
+            # 1) 基準となる現在値の取得
             try:
                 p_val = float(str(r.get('現在値', 0)).replace(',', ''))
             except Exception:
                 p_val = 0
-                
-            # 2) 理想のIN株価（押し目位置）の計算
-            sup_near = r.get('最寄り支持')
-            sup_zone = r.get('支持帯中心')
-            try:
-                if sup_near and str(sup_near) not in ("None", "", "NaN", "nan"):
-                    ideal_in = int(float(str(sup_near).replace(',', '')))
-                elif sup_zone and str(sup_zone) not in ("None", "", "NaN", "nan"):
-                    ideal_in = int(float(str(sup_zone).replace(',', '')))
-                else:
-                    ideal_in = int(p_val * 0.96)
-            except Exception:
-                ideal_in = int(p_val * 0.96)
 
-            if ideal_in > p_val or ideal_in <= 0:
-                ideal_in = int(p_val)
-                
-            # 3) 抵抗帯（目標）の取得
-            res_zone = r.get('抵抗帯中心')
+            if p_val <= 0:
+                r['AI判定'] = '-'
+                r['AI目標値'] = '-'
+                r['AI目標値_raw'] = -999999
+                continue
+
+            # 2) ATR（1日の平均値幅）の取得。無ければ現在値の2.5%を疑似ATRとする
             try:
-                target = int(float(str(res_zone).replace(',', ''))) if str(res_zone) not in ("None", "", "NaN", "nan") else 0
+                atr_val = float(str(r.get('ATR14', r.get('ATR20', 0))).replace(',', ''))
             except Exception:
-                target = 0
+                atr_val = 0
+            if atr_val <= 0:
+                atr_val = p_val * 0.025
+
+            # 3) 支持線（サポート）と抵抗線（レジスタンス）の取得
+            sup_zone = r.get('支持帯中心')
+            sup_near = r.get('最寄り支持')
+            sup_ll   = r.get('Sup_LL')
             
-            # 4) 判定と表記の生成
+            res_zone = r.get('抵抗帯中心')
+            res_near = r.get('最寄り抵抗')
+            res_hh   = r.get('Res_HH')
+
+            # 数値変換の安全関数
+            def get_valid_price(*candidates):
+                for c in candidates:
+                    try:
+                        if c and str(c).strip() not in ("None", "", "NaN", "nan"):
+                            v = float(str(c).replace(',', ''))
+                            if v > 0: return v
+                    except Exception:
+                        pass
+                return None
+
+            # 4) IN株価（押し目）の決定
+            # 優先順位: ①支持帯中心 ②最寄り支持 ③直近安値 ④どれもなければ「ATRの0.5日分下」
+            ideal_in = get_valid_price(sup_zone, sup_near, sup_ll)
+            if ideal_in is None or ideal_in >= p_val:
+                ideal_in = p_val - (atr_val * 0.5)
+            ideal_in = int(ideal_in)
+
+            # 5) 目標株価の決定
+            # 優先順位: ①抵抗帯中心 ②最寄り抵抗 ③直近高値
+            target_out = get_valid_price(res_zone, res_near, res_hh)
+
+            # 6) 判定と表記の生成（ATRを活用した青天井ターゲットの実装）
             diff_val = None
             if score_val >= 65:
                 r['AI判定'] = '★超強気'
-                tgt = int(p_val * 1.10) if p_val > 0 else 0
-                if tgt > 0:
-                    diff_val = tgt - int(p_val)
-                    r['AI目標値'] = f"{int(p_val)}→{tgt} (+{diff_val}円)"
-                else:
-                    r['AI目標値'] = '-'
+                # 超強気は「現在値」からエントリーし、抵抗線か「青天井（現在値 + ATR 3日分）」を狙う
+                tgt = target_out if (target_out and target_out > p_val * 1.03) else (p_val + (atr_val * 3))
+                tgt = int(tgt)
+                diff_val = tgt - int(p_val)
+                r['AI目標値'] = f"{int(p_val)}→{tgt} (+{diff_val}円)"
+
             elif score_val >= 55:
                 r['AI判定'] = '△注目'
-                if target > ideal_in:
-                    diff_val = target - ideal_in
-                    r['AI目標値'] = f"{ideal_in}→{target} (+{diff_val}円)"
-                else:
-                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし (+???円)"
+                # 注目は「押し目(ideal_in)」からエントリーし、抵抗線か「青天井（+ ATR 4日分）」を狙う
+                tgt = target_out if (target_out and target_out > ideal_in) else (ideal_in + (atr_val * 4))
+                tgt = int(tgt)
+                diff_val = tgt - ideal_in
+                r['AI目標値'] = f"{ideal_in}→{tgt} (+{diff_val}円)"
+
             else:
                 r['AI判定'] = '◯様子見'
-                if target > ideal_in:
-                    diff_val = target - ideal_in
-                    r['AI目標値'] = f"{ideal_in}→{target} (+{diff_val}円)"
-                else:
-                    r['AI目標値'] = f"{ideal_in}→抵抗帯なし (+???円)"
-                    
+                # 様子見も「押し目(ideal_in)」からエントリー。抵抗が無ければ控えめに「+ ATR 2日分」
+                tgt = target_out if (target_out and target_out > ideal_in) else (ideal_in + (atr_val * 2))
+                tgt = int(tgt)
+                diff_val = tgt - ideal_in
+                r['AI目標値'] = f"{ideal_in}→{tgt} (+{diff_val}円)"
+                
             r['AI目標値_raw'] = diff_val if diff_val is not None else -999999
+
     except Exception as e:
         print(f"[AI] 分析エラー: {e}")
         
@@ -3230,6 +3254,9 @@ def phase_csv_import(conn, csv_path=None, overwrite_registered_date=None, **_ign
     for c in needed:
         df[c] = df[c].astype(str).map(lambda x: x.strip() if x is not None else x)
 
+    # ★ 追加：コードを ^TOPX 等に統一する
+    df["コード"] = df["コード"].map(canonical_code_for_db)
+
     df["登録日"] = today_str  # INSERT時だけ使われる
 
     sql = """
@@ -3580,7 +3607,7 @@ def filter_valid_yahoo_codes(conn: sqlite3.Connection, codes: list) -> list:
     if not codes:
         return []
     
-    IGNORE_MARKETS = ["札", "札幌", "名", "名古屋", "福", "福岡", "S", "N", "F"]
+    IGNORE_MARKETS = ["札", "札幌", "名", "名古屋", "福", "福岡", "名証", "札証", "福証"]
 
     try:
         cur = conn.cursor()
@@ -3635,10 +3662,8 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
         chunk = exist_codes[i:i+batch_size]
         tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         
-        safe_tickers = []
-        for c, sym in tickers_map.items():
-            if sym.endswith(".T"): # 東証のみ許可
-                safe_tickers.append(sym)
+        # すべてのシンボルをそのまま許可
+        safe_tickers = list(tickers_map.values())
         
         if not safe_tickers:
             continue
@@ -3657,10 +3682,8 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
         chunk = new_codes[i:i+batch_size]
         tickers_map = {c: resolve_yahoo_symbol(str(c), conn, True) for c in chunk}
         
-        safe_tickers = []
-        for c, sym in tickers_map.items():
-            if sym.endswith(".T"):
-                safe_tickers.append(sym)
+        # すべてのシンボルをそのまま許可
+        safe_tickers = list(tickers_map.values())
 
         if not safe_tickers:
             continue
@@ -3836,7 +3859,13 @@ LEFT JOIN latest_prices lp
         quotes = t.quotes if isinstance(t.quotes, dict) else {}
 
         for sym in symbols:
-            q = quotes.get(sym) or {}
+            q = quotes.get(sym)
+            
+            # 【前回の修正】エラーメッセージ(文字列)が返ってきた場合は空辞書にして回避
+            if not isinstance(q, dict):
+                q = {}  
+
+            # ▼▼ 以下の行が消えていたり、字下げがズレていないか確認してください ▼▼
             code = sym.split('.', 1)[0]
             trade_date = _trade_date_from_quote(q)
 
@@ -5166,6 +5195,130 @@ def _derive_opratio_flag(d, threshold_pct: float = 10.0) -> str:
     ratio_pct = (op / mcap) * 100.0
     return "1" if ratio_pct >= threshold_pct else "0"
 # =======================================================================
+from typing import Union
+
+def _safe_get_numeric(df: pd.DataFrame, col_names: Union[str, list[str]], default_val: float = 0.0) -> pd.Series:
+    """
+    指定カラム（複数候補可）を安全に数値Seriesとして取得し、欠損値やカラムが存在しない場合はデフォルト値で埋める。
+    空間計算量: O(N) - 新しいSeriesを生成
+    時間計算量: O(N) - Pandasのベクトル化処理に依存
+    """
+    if isinstance(col_names, str):
+        col_names = [col_names]
+        
+    for col in col_names:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce").fillna(default_val)
+            
+    # 全ての候補が存在しない場合はデフォルト値のSeriesを返す
+    return pd.Series(default_val, index=df.index, dtype=float)
+
+def apply_3algo_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """3大アルゴリズムをグラデーション（連続評価）で100点満点で採点し、最終的な売買判定を下す"""
+    if df is None or getattr(df, "empty", True):
+        return df
+
+    import numpy as np
+    import pandas as pd
+
+    # --- 1. モメンタムCTA (0〜100点) ---
+    rs20 = pd.to_numeric(df.get("RS_20"), errors="coerce").fillna(0)
+    rs5 = pd.to_numeric(df.get("RS_5"), errors="coerce").fillna(0)
+    
+    # ベース点（フラグが出ている場合は下駄をはかせる）
+    has_rightup = df.get("右肩上がりフラグ", pd.Series(dtype=str)).astype(str).str.contains("候補")
+    has_early = df.get("右肩早期フラグ", pd.Series(dtype=str)).astype(str).str.contains("候補")
+    has_shodou = df.get("初動フラグ", pd.Series(dtype=str)).astype(str).str.contains("候補")
+    base_mom = np.where(has_rightup | has_early | has_shodou, 40, 0)
+    
+    # RS(相対的な強さ)によるグラデーション加点
+    # 中期(RS_20): -10%〜+30%の範囲を 0〜40点 に滑らかに変換
+    rs20_score = np.clip((rs20 + 10) / 40 * 40, 0, 40)
+    # 短期(RS_5): -5%〜+15%の範囲を 0〜20点 に滑らかに変換
+    rs5_score = np.clip((rs5 + 5) / 20 * 20, 0, 20)
+    
+    score_mom = np.round(np.clip(base_mom + rs20_score + rs5_score, 0, 100)).astype(int)
+    
+    cond_mom_strong = score_mom >= 80
+    cond_mom_break = (score_mom >= 60) & (has_early | has_shodou)
+    cond_mom_adj = (rs20 > 0) & (rs5 < 0) & (score_mom >= 40)
+
+    label_mom = np.select(
+        [cond_mom_strong, cond_mom_break, cond_mom_adj], 
+        ["🔥強気", "🚀初動", "⚠️調整"], 
+        default="❄️弱気"
+    )
+    df["Algo_Momentum"] = pd.Series(label_mom, index=df.index).astype(str) + " (" + pd.Series(score_mom, index=df.index).astype(str) + "点)"
+
+
+    # --- 2. ボラティリティターゲット (0〜100点) ---
+    price = _safe_get_numeric(df, ["現在値", "終値"], 0.0)
+    atr = _safe_get_numeric(df, ["ATR14%", "ATR14", "ATR20"], 0.0)
+    
+    daily_risk = np.where(price > 0, (atr / price) * 100.0, np.nan)
+    daily_risk_s = pd.Series(daily_risk, index=df.index).fillna(0)
+    
+    # 連続的スコアリング: 1日の値幅リスクが2%以下なら100点。そこから8%に向けて徐々に0点へ減点する
+    score_vol = np.where(daily_risk_s <= 2.0, 100, 
+                np.where(daily_risk_s >= 8.0, 0, 
+                         100 - ((daily_risk_s - 2.0) / 6.0) * 100))
+    score_vol = np.round(np.clip(score_vol, 0, 100)).astype(int)
+
+    cond_vol_low = score_vol >= 80
+    cond_vol_mid = score_vol >= 50
+    cond_vol_high = score_vol >= 20
+    cond_vol_danger = score_vol < 20
+
+    label_vol = np.select(
+        [cond_vol_low, cond_vol_mid, cond_vol_high, cond_vol_danger], 
+        ["🟢低ﾘｽｸ", "🟡中ﾘｽｸ", "🟠高ﾘｽｸ", "🔴危険"], 
+        default="情報不足"
+    )
+    df["Algo_VolTarget"] = pd.Series(label_vol, index=df.index).astype(str) + " (" + pd.Series(score_vol, index=df.index).astype(str) + "点)"
+
+
+    # --- 3. クオンツ・ファクター (0〜100点) ---
+    val_score = _safe_get_numeric(df, "割安度", 0.0)
+    op_ratio = _safe_get_numeric(df, ["営利対時価_pct", "営利対時価"], 0.0)
+    roe = _safe_get_numeric(df, "ROE", 0.0)
+
+    # 各指標の実数値に応じて配点し、合算する（グラデーション加点）
+    # 割安度(最大50点): -20%〜+30%の範囲を 0〜50点 に変換
+    v_score = np.clip((val_score + 20) / 50 * 50, 0, 50)
+    # 収益性(最大30点): 営利対時価 0%〜10%の範囲を 0〜30点 に変換
+    o_score = np.clip(op_ratio / 10 * 30, 0, 30)
+    # 資本効率(最大20点): ROE 0%〜15%の範囲を 0〜20点 に変換
+    r_score = np.clip(roe / 15 * 20, 0, 20)
+    
+    score_fac = np.round(np.clip(v_score + o_score + r_score, 0, 100)).astype(int)
+
+    cond_fac_super = score_fac >= 80
+    cond_fac_val = score_fac >= 60
+    cond_fac_fair = score_fac >= 40
+    
+    label_fac = np.select(
+        [cond_fac_super, cond_fac_val, cond_fac_fair], 
+        ["🌟超割安", "✨割安", "⚖️妥当"], 
+        default="📉割高"
+    )
+    df["Algo_Factor"] = pd.Series(label_fac, index=df.index).astype(str) + " (" + pd.Series(score_fac, index=df.index).astype(str) + "点)"
+
+
+    # --- 4. 総合判定 (平均点から買い/売りを決定) ---
+    total_score = np.round((score_mom + score_vol + score_fac) / 3.0).astype(int)
+    
+    cond_buy_strong = total_score >= 80
+    cond_buy = (total_score >= 60) & (total_score < 80)
+    cond_wait = (total_score >= 40) & (total_score < 60)
+    
+    label_total = np.select(
+        [cond_buy_strong, cond_buy, cond_wait],
+        ["🚀強い買い", "🟢買い", "🟡様子見"],
+        default="🔴売り"
+    )
+    df["Algo_総合判定"] = pd.Series(label_total, index=df.index).astype(str) + " (" + pd.Series(total_score, index=df.index).astype(str) + "点)"
+
+    return df
 
 # ---------- 行整形（欠損安全 & 外部列に依存しない） ----------
 def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
@@ -5356,7 +5509,9 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
         "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ", "踏み上げ期待スコア",
         "AI目標値", "AI目標値_raw",
-        "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主"
+        "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主",
+        "Algo_Momentum", "Algo_VolTarget", "Algo_Factor", "Algo_総合判定",
+        "直近売上YoY", "直近営業益YoY", "利益加速フラグ"
     ] if c in _df.columns]
 
     # ループ内で必ず yahoo/x を合成して rows に積む
@@ -6991,10 +7146,11 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     df_cand = _vectorize_minimum_fields(df_cand)
     if latest_theme_map:
         _attach_latest_theme(df_cand, latest_theme_map)
+    df_cand = apply_3algo_labels(df_cand) # ★追加: 3大アルゴリズム列の生成
     _tick("vectorize_minimum_fields")
 
     rows = _prepare_rows(df_cand, conn)
-
+    
     # 🎯 60日（2ヶ月）スイング・トレンドフォロー算出モデル
     for r in rows:
         try:
@@ -7167,6 +7323,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # monitorリスト出力
     try:
         export_monitor_list(df_cand)
+        # ★ ここに追加：LLM用のCSVも一緒に出力させる
+        export_llm_dataset(df_cand)
     except Exception as e:
         print(f"[monitor] export failed: {e}")
     
@@ -7242,6 +7400,49 @@ def export_monitor_list(df_cand, filename="rss_monitor_list.json"):
 
     except Exception as e:
         print(f"[連携][ERROR] 監視リストの出力に失敗しました: {e}", flush=True)
+
+
+def export_llm_dataset(df_cand, filename="llm_dataset.csv"):
+    """
+    LLM（Gemini等）に丸投げして分析させるための厳選データCSVを出力する。
+    売買代金5億円以上で足切りし、トークン節約のため不要な列を削ぎ落とす。
+    """
+    try:
+        if df_cand is None or getattr(df_cand, "empty", True):
+            return
+
+        df = df_cand.copy()
+
+        # 1) 売買代金 5億円以上 で足切り
+        df["売買代金(億)"] = pd.to_numeric(df["売買代金(億)"], errors="coerce").fillna(0)
+        df_filtered = df[df["売買代金(億)"] >= 5.0]
+
+        # 2) LLMが思考しやすい「厳選カラム」だけを指定
+        target_cols = [
+            "コード", "銘柄名", "セクター", "関連テーマ", 
+            "前日終値比率", "売買代金(億)", "RVOL代金", "RS_5", 
+            "時価総額億円", "需給OH", 
+            "右肩早期種別", "初動フラグ", "Algo_総合判定"
+        ]
+        
+        # 実際にDataFrameに存在するカラムのみ抽出
+        exist_cols = [c for c in target_cols if c in df_filtered.columns]
+        df_llm = df_filtered[exist_cols].copy()
+
+        # 3) 保存先の生成
+        out_dir = OUTPUT_DIR if "OUTPUT_DIR" in globals() else "."
+        os.makedirs(out_dir, exist_ok=True)
+        full_path = os.path.join(out_dir, filename)
+
+        # 4) CSV出力（Excel等でも文字化けしないBOM付きUTF-8）
+        df_llm.to_csv(full_path, index=False, encoding="utf-8-sig")
+        
+        print(f"\n[LLM] 分析用データを抽出しました: {len(df_llm)} 銘柄 (売買代金5億円以上)")
+        print(f"       保存先: {full_path}", flush=True)
+
+    except Exception as e:
+        print(f"[LLM][ERROR] 分析用データの出力に失敗しました: {e}", flush=True)
+
 
 # ========= 営業利益 
 def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int = 300, max_workers: int = 12, use_quarterly: bool = False) -> None:
@@ -9046,6 +9247,7 @@ def sync_to_github_pages(repo_root: str, target_file: str):
     except Exception as e:
         print(f"[git][FATAL] Unexpected infrastructure error: {e}")
 
+
 # ===== メイン処理 =====
 def main():
 
@@ -9107,6 +9309,15 @@ def main():
     # (1) DB open & スキーマ保証
     conn = _get_db_conn()
     try:
+        # ★ 追加：既存DB内の表記ゆれ（TOPIX）を強制的に ^TOPX に修正する
+        try:
+            conn.execute("UPDATE screener SET コード = '^TOPX' WHERE コード IN ('^TOPIX', 'TOPIX', '998405.T')")
+            conn.execute("UPDATE price_history SET コード = '^TOPX' WHERE コード IN ('^TOPIX', 'TOPIX', '998405.T')")
+            conn.execute("UPDATE latest_prices SET コード = '^TOPX' WHERE コード IN ('^TOPIX', 'TOPIX', '998405.T')")
+            conn.commit()
+        except Exception as e:
+            print("[fix_code][WARN]", e)
+
         ensure_runlog_schema(conn)
         # 基礎データ（日次更新）【同日スキップ】
         _timed_daily_once("run_fundamental_daily", run_fundamental_daily, conn)
@@ -9230,7 +9441,7 @@ def main():
         
             # (7.1) 財務コメント追加
             phase_sync_finance_comments(conn)
-        
+            
             # (7.2) チャート生成
             try:
                 _run_charts60(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\charts60_make.py")

@@ -310,6 +310,39 @@ def batch_record_to_sqlite(results: list[dict]):
             """, data_to_insert)
             conn.commit()
             print(f"[DB][INFO] {len(data_to_insert)}件の結果をSQLiteに一括記録しました。")
+            # =========================================================
+            # ★ここから追加：screenerテーブルへ業績加速データを直接書き込む
+            # =========================================================
+            for col, coltype in [
+                ("直近売上YoY", "REAL"),
+                ("直近営業益YoY", "REAL"),
+                ("利益加速フラグ", "INTEGER"),
+            ]:
+                try:
+                    cur.execute(f"ALTER TABLE screener ADD COLUMN {col} {coltype};")
+                except sqlite3.OperationalError:
+                    pass # すでにカラムが存在する場合は無視
+                    
+            screener_updates = []
+            for res in results:
+                if res.get('status') == 'OK' and 'accel_flag' in res:
+                    screener_updates.append((
+                        res.get('sales_yoy'),
+                        res.get('op_yoy'),
+                        res.get('accel_flag'),
+                        res['code']
+                    ))
+                    
+            if screener_updates:
+                cur.executemany("""
+                    UPDATE screener 
+                    SET 直近売上YoY = ?, 直近営業益YoY = ?, 利益加速フラグ = ?
+                    WHERE コード = ?
+                """, screener_updates)
+                conn.commit()
+                print(f"[DB][INFO] screener に {len(screener_updates)}件の四半期業績加速データを保存しました。")
+            # =========================================================
+
     except sqlite3.OperationalError as e:
         print(f"[DB][CRITICAL ERROR] SQLite DB操作エラー: {e}")
     except Exception as e:
@@ -1041,7 +1074,43 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                 except Exception:
                     pass
             # --- 追加ここまで ---
-
+            
+            # =========================================================
+            # ★ここから追加：四半期の業績加速（売上高/営業益のYoY）計算
+            # =========================================================
+            sales_yoy = None
+            op_yoy = None
+            accel_flag = 0
+            
+            # 5四半期分（1年以上）のデータがあればYoY計算を行う
+            if df_quarterly is not None and len(df_quarterly) >= 5:
+                try:
+                    latest = df_quarterly.iloc[-1]   # 最新四半期
+                    prev_1 = df_quarterly.iloc[-2]   # 1四半期前
+                    prev_4 = df_quarterly.iloc[-5]   # 4四半期前（前年同期）
+                    prev_5 = df_quarterly.iloc[-6] if len(df_quarterly) >= 6 else None # 5四半期前
+                    
+                    # 1. 売上高YoY（前年同期比 %）
+                    if pd.notna(latest.get('売上高')) and pd.notna(prev_4.get('売上高')) and prev_4['売上高'] != 0:
+                        sales_yoy = (latest['売上高'] - prev_4['売上高']) / abs(prev_4['売上高']) * 100.0
+                        
+                    # 2. 営業益YoY（前年同期比 %）
+                    if pd.notna(latest.get('営業益')) and pd.notna(prev_4.get('営業益')) and prev_4['営業益'] != 0:
+                        op_yoy = (latest['営業益'] - prev_4['営業益']) / abs(prev_4['営業益']) * 100.0
+                        
+                    # 3. 1四半期前の営業益YoY（加速判定用）
+                    op_yoy_prev = None
+                    if prev_5 is not None and pd.notna(prev_1.get('営業益')) and pd.notna(prev_5.get('営業益')) and prev_5['営業益'] != 0:
+                        op_yoy_prev = (prev_1['営業益'] - prev_5['営業益']) / abs(prev_5['営業益']) * 100.0
+                        
+                    # 4. 加速フラグ判定（今期の伸び率が、前期の伸び率を上回っていれば 1）
+                    if op_yoy is not None and op_yoy_prev is not None:
+                        if op_yoy > 0 and op_yoy > op_yoy_prev:
+                            accel_flag = 1
+                except Exception as e:
+                    print(f"[ACCEL] {code_full} 加速計算エラー: {e}")
+            # =========================================================
+            
             # 進捗式ログ
             _log_on = bool(getattr(opt, 'log_progress', False))
             _log_file = getattr(opt, 'log_file', 'progress_debug.csv')
@@ -1058,10 +1127,14 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                 'status': 'OK',
                 'code': code_full,
                 'score': score,
-                'overall_alpha': overall_alpha,     # ★ 返却
+                'overall_alpha': overall_alpha,     
                 'progress_percent': progress_percent_db,
                 'formatted_verdict': formatted_v,
                 'out_html': out_html,
+                'forecast_op': forecast_op,
+                'sales_yoy': sales_yoy,             # ★ 追加: 売上YoY
+                'op_yoy': op_yoy,                   # ★ 追加: 営業益YoY
+                'accel_flag': accel_flag,           # ★ 追加: 加速フラグ
             }
 
         except aiohttp.ClientResponseError as e:
