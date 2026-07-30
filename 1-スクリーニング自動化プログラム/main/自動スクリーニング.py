@@ -5511,7 +5511,8 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "AI目標値", "AI目標値_raw",
         "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主",
         "Algo_Momentum", "Algo_VolTarget", "Algo_Factor", "Algo_総合判定",
-        "直近売上YoY", "直近営業益YoY", "利益加速フラグ"
+        "直近売上YoY", "直近営業益YoY", "利益加速フラグ",
+        "決算勝率", "決算期待値", "決算リアクションスコア", "決算リアクション履歴"
     ] if c in _df.columns]
 
     # ループ内で必ず yahoo/x を合成して rows に積む
@@ -5669,6 +5670,104 @@ def enrich_rows_with_price_summary(rows, summary_map):
             r["75日"]  = r.get("MA75","" )
     return rows
 # ==== [/BULK PRICE SUMMARIES - TOP LEVEL] ===============================
+
+def enrich_earnings_reaction(conn: sqlite3.Connection, df_cand: pd.DataFrame) -> pd.DataFrame:
+    """finance_notesの決算日リストとprice_historyを使って、過去の決算翌日のリアクション（期待値）を計算する"""
+    if df_cand is None or df_cand.empty or "コード" not in df_cand.columns:
+        return df_cand
+        
+    try:
+        import json
+        # finance_notesから過去決算日リストを取得
+        fn_df = pd.read_sql_query("SELECT コード, past_earnings_dates FROM finance_notes WHERE past_earnings_dates IS NOT NULL AND past_earnings_dates != '[]'", conn)
+        if fn_df.empty:
+            return df_cand
+            
+        dates_map = {}
+        for _, r in fn_df.iterrows():
+            c = str(r["コード"]).zfill(4)
+            try:
+                dates = json.loads(r["past_earnings_dates"])
+                if isinstance(dates, list) and dates:
+                    dates_map[c] = dates
+            except Exception:
+                pass
+                
+        if not dates_map:
+            return df_cand
+
+        # 計算対象のコードだけ履歴を取得（メモリ節約）
+        target_codes = tuple(dates_map.keys())
+        qmarks = ",".join(["?"] * len(target_codes))
+        
+        ph_df = pd.read_sql_query(
+            f"SELECT コード, 日付, 始値, 高値, 安値, 終値 FROM price_history WHERE コード IN ({qmarks}) ORDER BY コード, 日付", 
+            conn, params=target_codes
+        )
+        if ph_df.empty: return df_cand
+        ph_df['日付'] = pd.to_datetime(ph_df['日付'])
+        
+        reaction_records = []
+        for code, group in ph_df.groupby("コード"):
+            c4 = str(code).zfill(4)
+            dates = dates_map.get(c4)
+            if not dates: continue
+                
+            group = group.sort_values("日付").reset_index(drop=True)
+            rets = []
+            
+            for d_str in dates:
+                d = pd.to_datetime(d_str)
+                # 決算日のインデックスを探す（発表日が休日の場合は直前の営業日を基準にする）
+                idx_list = group.index[group['日付'] <= d].tolist()
+                if not idx_list: continue
+                idx = idx_list[-1]
+                    
+                # 翌営業日が存在するか確認
+                if idx + 1 < len(group):
+                    prev_close = group.loc[idx, '終値']
+                    next_close = group.loc[idx+1, '終値']
+                    
+                    if pd.notna(prev_close) and prev_close > 0 and pd.notna(next_close):
+                        # 翌日の終値ベースの騰落率（%）
+                        ret = (next_close - prev_close) / prev_close * 100.0
+                        rets.append(ret)
+            
+            if rets:
+                ups = [r for r in rets if r > 0]
+                downs = [r for r in rets if r <= 0]
+                
+                win_prob = len(ups) / len(rets)
+                lose_prob = len(downs) / len(rets)
+                
+                avg_up = sum(ups) / len(ups) if ups else 0.0
+                avg_down = sum(downs) / len(downs) if downs else 0.0
+                
+                # 💡 指示いただいた「期待値」の計算式
+                expected_value = (win_prob * avg_up) + (lose_prob * avg_down)
+                
+                # 期待値を 0〜100 のスコアにマッピング（期待値-2%で0点、+5%以上で100点とする）
+                score = max(0.0, min(100.0, (expected_value + 2.0) / 7.0 * 100.0))
+                
+                # スパークライン用（直近8回分を文字列化）
+                spark = ",".join([f"{r:.1f}" for r in rets[-8:]])
+                
+                reaction_records.append({
+                    "コード": c4,
+                    "決算勝率": win_prob * 100.0,
+                    "決算期待値": expected_value,
+                    "決算リアクションスコア": score,
+                    "決算リアクション履歴": spark
+                })
+                
+        if reaction_records:
+            react_df = pd.DataFrame(reaction_records)
+            df_cand = df_cand.merge(react_df, on="コード", how="left")
+            
+    except Exception as e:
+        print(f"[REACTION] 決算リアクションの計算エラー: {e}")
+        
+    return df_cand
 
 
 # === [INJECTED | Google News RSS (site:kabutan.jp) + optional BERT sentiment] ===================
@@ -6936,6 +7035,13 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         ON CAST(lp.コード AS TEXT) = CAST(s.コード AS TEXT)
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
+    
+    # =========================================================
+    # ★ ここを追加：画面表示に不要な超巨大データを削除し、ブラウザのフリーズを防ぐ
+    if "raw_fin_json" in df_cand.columns:
+        df_cand.drop(columns=["raw_fin_json"], inplace=True)
+    # =========================================================
+
     df_cand = ensure_news_cols(df_cand)
     _p(f"SQL: df_cand done shape={df_cand.shape} dt={( time.perf_counter()-t):.2f}s")
 
@@ -7196,9 +7302,23 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     rows = enrich_rows_with_price_summary(rows, summary_map)
     _tick("price_summary_enrich")
 
+    # --- 修正前 ---
     # chart / 移動平均 / ボリバン / GC / 三役
     enhance_with_chart_flags(conn, rows)
     _tick("chart_flags_enhance")
+    
+    # ★ ここに追加：過去の決算リアクションを計算・付与
+    df_cand = enrich_earnings_reaction(conn, df_cand)
+    # df_candに結合したデータをrows辞書にも反映させる
+    for r in rows:
+        c4 = str(r.get("コード", "")).zfill(4)
+        match_row = df_cand[df_cand["コード"] == c4]
+        if not match_row.empty:
+            r["決算勝率"] = match_row.iloc[0].get("決算勝率")
+            r["決算期待値"] = match_row.iloc[0].get("決算期待値")
+            r["決算リアクションスコア"] = match_row.iloc[0].get("決算リアクションスコア")
+            r["決算リアクション履歴"] = match_row.iloc[0].get("決算リアクション履歴")
+    _tick("earnings_reaction_enrich")
     
     # TOBデータの注入処理
     try:
@@ -7305,17 +7425,61 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     tpl = env.get_template("dashboard.html")
     html_output = tpl.render(
         include_log=include_log,
-        data_json=data_json,
+        data_json="{}", # テンプレート側には空を渡す
         generated_at=build_id,
         build_id=build_id
     )
     _tick("template done")
 
-    # 11) __DATA__ をインライン注入
+    # 11) __DATA__ を安全にインライン注入
     t_inject = time.perf_counter()
-    html_output = __inject_inline_data_json(html_output, data_obj)
+    try:
+        # ★修正1：標準の json.dumps だと NaN がそのまま出力されてブラウザが死ぬため、
+        # 9) のステップで安全に生成済みの「data_json」を再利用します。
+        data_json_str = data_json
+        
+        # ★修正2：HTMLの崩れを防ぐエスケープ ＋ 万が一残ったNaNをnullに強制置換する徹底ガード
+        data_json_str = data_json_str.replace("<", "\\u003c").replace(">", "\\u003e")
+        import re
+        data_json_str = re.sub(r':\s*NaN', ': null', data_json_str)
+        data_json_str = re.sub(r':\s*Infinity', ': null', data_json_str)
+        data_json_str = re.sub(r':\s*-Infinity', ': null', data_json_str)
+        
+        # 埋め込んだJSONをダッシュボードに読み込ませる「JavaScriptの紐付け処理」
+        json_script = f"""
+<script id="__DATA__" type="application/json">
+{data_json_str}
+</script>
+<script id="data_inline">
+    try {{
+        var el = document.getElementById('__DATA__');
+        if (el) {{
+            // 埋め込まれたテキストを読み込み、ダッシュボードのシステム(window.DATA)に渡す
+            window.__DATA__ = JSON.parse(el.textContent);
+            window.DATA = window.__DATA__;
+        }}
+    }} catch(e) {{
+        console.error("データの読み込みに失敗しました:", e);
+    }}
+</script>
+"""
+        
+        # 既存の古いタグを掃除
+        import re
+        html_output = re.sub(r'<script\s+id="__DATA__"[^>]*>.*?</script>', '', html_output, flags=re.DOTALL | re.IGNORECASE)
+        html_output = re.sub(r'<script\s+id="(data_inline|inline-data)"[^>]*>.*?</script>', '', html_output, flags=re.DOTALL | re.IGNORECASE)
+        
+        # </body> の直前に挿入
+        if "</body>" in html_output:
+            html_output = html_output.replace("</body>", json_script + "\n</body>")
+        else:
+            html_output += json_script
+            
+    except Exception as e:
+        print(f"[HTML-EXPORT][ERROR] JSONデータの埋め込みに失敗しました: {e}")
+        
     _p(f"inject_inline_data_json: dt={( time.perf_counter() - t_inject ): .2f}s")
-
+    
     # 12) 書き出し
     t_write = time.perf_counter()
     os.makedirs(os.path.dirname(html_path), exist_ok=True)
@@ -7323,19 +7487,19 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # monitorリスト出力
     try:
         export_monitor_list(df_cand)
-        # ★ ここに追加：LLM用のCSVも一緒に出力させる
         export_llm_dataset(df_cand)
     except Exception as e:
         print(f"[monitor] export failed: {e}")
     
-    with open(html_path, "w", encoding="utf-8", newline="") as f:
-        f.write(html_output)
-        if '_apply_planA_postprocess' in globals():
-            try:
-                _apply_planA_postprocess(html_path, data_obj)
-                _tick("planA done")
-            except Exception:
-                pass
+    # 書き込み
+    try:
+        with open(html_path, "w", encoding="utf-8", buffering=8192) as f:
+            f.write(html_output)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as e:
+        print(f"[HTML-EXPORT][ERROR] ファイルの書き出しに失敗しました: {e}")
+
     _p(f"write+planA: dt={( time.perf_counter() - t_write ): .2f}s")
     
     # --- Git同期 ---
@@ -7413,14 +7577,19 @@ def export_llm_dataset(df_cand, filename="llm_dataset.csv"):
 
         df = df_cand.copy()
 
+        # ★修正: カラム名を動的に判定
+        turnover_col = '売買代金億' if '売買代金億' in df.columns else '売買代金(億)'
+        if turnover_col not in df.columns:
+            return
+
         # 1) 売買代金 5億円以上 で足切り
-        df["売買代金(億)"] = pd.to_numeric(df["売買代金(億)"], errors="coerce").fillna(0)
-        df_filtered = df[df["売買代金(億)"] >= 5.0]
+        df[turnover_col] = pd.to_numeric(df[turnover_col], errors="coerce").fillna(0)
+        df_filtered = df[df[turnover_col] >= 5.0].copy()
 
         # 2) LLMが思考しやすい「厳選カラム」だけを指定
         target_cols = [
             "コード", "銘柄名", "セクター", "関連テーマ", 
-            "前日終値比率", "売買代金(億)", "RVOL代金", "RS_5", 
+            "前日終値比率", turnover_col, "RVOL代金", "RS_5", 
             "時価総額億円", "需給OH", 
             "右肩早期種別", "初動フラグ", "Algo_総合判定"
         ]
@@ -7428,6 +7597,10 @@ def export_llm_dataset(df_cand, filename="llm_dataset.csv"):
         # 実際にDataFrameに存在するカラムのみ抽出
         exist_cols = [c for c in target_cols if c in df_filtered.columns]
         df_llm = df_filtered[exist_cols].copy()
+        
+        # CSV出力時の列名を整える
+        if turnover_col != "売買代金(億)":
+            df_llm = df_llm.rename(columns={turnover_col: "売買代金(億)"})
 
         # 3) 保存先の生成
         out_dir = OUTPUT_DIR if "OUTPUT_DIR" in globals() else "."
@@ -7442,7 +7615,6 @@ def export_llm_dataset(df_cand, filename="llm_dataset.csv"):
 
     except Exception as e:
         print(f"[LLM][ERROR] 分析用データの出力に失敗しました: {e}", flush=True)
-
 
 # ========= 営業利益 
 def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int = 300, max_workers: int = 12, use_quarterly: bool = False) -> None:
@@ -8372,9 +8544,8 @@ def batch_update_all_financials(conn,
         ("自己資本比率", "REAL"), ("営業CF_直近", "REAL"), ("営業CF_4Q合計", "REAL"),
         ("配当1年合計", "REAL"), ("自社株買い4Q合計", "REAL"),
         ("増資リスク", "INTEGER"), ("増資スコア", "REAL"), ("増資理由", "TEXT"),
-        # ★追加カラム
         ("PBR", "REAL"), ("現金同等物", "REAL"), ("有利子負債", "REAL"), ("大株主", "TEXT"),
-        ("EPS", "REAL"), ("BPS", "REAL"), ("ROE", "REAL")  # ←ここを追加
+        ("EPS", "REAL"), ("BPS", "REAL"), ("ROE", "REAL")
     ]:
         try:
             conn.execute(f'ALTER TABLE screener ADD COLUMN "{name}" {decl}')
@@ -8477,7 +8648,7 @@ def batch_update_all_financials(conn,
                 for s in to_fetch:
                     q = quotes.get(s) if isinstance(quotes, dict) else quotes
                     k = ks.get(s) if isinstance(ks, dict) else ks
-                    f_dat = fd_data.get(s) if isinstance(fd_data, dict) else fd_data  # ←追加
+                    f_dat = fd_data.get(s) if isinstance(fd_data, dict) else fd_data
                     
                     b = bs.get(s) if isinstance(bs, dict) else bs
                     cflow = cf.get(s) if isinstance(cf, dict) else cf
@@ -8487,7 +8658,7 @@ def batch_update_all_financials(conn,
                     fetched_raw[s] = {
                         "quotes": q, 
                         "key_stats": k, 
-                        "financial_data": f_dat,  # ←追加
+                        "financial_data": f_dat,  
                         "balance_sheet": b, 
                         "cashflow": cflow, 
                         "dividends": d,
@@ -8592,7 +8763,6 @@ def batch_update_all_financials(conn,
                     divobj = sym_raw.get("dividends")
                     div_1y = _sum_dividends_1y(divobj, one_year_ago)
 
-                    # --- ★追加: 大株主 ---
                     # --- ★追加: 大株主 (修正版) ---
                     mhobj = sym_raw.get("major_holders")
                     if mhobj is not None:

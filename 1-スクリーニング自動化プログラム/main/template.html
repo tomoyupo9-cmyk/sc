@@ -706,6 +706,7 @@
     </div>
 
     <button class="btn copylink" id="copy-page">今のページの銘柄をコピー</button>
+    <button class="btn" id="copy-earnings-data" style="background-color: #ec4899;">決算またぎ用データ コピー</button>
     <button id="download-page-csv" class="btn">今のページの銘柄をCSVダウンロード</button>
     <button class="btn" id="download-csv">CSVダウンロード</button>
   </div>
@@ -1860,6 +1861,34 @@
       const sqScore = Number(r["踏み上げ期待スコア"] ?? 0);
       const sqBadge = sqScore > 0 ? `<span style="color:#e11d48; font-weight:bold;">${sqScore}</span>` : '-';
       
+      // =========================================================
+      // ★ ここに以下のコードをごっそり追加します！ ★
+      // =========================================================
+      
+      // 決算期待値のフォーマット
+      let expVal = Number.isFinite(Number(r["決算期待値"])) ? Number(r["決算期待値"]).toFixed(1) : "-";
+      let expStyle = Number(r["決算期待値"]) > 0 ? "color:#e11d48;font-weight:bold;" : (Number(r["決算期待値"]) < 0 ? "color:#2563eb;" : "");
+      let expHtml = expVal !== "-" ? `<span style="${expStyle}">${Number(expVal) > 0 ? '+'+expVal : expVal}%</span>` : "-";
+
+      // 決算リアクション（過去8回分）のミニグラフ（スパークライン）
+      let sparkHtml = '<span style="color:#cbd5e1;">-</span>';
+      if (r["決算リアクション履歴"] != null && String(r["決算リアクション履歴"]).trim() !== "") {
+          const rets = String(r["決算リアクション履歴"]).split(',').map(Number);
+          const maxAbs = Math.max(10, ...rets.map(Math.abs)); // スケールの基準（最低10%をMAXとする）
+          let bars = rets.map(ret => {
+              const h = Math.max(2, (Math.abs(ret) / maxAbs) * 14); // 最大14pxの高さで表現
+              if (ret > 0) {
+                  return `<div style="display:flex; flex-direction:column; justify-content:flex-end; height:14px; width:4px; margin-bottom:14px;"><div style="background:#e11d48; height:${h}px; width:100%; border-radius:2px 2px 0 0;"></div></div>`;
+              } else {
+                  return `<div style="display:flex; flex-direction:column; justify-content:flex-start; height:14px; width:4px; margin-top:14px;"><div style="background:#2563eb; height:${h}px; width:100%; border-radius:0 0 2px 2px;"></div></div>`;
+              }
+          }).join("");
+          const winRate = Number.isFinite(Number(r["決算勝率"])) ? Number(r["決算勝率"]).toFixed(0) : "-";
+          sparkHtml = `<div style="display:inline-flex; align-items:center; height:28px; gap:2px; padding: 0 4px;" title="過去の反応: ${r['決算リアクション履歴']} / 勝率: ${winRate}%">${bars}</div>`;
+      }
+
+      
+      
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <!-- 短期トレード用 -->
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
@@ -1870,7 +1899,7 @@
         <td class="num">${r["前日終値比率"] ?? ""}</td>
         <td class="num">${r["売買代金(億)"] ?? ""}</td>
         <td class="num">${r["出来高"] ?? ""}</td>
-        <td class="num">${r["RVOL代金"] != null ? Number(r["RVOL代金"]).toFixed(2) : ""}</td>
+        <td class="num">${Number.isFinite(Number(r["RVOL代金"])) ? Number(r["RVOL代金"]).toFixed(2) : ""}</td>
         <td style="${shStyle}">${escapeHtml(shVal)}</td>
         <td style="text-align:center;"><button class="btn btn-prompt" data-code="${String(r["コード"]||"").padStart(4,"0")}" style="padding:2px 8px; font-size:11px;">生成</button></td>
         <td style="text-align:center;"><button class="yabb-btn" data-code="${String(r["コード"]||"").padStart(4,"0")}" onclick="runYabbAnalysis('${String(r["コード"]||"").padStart(4,"0")}')">📊 ヤフ板分析</button></td>
@@ -1891,11 +1920,11 @@
         <td>${r["右肩早期フラグ"] || ""}</td>
         <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
         <td class="num" style="text-align:center;">${sqBadge}</td>
-        <td class="num">${r["信用倍率"] != null ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
-        <td class="num">${r["需給OH"] != null ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["信用倍率"])) ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["需給OH"])) ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
         <td style="text-align:center;">${sfBadge}</td>
-        <td class="num">${r["売り残"] != null ? Number(r["売り残"]).toLocaleString() : "-"}</td>
-        <td class="num">${r["買い残"] != null ? Number(r["買い残"]).toLocaleString() : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["売り残"])) ? Number(r["売り残"]).toLocaleString() : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["買い残"])) ? Number(r["買い残"]).toLocaleString() : "-"}</td>
         <td class="num">${fint(r["最寄り抵抗"])}</td>
         <td class="num">${fint(r["最寄り支持"])}</td>
         <td data-col="株探ニュース(3)" class="news-col" title="${escapeHtml(String(r["株探ニュース(3)"]||"").replace(/<[^>]*>/g, ""))}">${r["株探ニュース(3)"] || ""}</td>
@@ -1929,17 +1958,19 @@
         <td>${escapeHtml(r["overall_alpha"] ?? "")}</td>
         <td class="num">${r["スコア"] ?? ""}</td>
         <td class="num">${r["進捗率"] ?? ""}</td>
-        <td class="num">${r["直近売上YoY"] != null ? Number(r["直近売上YoY"]).toFixed(2) : "-"}</td>
-        <td class="num">${r["直近営業益YoY"] != null ? Number(r["直近営業益YoY"]).toFixed(2) : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["直近売上YoY"])) ? Number(r["直近売上YoY"]).toFixed(2) : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["直近営業益YoY"])) ? Number(r["直近営業益YoY"]).toFixed(2) : "-"}</td>
         <td class="num" style="text-align:center;">${Number(r["利益加速フラグ"]) === 1 ? '<span class="badge b-green">🚀加速</span>' : '-'}</td>
-        <td class="num">${r["PBR"] ? Number(r["PBR"]).toFixed(2) : "-"}</td>
+        <td class="num">${expHtml}</td>
+        <td style="text-align:center; vertical-align:middle;">${sparkHtml}</td>
+        <td class="num">${Number.isFinite(Number(r["PBR"])) ? Number(r["PBR"]).toFixed(2) : "-"}</td>
         <td class="num">${r["EPS"] ?? "-"}</td>
         <td class="num">${r["BPS"] ?? "-"}</td>
-        <td class="num">${r["ROE"] ? Number(r["ROE"]).toFixed(1) : "-"}</td>
-        <td class="num">${r["適正株価"] ? Number(r["適正株価"]).toFixed(0) : "-"}</td>
-        <td class="num" style="${r["割安度"] > 0 ? 'color:#e11d48;font-weight:bold;' : ''}">${r["割安度"] ? Number(r["割安度"]).toFixed(1) : "-"}</td>
-        <td class="num">${r["現金同等物"] ? Math.round(r["現金同等物"]/100000000).toLocaleString() : "-"}</td>
-        <td class="num">${r["有利子負債"] ? Math.round(r["有利子負債"]/100000000).toLocaleString() : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["ROE"])) ? Number(r["ROE"]).toFixed(1) : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["適正株価"])) ? Number(r["適正株価"]).toFixed(0) : "-"}</td>
+        <td class="num" style="${r["割安度"] > 0 ? 'color:#e11d48;font-weight:bold;' : ''}">${Number.isFinite(Number(r["割安度"])) ? Number(r["割安度"]).toFixed(1) : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["現金同等物"])) ? Math.round(r["現金同等物"]/100000000).toLocaleString() : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["有利子負債"])) ? Math.round(r["有利子負債"]/100000000).toLocaleString() : "-"}</td>
         <td class="theme-col" title="${escapeHtml(r["大株主"]||"")}">${escapeHtml(r["大株主"]||"-")}</td>
         <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
         <td class="num">${r["増資スコア"] ?? ""}</td>
@@ -2419,6 +2450,88 @@
       alert("コピーに失敗しました");
     }
   });
+
+  // =========================================================
+  // ★ 追加：決算またぎ特化データの高精度コピー機能
+  // =========================================================
+  $("#copy-earnings-data")?.addEventListener("click", async (e)=>{
+    e.preventDefault();
+    const tbl = document.getElementById(getActiveTableId());
+    if (!tbl || !tbl.tBodies.length) return;
+    
+    // 表示中の行（銘柄コード）を取得
+    const bodyRows = Array.from(tbl.tBodies[0].rows);
+    const codes = bodyRows.map(tr => tr.getAttribute("data-code")).filter(Boolean);
+    if (!codes.length) return;
+
+    // 抽出するカラムの定義（ラベル名 と 内部データキー）
+    const targetCols = [
+      { label: "コード", key: "コード" },
+      { label: "銘柄名", key: "銘柄名" },
+      { label: "セクター", key: "セクター" },
+      { label: "現在値", key: "現在値" },
+      { label: "前日比(円)", key: "前日円差" },
+      { label: "時価総額(億)", key: "時価総額億円" },
+      { label: "売買代金(億)", key: "売買代金(億)" },
+      { label: "RVOL代金", key: "RVOL代金" },
+      { label: "RS_5", key: "RS_5" },
+      { label: "需給OH", key: "需給OH" },
+      { label: "Algo総合判定", key: "Algo_総合判定" },
+      { label: "初動フラグ", key: "初動フラグ" },
+      { label: "右肩早期種別", key: "右肩早期種別" },
+      { label: "決算期待値", key: "決算期待値" },
+      { label: "過去反応(8回分)", key: "決算リアクション履歴" },
+      { label: "信用倍率", key: "信用倍率" }
+    ];
+
+    // 全データから高速に検索するためのマップ作成
+    const allData = window.state?.data || window.DATA_CAND || [];
+    const dataMap = new Map();
+    allData.forEach(item => {
+      const c = String(item["コード"] || "").padStart(4, "0");
+      if (c) dataMap.set(c, item);
+    });
+
+    const csvEscape = (v)=>{
+      let s = String(v ?? "").replace(/<[^>]*>/g, "").trim();
+      if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+
+    // ヘッダー行の生成
+    const headerLine = targetCols.map(c => csvEscape(c.label)).join(",");
+
+    // 表示されている銘柄のみ順番にデータを抽出
+    const dataLines = codes.map(code => {
+      const r = dataMap.get(code) || {};
+      return targetCols.map(col => {
+        let val = r[col.key];
+        // 表記揺れのフォロー
+        if (col.key === "売買代金(億)" && val == null) val = r["売買代金億"];
+        return csvEscape(val);
+      }).join(",");
+    });
+
+    const text = [headerLine, ...dataLines].join("\n");
+
+    try {
+      if (navigator.clipboard && window.isSecureContext !== false) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.left = "-9999px";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+      }
+      const btn = document.getElementById("copy-earnings-data");
+      btn?.classList.add("ok");
+      const old = btn?.textContent || "";
+      if (btn) btn.textContent = "コピー完了！";
+      setTimeout(()=>{ if(btn){ btn.classList.remove("ok"); btn.textContent = old; } }, 1500);
+    } catch (_) {
+      alert("コピーに失敗しました");
+    }
+  });
+  // =========================================================
 
   $("#download-page-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
@@ -3204,6 +3317,8 @@ document.getElementById("btn-gemini-prompt")?.addEventListener("click", async ()
             <th class="sortable" data-col="直近売上YoY" data-type="number">売上YoY(%)<span class="arrow"></span></th>
             <th class="sortable" data-col="直近営業益YoY" data-type="number">営益YoY(%)<span class="arrow"></span></th>
             <th class="sortable" data-col="利益加速フラグ" data-type="number">🚀加速<span class="arrow"></span></th>
+            <th class="num sortable" data-col="決算期待値" data-type="num" title="勝率 × 平均上昇幅 ＋ 敗率 × 平均下落幅">決算期待値<span class="arrow"></span></th>
+            <th data-col="決算リアクション履歴" title="過去8回の決算翌日リアクション">過去反応<span class="arrow"></span></th>
             <th class="num sortable" data-col="PBR" data-type="num">PBR<span class="arrow"></span></th>
             <th class="num sortable" data-col="EPS" data-type="num">EPS<span class="arrow"></span></th>
             <th class="num sortable" data-col="BPS" data-type="num">BPS<span class="arrow"></span></th>
