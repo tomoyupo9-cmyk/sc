@@ -21,6 +21,7 @@ import sys
 import os
 import sqlite3
 import asyncio
+import json
 from datetime import datetime, timezone, timedelta
 from io import StringIO
 import random
@@ -272,6 +273,7 @@ def batch_record_to_sqlite(results: list[dict]):
             ("updated_at","TEXT"),
             ("overall_alpha","TEXT"),          # ★ 追加列：アルファ評価
             ("forecast_op", "REAL"),   # ★追加列：予想営業利益
+            ("past_earnings_dates", "TEXT"),   # ★追加列：過去の決算発表日リスト
         ]:
             try:
                 cur.execute(f"SELECT {col} FROM finance_notes LIMIT 1;")
@@ -291,14 +293,15 @@ def batch_record_to_sqlite(results: list[dict]):
                     res.get('progress_percent'),
                     res.get('out_html') or "",
                     ts,
-                    res.get('overall_alpha') or None,   # ★ 追加
+                    res.get('overall_alpha') or None,   
                     res.get('forecast_op') or None,
+                    res.get('past_earnings_dates') or "[]", # ★ 追加
                 ))
         if data_to_insert:
             # ★修正: 列、プレースホルダの数、全角カンマの排除
             cur.executemany("""
-            INSERT INTO finance_notes (コード, 財務コメント, score, progress_percent, html_path, updated_at, overall_alpha, forecast_op)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO finance_notes (コード, 財務コメント, score, progress_percent, html_path, updated_at, overall_alpha, forecast_op, past_earnings_dates)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(コード) DO UPDATE SET
               財務コメント    = excluded.財務コメント,
               score           = excluded.score,
@@ -306,7 +309,8 @@ def batch_record_to_sqlite(results: list[dict]):
               html_path       = excluded.html_path,
               updated_at      = excluded.updated_at,
               overall_alpha   = excluded.overall_alpha,
-              forecast_op     = excluded.forecast_op;
+              forecast_op     = excluded.forecast_op,
+              past_earnings_dates = excluded.past_earnings_dates;
             """, data_to_insert)
             conn.commit()
             print(f"[DB][INFO] {len(data_to_insert)}件の結果をSQLiteに一括記録しました。")
@@ -1123,6 +1127,15 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
             export_html(df_full_year, code_full, out_html=out_html, qp_result=qp, verdict_str=formatted_v)
             print(f"[OK] {code_full} done. (Score: {score} points, Alpha: {overall_alpha}, Progress: {progress_percent_db}%)")
 
+            # =========================================================
+            # ★ここから追加：過去の決算日リストを抽出
+            # =========================================================
+            past_dates = []
+            if df_quarterly is not None and not df_quarterly.empty and "発表日" in df_quarterly.columns:
+                # NaTを除外し、YYYY-MM-DDの文字列リストに変換
+                past_dates = df_quarterly["発表日"].dropna().dt.strftime("%Y-%m-%d").tolist()
+            # =========================================================
+
             return {
                 'status': 'OK',
                 'code': code_full,
@@ -1132,9 +1145,10 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                 'formatted_verdict': formatted_v,
                 'out_html': out_html,
                 'forecast_op': forecast_op,
-                'sales_yoy': sales_yoy,             # ★ 追加: 売上YoY
-                'op_yoy': op_yoy,                   # ★ 追加: 営業益YoY
-                'accel_flag': accel_flag,           # ★ 追加: 加速フラグ
+                'sales_yoy': sales_yoy,             
+                'op_yoy': op_yoy,                   
+                'accel_flag': accel_flag,           
+                'past_earnings_dates': json.dumps(past_dates, ensure_ascii=False), # ★ 追加
             }
 
         except aiohttp.ClientResponseError as e:

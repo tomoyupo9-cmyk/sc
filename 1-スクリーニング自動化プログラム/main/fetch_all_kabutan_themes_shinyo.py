@@ -53,6 +53,13 @@ def scrape_kabutan_all_themes():
             取得日 TEXT
         )
     """)
+    
+    # ★追加：screenerテーブルに「決算発表予定日」カラムを準備
+    try:
+        cur.execute("ALTER TABLE screener ADD COLUMN 決算発表予定日 TEXT")
+    except Exception:
+        pass # 既に存在する場合はスキップ
+        
     conn.commit()
 
     codes = get_all_stock_codes(conn)
@@ -150,6 +157,19 @@ def scrape_kabutan_all_themes():
                                     (コード, 基準日, 売り残, 買い残, 倍率, 取得日) 
                                     VALUES (?, ?, ?, ?, ?, ?)
                                 """, (code, margin_date, sell_bal, buy_bal, ratio, today))
+
+            # ==========================================
+            # 3. ★追加：決算発表予定日の取得・保存ロジック
+            # ==========================================
+            kessan_div = soup.find("div", id="kessan_happyoubi")
+            if kessan_div:
+                time_tag = kessan_div.find("time")
+                if time_tag:
+                    kessan_date = time_tag.text.strip() # 例: "2026/08/14"
+                    # screenerテーブルへ直接アップデート
+                    cur.execute("""
+                        UPDATE screener SET 決算発表予定日 = ? WHERE コード = ?
+                    """, (kessan_date, code))
 
             # 変更を確定
             conn.commit()

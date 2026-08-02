@@ -1,19 +1,72 @@
 import asyncio
 import os
 import time
+import sqlite3
+import re
 from datetime import datetime
 from pathlib import Path
 from playwright.async_api import async_playwright, Browser, Page
 
 # ==== 設定 ====
-# CHROME_PATH の代わりに Playwright が自動でブラウザを管理します
 INPUT_CODES = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/main/input_data/株コード番号.txt')
-OUTPUT_TXT = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/main/input_data/空売り無しリスト.txt')
+DB_PATH = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/main/db/kani2.db')
+# 1日1回実行を管理するマーカーファイルのパス
+MARKER_FILE = Path('H:/desctop/株攻略/1-スクリーニング自動化プログラム/main/input_data/.karauri_executed_today')
 BASE_URL = 'https://karauri.net'
 HEADLESS = True  # ヘッドレスモード (True/False)
-REQUEST_INTERVAL_MS = 800  # アクセス間隔 (ミリ秒) - ★並行処理の総量制御に使用
+REQUEST_INTERVAL_MS = 800  # アクセス間隔 (ミリ秒)
 MAX_RETRY = 5  # 最大リトライ回数
-CONCURRENT_LIMIT = 5 # ★最大同時実行数（並行で開くページ数の上限）
+CONCURRENT_LIMIT = 5 # 最大同時実行数
+
+# ==== データベース初期化 ====
+def init_db(db_path):
+    """機関の空売り残高情報を保存するテーブルを準備します"""
+    os.makedirs(db_path.parent, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS institution_short_sales (
+            code TEXT,
+            calc_date TEXT,
+            institution_name TEXT,
+            ratio REAL,
+            ratio_change REAL,
+            shares INTEGER,
+            shares_change INTEGER,
+            note TEXT,
+            PRIMARY KEY (code, calc_date, institution_name)
+        )
+    """)
+    # 検索用インデックス
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_iss_code ON institution_short_sales(code)")
+    conn.commit()
+    conn.close()
+
+def check_and_skip_today():
+    """マーカーファイルの更新日時をチェックし、今日すでに実行済みならTrueを返します"""
+    if not MARKER_FILE.exists():
+        return False
+
+    try:
+        mtime_ts = os.path.getmtime(MARKER_FILE)
+        mtime = datetime.fromtimestamp(mtime_ts).date()
+        today = datetime.now().date()
+        
+        if mtime == today:
+            print(f"[karauri] 本日はすでにスクリプトを実行済みのためスキップします。")
+            return True
+    except Exception as e:
+        print(f"警告: 実行日時のチェック中にエラーが発生: {e}")
+        
+    return False
+
+def touch_marker():
+    """本日の実行完了を示すマーカーファイルを更新（作成）します"""
+    try:
+        MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        MARKER_FILE.touch()
+    except Exception as e:
+        print(f"警告: マーカーファイルの更新に失敗しました: {e}")
 
 # ==== ユーティリティ ====
 async def sleep(ms):
@@ -28,7 +81,6 @@ async def retry(func, *args, retry_count=MAX_RETRY):
             return await func(*args)
         except Exception as e:
             last_err = e
-            # Puppeteerのバックオフ: 500 * (2^i) ms
             wait_time = 0.5 * (2 ** i)
             print(f"警告: リトライ({i+1}/{retry_count+1}) 待機 {wait_time:.1f}秒...")
             await asyncio.sleep(wait_time)
@@ -49,73 +101,83 @@ def load_codes(file_path):
         if len(s.strip()) == 4 and s.strip().isdigit()
     ]
 
-def ensure_output(file_path):
-    """出力ファイルを初期化し、ヘッダ行を書き込みます"""
-    # ファイルが存在しても、常にヘッダを上書き（初期化）する
-    file_path.write_text('コード\n', encoding='utf-8')
-
-def check_and_skip(file_path):
-    """出力ファイルの更新日時をチェックし、今日の日付ならTrueを返します"""
-    if not file_path.exists():
-        return False
-
+def parse_num(text, is_float=False):
+    """文字列から数値（float/int）を安全に抽出します"""
+    if not text:
+        return 0.0 if is_float else 0
+    clean = re.sub(r'[^\d\.\-\+]', '', text)
     try:
-        mtime_ts = os.path.getmtime(file_path)
-        mtime = datetime.fromtimestamp(mtime_ts).date()
-        today = datetime.now().date()
-    except Exception as e:
-        print(f"警告: ファイル日時のチェック中にエラーが発生: {e}")
-        return False
+        return float(clean) if is_float else int(clean)
+    except ValueError:
+        return 0.0 if is_float else 0
 
-    if mtime == today:
-        print(f"[karauri] 本日分の結果が既に存在するためスキップします: {file_path}")
-        return True
-    return False
-
-# ----------------------------------------------------
 
 # ==== 並行処理ワーカー関数 ====
 async def fetch_karauri_info(
     browser: Browser, 
     code: str, 
-    results: list, 
+    all_rows_to_insert: list, 
     semaphore: asyncio.Semaphore, 
     request_interval_ms: float, 
     base_url: str
 ):
     """
-    単一の株コードに対して Playwright アクセスと判定を行うワーカー関数
+    単一の株コードに対して Playwright でアクセスし、詳細な機関の空売り表を解析するワーカー関数
     """
     url = f"{base_url}/{code}/"
     print(f'GET {code}: {url}')
 
-    # ★セマフォで同時実行数を制限
     async with semaphore:
-        # ★アクセス間隔の待機 (並行実行数を考慮した調整)
         await sleep(request_interval_ms) 
-        
-        # ★単一のブラウザインスタンス内に新しいページを作成し、処理後に閉じる
         page: Page = await browser.new_page()
-        # タイムアウトの設定
-        page.set_default_timeout(23_000) # 個別のページ操作タイムアウト
+        page.set_default_timeout(23_000)
 
         try:
-            # リトライ処理
-            async def fetch_page_and_check():
-                # Playwrightの page.goto
+            async def fetch_page_and_parse():
                 await page.goto(url, wait_until="domcontentloaded", timeout=23_000)
                 
-                # 要素の存在チェック
+                # 1. 空売り無しメッセージのチェック
                 has_message = await page.query_selector('.message_c')
-                
                 if has_message:
-                    results.append(code)
                     print(f' → 空売り無し: {code} (発見)')
-                # else:
-                    # print(f' → 空売りあり: {code}')
-                return True # 成功
+                    return True
 
-            await retry(fetch_page_and_check)
+                # 2. 空売り残高の明細テーブル（行）を全て取得
+                rows = await page.query_selector_all('table tr')
+                parsed_count = 0
+
+                for row in rows:
+                    cols = await row.query_selector_all('td')
+                    if len(cols) >= 6:
+                        date_str = (await cols[0].inner_text()).strip()
+                        inst_name = (await cols[1].inner_text()).strip()
+                        ratio_str = (await cols[2].inner_text()).strip()
+                        ratio_chg_str = (await cols[3].inner_text()).strip()
+                        shares_str = (await cols[4].inner_text()).strip()
+                        shares_chg_str = (await cols[5].inner_text()).strip()
+                        
+                        note_str = ""
+                        if len(cols) >= 7:
+                            note_str = (await cols[6].inner_text()).strip()
+
+                        # 日付フォーマットの簡易チェック (YYYY/MM/DD)
+                        if re.match(r'^\d{4}/\d{2}/\d{2}$', date_str):
+                            calc_date = date_str.replace('/', '-')
+                            ratio = parse_num(ratio_str, is_float=True)
+                            ratio_chg = parse_num(ratio_chg_str, is_float=True)
+                            shares = parse_num(shares_str, is_float=False)
+                            shares_chg = parse_num(shares_chg_str, is_float=False)
+
+                            all_rows_to_insert.append((
+                                code, calc_date, inst_name, ratio, ratio_chg, shares, shares_chg, note_str
+                            ))
+                            parsed_count += 1
+
+                if parsed_count > 0:
+                    print(f' → 空売り情報あり: {code} ({parsed_count}件の明細取得)')
+                return True
+
+            await retry(fetch_page_and_parse)
 
         except Exception as err:
             error_msg = str(err)
@@ -124,13 +186,13 @@ async def fetch_karauri_info(
             print(f" × 失敗: {code} {error_msg}")
         
         finally:
-            # ページを閉じてリソースを解放
             await page.close()
 
 
 # ==== 本体（並行処理対応） ====
 async def main():
-    if check_and_skip(OUTPUT_TXT):
+    # 1日1回実行済みかチェック（今日すでに走っていたらここで終了）
+    if check_and_skip_today():
         return
 
     codes = load_codes(INPUT_CODES)
@@ -138,28 +200,24 @@ async def main():
         return
 
     print(f"対象コード: {len(codes)}件")
-    ensure_output(OUTPUT_TXT)
-    results = []
+    init_db(DB_PATH)
     
-    # ★セマフォを初期化し、同時実行数の上限を設定
+    all_rows_to_insert = []
+    
     semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
-    # ★並行処理に合わせて調整されたアクセス間隔
-    # 例: 800ms / 5 = 160ms (全体で800msあたり5リクエスト程度を目指す)
     adjusted_interval = REQUEST_INTERVAL_MS / CONCURRENT_LIMIT 
 
     async with async_playwright() as p:
-        # ブラウザ起動
         browser = await p.chromium.launch(headless=HEADLESS, args=[
             '--no-sandbox',
             '--disable-setuid-sandbox',
         ])
         
-        # ★全てのタスクを作成
         tasks = [
             fetch_karauri_info(
                 browser, 
                 code, 
-                results, 
+                all_rows_to_insert, 
                 semaphore, 
                 adjusted_interval,
                 BASE_URL
@@ -167,20 +225,32 @@ async def main():
             for code in codes
         ]
 
-        # ★タスクを並行実行し、全て完了するのを待機
         print(f"--- 並行処理開始 (同時最大 {CONCURRENT_LIMIT} 件) ---")
         await asyncio.gather(*tasks)
         print("--- 全てのタスク完了 ---")
 
         await browser.close()
 
-    if results:
-        # fs.appendFileSync と似た処理
-        # ヘッダーは ensure_output で書き込み済みのため、結果のみ追記
-        with open(OUTPUT_TXT, 'a', encoding='utf-8') as f:
-            f.write('\n'.join(results) + '\n')
-            
-    print(f'完了: 空売り無し = {len(results)} 件')
+    # まとめてデータベースに一括保存 (UPSERT)
+    if all_rows_to_insert:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.executemany("""
+            INSERT INTO institution_short_sales (code, calc_date, institution_name, ratio, ratio_change, shares, shares_change, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(code, calc_date, institution_name) DO UPDATE SET
+                ratio = excluded.ratio,
+                ratio_change = excluded.ratio_change,
+                shares = excluded.shares,
+                shares_change = excluded.shares_change,
+                note = excluded.note
+        """, all_rows_to_insert)
+        conn.commit()
+        conn.close()
+        print(f'完了: 機関空売りデータ {len(all_rows_to_insert)} 件をDBに保存しました。')
+
+    # 最後に本日の実行完了マーカーを更新
+    touch_marker()
 
 if __name__ == "__main__":
     try:

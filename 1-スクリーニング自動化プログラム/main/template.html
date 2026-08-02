@@ -836,7 +836,15 @@
     "指数サポレジ位置とセットで見ると、「価格の位置」と「ボラ環境」の両方を把握できます。",
     "モメンタムCTA": "トレンドの勢いを判定します。\n・🔥強気：順張り推奨\n・🚀初動：トレンド発生の兆し\n・⚠️調整中：一時的な押し目\n・❄️弱気：手出し無用",
     "ボラターゲット": "価格に対する1日の平均変動率に基づく推奨ポジションサイズです。\nボラティリティ（危険度）が高いほど、ポジションを小さくして致命的なドローダウンを回避します。",
-    "ファクター": "バリュエーション（割安度）とクオリティ（ROE・営利対時価）の総合評価です。\n「🌟超割安・高収益」は機関投資家が下値で買い集めやすく、浅い押し目で反発しやすい下地を持ちます。"
+    "ファクター": "バリュエーション（割安度）とクオリティ（ROE・営利対時価）の総合評価です。\n「🌟超割安・高収益」は機関投資家が下値で買い集めやすく、浅い押し目で反発しやすい下地を持ちます。",
+    "決算発表予定日": "次回または直近の決算発表予定日です。決算またぎのリスク管理やスケジュールトレードに活用します。",
+    "短期需給判定": "出来高と値動きから「本物かフェイクか」を直感的に判定します。\n\n" +
+    "【上げの場合】\n" +
+    "・🚀本物/吸い上げ：出来高を伴う強い上げ、または大口の吸収。継続性が高い。\n" +
+    "・🎈値飛び：出来高を伴わない弱い上げ。板が薄く値段だけ上がったフェイクの可能性大。\n\n" +
+    "【下げの場合】\n" +
+    "・💥強い売り/吸収：出来高を伴う強い下げ、または大口の押し目買い(吸収)。\n" +
+    "・🍂需給薄：出来高を伴わない弱い下げ。買い手がいないだけで落ちているフェイク下げ。"
   };
 
   window.DATACOL_TO_HELPKEY = {
@@ -859,12 +867,14 @@
     "逆行強フラグ":"逆行強フラグ",
     "逆行弱フラグ":"逆行弱フラグ",
     "進捗率":"進捗率",
+    "決算発表予定日":"決算発表予定日",
     "EPS":"EPS",
     "BPS":"BPS",
     "ROE":"ROE",
     "増資リスク":"増資リスク",
     "増資スコア":"増資スコア",
     "三角スコア": "三角スコア",
+    "短期需給判定": "短期需給判定",
   };
 </script>
 
@@ -1860,6 +1870,13 @@
       
       const sqScore = Number(r["踏み上げ期待スコア"] ?? 0);
       const sqBadge = sqScore > 0 ? `<span style="color:#e11d48; font-weight:bold;">${sqScore}</span>` : '-';
+
+      const jq = r["短期需給判定"] || "様子見";
+      let jqBadge = jq;
+      if (jq.includes("本物")) jqBadge = `<span class="badge b-green" style="font-weight:bold;">${escapeHtml(jq)}</span>`;
+      else if (jq.includes("値飛び")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
+      else if (jq.includes("強い売り")) jqBadge = `<span class="badge b-orange" style="font-weight:bold;">${escapeHtml(jq)}</span>`;
+      else if (jq.includes("需給薄")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
       
       // =========================================================
       // ★ ここに以下のコードをごっそり追加します！ ★
@@ -1886,7 +1903,17 @@
           const winRate = Number.isFinite(Number(r["決算勝率"])) ? Number(r["決算勝率"]).toFixed(0) : "-";
           sparkHtml = `<div style="display:inline-flex; align-items:center; height:28px; gap:2px; padding: 0 4px;" title="過去の反応: ${r['決算リアクション履歴']} / 勝率: ${winRate}%">${bars}</div>`;
       }
+      
+      // ====== 1. ループの直前（または `html +=` の手前）で変数を計算・定義する ======
+      let instTotalVal = Number(r["機関空売り合計株数"]);
+      let instTotal = Number.isFinite(instTotalVal) && instTotalVal > 0 
+          ? instTotalVal.toLocaleString() + "株" : "-";
 
+      let instChgNum = Number(r["本日の増減合計株数"] || 0);
+      let instChgStyle = instChgNum > 0 ? "color:#e11d48; font-weight:bold;" : (instChgNum < 0 ? "color:#2563eb; font-weight:bold;" : "");
+      let instChgText = instChgNum !== 0 ? (instChgNum > 0 ? "+" + instChgNum.toLocaleString() + "株" : instChgNum.toLocaleString() + "株") : "-";
+
+      let instMoveText = escapeHtml(r["主要機関の動き"] || "-");
       
       
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
@@ -1913,6 +1940,7 @@
         <td>${escapeHtml(r["Algo_Momentum"] || "-")}</td>
         <td>${escapeHtml(r["Algo_VolTarget"] || "-")}</td>
         <td style="font-weight:bold; font-size:1.05em; background-color:#f8fafc;">${escapeHtml(r["Algo_総合判定"] || "-")}</td>
+        <td style="font-weight:bold; color:#f97316;">${escapeHtml(r["短期需給判定"] || "-")}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num" data-sort="${r['AI目標値_raw'] ?? -999999}">${r["AI目標値"] || "-"}</td>
         <td>${r["初動フラグ"] || ""}</td>
@@ -1922,11 +1950,18 @@
         <td class="num" style="text-align:center;">${sqBadge}</td>
         <td class="num">${Number.isFinite(Number(r["信用倍率"])) ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["需給OH"])) ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
+        <td>${escapeHtml(r["空売り機関"] || "-")}</td>
+        <td class="num">${instTotal}</td>
+        <td class="num" style="${instChgStyle}">${instChgText}</td>
+        <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${instMoveText}">${instMoveText}</td>
         <td style="text-align:center;">${sfBadge}</td>
         <td class="num">${Number.isFinite(Number(r["売り残"])) ? Number(r["売り残"]).toLocaleString() : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["買い残"])) ? Number(r["買い残"]).toLocaleString() : "-"}</td>
         <td class="num">${fint(r["最寄り抵抗"])}</td>
         <td class="num">${fint(r["最寄り支持"])}</td>
+        <td class="num" style="color: var(--blue); font-weight: bold;">${r["shikomi_txt"] || "-"}</td>
+        <td class="num" style="color: var(--green); font-weight: bold;">${r["rikaku_txt"] || "-"}</td>
+        <td class="num" style="color: var(--orange); font-weight: bold;">${r["songiri_txt"] || "-"}</td>
         <td data-col="株探ニュース(3)" class="news-col" title="${escapeHtml(String(r["株探ニュース(3)"]||"").replace(/<[^>]*>/g, ""))}">${r["株探ニュース(3)"] || ""}</td>
         <td class="theme-col" data-col="最新テーマ" title="${escapeHtml(String(r["最新テーマ"] || ""))}">${escapeHtml(r["最新テーマ"] || "")}</td>
         <td class="theme-col" data-col="関連テーマ" title="${escapeHtml(r["関連テーマ"]?.replace(/<[^>]*>/g, "") || "")}">${r["関連テーマ"] || ""}</td>
@@ -1961,8 +1996,9 @@
         <td class="num">${Number.isFinite(Number(r["直近売上YoY"])) ? Number(r["直近売上YoY"]).toFixed(2) : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["直近営業益YoY"])) ? Number(r["直近営業益YoY"]).toFixed(2) : "-"}</td>
         <td class="num" style="text-align:center;">${Number(r["利益加速フラグ"]) === 1 ? '<span class="badge b-green">🚀加速</span>' : '-'}</td>
+        <td style="text-align:center; font-size:12px; font-weight:bold; color:var(--blue);">${escapeHtml(r["決算発表予定日"] || "-")}</td> <!-- ★追加 -->
         <td class="num">${expHtml}</td>
-        <td style="text-align:center; vertical-align:middle;">${sparkHtml}</td>
+        <td style="text-align:center; vertical-align:middle;" data-sort="${Number.isFinite(Number(r["決算勝率"])) ? Number(r["決算勝率"]) : -999}">${sparkHtml}</td>
         <td class="num">${Number.isFinite(Number(r["PBR"])) ? Number(r["PBR"]).toFixed(2) : "-"}</td>
         <td class="num">${r["EPS"] ?? "-"}</td>
         <td class="num">${r["BPS"] ?? "-"}</td>
@@ -2479,6 +2515,7 @@
       { label: "Algo総合判定", key: "Algo_総合判定" },
       { label: "初動フラグ", key: "初動フラグ" },
       { label: "右肩早期種別", key: "右肩早期種別" },
+      { label: "決算発表日", key: "決算発表予定日" },
       { label: "決算期待値", key: "決算期待値" },
       { label: "過去反応(8回分)", key: "決算リアクション履歴" },
       { label: "信用倍率", key: "信用倍率" }
@@ -2601,6 +2638,7 @@ function initExcelFilters() {
       <option value="lte">以下 (<=)</option>
       <option value="eq">一致 (==)</option>
       <option value="includes">テキストを含む</option>
+      <option value="not_includes">テキストを含まない</option>
     </select>
     <input type="text" id="ef-val-1" placeholder="値 (例: 10 または テキスト)">
     
@@ -2615,6 +2653,7 @@ function initExcelFilters() {
       <option value="lte">以下 (<=)</option>
       <option value="eq">一致 (==)</option>
       <option value="includes">テキストを含む</option>
+      <option value="not_includes">テキストを含まない</option>
     </select>
     <input type="text" id="ef-val-2" placeholder="値 (例: 30)">
     
@@ -2715,6 +2754,7 @@ function evaluateExcelFilters(r) {
     const check = (type, val) => {
       if (val === '') return false;
       if (type === 'includes') return strVal.includes(val.toLowerCase());
+      if (type === 'not_includes') return !strVal.includes(val.toLowerCase());
       
       const vNum = parseFloat(val);
       if (!isNaN(vNum) && numVal !== null) {
@@ -3171,18 +3211,19 @@ window.showTobHistory = function(btn, jsonStr) {
 // ★ Gemini用プロンプト＆データ一括コピー機能
 // ==========================================
 document.getElementById("btn-gemini-prompt")?.addEventListener("click", async () => {
-  // 1. 全データから「売買代金 5億円以上」のみを自動抽出
-  const allData = window.state?.data || window.DATA_CAND || [];
-  const filtered = allData.filter(r => {
+  // 1. 画面上のフィルター条件を通過したデータのみを取得
+  const currentData = applyFilter(window.state?.data || window.DATA_CAND || []);
+  
+  // その中から「売買代金 5億円以上」のみを自動抽出（ノイズ排除）
+  const filtered = currentData.filter(r => {
     const turn = parseFloat(String(r["売買代金(億)"] || r["売買代金億"] || "0").replace(/[,円]/g, ""));
     return Number.isFinite(turn) && turn >= 5.0;
   });
 
   if (!filtered.length) {
-    alert("売買代金5億円以上の銘柄が見つかりませんでした。");
+    alert("現在の条件で、売買代金5億円以上の銘柄が見つかりませんでした。");
     return;
   }
-
   // 2. Geminiが思考しやすい厳選カラムを指定
   const cols = [
     "コード", "銘柄名", "セクター", "関連テーマ", 
@@ -3201,13 +3242,19 @@ document.getElementById("btn-gemini-prompt")?.addEventListener("click", async ()
   });
 
   // 4. 分析プロンプト ＋ CSV の統合テキストを生成
+  // マクロ環境（VIXや指数位置）の情報を取得してAIの文脈に組み込む
+  const vixInfo = document.getElementById("vix-regime")?.textContent?.replace(" ?", "") || "";
+  const idxInfo = document.getElementById("idx-sr-summary")?.textContent?.replace(" ?", "") || "";
+  const macroContext = (vixInfo || idxInfo) ? `\n【現在のマクロ環境】\n${idxInfo} / ${vixInfo}` : "";
+
   const fullText = 
-`以下の日本株スクリーニングデータ（本日売買代金5億円以上の主要銘柄：計 ${filtered.length} 件）を分析してください。
+`以下の日本株スクリーニングデータ（フィルター適用後：計 ${filtered.length} 件）を分析してください。
+${macroContext}
 
 【分析依頼】
-1. 本日の相場概況：どのセクター・テーマに特に強い資金（高RVOL・高前日比%）が流入しているか、相場のトレンドをまとめてください。
-2. 明日以降期待できる【最強の3銘柄】：シグナルが出ており、流動性・モメンタム・需給（需給OHが低い）のバランスが最も良い銘柄を3つ厳選し、理由を述べてください。
-3. 警戒すべきセクター/リスク要因：資金が流出しているセクターや、上値が重そうなパターンを指摘してください。
+1. 本日の相場概況：上記のマクロ環境も踏まえ、どのセクター・テーマに強い資金（高RVOL・高前日比%）が流入しているか、相場のトレンドをまとめてください。
+2. 明日以降期待できる【最強の3銘柄】：シグナルが出ており、流動性・モメンタム・需給のバランスが最も良い銘柄を3つ厳選し、理由を述べてください。
+3. 警戒すべきセクター/リスク要因：マクロ視点で資金が流出しているセクターや、上値が重そうなパターンを指摘してください。
 
 【スクリーニングデータ (CSV)】
 ` + csvRows.join("\n");
@@ -3269,6 +3316,7 @@ document.getElementById("btn-gemini-prompt")?.addEventListener("click", async ()
             <th class="sortable" data-col="Algo_Momentum" data-type="text">モメンタムCTA<span class="arrow"></span></th>
             <th class="sortable" data-col="Algo_VolTarget" data-type="text">ボラターゲット<span class="arrow"></span></th>
             <th class="sortable" data-col="Algo_総合判定" data-type="text" style="color:var(--blue);">総合判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="短期需給判定" data-type="text" style="color:#f97316;">短期需給<span class="arrow"></span></th>
             <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
             <th class="sortable" data-col="初動フラグ" data-type="text">初動<span class="arrow"></span></th>
@@ -3278,11 +3326,18 @@ document.getElementById("btn-gemini-prompt")?.addEventListener("click", async ()
             <th class="num sortable" data-col="踏み上げ期待スコア" data-type="num">踏み上げ<span class="arrow"></span></th>
             <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<span class="arrow"></span></th>
             <th class="num sortable" data-col="需給OH" data-type="num">需給OH<span class="arrow"></span></th>
+            <th class="sortable" data-col="空売り機関" data-type="text">空売り<span class="arrow"></span></th>
+            <th class="num sortable" data-col="機関空売り合計株数" data-type="num">機関空売り合計<span class="arrow"></span></th>
+            <th class="num sortable" data-col="本日の増減合計株数" data-type="num">機関増減(当日)<span class="arrow"></span></th>
+            <th class="sortable" data-col="主要機関の動き" data-type="text">主要機関の動き<span class="arrow"></span></th>
             <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
             <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
             <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
             <th class="num sortable" data-col="最寄り抵抗" data-type="num">最寄り抵抗<span class="arrow"></span></th>
             <th class="num sortable" data-col="最寄り支持" data-type="num">最寄り支持<span class="arrow"></span></th>
+            <th class="num sortable" data-col="仕込み" data-type="num">仕込み目安<span class="arrow"></span></th>
+            <th class="num sortable" data-col="利確" data-type="num">利確目安<span class="arrow"></span></th>
+            <th class="num sortable" data-col="損切り" data-type="num">損切目安<span class="arrow"></span></th>
             <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
             <th class="sortable" data-col="最新テーマ" data-type="text">最新テーマ<span class="arrow"></span></th>
             <th class="sortable" data-col="関連テーマ" data-type="text">関連テーマ<span class="arrow"></span></th>
@@ -3317,8 +3372,9 @@ document.getElementById("btn-gemini-prompt")?.addEventListener("click", async ()
             <th class="sortable" data-col="直近売上YoY" data-type="number">売上YoY(%)<span class="arrow"></span></th>
             <th class="sortable" data-col="直近営業益YoY" data-type="number">営益YoY(%)<span class="arrow"></span></th>
             <th class="sortable" data-col="利益加速フラグ" data-type="number">🚀加速<span class="arrow"></span></th>
+            <th class="sortable" data-col="決算発表予定日" data-type="date">決算発表日<span class="arrow"></span></th> <!-- ★追加 -->
             <th class="num sortable" data-col="決算期待値" data-type="num" title="勝率 × 平均上昇幅 ＋ 敗率 × 平均下落幅">決算期待値<span class="arrow"></span></th>
-            <th data-col="決算リアクション履歴" title="過去8回の決算翌日リアクション">過去反応<span class="arrow"></span></th>
+            <th class="sortable" data-col="決算リアクション履歴" data-type="num" title="勝率でソート。過去8回の決算翌日リアクション">過去反応<span class="arrow"></span></th>
             <th class="num sortable" data-col="PBR" data-type="num">PBR<span class="arrow"></span></th>
             <th class="num sortable" data-col="EPS" data-type="num">EPS<span class="arrow"></span></th>
             <th class="num sortable" data-col="BPS" data-type="num">BPS<span class="arrow"></span></th>
@@ -3530,9 +3586,12 @@ window.applyQuickSearch = function(keyword) {
 };
 
 // ==========================================
-// ★追加: セクター・テーマ別資金流入ランキングモーダル
+// ★追加: セクター別資金流入ランキングモーダル
 // ==========================================
 (function(){
+  let currentSectorSortKey = null;
+  let currentSectorSortAsc = false;
+
   // モーダル用DOMの生成
   if (!document.getElementById('sector-modal-overlay')) {
     const ov = document.createElement('div');
@@ -3550,8 +3609,8 @@ window.applyQuickSearch = function(keyword) {
               <tr style="height:40px;">
                 <th style="text-align:center; font-size:15px;">順位</th>
                 <th style="text-align:left; font-size:15px;">セクター (東証33業種)</th>
-                <th class="num" style="font-size:15px;">平均騰落率</th>
-                <th class="num" style="font-size:15px;">売買代金 (億円)</th>
+                <th class="num" id="th-sec-ret" style="font-size:15px; cursor:pointer; user-select:none;" title="クリックでソート">平均騰落率<span class="sort-arrow" style="font-size:11px; color:#666; margin-left:4px;"></span></th>
+                <th class="num" id="th-sec-turn" style="font-size:15px; cursor:pointer; user-select:none;" title="クリックでソート">売買代金 (億円)<span class="sort-arrow" style="font-size:11px; color:#666; margin-left:4px;"></span></th>
                 <th class="num" style="font-size:15px;">銘柄数</th>
                 <th class="num" title="1銘柄あたりの平均売買代金" style="font-size:15px;">平均流入 (億円)</th>
               </tr>
@@ -3569,47 +3628,74 @@ window.applyQuickSearch = function(keyword) {
     ov.addEventListener('click', (e) => { if (e.target === ov) closeParams(); });
   }
 
+  function renderSectorTable() {
+    const rawData = (typeof RAW !== 'undefined' && Object.keys(RAW).length) ? RAW : (window.__DATA__ || {});
+    let sectors = (rawData.sector_ranking || []).slice();
+    const tbody = document.getElementById("sector-tbody");
+    
+    document.getElementById('th-sec-ret').querySelector('.sort-arrow').textContent = currentSectorSortKey === 'avg_return' ? (currentSectorSortAsc ? '▲' : '▼') : '';
+    document.getElementById('th-sec-turn').querySelector('.sort-arrow').textContent = currentSectorSortKey === 'total_turnover' ? (currentSectorSortAsc ? '▲' : '▼') : '';
+
+    if (currentSectorSortKey) {
+      sectors.sort((a, b) => {
+        const valA = Number(a[currentSectorSortKey] || 0);
+        const valB = Number(b[currentSectorSortKey] || 0);
+        return currentSectorSortAsc ? (valA - valB) : (valB - valA);
+      });
+    }
+
+    if (!sectors.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:16px; color:var(--muted);">データがまだ計算されていません（Python側のEODバッチ実行をお待ちください）</td></tr>';
+    } else {
+      let html = "";
+      sectors.forEach((s, idx) => {
+        const turn = Number(s.total_turnover || 0);
+        const count = Number(s.active_stocks || 1);
+        const avg = turn / count;
+        const avgRet = Number(s.avg_return || 0);
+        
+        const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
+        let rankHtml = \`\${idx + 1}\`;
+        if (idx === 0) rankHtml = \`<span style="font-size:22px;">🥇</span> 1\`;
+        if (idx === 1) rankHtml = \`<span style="font-size:22px;">🥈</span> 2\`;
+        if (idx === 2) rankHtml = \`<span style="font-size:22px;">🥉</span> 3\`;
+
+        html += \`
+          <tr style="height:44px;">
+            <td style="text-align:center; font-weight:bold; font-size:16px;">\${rankHtml}</td>
+            <td style="font-weight:bold; color:var(--blue); font-size:16px;">
+              <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('\${s.セクター}'); return false;" title="このセクターで絞り込み">\${s.セクター}</a>
+            </td>
+            <td class="num" style="color:\${retColor}; font-weight:bold; font-size:16px;">\${avgRet > 0 ? '+' : ''}\${avgRet.toFixed(2)}%</td>
+            <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">\${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
+            <td class="num" style="font-size:16px;">\${count.toLocaleString('ja-JP')}</td>
+            <td class="num" style="color:#64748b; font-size:16px;">\${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
+          </tr>
+        \`;
+      });
+      tbody.innerHTML = html;
+    }
+  }
+
   // ボタンクリックイベントのバインド
   document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById('th-sec-ret')?.addEventListener('click', () => {
+      if (currentSectorSortKey === 'avg_return') { currentSectorSortAsc = !currentSectorSortAsc; }
+      else { currentSectorSortKey = 'avg_return'; currentSectorSortAsc = false; }
+      renderSectorTable();
+    });
+
+    document.getElementById('th-sec-turn')?.addEventListener('click', () => {
+      if (currentSectorSortKey === 'total_turnover') { currentSectorSortAsc = !currentSectorSortAsc; }
+      else { currentSectorSortKey = 'total_turnover'; currentSectorSortAsc = false; }
+      renderSectorTable();
+    });
+
     document.getElementById("btn-sector")?.addEventListener("click", (e) => {
       e.preventDefault();
-      
-      const rawData = (typeof RAW !== 'undefined' && Object.keys(RAW).length) ? RAW : (window.__DATA__ || {});
-      const sectors = rawData.sector_ranking || [];
-      const tbody = document.getElementById("sector-tbody");
-      
-      if (!sectors.length) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:16px; color:var(--muted);">データがまだ計算されていません（Python側のEODバッチ実行をお待ちください）</td></tr>';
-      } else {
-        let html = "";
-        sectors.forEach((s, idx) => {
-          const turn = Number(s.total_turnover || 0);
-          const count = Number(s.active_stocks || 1);
-          const avg = turn / count;
-          const avgRet = Number(s.avg_return || 0);
-          
-          const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
-          let rankHtml = `${idx + 1}`;
-          if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
-          if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
-          if (idx === 2) rankHtml = `<span style="font-size:22px;">🥉</span> 3`;
-
-          html += `
-            <tr style="height:44px;">
-              <td style="text-align:center; font-weight:bold; font-size:16px;">${rankHtml}</td>
-              <td style="font-weight:bold; color:var(--blue); font-size:16px;">
-                <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${s.セクター}'); return false;" title="このセクターで絞り込み">${s.セクター}</a>
-              </td>
-              <td class="num" style="color:${retColor}; font-weight:bold; font-size:16px;">${avgRet > 0 ? '+' : ''}${avgRet.toFixed(2)}%</td>
-              <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
-              <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
-              <td class="num" style="color:#64748b; font-size:16px;">${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
-            </tr>
-          `;
-        });
-        tbody.innerHTML = html;
-      }
-      
+      currentSectorSortKey = null;
+      currentSectorSortAsc = false;
+      renderSectorTable();
       document.getElementById('sector-modal-overlay').style.display = 'block';
     });
   });
@@ -3619,6 +3705,9 @@ window.applyQuickSearch = function(keyword) {
 // ★追加: テーマ別資金流入ランキングモーダル
 // ==========================================
 (function(){
+  let currentThemeSortKey = null;
+  let currentThemeSortAsc = false;
+
   // モーダル用DOMの生成
   if (!document.getElementById('theme-modal-overlay')) {
     const ov = document.createElement('div');
@@ -3636,8 +3725,8 @@ window.applyQuickSearch = function(keyword) {
               <tr style="height:40px;">
                 <th style="text-align:center; font-size:15px;">順位</th>
                 <th style="text-align:left; font-size:15px;">テーマ名</th>
-                <th class="num" style="font-size:15px;">平均騰落率</th>
-                <th class="num" style="font-size:15px;">売買代金 (億円)</th>
+                <th class="num" id="th-theme-ret" style="font-size:15px; cursor:pointer; user-select:none;" title="クリックでソート">平均騰落率<span class="sort-arrow" style="font-size:11px; color:#666; margin-left:4px;"></span></th>
+                <th class="num" id="th-theme-turn" style="font-size:15px; cursor:pointer; user-select:none;" title="クリックでソート">売買代金 (億円)<span class="sort-arrow" style="font-size:11px; color:#666; margin-left:4px;"></span></th>
                 <th class="num" style="font-size:15px;">銘柄数</th>
                 <th class="num" title="1銘柄あたりの平均売買代金" style="font-size:15px;">平均流入 (億円)</th>
               </tr>
@@ -3654,50 +3743,78 @@ window.applyQuickSearch = function(keyword) {
     ov.addEventListener('click', (e) => { if (e.target === ov) closeParams(); });
   }
 
+  function renderThemeTable() {
+    const rawData = (typeof RAW !== 'undefined' && Object.keys(RAW).length) ? RAW : (window.__DATA__ || {});
+    let themes = (rawData.theme_ranking || []).slice();
+    const tbody = document.getElementById("theme-tbody");
+    
+    document.getElementById('th-theme-ret').querySelector('.sort-arrow').textContent = currentThemeSortKey === 'avg_return' ? (currentThemeSortAsc ? '▲' : '▼') : '';
+    document.getElementById('th-theme-turn').querySelector('.sort-arrow').textContent = currentThemeSortKey === 'total_turnover' ? (currentThemeSortAsc ? '▲' : '▼') : '';
+
+    if (currentThemeSortKey) {
+      themes.sort((a, b) => {
+        const valA = Number(a[currentThemeSortKey] || 0);
+        const valB = Number(b[currentThemeSortKey] || 0);
+        return currentThemeSortAsc ? (valA - valB) : (valB - valA);
+      });
+    }
+
+    if (!themes.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:16px; color:var(--muted);">データがまだ計算されていません</td></tr>';
+    } else {
+      let html = "";
+      themes.forEach((t, idx) => {
+        const turn = Number(t.total_turnover || 0);
+        const count = Number(t.active_stocks || 1);
+        const median = Number(t.median_turnover || 0);
+        const score = Number(t.true_flow_score || 0);
+        const avgRet = Number(t.avg_return || 0);
+        
+        const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
+        let rankHtml = \`\${idx + 1}\`;
+        if (idx === 0) rankHtml = \`<span style="font-size:22px;">🥇</span> 1\`;
+        if (idx === 1) rankHtml = \`<span style="font-size:22px;">🥈</span> 2\`;
+        if (idx === 2) rankHtml = \`<span style="font-size:22px;">🥉</span> 3\`;
+
+        html += \`
+          <tr style="height:44px;">
+            <td style="text-align:center; font-weight:bold; font-size:16px;">\${rankHtml}</td>
+            <td style="font-weight:bold; color:var(--orange); font-size:16px;">
+              <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('\${t.テーマ}'); return false;" title="このテーマで絞り込み">\${t.テーマ}</a>
+            </td>
+            <td class="num" style="color:\${retColor}; font-weight:bold; font-size:16px;">\${avgRet > 0 ? '+' : ''}\${avgRet.toFixed(2)}%</td>
+            <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">\${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
+            <td class="num" style="font-size:16px;">\${count.toLocaleString('ja-JP')}</td>
+            <td class="num" title="メガキャップのノイズを排除した中央値" style="color:#64748b; font-size:16px;">
+              \${median.toLocaleString('ja-JP', {maximumFractionDigits:1})} 
+              <span style="font-size:12px; color:var(--blue);"> (スコア: \${score.toFixed(1)})</span>
+            </td>
+          </tr>
+        \`;
+      });
+      tbody.innerHTML = html;
+    }
+  }
+
   // ボタンクリックイベントのバインド
   document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById('th-theme-ret')?.addEventListener('click', () => {
+      if (currentThemeSortKey === 'avg_return') { currentThemeSortAsc = !currentThemeSortAsc; }
+      else { currentThemeSortKey = 'avg_return'; currentThemeSortAsc = false; }
+      renderThemeTable();
+    });
+
+    document.getElementById('th-theme-turn')?.addEventListener('click', () => {
+      if (currentThemeSortKey === 'total_turnover') { currentThemeSortAsc = !currentThemeSortAsc; }
+      else { currentThemeSortKey = 'total_turnover'; currentThemeSortAsc = false; }
+      renderThemeTable();
+    });
+
     document.getElementById("btn-theme")?.addEventListener("click", (e) => {
       e.preventDefault();
-      
-      const rawData = (typeof RAW !== 'undefined' && Object.keys(RAW).length) ? RAW : (window.__DATA__ || {});
-      const themes = rawData.theme_ranking || [];
-      const tbody = document.getElementById("theme-tbody");
-      
-      if (!themes.length) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:16px; color:var(--muted);">データがまだ計算されていません</td></tr>';
-      } else {
-        let html = "";
-        themes.forEach((t, idx) => {
-          const turn = Number(t.total_turnover || 0);
-          const count = Number(t.active_stocks || 1);
-          const median = Number(t.median_turnover || 0);
-          const score = Number(t.true_flow_score || 0);
-          const avgRet = Number(t.avg_return || 0);
-          
-          const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
-          let rankHtml = `${idx + 1}`;
-          if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
-          if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
-          if (idx === 2) rankHtml = `<span style="font-size:22px;">🥉</span> 3`;
-
-          html += `
-            <tr style="height:44px;">
-              <td style="text-align:center; font-weight:bold; font-size:16px;">${rankHtml}</td>
-              <td style="font-weight:bold; color:var(--orange); font-size:16px;">
-                <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${t.テーマ}'); return false;" title="このテーマで絞り込み">${t.テーマ}</a>
-              </td>
-              <td class="num" style="color:${retColor}; font-weight:bold; font-size:16px;">${avgRet > 0 ? '+' : ''}${avgRet.toFixed(2)}%</td>
-              <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
-              <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
-              <td class="num" title="メガキャップのノイズを排除した中央値" style="color:#64748b; font-size:16px;">
-                ${median.toLocaleString('ja-JP', {maximumFractionDigits:1})} 
-                <span style="font-size:12px; color:var(--blue);"> (スコア: ${score.toFixed(1)})</span>
-              </td>
-            </tr>
-          `;
-        });
-        tbody.innerHTML = html;
-      }
+      currentThemeSortKey = null;
+      currentThemeSortAsc = false;
+      renderThemeTable();
       document.getElementById('theme-modal-overlay').style.display = 'block';
     });
   });

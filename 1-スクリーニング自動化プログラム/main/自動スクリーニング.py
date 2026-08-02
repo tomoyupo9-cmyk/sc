@@ -1,20 +1,11 @@
 ﻿# --- 標準ライブラリ ---
-import datetime as dt_mod  # モジュールに別名を付ける
-from datetime import datetime as dt_class, timezone, timedelta, date, time
 import decimal
 import email
-from email.message import EmailMessage
-from email.utils import parsedate_to_datetime as _pdt
 import html
 import json
 import logging
-from logging.handlers import RotatingFileHandler
 import math
-import multiprocessing
-from multiprocessing import Process, JoinableQueue
 import os
-import pathlib
-from pathlib import Path
 import re
 import shutil
 import smtplib
@@ -25,39 +16,46 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Iterable, Literal, Optional, Union
 import urllib.parse
-from urllib.parse import quote
 import warnings
 import webbrowser
 import xml.etree.ElementTree as ET
-from zoneinfo import ZoneInfo
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone, time as dt_time
+from email.message import EmailMessage
+from email.utils import parsedate_to_datetime as _pdt
 from functools import lru_cache
+from logging.handlers import RotatingFileHandler
+from multiprocessing import JoinableQueue, Process
+from pathlib import Path
+from typing import Any, Iterable, Literal, Optional, Union
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
+
+# --- 拡張ライブラリ（フォールバック処理） ---
 try:
     import orjson
 except ImportError:
-    import json as orjson  # orjsonがない場合は標準jsonをorjsonとして代用
-from collections import defaultdict
+    import json as orjson  # orjsonがない環境では標準のjsonで代用
 
 # --- サードパーティライブラリ ---
 import bs4 # BeautifulSoup
-import joblib
 import jinja2
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+import joblib
 import jpholiday
 import markupsafe
-from markupsafe import Markup, escape
 import numpy as np
-import orjson
 import pandas as pd
 import pandas_datareader.data as _pdr
-from plyer import notification
 import requests
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
-import yahooquery
-from yahooquery import Ticker
-import yfinance
 import workdays
+import yahooquery
+import yfinance
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup, escape
+from plyer import notification
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
+from yahooquery import Ticker
 
 # --- 内部用エイリアス・パッチ（必要最小限） ---
 # パッチ処理や特定のライブラリ構成用に使用されているもの
@@ -65,24 +63,382 @@ import logging as __lg_patch_v8
 import warnings as __wn_patch_v8
 import os as __os_patch_v8
 import sys as __sys_patch_v8
-from datetime import datetime as datetime
 
+# ==============================================================================
+# 【全体設定・定数群】（パラメータの調整やパスの変更はここで行います）
+# ==============================================================================
 
-def __inject_inline_data_json(html: str, data_obj) -> str:
-    """<body>直後に JSON タグ(__DATA__) と window.__DATA__ を挿入。fallback: 文末追加。"""
+# --- [1] ファイル・ディレクトリ パス設定 ---
+DB_PATH             = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
+OUTPUT_DIR          = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data"
+CSV_INPUT_PATH      = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\screener_result.csv"
+MASTER_CODES_PATH   = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt"
+EXTRA_CLOSED_PATH   = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\market_closed_extra.txt"
+KARAURI_PY_PATH     = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\空売り無しリスト出しスクリプト.py"
+KARA_URI_NASHI_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\空売り無しリスト.txt"
+FUND_SCRIPT         = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\株探ファンダ.py"
+FETCH_PATH          = r"H:\desctop\株攻略\2-トレンドツール\fetch_all.py"
+MARKER_FILE         = Path(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\last_funda.txt")
+MODEL_PATH          = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
+
+# --- [2] 実行モード・オプション設定 ---
+RUN_SESSION         = "EOD"   # "EOD" または "MIDDAY"
+AUTO_MODE           = True    # 自動判定フラグ
+USE_CSV             = True    # CSV取り込みフラグ
+TEST_MODE           = False   # テストモードフラグ（件数制限）
+TEST_LIMIT          = 50      # テスト時の最大件数
+PRICE_GUARD_ENABLED = False   # 休日価格補完フラグ
+MIDDAY_FILTER_BY_FLAGS = False # MIDDAY対象を絞るか
+
+# --- [3] トレンド・シグナル判定 パラメータ ---
+LOOKBACK            = 90
+SIGNAL_LOOKBACK_DAYS= 300
+MIN_DAYS            = 60
+MID_MA              = 25
+BREAKOUT_LOOKBACK   = 90
+RIBBON_KEEP_DAYS    = 30
+HL_WIN              = 5
+THRESH_SCORE        = 70      # 合格スコアのしきい値
+SLOPE_MIN_ANN       = 0.08    # 年率傾きの下限
+R2_MIN              = 0.30    # R2下限
+MDD_MAX             = 0.30    # 最大ドローダウン上限
+WEEK_UP_MIN         = 0.55    # 週間上昇の下限
+
+# --- [4] 早期トリガー・ブレイク判定 パラメータ ---
+HH_N                = 60      # ブレイク判定の過去高値期間
+POCKET_WIN          = 10      # ポケットピボットの参照日数
+REB_WIN             = 10      # 20MA割れ→奪回を探すウィンドウ
+RECLAIM_WIN         = 10      # 200MA上抜けの探索ウィンドウ
+SCORE_TH            = 70      # 早期フラグのスコア閾値
+PIVOT_EPS           = 0.002   # ブレイク余白(+0.2%)
+VOL_BOOST           = 1.5     # ブレイク時の出来高ブースト(×20日平均)
+EXT_20_MAX          = 0.05    # 20MAからの乖離上限(=+5%)
+EXT_50_MAX          = 0.10    # 50MAからの乖離上限(=+10%)
+
+# --- [5] 再評価 (Rejudge) パラメータ ---
+REJUDGE_LOOKAHEAD_DAYS  = 5
+REJUDGE_REQ_HIGH_PCT    = 5.0
+REJUDGE_MAX_ADVERSE_PCT = 7.0
+
+# --- [6] 支持・抵抗線 パラメータ ---
+RES_LOOKBACK_DAYS   = 90
+RES_TOUCH_BAND_PCT  = 0.015   # ±1.5%の幅でゾーンを形成
+RES_MIN_TOUCHES     = 2       # 最低2回のタッチでゾーン候補
+RES_ZONE_MERGE_PCT  = 0.02    # 2%以内のシードはマージ
+
+# --- [7] API取得・その他システム設定 ---
+EPS                 = 0.0
+JST                 = timezone(timedelta(hours=9))
+YQ_BATCH_EOD        = 400
+YQ_BATCH_MID        = 400
+YQ_SLEEP_EOD        = 0.15
+YQ_SLEEP_MID        = 0.10
+HISTORY_PERIOD_DAILY= "10d"
+HISTORY_PERIOD_FULL = "12mo"
+
+GMAIL_USER          = "tomoyupo9@gmail.com"
+GMAIL_TO            = "tomoyupo9@gmail.com"
+GMAIL_APP_PASSWORD  = "pzunutpfqophuoae"
+GMAIL_SUBJ          = "スクリーニング レポート"
+GMAIL_BODY          = "index.html を添付します（オフラインで開けます）。"
+SEND_HTML_AS_ZIP    = False
+
+_KABUNEWS_CONF = {
+    "rss_base": "https://news.google.com/rss/search",
+    "lang": "ja",
+    "gl": "JP",
+    "ceid": "JP:ja",
+    "max_items_per_symbol": 3,
+    "enable_bert": False,
+    "bert_model": "koheiduck/bert-japanese-finetuned-sentiment",
+    "http_timeout": 8,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "pos_keywords": [
+        "上方修正", "増額修正", "業績予想の上方修正", "最高益", "過去最高益", 
+        "上場来高値", "配当増額", "増配", "大幅増益", "好決算", 
+        "連結営業利益の増加", "株式分割", "自社株買い", "中期経営計画", "大型受注"
+    ],
+}
+
+# ==============================================================================
+# 【外部スクリプト・プロセス実行ユーティリティ群】
+# ==============================================================================
+
+def run_karauri_script():
+    """機関の空売り詳細データを取得・DB保存するスクリプトを実行"""
+    if not os.path.exists(KARAURI_PY_PATH):
+        print(f"[karauri] スクリプトが見つかりません: {KARAURI_PY_PATH}")
+        return
+
     try:
+        print("[karauri] 機関の空売りデータの取得をバックグラウンド起動...")
+        # 同期的にしっかり終わらせたい場合は subprocess.run にしても良いですが、
+        # 従来の「待たずに進む」スタイルであればそのまま fire_and_forget でOKです
+        proc = fire_and_forget_script(KARAURI_PY_PATH)
+        print(f"[karauri] 起動しました PID={proc.pid}")
+        return proc
+    except Exception as e:
+        print(f"[karauri][WARN] 起動に失敗しました: {e}")
+
+
+def _run_fetch_all(fetch_path: str | None = None,
+                   extra_args: list[str] | None = None,
+                   timeout_sec: int | None = None,
+                   use_lock: bool = True) -> None:
+    """
+    自分と同じ Python で fetch_all.py をサブプロセス実行。
+    ・stdout を逐次そのままコンソールへ流す
+    ・異常終了/タイムアウト時は例外
+    ・多重起動を避けるため lock ファイル(任意)を利用
+    """
+    if not os.path.exists(fetch_path):
+        raise FileNotFoundError(f"fetch_all.py が見つかりません: {fetch_path}")
+
+    py = sys.executable  # いま実行中の Python を使う（仮想環境の取り違え防止）
+    cmd = [py, "-u", fetch_path]
+    if extra_args:
+        cmd.extend(extra_args)
+
+    # 2) ロック（簡易）
+    lock_path = os.path.splitext(fetch_path)[0] + ".lock"  # 例: fetch_all.lock
+    if use_lock:
+        if os.path.exists(lock_path):
+            # 古いロックは5時間で無視（適当な保険）
+            try:
+                if time.time() - os.path.getmtime(lock_path) < 5*60*60:
+                    print(f"[fetch_all] lock検知のためスキップ: {lock_path}")
+                    return
+            except Exception:
+                pass
+        # 作成
+        try:
+            with open(lock_path, "w", encoding="utf-8") as lf:
+                lf.write(f"pid={os.getpid()}\nstart={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        except Exception:
+            pass
+
+    print(f"[fetch_all] 実行開始: {cmd}")
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+            universal_newlines=True,
+        )
+        start = time.time()
+        # 逐次出力
+        for line in proc.stdout:
+            print(line.rstrip())
+            if timeout_sec and (time.time() - start) > timeout_sec:
+                proc.kill()
+                raise TimeoutError(f"fetch_all タイムアウト（{timeout_sec}s）")
+
+        rc = proc.wait()
+        if rc != 0:
+            raise RuntimeError(f"fetch_all 異常終了: returncode={rc}")
+
+        print("[fetch_all] 正常終了")
+    finally:
+        # ロック解除
+        if use_lock:
+            try:
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+            except Exception:
+                pass
+
+
+def run_fundamental_daily(force: bool = False):
+    """株探ファンダメンタルズ情報を取得・更新する外部スクリプトを1日1回実行する"""
+    today = date.today()
+
+    # 1) mtimeで判定（中身は見ない）
+    if not force and MARKER_FILE.exists():
+        mtime = datetime.fromtimestamp(MARKER_FILE.stat().st_mtime).date()
+        print(f"[fundamental] marker_mtime={mtime} today={today}")
+        if mtime == today:
+            print("[fundamental] 今日すでに実行済み → スキップ")
+            return
+
+    # 2) 実行
+    try:
+        print(f"[fundamental] 実行開始: {FUND_SCRIPT}")
+        # ★ ここを修正：python 固定 → sys.executable
+        subprocess.run([sys.executable, str(FUND_SCRIPT)], check=True)
+        print("[fundamental] 株探ファンダ 全銘柄処理 OK")
+    except subprocess.CalledProcessError as e:
+        print(f"[fundamental][ERROR] 子プロセス失敗: returncode={e.returncode}")
+        return
+
+    # 3) マーカー更新（touch相当）
+    MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MARKER_FILE.touch()  # 中身は不要、更新日時だけ使う
+    print(f"[fundamental] マーカー更新(mtime): {MARKER_FILE}")
+
+
+def _run_charts60(py_path: str):
+    """個別チャート画像（charts60）を生成する外部スクリプトを実行する"""
+    py = Path(py_path)
+    if not py.exists():
+        raise FileNotFoundError(f"charts60_make.py が見つかりません: {py}")
+    # そのまま実行（DBパスはスクリプト内に埋め込み済み）
+    # メインと同じ Python 実行ファイルを使う（pythonw.exe で起動していればそれを継承）
+    subprocess.run(
+        [sys.executable, str(py)],
+        check=True,
+        creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+
+
+def sync_to_github_pages(repo_root: str, target_file: str):
+    """
+    Windowsのcmd.exe（shell=True）の介在を100%遮断し、
+    カレントディレクトリ誤認バグを構造上完全に根絶した決定版。
+    万が一.gitフォルダが消失・破損していた場合の自動修復機能付き。
+    """
+    try:
+        # Windowsのネイティブな絶対パス文字列に完全変換
+        repo_path = os.path.abspath(repo_root)
+        src = Path(target_file)
+        dest = Path(repo_path) / "index.html"
+
+        if not src.exists():
+            print(f"[git][ERROR] Source HTML file not found: {target_file}")
+            return
+
+        # リポジトリの親フォルダが存在しない場合は自動作成
+        os.makedirs(repo_path, exist_ok=True)
+
+        # --- 🔥【重要】万が一.gitフォルダが壊れて消失していた場合の自動初期化 ---
+        dot_git_path = os.path.join(repo_path, ".git")
+        if not os.path.exists(dot_git_path):
+            print(f"[git][WARN] .git directory not found in {repo_path}. Initializing repository...")
+            subprocess.run(
+                ["git", "init"], 
+                cwd=repo_path, 
+                shell=False, 
+                capture_output=True, 
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+        # --- ロックファイルの自動排除 ---
+        lock_file = Path(repo_path) / ".git" / "index.lock"
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                print("[git] Removed residual index.lock file.")
+            except Exception:
+                pass
+
+        # 成果物のコピー（D:作業場 → C:リポジトリ）
+        shutil.copy(src, dest)
+        print(f"[git] Copied target: {src.name} → {dest}")
+
+        # ステルスフラグ
+        CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW
+
+        # 確実なる処置：shell=False に固定し、コマンドをリスト形式で渡す。
+        # cwdに「Windows絶対パス文字列」を直接指定することで、Gitは100%迷子にならずにその場所で起動する。
         
+        # --- 3. git add 実行 ---
+        res_add = subprocess.run(
+            ["git", "add", "index.html"], 
+            cwd=repo_path, 
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if res_add.returncode != 0:
+            print(f"[git][ERROR] 'git add' failed.\nReason: {res_add.stderr.strip()}")
+            return
+
+        # --- 4. 差分チェック ---
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path,
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if status.returncode != 0:
+            print(f"[git][ERROR] 'git status' failed.\nReason: {status.stderr.strip()}")
+            return
+
+        # 変更（index.html）に差分がなければ終了
+        if not status.stdout.strip():
+            print("[git] No changes detected. Skipping commit and push.")
+            return
+
+        # --- 5. git commit 実行 ---
+        msg = f"Update dashboard: {datetime.now():%Y-%m-%d %H:%M:%S}"
+        res_commit = subprocess.run(
+            ["git", "commit", "-m", msg], 
+            cwd=repo_path, 
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if res_commit.returncode != 0:
+            print(f"[git][ERROR] 'git commit' failed.\nReason: {res_commit.stderr.strip()}")
+            return
+        print(f"[git] Committed changes: {msg}")
+
+        # --- 6. git push 実行 ---
+        print("[git] Pushing to GitHub repository...")
+        res_push = subprocess.run(
+            ["git", "push", "origin", "main"], 
+            cwd=repo_path, 
+            shell=False,
+            capture_output=True,
+            text=True,
+            creationflags=CREATE_NO_WINDOW
+        )
+        if res_push.returncode != 0:
+            print(f"[git][ERROR] 'git push' failed.\nReason: {res_push.stderr.strip()}")
+            return
+
+        print(f"[git] ✅ GitHub Pages successfully updated at {datetime.now():%H:%M:%S}")
+
+    except Exception as e:
+        print(f"[git][FATAL] Unexpected infrastructure error: {e}")
+# ==============================================================================
+
+
+
+
+def __inject_inline_data_json(html_str: str, data_obj) -> str:
+    """<body>直後に JSON タグ(__DATA__) と window.__DATA__ を挿入（BeautifulSoup版）"""
+    soup = bs4.BeautifulSoup(html_str, "html.parser")
+    
+    try:
         dj = json.dumps(data_obj, ensure_ascii=False, separators=(",", ":"), default=str)
     except Exception:
         dj = "{}"
-    json_tag   = '<script id="__DATA__" type="application/json">' + dj + '</script>'
-    inline_tag = '<script id="data_inline">window.__DATA__=' + dj + ';window.DATA=window.__DATA__;</script>'
+
+    # JSONデータ格納用のタグを作成
+    json_tag = soup.new_tag("script", id="__DATA__", type="application/json")
+    json_tag.string = dj
     
-    m = re.search(r'<body[^>]*>', html, re.IGNORECASE)
-    if m:
-        i = m.end()
-        return html[:i] + json_tag + inline_tag + html[i:]
-    return html + json_tag + inline_tag
+    # 展開用のインラインスクリプトタグを作成
+    inline_tag = soup.new_tag("script", id="data_inline")
+    inline_tag.string = f"window.__DATA__={dj};window.DATA=window.__DATA__;"
+    
+    # bodyの先頭に安全に挿入
+    if soup.body:
+        soup.body.insert(0, inline_tag)
+        soup.body.insert(0, json_tag)
+    else:
+        soup.append(json_tag)
+        soup.append(inline_tag)
+        
+    return str(soup)
 
 # --- [ENCODING GUARD | Windows cp932 safe] ---
 try:
@@ -419,7 +775,7 @@ def dumps_json_clean(obj,
             return list(x)
         if isinstance(x, (pathlib.Path, )):
             return str(x)
-        if isinstance(x, (datetime, date, datetime.time)):
+        if isinstance(x, (datetime, date, dt_time)):
             try:
                 return x.isoformat()
             except Exception:
@@ -1270,7 +1626,7 @@ def _is_trading_session_now(now=None):
     if not _is_jp_business_day(now.date()):
         return False
     t = now.time()
-    return (dt_mod.time(9,0) <= t <= dt_mod.time(11,30)) or (dt_mod.time(12,30) <= t <= dt_mod.time(15,30))
+    return (dt_time(9,0) <= t <= dt_time(11,30)) or (dt_time(12,30) <= t <= dt_time(15,30))
 
 def _ensure_override_table(conn):
     try:
@@ -1414,7 +1770,7 @@ def _get_last_two_closes(conn, code: str):
         
         # ★追加：9:00前なら、APIが返してきた「今日」のデータを未来データとして削除する
         now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
-        if now_jst.time() < dt_mod.time(9, 0):
+        if now_jst.time() < dt_time(9, 0):
             out = out[out["日付"] < now_jst.date()]
         else:
             out = out[out["日付"] <= now_jst.date()]
@@ -1502,10 +1858,6 @@ def _get_last_two_closes(conn, code: str):
         return None, None, None, None
 
 def _vectorize_minimum_fields(df):
-    try:
-        import pandas as _pd
-    except Exception:
-        return df
     if df is None or getattr(df, "empty", True):
         return df
 
@@ -1579,7 +1931,7 @@ def _apply_price_fields(conn, row: dict, code: str,
     
     # ★修正2：9:00前（0:00〜8:59）は絶対にライブ価格を適用しない
     now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
-    is_morning_before_open = now_jst.time() < time(9, 0)
+    is_morning_before_open = now_jst.time() < dt_time(9, 0)
     is_session = _is_trading_session_now()
     
     use_live = (not force_eod) and is_session and not is_morning_before_open and isinstance(live_price, (int, float))
@@ -1629,11 +1981,6 @@ def _fetch_live_price_map(conn,codes):
     """
     try:
         if not codes:
-            return {}
-        try:
-            from yahooquery import Ticker as Ticker
-        except Exception as _e:
-            print(f"[live][WARN] yahooquery import failed: {_e}")
             return {}
         syms = [resolve_yahoo_symbol(str(c), conn) for c in codes]
         yq = Ticker(syms, validate=True)
@@ -1961,170 +2308,6 @@ def add_price_features(df):
     return df
 # ========= end price series features =========
 
-# ===== Constants (centralized) =====
-# --- MISC settings ---
-# eps
-EPS = 0.0
-# jst
-JST = dt_mod.timezone(timedelta(hours=9))
-# ===== パラメータ（好みで微調整） =====
-LOOKBACK = 90
-# yq
-
-# --- KARAURI settings ---
-# JS スクリプトと出力ファイルのパス
-KARAURI_PY_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\空売り無しリスト出しスクリプト.py"
-
-# ファイル/ディレクトリのパス
-KARA_URI_NASHI_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\空売り無しリスト.txt"
-
-# --- RUN settings ---
-# ======== 実行モード ========
-RUN_SESSION = "EOD"
-#RUN_SESSION = "MIDDAY"
-
-# --- AUTO settings ---
-# 機能フラグ（ON/OFF）
-AUTO_MODE = True
-#AUTO_MODE = False
-
-# --- GMAIL settings ---
-# gmail app password
-GMAIL_APP_PASSWORD = "pzunutpfqophuoae"
-# gmail body
-GMAIL_BODY = "index.html を添付します（オフラインで開けます）。"
-# gmail subj
-GMAIL_SUBJ = "スクリーニング レポート"
-# gmail to
-GMAIL_TO = "tomoyupo9@gmail.com"
-# ======== 送信設定（Gmail） ========
-GMAIL_USER = "tomoyupo9@gmail.com"
-
-# --- SEND settings ---
-# send html as zip
-SEND_HTML_AS_ZIP = False
-
-# --- DB settings ---
-# ======== パス ========
-DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
-
-# --- CSV settings ---
-# ファイル/ディレクトリのパス
-CSV_INPUT_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\screener_result.csv"
-
-# --- MASTER settings ---
-# ファイル/ディレクトリのパス
-MASTER_CODES_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt"
-
-# --- OUTPUT settings ---
-# ファイル/ディレクトリのパス
-OUTPUT_DIR = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data"
-
-# --- EXTRA settings ---
-# ファイル/ディレクトリのパス
-EXTRA_CLOSED_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\market_closed_extra.txt"
-
-# --- FUND settings ---
-# fund script
-FUND_SCRIPT = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\株探ファンダ.py"
-
-# --- MARKER settings ---
-# marker file
-MARKER_FILE = Path(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\last_funda.txt")
-
-FETCH_PATH = r"H:\desctop\株攻略\2-トレンドツール\fetch_all.py"
-
-# --- USE settings ---
-# ======== オプション ========
-USE_CSV = True
-
-# --- TEST settings ---
-# 最大件数/上限
-TEST_LIMIT = 50
-# 機能フラグ（ON/OFF）
-TEST_MODE = False
-#TEST_MODE = True
-
-# --- YQ settings ---
-# EOD処理のバッチサイズ
-YQ_BATCH_EOD = 400
-# 中間処理のバッチサイズ
-YQ_BATCH_MID = 400
-# yahooquery の設定
-YQ_SLEEP_EOD = 0.15
-# yahooquery の設定
-YQ_SLEEP_MID = 0.10
-
-# --- HISTORY settings ---
-# 履歴取得
-HISTORY_PERIOD_DAILY = "10d"
-# history period full
-HISTORY_PERIOD_FULL = "12mo"
-
-# --- SIGNAL settings ---
-# シグナル計算に読み込む過去日数（DBから）
-SIGNAL_LOOKBACK_DAYS = 300
-
-# --- MIDDAY settings ---
-# MIDDAYの対象を絞る（Trueで速い）
-MIDDAY_FILTER_BY_FLAGS = False
-
-# --- REJUDGE settings ---
-# ===== 外れ→再評価 ルール（遅れて成功を拾う） =====
-REJUDGE_LOOKAHEAD_DAYS = 5
-# 割合（0〜1想定）
-REJUDGE_MAX_ADVERSE_PCT = 7.0
-# 割合（0〜1想定）
-REJUDGE_REQ_HIGH_PCT = 5.0
-
-# --- MID settings ---
-# === パラメータ（必要なら調整） ===
-MID_MA = 25
-
-# --- BREAKOUT settings ---
-# 期間/窓サイズ（日数）
-BREAKOUT_LOOKBACK = 90
-
-# --- MIN settings ---
-# 日数
-MIN_DAYS = 60
-
-# --- SLOPE settings ---
-# slope min ann
-SLOPE_MIN_ANN = 0.08
-
-# --- R2 settings ---
-# 下限
-R2_MIN = 0.30
-
-# --- MDD settings ---
-# 上限
-MDD_MAX = 0.30
-
-# --- RIBBON settings ---
-# 日数
-RIBBON_KEEP_DAYS = 30
-
-# --- WEEK settings ---
-# 下限
-WEEK_UP_MIN = 0.55
-
-# --- HL settings ---
-# hl win
-HL_WIN = 5
-
-# --- THRESH settings ---
-# しきい値
-THRESH_SCORE = 70
-
-# 価格ガード（休日に price_history から現在値/前日比を補完するか）
-PRICE_GUARD_ENABLED = False  # ← しばらく挙動を見るために OFF
-
-# ==========================================
-# ★追加パーツ: AI予測ロジック
-# ==========================================
-# モデルのパス（環境に合わせて書き換えてください）
-MODEL_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -2217,6 +2400,21 @@ def add_ai_analysis(conn, rows):
                 
             prob = scores[code]
             score_val = round(prob * 100, 1)
+            
+            # ★追加: 大陽線・急騰時の強制モメンタム補正（AIモデルの遅行をカバー）
+            pct_val = 0
+            try:
+                if r.get('前日終値比率_raw') is not None:
+                    pct_val = float(r.get('前日終値比率_raw'))
+                elif r.get('前日終値比率'):
+                    pct_val = float(str(r.get('前日終値比率')).replace('%', ''))
+            except Exception: pass
+
+            if pct_val >= 10.0:
+                score_val = max(score_val, 75.0)  # +10%超えは強制的に「超強気」へ
+            elif pct_val >= 5.0:
+                score_val = max(score_val, 60.0)  # +5%超えは強制的に「注目」へ
+
             r['AIスコア'] = score_val
             
             # 1) 基準となる現在値の取得
@@ -2299,7 +2497,7 @@ def add_ai_analysis(conn, rows):
             r['AI目標値_raw'] = diff_val if diff_val is not None else -999999
 
     except Exception as e:
-        print(f"[AI] 分析エラー: {e}")
+        logging.error(f"[AI] 分析エラー", exc_info=True)
         
     return rows
 # ==========================================
@@ -2628,10 +2826,6 @@ def phase_shortterm_enhancements(conn: sqlite3.Connection):
     _apply_shortterm_metrics(conn)
 # ==== Resistance lines (水平/斜め) : price_history → latest_prices ====
 
-RES_LOOKBACK_DAYS = 90
-RES_TOUCH_BAND_PCT = 0.015  # ±1.5%の幅でゾーンを形成
-RES_MIN_TOUCHES = 2         # 最低2回のタッチでゾーン候補
-RES_ZONE_MERGE_PCT = 0.02   # 2%以内のシードはマージ
 
 def _res__pivot_highs_lows(df: pd.DataFrame, is_support: bool = False, order: int = 3):
     """谷（安値）または山（高値）のピボット点を抽出"""
@@ -2986,7 +3180,7 @@ with open(template_path, "r", encoding="utf-8") as f:
 # “決算系”だけを抽出するゆるいフィルタ
 _DECISION_PAT = re.compile(r"(決算短信|四半期決算短信|通期決算|四半期報告書|有価証券報告書|業績予想|配当予想)")
 # JST（日付判定を日本時間で行う）
-_JST = dt_mod.timezone(timedelta(hours=9))
+_JST = timezone(timedelta(hours=9))
 
 #  neg keys
 _NEG_KEYS = [
@@ -3053,24 +3247,6 @@ except Exception:
 
 前提: Python 3.11 / pip install yahooquery pandas jpholiday
 """
-
-def run_karauri_script():
-    """Node.js の puppeteer / もしくは Python スクリプトを“待たずに”起動して続行"""
-    if not os.path.exists(KARAURI_PY_PATH):
-        print(f"[karauri] スクリプトが見つかりません: {KARAURI_PY_PATH}")
-        return
-
-    try:
-        print("[karauri] 空売り無しリスト抽出をバックグラウンド起動...")
-        # ※ すでに追加済みのユーティリティを使用（fire_and_forget_script）
-        #    ログは %TEMP%/karauri_xxx.log に出ます
-        proc = fire_and_forget_script(KARAURI_PY_PATH)
-        print(f"[karauri] 起動しました PID={proc.pid}（処理はバックグラウンドで継続）")
-        # 戻り値を使いたければ proc を返す
-        return proc
-    except Exception as e:
-        print(f"[karauri][WARN] 起動に失敗しました: {e}")
-
 
 
 
@@ -3154,7 +3330,7 @@ def _safe_jsonable(val):
     if isinstance(val, (np.floating, np.integer)):
         return val.item()
     # 日付・日時
-    if isinstance(val, (pd.Timestamp, datetime, date, datetime.time)):
+    if isinstance(val, (pd.Timestamp, datetime, date, dt_time)):
         return str(val)[:19]
     return val
 
@@ -3524,7 +3700,7 @@ def _to_long_history(df_wide: pd.DataFrame, codes_map) -> pd.DataFrame:
     
     # ★追加：9:00前なら、APIが返してきた「今日」のデータを未来データとして削除する
     now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
-    if now_jst.time() < dt_mod.time(9, 0):
+    if now_jst.time() < dt_time(9, 0):
         df = df[df["日付"] < now_jst.date()]
     else:
         df = df[df["日付"] <= now_jst.date()]
@@ -3581,7 +3757,7 @@ def _update_screener_from_history(conn, codes):
             _r2(yen),                            # 前日円差 → 2桁
             _r2(pct),                            # 前日終値比率(％) → 2桁
             int(vol_t) if pd.notna(vol_t) else None,  # 出来高
-            dt_class.today().strftime("%Y-%m-%d"),
+            datetime.today().strftime("%Y-%m-%d"),
             str(code),
         ))
 
@@ -4258,17 +4434,6 @@ def compute_right_up_persistent(conn, as_of=None):
     print(f"[右肩上がり] 持続トレンド版 {len(outs)} 銘柄を更新 / 閾値={THRESH_SCORE}")
 
 # ========================= 右肩上がり・早期トリガー（完全版：置換用） =========================
-
-# ---- しきい値（好みに応じて調整してください）----
-HH_N = 60                   # ブレイク判定の過去高値期間
-POCKET_WIN = 10             # ポケットピボットの参照日数
-REB_WIN = 10                # 20MA割れ→奪回を探すウィンドウ
-RECLAIM_WIN = 10            # 200MA上抜けの探索ウィンドウ
-SCORE_TH = 70               # 早期フラグのスコア閾値（これ以上で候補）
-PIVOT_EPS = 0.002           # ブレイク余白(+0.2%)
-VOL_BOOST = 1.5             # ブレイク時の出来高ブースト(×20日平均)
-EXT_20_MAX = 0.05           # 20MAからの乖離上限(=+5%)
-EXT_50_MAX = 0.10           # 50MAからの乖離上限(=+10%)
 
 # ---- スキーマ確保（screener の列/ 最小列）----
 def _ma(s, n):  return s.rolling(n, min_periods=n).mean()
@@ -5225,19 +5390,24 @@ def apply_3algo_labels(df: pd.DataFrame) -> pd.DataFrame:
     rs20 = pd.to_numeric(df.get("RS_20"), errors="coerce").fillna(0)
     rs5 = pd.to_numeric(df.get("RS_5"), errors="coerce").fillna(0)
     
+    # ★追加：単日の強烈なモメンタム（前日比）を取得
+    pct_change = _safe_get_numeric(df, ["前日終値比率_raw", "前日終値比率"], 0.0)
+    
     # ベース点（フラグが出ている場合は下駄をはかせる）
     has_rightup = df.get("右肩上がりフラグ", pd.Series(dtype=str)).astype(str).str.contains("候補")
     has_early = df.get("右肩早期フラグ", pd.Series(dtype=str)).astype(str).str.contains("候補")
     has_shodou = df.get("初動フラグ", pd.Series(dtype=str)).astype(str).str.contains("候補")
     base_mom = np.where(has_rightup | has_early | has_shodou, 40, 0)
     
-    # RS(相対的な強さ)によるグラデーション加点
-    # 中期(RS_20): -10%〜+30%の範囲を 0〜40点 に滑らかに変換
-    rs20_score = np.clip((rs20 + 10) / 40 * 40, 0, 40)
-    # 短期(RS_5): -5%〜+15%の範囲を 0〜20点 に滑らかに変換
-    rs5_score = np.clip((rs5 + 5) / 20 * 20, 0, 20)
+    # ★追加：前日比 +5%〜+15% の範囲で 0〜40点 を加算（単日急騰を逃さない）
+    pct_score = np.clip((pct_change - 5.0) / 10.0 * 40, 0, 40)
     
-    score_mom = np.round(np.clip(base_mom + rs20_score + rs5_score, 0, 100)).astype(int)
+    # RS(相対的な強さ)によるグラデーション加点（比率を微調整）
+    rs20_score = np.clip((rs20 + 10) / 40 * 30, 0, 30)
+    rs5_score = np.clip((rs5 + 5) / 20 * 30, 0, 30)
+    
+    # ★合算にpct_scoreを追加
+    score_mom = np.round(np.clip(base_mom + rs20_score + rs5_score + pct_score, 0, 100)).astype(int)
     
     cond_mom_strong = score_mom >= 80
     cond_mom_break = (score_mom >= 60) & (has_early | has_shodou)
@@ -5320,6 +5490,40 @@ def apply_3algo_labels(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+def apply_volume_quality_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """出来高と値動きの質を判定する（短期需給分析）"""
+    if df is None or getattr(df, "empty", True):
+        return df
+
+    import numpy as np
+    import pandas as pd
+
+    # 前日比とRVOLを安全に取得
+    pct = _safe_get_numeric(df, ["前日終値比率_raw", "前日終値比率"], 0.0)
+    rvol = _safe_get_numeric(df, ["RVOL代金", "RVOL_売買代金"], 1.0)
+    
+    # 上げ・下げの判定
+    is_up = pct > 0
+    is_down = pct < 0
+    
+    # 出来高の伴い具合 (RVOL 1.5倍以上を「伴う」、1.0未満を「伴わない」とする)
+    high_vol = rvol >= 1.5
+    low_vol = rvol < 1.0
+    
+    cond_real_up = is_up & high_vol
+    cond_fake_up = is_up & low_vol
+    cond_real_down = is_down & high_vol
+    cond_fake_down = is_down & low_vol
+    
+    label = np.select(
+        [cond_real_up, cond_fake_up, cond_real_down, cond_fake_down],
+        ["🚀本物/吸い上げ(↑)", "🎈値飛び(↑)", "💥強い売り/吸収(↓)", "🍂需給薄(↓)"],
+        default="様子見"
+    )
+    df["短期需給判定"] = label
+    return df
+
+
 # ---------- 行整形（欠損安全 & 外部列に依存しない） ----------
 def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
     rows: list[dict] = []
@@ -5363,13 +5567,13 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
         if d.get("売買代金(億)") is None:
             fv = _to_float(d.get("現在値")); fvol = _to_float(d.get("出来高"))
             if fv is not None and fvol is not None:
-                d["売買代金(億)"] = fv * fvol / 1e8
+                d["売買代金(億)"] = round(fv * fvol / 1e8, 2)
 
         # RVOL代金 補完
         fturn = _to_float(d.get("売買代金(億)"))
         favg20 = _to_float(d.get("売買代金20日平均億"))
         if d.get("RVOL代金") is None and (fturn is not None) and (favg20 and favg20 != 0):
-            d["RVOL代金"] = fturn / favg20
+            d["RVOL代金"] = round(fturn / favg20, 2)
 
         # 前日比 補完
         now_ = _to_float(d.get("現在値")); prev_ = _to_float(d.get("前日終値"))
@@ -5508,10 +5712,13 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
         "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
         "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ", "踏み上げ期待スコア",
+        "機関空売り合計株数", "本日の増減合計株数", "主要機関の動き",
         "AI目標値", "AI目標値_raw",
         "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主",
         "Algo_Momentum", "Algo_VolTarget", "Algo_Factor", "Algo_総合判定",
+        "短期需給判定",
         "直近売上YoY", "直近営業益YoY", "利益加速フラグ",
+        "決算発表予定日",
         "決算勝率", "決算期待値", "決算リアクションスコア", "決算リアクション履歴"
     ] if c in _df.columns]
 
@@ -5769,38 +5976,6 @@ def enrich_earnings_reaction(conn: sqlite3.Connection, df_cand: pd.DataFrame) ->
         
     return df_cand
 
-
-# === [INJECTED | Google News RSS (site:kabutan.jp) + optional BERT sentiment] ===================
-
-_KABUNEWS_CONF = {
-    "rss_base": "https://news.google.com/rss/search",
-    "lang": "ja",
-    "gl": "JP",
-    "ceid": "JP:ja",
-    "max_items_per_symbol": 3,
-    "enable_bert": False,          # （※今は使わないが一応残しておく）
-    "bert_model": "koheiduck/bert-japanese-finetuned-sentiment",
-    "http_timeout": 8,
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36",
-    # ここから追加：ポジティブ単語辞書（含まれていたら青●）
-    "pos_keywords": [
-        "上方修正",
-        "増額修正",
-        "業績予想の上方修正",
-        "最高益",
-        "過去最高益",
-        "上場来高値",
-        "配当増額",
-        "増配",
-        "大幅増益",
-        "好決算",
-        "連結営業利益の増加",
-        "株式分割",
-        "自社株買い",
-        "中期経営計画",
-        "大型受注",
-    ],
-}
 
 
 # 軽いメモリキャッシュ（ラン内のみ）
@@ -6279,15 +6454,6 @@ def _update_kabutan_theme_ranking(conn: sqlite3.Connection,
     ※ テーマ詳細ページには飛ばない。
     ※ 失敗しても例外は外に投げず、WARN ログだけ出して処理継続。
     """
-    try:
-        from bs4 import BeautifulSoup  # type: ignore
-        import datetime as datetime
-    except Exception as e:
-        try:
-            print("[theme][WARN] bs4 not available, skip kabutan themes:", e)
-        except Exception:
-            pass
-        return
 
     # 1) ページ取得
     try:
@@ -6495,8 +6661,8 @@ def _parse_theme_date_for_screener(date_text):
     s = str(date_text).strip()
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
         try:
-            # 【修正】dt_mod.datetime を使うことでインポート名の衝突によるクラッシュを完全に回避
-            return dt_mod.datetime.strptime(s[:10], fmt).date()
+            # 【修正】datetime を使うことでインポート名の衝突によるクラッシュを完全に回避
+            return datetime.strptime(s[:10], fmt).date()
         except Exception:
             continue
     return None
@@ -7036,15 +7202,40 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
     
-    # =========================================================
-    # ★ ここを追加：画面表示に不要な超巨大データを削除し、ブラウザのフリーズを防ぐ
     if "raw_fin_json" in df_cand.columns:
         df_cand.drop(columns=["raw_fin_json"], inplace=True)
-    # =========================================================
 
     df_cand = ensure_news_cols(df_cand)
     _p(f"SQL: df_cand done shape={df_cand.shape} dt={( time.perf_counter()-t):.2f}s")
 
+    # ==============================================================================
+    # ★【追加】 institution_short_sales から最新の機関空売りデータを集計して df_cand にマージ
+    # ==============================================================================
+    try:
+        sql_karauri = """
+            SELECT 
+                code,
+                SUM(shares) AS 機関空売り合計株数,
+                SUM(shares_change) AS 本日の増減合計株数,
+                GROUP_CONCAT(institution_name || '(' || 
+                    CASE WHEN shares_change >  0 THEN '+' || shares_change ELSE CAST(shares_change AS TEXT) END || '株)', ' / ') AS 主要機関の動き
+            FROM institution_short_sales
+            WHERE calc_date = (SELECT MAX(calc_date) FROM institution_short_sales)
+            GROUP BY code
+        """
+        df_karauri = pd.read_sql_query(sql_karauri, conn)
+        if not df_karauri.empty:
+            df_karauri["code"] = df_karauri["code"].astype(str).str.zfill(4)
+            df_karauri = df_karauri.rename(columns={"code": "コード"})
+            
+            df_cand = df_cand.merge(df_karauri, on="コード", how="left")
+            df_cand["機関空売り合計株数"] = df_cand["機関空売り合計株数"].fillna(0)
+            df_cand["本日の増減合計株数"] = df_cand["本日の増減合計株数"].fillna(0)
+            df_cand["主要機関の動き"] = df_cand["主要機関の動き"].fillna("-")
+            _p("karauri: attached institution short sales metrics")
+    except Exception as e:
+        print(f"[karauri][WARN] 集計データのマージに失敗しました: {e}")
+    # ==============================================================================
     # --- テーマ付与 ---
     try:
         kabutan_map, theme_names = _load_theme_maps_for_screener(conn)
@@ -7253,6 +7444,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     if latest_theme_map:
         _attach_latest_theme(df_cand, latest_theme_map)
     df_cand = apply_3algo_labels(df_cand) # ★追加: 3大アルゴリズム列の生成
+    df_cand = apply_volume_quality_labels(df_cand) # ★追加: 短期需給(出来高の質)判定
     _tick("vectorize_minimum_fields")
 
     rows = _prepare_rows(df_cand, conn)
@@ -7375,7 +7567,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     try:
         rows = add_ai_analysis(conn, rows)
     except Exception as e:
-        print(f"[AI] 分析に失敗しました: {e}")
+        logging.error(f"[AI] 分析に失敗しました", exc_info=True)
 
     # === ★追加: セクターランキングの集計 ===
     try:
@@ -7476,7 +7668,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             html_output += json_script
             
     except Exception as e:
-        print(f"[HTML-EXPORT][ERROR] JSONデータの埋め込みに失敗しました: {e}")
+        logging.error(f"[HTML-EXPORT][ERROR] JSONデータの埋め込みに失敗しました", exc_info=True)
         
     _p(f"inject_inline_data_json: dt={( time.perf_counter() - t_inject ): .2f}s")
     
@@ -7498,7 +7690,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             f.flush()
             os.fsync(f.fileno())
     except Exception as e:
-        print(f"[HTML-EXPORT][ERROR] ファイルの書き出しに失敗しました: {e}")
+        logging.error(f"[HTML-EXPORT][ERROR] ファイルの書き出しに失敗しました", exc_info=True)
 
     _p(f"write+planA: dt={( time.perf_counter() - t_write ): .2f}s")
     
@@ -7747,7 +7939,7 @@ def get_prev_close_db_first(conn: sqlite3.Connection, code: str, quotes_prev: fl
 def _jp_session_progress(dt: datetime | None = None) -> float:
     """場中の進捗率(0.0〜1.0)。東証 9:00–11:30 / 12:30–15:00 を300分=1.0で換算。"""
     if dt is None:
-        dt = dt_mod.datetime.now(dt_mod.timezone(dt_mod.timedelta(hours=9)))
+        dt = datetime.now(timezone(timedelta(hours=9)))
     m = dt.hour * 60 + dt.minute
     s1, e1, s2, e2 = 9*60, 11*60+30, 12*60+30, 15*60
     if m < s1: return 0.0
@@ -7917,7 +8109,7 @@ def open_html_locally(html_path: str, wait_sec: float = 0.0, cool_min: int = 0, 
             return False  # クールダウン中
 
     if wait_sec > 0:
-        datetime.time.sleep(wait_sec)
+        dt_time.sleep(wait_sec)
 
     opened = False
 
@@ -8863,105 +9055,6 @@ def batch_update_all_financials(conn,
     
 # --- END: batch_update_all_financials ---
 
-# ===== fetch_all 連携 =====
-def _run_fetch_all(fetch_path: str | None = None,
-                   extra_args: list[str] | None = None,
-                   timeout_sec: int | None = None,
-                   use_lock: bool = True) -> None:
-    """
-    自分と同じ Python で fetch_all.py をサブプロセス実行。
-    ・stdout を逐次そのままコンソールへ流す
-    ・異常終了/タイムアウト時は例外
-    ・多重起動を避けるため lock ファイル(任意)を利用
-    """
-
-    if not os.path.exists(fetch_path):
-        raise FileNotFoundError(f"fetch_all.py が見つかりません: {fetch_path}")
-
-    py = sys.executable  # いま実行中の Python を使う（仮想環境の取り違え防止）
-    cmd = [py, "-u", fetch_path]
-    if extra_args:
-        cmd.extend(extra_args)
-
-    # 2) ロック（簡易）
-    lock_path = os.path.splitext(fetch_path)[0] + ".lock"  # 例: fetch_all.lock
-    if use_lock:
-        if os.path.exists(lock_path):
-            # 古いロックは5時間で無視（適当な保険）
-            try:
-                if time.time() - os.path.getmtime(lock_path) < 5*60*60:
-                    print(f"[fetch_all] lock検知のためスキップ: {lock_path}")
-                    return
-            except Exception:
-                pass
-        # 作成
-        try:
-            with open(lock_path, "w", encoding="utf-8") as lf:
-                lf.write(f"pid={os.getpid()}\nstart={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        except Exception:
-            pass
-
-    print(f"[fetch_all] 実行開始: {cmd}")
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=1,
-            universal_newlines=True,
-        )
-        start = time.time()
-        # 逐次出力
-        for line in proc.stdout:
-            print(line.rstrip())
-            if timeout_sec and (time.time() - start) > timeout_sec:
-                proc.kill()
-                raise TimeoutError(f"fetch_all タイムアウト（{timeout_sec}s）")
-
-        rc = proc.wait()
-        if rc != 0:
-            raise RuntimeError(f"fetch_all 異常終了: returncode={rc}")
-
-        print("[fetch_all] 正常終了")
-    finally:
-        # ロック解除
-        if use_lock:
-            try:
-                if os.path.exists(lock_path):
-                    os.remove(lock_path)
-            except Exception:
-                pass
-
-
-# ===== カブタン呼び出し
-
-def run_fundamental_daily(force: bool = False):
-    today = date.today()
-
-    # 1) mtimeで判定（中身は見ない）
-    if not force and MARKER_FILE.exists():
-        mtime = datetime.fromtimestamp(MARKER_FILE.stat().st_mtime).date()
-        print(f"[fundamental] marker_mtime={mtime} today={today}")
-        if mtime == today:
-            print("[fundamental] 今日すでに実行済み → スキップ")
-            return
-
-    # 2) 実行
-    try:
-        print(f"[fundamental] 実行開始: {FUND_SCRIPT}")
-        # ★ ここを修正：python 固定 → sys.executable
-        subprocess.run([sys.executable, str(FUND_SCRIPT)], check=True)
-        print("[fundamental] 株探ファンダ 全銘柄処理 OK")
-    except subprocess.CalledProcessError as e:
-        print(f"[fundamental][ERROR] 子プロセス失敗: returncode={e.returncode}")
-        return
-
-    # 3) マーカー更新（touch相当）
-    MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MARKER_FILE.touch()  # 中身は不要、更新日時だけ使う
-    print(f"[fundamental] マーカー更新(mtime): {MARKER_FILE}")
-
 
 def yj_board(code: str, name: str):
     c = str(code).zfill(4)
@@ -9296,126 +9389,11 @@ def _auto_run_mode():
     now = datetime.now(ZoneInfo("Asia/Tokyo")).time()
 
     # 場中（前場＋後場＋昼休みも含めて）を MIDDAY 扱いにする
-    if dt_mod.time(9, 0) <= now < dt_mod.time(15, 25):
+    if dt_time(9, 0) <= now < dt_time(15, 25):
         return "MIDDAY"
     else:
         return "EOD"
 
-def sync_to_github_pages(repo_root: str, target_file: str):
-    """
-    Windowsのcmd.exe（shell=True）の介在を100%遮断し、
-    カレントディレクトリ誤認バグを構造上完全に根絶した決定版。
-    万が一.gitフォルダが消失・破損していた場合の自動修復機能付き。
-    """
-    try:
-        # Windowsのネイティブな絶対パス文字列に完全変換
-        repo_path = os.path.abspath(repo_root)
-        src = Path(target_file)
-        dest = Path(repo_path) / "index.html"
-
-        if not src.exists():
-            print(f"[git][ERROR] Source HTML file not found: {target_file}")
-            return
-
-        # リポジトリの親フォルダが存在しない場合は自動作成
-        os.makedirs(repo_path, exist_ok=True)
-
-        # --- 🔥【重要】万が一.gitフォルダが壊れて消失していた場合の自動初期化 ---
-        dot_git_path = os.path.join(repo_path, ".git")
-        if not os.path.exists(dot_git_path):
-            print(f"[git][WARN] .git directory not found in {repo_path}. Initializing repository...")
-            subprocess.run(
-                ["git", "init"], 
-                cwd=repo_path, 
-                shell=False, 
-                capture_output=True, 
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-
-        # --- ロックファイルの自動排除 ---
-        lock_file = Path(repo_path) / ".git" / "index.lock"
-        if lock_file.exists():
-            try:
-                lock_file.unlink()
-                print("[git] Removed residual index.lock file.")
-            except Exception:
-                pass
-
-        # 成果物のコピー（D:作業場 → C:リポジトリ）
-        shutil.copy(src, dest)
-        print(f"[git] Copied target: {src.name} → {dest}")
-
-        # ステルスフラグ
-        CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW
-
-        # 確実なる処置：shell=False に固定し、コマンドをリスト形式で渡す。
-        # cwdに「Windows絶対パス文字列」を直接指定することで、Gitは100%迷子にならずにその場所で起動する。
-        
-        # --- 3. git add 実行 ---
-        res_add = subprocess.run(
-            ["git", "add", "index.html"], 
-            cwd=repo_path, 
-            shell=False,
-            capture_output=True,
-            text=True,
-            creationflags=CREATE_NO_WINDOW
-        )
-        if res_add.returncode != 0:
-            print(f"[git][ERROR] 'git add' failed.\nReason: {res_add.stderr.strip()}")
-            return
-
-        # --- 4. 差分チェック ---
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=repo_path,
-            shell=False,
-            capture_output=True,
-            text=True,
-            creationflags=CREATE_NO_WINDOW
-        )
-        if status.returncode != 0:
-            print(f"[git][ERROR] 'git status' failed.\nReason: {status.stderr.strip()}")
-            return
-
-        # 変更（index.html）に差分がなければ終了
-        if not status.stdout.strip():
-            print("[git] No changes detected. Skipping commit and push.")
-            return
-
-        # --- 5. git commit 実行 ---
-        msg = f"Update dashboard: {datetime.now():%Y-%m-%d %H:%M:%S}"
-        res_commit = subprocess.run(
-            ["git", "commit", "-m", msg], 
-            cwd=repo_path, 
-            shell=False,
-            capture_output=True,
-            text=True,
-            creationflags=CREATE_NO_WINDOW
-        )
-        if res_commit.returncode != 0:
-            print(f"[git][ERROR] 'git commit' failed.\nReason: {res_commit.stderr.strip()}")
-            return
-        print(f"[git] Committed changes: {msg}")
-
-        # --- 6. git push 実行 ---
-        print("[git] Pushing to GitHub repository...")
-        res_push = subprocess.run(
-            ["git", "push", "origin", "main"], 
-            cwd=repo_path, 
-            shell=False,
-            capture_output=True,
-            text=True,
-            creationflags=CREATE_NO_WINDOW
-        )
-        if res_push.returncode != 0:
-            print(f"[git][ERROR] 'git push' failed.\nReason: {res_push.stderr.strip()}")
-            return
-
-        print(f"[git] ✅ GitHub Pages successfully updated at {datetime.now():%H:%M:%S}")
-
-    except Exception as e:
-        print(f"[git][FATAL] Unexpected infrastructure error: {e}")
 
 
 # ===== メイン処理 =====
@@ -9548,7 +9526,7 @@ def main():
                 _timed("update_margin_metrics", phase_update_margin_metrics, conn)
 
                 now = datetime.now().time()
-                if now < dt_mod.time(12,30):
+                if now < dt_time(12,30):
                     _timed_daily_once("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
                     try:
                         _timed_daily_once("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
@@ -9738,11 +9716,7 @@ def fallback_fill_today_from_quotes(conn):
         return 0
 
     def is_holiday(d: date) -> bool:
-        try:
-            import jpholiday
-            return (d.weekday() >= 5) or jpholiday.is_holiday(d)
-        except Exception:
-            return d.weekday() >= 5
+        return (d.weekday() >= 5) or jpholiday.is_holiday(d)
 
     today = now.date()
     if is_holiday(today):
@@ -10097,32 +10071,36 @@ def _apply_planA_postprocess(html_path, data_obj):
         else:
             print("[singlefile][PlanA] no changes made")
     except Exception as _e:
-        print("[singlefile][PlanA][ERROR]", _e)
+        logging.error("[singlefile][PlanA][ERROR] 処理に失敗しました", exc_info=True)
 
 
 
 def _singlefile_planA_transform(html_str, data_obj):
-    # 1) Neutralize only data.js script tags
-    def _kill_data_js(m):
-        s = m.group(0)
-        return '<!-- __neutralized_data_js__ ' + html.escape(s) + ' -->'
-    html_str = re.sub(
-        r'<script[^>]+src=["\\\']([^"\\\']*data\\.js[^"\\\']*)["\\\'][^>]*>\\s*</script>',
-        _kill_data_js, html_str, flags=re.I
-    )
-    # 2) Inject __DATA__ inline (after </nav> if exists, otherwise after <body>)
+    soup = bs4.BeautifulSoup(html_str, "html.parser")
+    
+    # 1) data.js を読み込んでいる script タグを安全に検索して削除
+    for script in soup.find_all("script", src=True):
+        if "data.js" in script["src"]:
+            script.decompose()  # タグをDOMツリーから完全に削除
+            
+    # 2) JSONデータの生成（すでに定義済みの安全なJSON変換関数を利用）
     try:
-        data_json = json.dumps(data_obj, ensure_ascii=False, separators=(",",":"))
+        data_json = dumps_json_clean(data_obj) 
     except Exception:
-        # Fallback: try dict(...) if it's a pandas-friendly thing
-        try:
-            data_json = json.dumps(dict(data_obj), ensure_ascii=False, separators=(",",":"))
-        except Exception:
-            data_json = "{}"
-    data_script = '<script id="data_inline">window.__DATA__='+data_json+';</script>'
-    if '</nav>' in html_str:
-        html_str = html_str.replace('</nav>', '</nav>\\n'+data_script, 1)
+        data_json = "{}"
+        
+    # 3) インライン用スクリプトタグを作成
+    new_script = soup.new_tag("script", id="data_inline")
+    new_script.string = f"window.__DATA__={data_json}; window.DATA=window.__DATA__;"
+    
+    # navタグの後ろ、なければbodyの先頭に挿入
+    nav_tag = soup.find("nav")
+    if nav_tag:
+        nav_tag.insert_after(new_script)
+    elif soup.body:
+        soup.body.insert(0, new_script)
     else:
-        html_str = re.sub(r'<body([^>]*)>', r'<body\\1>\\n'+data_script, html_str, count=1, flags=re.I)
-    return html_str
+        soup.append(new_script)
+        
+    return str(soup)
 # ===== End Plan A helpers =====
