@@ -1904,16 +1904,21 @@
           sparkHtml = `<div style="display:inline-flex; align-items:center; height:28px; gap:2px; padding: 0 4px;" title="過去の反応: ${r['決算リアクション履歴']} / 勝率: ${winRate}%">${bars}</div>`;
       }
       
-      // ====== 1. ループの直前（または `html +=` の手前）で変数を計算・定義する ======
-      let instTotalVal = Number(r["機関空売り合計株数"]);
-      let instTotal = Number.isFinite(instTotalVal) && instTotalVal > 0 
-          ? instTotalVal.toLocaleString() + "株" : "-";
+      // ====== 1. データがないときはマイナス値と混ざらないよう "N/A" にする ======
+      let rawTotal = r["機関空売り合計株数"];
+      let instTotalVal = Number(rawTotal);
+      let instTotal = (rawTotal !== null && rawTotal !== undefined && rawTotal !== "" && Number.isFinite(instTotalVal) && instTotalVal > 0)
+          ? instTotalVal.toLocaleString() + "株" : "N/A";
 
-      let instChgNum = Number(r["本日の増減合計株数"] || 0);
-      let instChgStyle = instChgNum > 0 ? "color:#e11d48; font-weight:bold;" : (instChgNum < 0 ? "color:#2563eb; font-weight:bold;" : "");
-      let instChgText = instChgNum !== 0 ? (instChgNum > 0 ? "+" + instChgNum.toLocaleString() + "株" : instChgNum.toLocaleString() + "株") : "-";
+      let rawChg = r["本日の増減合計株数"];
+      let instChgNum = (rawChg !== null && rawChg !== undefined && rawChg !== "") ? Number(rawChg) : NaN;
+      let instChgStyle = Number.isFinite(instChgNum) && instChgNum > 0 ? "color:#e11d48; font-weight:bold;" : (Number.isFinite(instChgNum) && instChgNum < 0 ? "color:#2563eb; font-weight:bold;" : "");
+      let instChgText = (rawChg !== null && rawChg !== undefined && rawChg !== "" && Number.isFinite(instChgNum)) 
+          ? (instChgNum > 0 ? "+" + instChgNum.toLocaleString() + "株" : (instChgNum < 0 ? instChgNum.toLocaleString() + "株" : "0株")) : "N/A";
 
-      let instMoveText = escapeHtml(r["主要機関の動き"] || "-");
+      let rawMove = r["主要機関の動き"];
+      let instMoveText = (rawMove !== null && rawMove !== undefined && String(rawMove).trim() !== "" && String(rawMove).trim() !== "-") 
+          ? escapeHtml(String(rawMove)) : "N/A";
       
       
       html += `<tr${isHitTr ? " class='hit'" : ""} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
@@ -1951,9 +1956,12 @@
         <td class="num">${Number.isFinite(Number(r["信用倍率"])) ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["需給OH"])) ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
         <td>${escapeHtml(r["空売り機関"] || "-")}</td>
-        <td class="num">${instTotal}</td>
-        <td class="num" style="${instChgStyle}">${instChgText}</td>
-        <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${instMoveText}">${instMoveText}</td>
+        <td class="num" data-sort="${Number.isFinite(instTotalVal) ? instTotalVal : -999999}">${instTotal}</td>
+        <td class="num" style="${instChgStyle}" data-sort="${Number.isFinite(instChgNum) ? instChgNum : -999999}">${instChgText}</td>
+        <td style="text-align:center; font-weight:bold; color:var(--blue);" data-sort="${r["空売り更新日"] || "1970-01-01"}">
+            ${escapeHtml(r["空売り更新日"] || "N/A")}
+        </td>
+        <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${instMoveText}" data-sort="${instMoveText}">${instMoveText}</td>
         <td style="text-align:center;">${sfBadge}</td>
         <td class="num">${Number.isFinite(Number(r["売り残"])) ? Number(r["売り残"]).toLocaleString() : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["買い残"])) ? Number(r["買い残"]).toLocaleString() : "-"}</td>
@@ -2211,11 +2219,13 @@
     });
   }
 
-// ===== ブックマーク機能 (Cookie方式移行 & LocalStorageからの自動引き継ぎ) =====
-  const BM_KEY = "pg_dash_bookmarks_v1";
-  const COOKIE_DAYS = 365; // Cookieの有効期限（日数）
+// ==========================================
+// ブックマーク機能 (Cookieのみ・保存ボタン押下時のみ保存)
+// ==========================================
+  const BM_COOKIE_NAME = "pg_dash_bookmarks_v1";
+  const COOKIE_DAYS = 365;
 
-  // --- Cookie操作用のユーティリティ関数 ---
+  // --- Cookie操作用の関数 ---
   function setCookie(name, value, days) {
     let expires = "";
     if (days) {
@@ -2237,28 +2247,14 @@
     return null;
   }
 
-  // --- ブックマークの読み込み（Cookie優先、無ければLocalStorageから移行） ---
+  // --- ブックマークの読み込み (Cookieのみ) ---
   function loadBookmarks() {
     try {
-      // 1. まずCookieから読み込みを試みる
-      const cookieRaw = getCookie(BM_KEY);
+      const cookieRaw = getCookie(BM_COOKIE_NAME);
       if (cookieRaw) {
         const obj = JSON.parse(cookieRaw);
         return (obj && typeof obj === "object") ? obj : {};
       }
-
-      // 2. Cookieに無ければLocalStorageを確認（旧バージョンからの移行）
-      const lsRaw = localStorage.getItem(BM_KEY);
-      if (lsRaw) {
-        const obj = JSON.parse(lsRaw);
-        if (obj && typeof obj === "object") {
-          console.log("[Bookmark] LocalStorageのデータをCookieに移行しました。");
-          // 直ちにCookieに保存し直す
-          saveBookmarksMap(obj);
-          return obj;
-        }
-      }
-      
       return {};
     } catch (e) {
       console.warn("bookmark load failed", e);
@@ -2266,21 +2262,18 @@
     }
   }
 
-  // --- ブックマークの保存（Cookieへ保存し、LocalStorageも同期） ---
+  // --- ブックマークの保存 (Cookieのみ。保存ボタン押下時のみ呼ばれます) ---
   function saveBookmarksMap(map) {
     try {
       const jsonStr = JSON.stringify(map);
-      // Cookieへ保存（約4KBの制限に注意。通常の使い方なら全く問題なし）
-      setCookie(BM_KEY, jsonStr, COOKIE_DAYS);
-      // 念のためLocalStorageにもバックアップとして同期しておく
-      localStorage.setItem(BM_KEY, jsonStr);
+      setCookie(BM_COOKIE_NAME, jsonStr, COOKIE_DAYS);
     } catch (e) {
       console.warn("bookmark save failed", e);
     }
   }
 
   function collectBookmarkState() {
-    const st = { text:{}, nums:{}, checks:{} };
+    const st = { text:{}, nums:{}, checks:{}, excelFilters: {} };
     if (qEl) st.text.q = qEl.value || "";
     numIds.forEach(id => {
       const el = $("#"+id);
@@ -2296,6 +2289,12 @@
     });
     const rn = $("#resNearPct");
     if (rn) st.nums.resNearPct = rn.value || "";
+    
+    // Excel風フィルターの状態を保存
+    if (typeof excelFilters !== 'undefined') {
+      st.excelFilters = JSON.parse(JSON.stringify(excelFilters));
+    }
+
     return st;
   }
 
@@ -2319,6 +2318,22 @@
         }
       });
     }
+    
+    // 保存されていたExcel風フィルターを復元
+    if (typeof excelFilters !== 'undefined') {
+      excelFilters = st.excelFilters ? JSON.parse(JSON.stringify(st.excelFilters)) : {};
+      
+      document.querySelectorAll('.filter-icon').forEach(icon => {
+        const th = icon.closest('th');
+        const colName = th ? th.getAttribute('data-col') : null;
+        if (colName && excelFilters[colName]) {
+          icon.classList.add('active');
+        } else {
+          icon.classList.remove('active');
+        }
+      });
+    }
+
     applyAndRender();
   }
 
@@ -2340,6 +2355,15 @@
     $$(".early-filter .ef-chk input").forEach(el=>{
       el.checked = false;
     });
+    
+    // Excel風フィルターをすべてクリア
+    if (typeof excelFilters !== 'undefined') {
+      excelFilters = {};
+      document.querySelectorAll('.filter-icon').forEach(icon => {
+        icon.classList.remove('active');
+      });
+    }
+
     applyAndRender();
   }
 
@@ -2397,6 +2421,7 @@
     let map = loadBookmarks();
     rebuildBookmarkSelect(map);
 
+    // 「保存」ボタンが押されたときのみCookieに書き込み
     btnSave?.addEventListener("click", () => {
       const name = (nameInput?.value || "").trim();
       if (!name) {
@@ -3329,6 +3354,7 @@ ${macroContext}
             <th class="sortable" data-col="空売り機関" data-type="text">空売り<span class="arrow"></span></th>
             <th class="num sortable" data-col="機関空売り合計株数" data-type="num">機関空売り合計<span class="arrow"></span></th>
             <th class="num sortable" data-col="本日の増減合計株数" data-type="num">機関増減(当日)<span class="arrow"></span></th>
+            <th class="sortable" data-col="空売り更新日" data-type="date" style="color:var(--blue);">機関更新日<span class="arrow"></span></th>
             <th class="sortable" data-col="主要機関の動き" data-type="text">主要機関の動き<span class="arrow"></span></th>
             <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
             <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>

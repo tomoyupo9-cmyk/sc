@@ -7108,6 +7108,106 @@ def prepare_sector_ranking_view(conn: sqlite3.Connection):
     """)
     conn.commit()
 # ========================================================
+# ==============================================================================
+# ★ 株価上昇幅・インパクト予測エンジン (StockSurprisePredictor)
+# ==============================================================================
+class StockSurprisePredictor:
+    def __init__(self, weights: dict = None):
+        self.weights = weights or {
+            "yoy_sales": 0.1,    # 売上成長の係数
+            "yoy_op": 0.05,      # 営業利益成長の係数
+            "revision": 15.0,    # 上方修正の加点
+            "buyback": 25.0,     # 自社株買いの加点
+            "dividend": 10.0,    # 増配の加点
+            "earnings_exp": 0.3  # 過去の決算期待値・勝率の係数
+        }
+
+    def _extract_news_flags(self, news_text: str) -> dict:
+        """株探ニュースのテキストからカタリスト（材料）フラグを抽出"""
+        text = str(news_text or "")
+        return {
+            "revision_flag": 1 if "上方修正" in text or "増額修正" in text else 0,
+            "share_buyback_flag": 1 if "自社株買い" in text or "自社株" in text else 0,
+            "dividend_up_flag": 1 if "増配" in text or "配当増額" in text else 0
+        }
+
+    def calculate_surprise_score(self, data: dict) -> float:
+        """Step 1: サプライズスコアの計算（YoY + ニュース + 過去の決算期待値）"""
+        flags = self._extract_news_flags(data.get("株探ニュース(3)", ""))
+        
+        sales_yoy = float(data.get("直近売上YoY", 0) or 0)
+        op_yoy = float(data.get("直近営業益YoY", 0) or 0)
+        accel_bonus = 5.0 if data.get("利益加速フラグ") == 1 else 0.0
+        
+        # 既存の「決算期待値」や「決算勝率」をサプライズスコアのブーストに活用
+        earnings_exp = float(data.get("決算期待値", 0) or 0) # 過去の翌日勝率平均等
+
+        score = (
+            (sales_yoy * self.weights["yoy_sales"]) +
+            (op_yoy * self.weights["yoy_op"]) +
+            (flags["revision_flag"] * self.weights["revision"]) +
+            (flags["share_buyback_flag"] * self.weights["buyback"]) +
+            (flags["dividend_up_flag"] * self.weights["dividend"]) +
+            (earnings_exp * self.weights["earnings_exp"]) +
+            accel_bonus
+        )
+        return max(score, 0.0)
+
+    def calculate_fuel_factor(self, data: dict) -> float:
+        """Step 2: 需給・踏み上げ係数の計算（燃料 ÷ 抵抗）"""
+        volume = float(data.get("出来高", 0) or 1)
+        
+        # 機関の空売り残高 ＋ 個人の売り残（燃料）
+        inst_short = float(data.get("機関空売り合計株数", 0) or 0)
+        margin_short = float(data.get("売り残", 0) or 0)
+        
+        total_short_days = (inst_short + margin_short) / max(volume, 1)
+
+        # 個人の買い残（上値の重さ・抵抗）＝ 需給OH (Days to Cover)
+        buy_oh = float(data.get("需給OH", 1.0) or 1.0)
+        buy_wall = max(buy_oh, 0.1)  # ゼロ除算防止
+
+        return total_short_days / buy_wall
+
+    def calculate_elasticity(self, data: dict) -> float:
+        """Step 3: 株価の軽さ（跳ねやすさ）の計算"""
+        mcap = float(data.get("時価総額億円", 100) or 100)
+        turnover = float(data.get("売買代金(億)", 1) or 1)
+        
+        # 時価総額が小さく、普段の売買代金が少ないほど「少しの資金で跳ねる」
+        elasticity_score = 1.0 / math.sqrt(max(mcap * turnover, 1.0))
+        return elasticity_score * 1000
+
+    def predict_price_increase(self, data: dict) -> dict:
+        """統合計算パイプライン"""
+        s_score = self.calculate_surprise_score(data)
+        f_factor = self.calculate_fuel_factor(data)
+        elasticity = self.calculate_elasticity(data)
+
+        # マクロ環境フィルター（地合いフラグ： 1=追い風, 0=中立, -1=逆風）
+        market_flag = float(data.get("地合いフラグ", 0) or 0)
+        macro_coef = 1.0 + (market_flag * 0.2)
+
+        # 予想上昇率（％）の算出
+        base_multiplier = 0.4
+        expected_return_pct = s_score * f_factor * elasticity * base_multiplier * macro_coef
+
+        # 最大上昇率のキャップ（最大30%）
+        expected_return_pct = min(max(expected_return_pct, 0.0), 30.0)
+
+        price_current = float(data.get("現在値", 0) or 0)
+        target_price = price_current * (1.0 + expected_return_pct / 100.0)
+
+        return {
+            "expected_return_pct": round(expected_return_pct, 2),
+            "target_price": round(target_price, 2),
+            "debug": {
+                "S_score": round(s_score, 2),
+                "Fuel": round(f_factor, 2),
+                "Elasticity": round(elasticity, 2)
+            }
+        }
+
 
 # === [/INJECTED] ===========================================================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
@@ -7209,30 +7309,38 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _p(f"SQL: df_cand done shape={df_cand.shape} dt={( time.perf_counter()-t):.2f}s")
 
     # ==============================================================================
-    # ★【追加】 institution_short_sales から最新の機関空売りデータを集計して df_cand にマージ
+    # ★【修正】 institution_short_sales から「各銘柄ごとの最新日付」の機関空売りデータを集計して df_cand にマージ
     # ==============================================================================
     try:
         sql_karauri = """
             SELECT 
-                code,
-                SUM(shares) AS 機関空売り合計株数,
-                SUM(shares_change) AS 本日の増減合計株数,
-                GROUP_CONCAT(institution_name || '(' || 
-                    CASE WHEN shares_change >  0 THEN '+' || shares_change ELSE CAST(shares_change AS TEXT) END || '株)', ' / ') AS 主要機関の動き
-            FROM institution_short_sales
-            WHERE calc_date = (SELECT MAX(calc_date) FROM institution_short_sales)
-            GROUP BY code
+                s.code,
+                s.calc_date AS 空売り更新日,
+                SUM(s.shares) AS 機関空売り合計株数,
+                SUM(s.shares_change) AS 本日の増減合計株数,
+                GROUP_CONCAT(s.institution_name || '(' || 
+                    CASE WHEN s.shares_change > 0 THEN '+' || s.shares_change ELSE CAST(s.shares_change AS TEXT) END || '株)', ' / ') AS 主要機関の動き
+            FROM institution_short_sales s
+            INNER JOIN (
+                -- 銘柄ごとにデータベースに存在する最新の日付を特定する
+                SELECT code, MAX(calc_date) AS max_date
+                FROM institution_short_sales
+                GROUP BY code
+            ) latest ON s.code = latest.code AND s.calc_date = latest.max_date
+            GROUP BY s.code, s.calc_date
         """
         df_karauri = pd.read_sql_query(sql_karauri, conn)
         if not df_karauri.empty:
             df_karauri["code"] = df_karauri["code"].astype(str).str.zfill(4)
             df_karauri = df_karauri.rename(columns={"code": "コード"})
             
+            # 既存のデータフレームにマージ（空売り更新日も一緒に結合される）
             df_cand = df_cand.merge(df_karauri, on="コード", how="left")
+            df_cand["空売り更新日"] = df_cand["空売り更新日"].fillna("N/A")
             df_cand["機関空売り合計株数"] = df_cand["機関空売り合計株数"].fillna(0)
             df_cand["本日の増減合計株数"] = df_cand["本日の増減合計株数"].fillna(0)
             df_cand["主要機関の動き"] = df_cand["主要機関の動き"].fillna("-")
-            _p("karauri: attached institution short sales metrics")
+            _p("karauri: attached institution short sales metrics (with individual latest dates)")
     except Exception as e:
         print(f"[karauri][WARN] 集計データのマージに失敗しました: {e}")
     # ==============================================================================
@@ -7408,6 +7516,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     except Exception as _e_news:
         print('[news][WARN] 株探ニュース列の付与に失敗:', _e_news)
 
+    
 
     # 6) フラグ装飾
     t_flags = time.perf_counter()
@@ -7446,6 +7555,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     df_cand = apply_3algo_labels(df_cand) # ★追加: 3大アルゴリズム列の生成
     df_cand = apply_volume_quality_labels(df_cand) # ★追加: 短期需給(出来高の質)判定
     _tick("vectorize_minimum_fields")
+    
+    
+    
+    
 
     rows = _prepare_rows(df_cand, conn)
     
@@ -7511,6 +7624,36 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             r["決算リアクションスコア"] = match_row.iloc[0].get("決算リアクションスコア")
             r["決算リアクション履歴"] = match_row.iloc[0].get("決算リアクション履歴")
     _tick("earnings_reaction_enrich")
+    
+    # ==============================================================================
+    # ★【追加】株価上昇幅・インパクト予測エンジンの実行とマージ
+    # ==============================================================================
+    try:
+        predictor = StockSurprisePredictor()
+        pred_returns = []
+        target_prices = []
+        
+        for _, row_series in df_cand.iterrows():
+            row_dict = row_series.to_dict()
+            res = predictor.predict_price_increase(row_dict)
+            pred_returns.append(res["expected_return_pct"])
+            target_prices.append(res["target_price"])
+            
+        df_cand["予想インパクト_pct"] = pred_returns
+        df_cand["予測ターゲット価格"] = target_prices
+        
+        # rows 辞書側にも反映させる
+        for r in rows:
+            c4 = str(r.get("コード", "")).zfill(4)
+            match_row = df_cand[df_cand["コード"] == c4]
+            if not match_row.empty:
+                r["予想インパクト_pct"] = match_row.iloc[0].get("予想インパクト_pct")
+                r["予測ターゲット価格"] = match_row.iloc[0].get("予測ターゲット価格")
+                
+        _p("predictor: expected return and target price calculated & injected")
+    except Exception as e:
+        print(f"[predictor][WARN] 予測計算の統合に失敗しました: {e}")
+    _tick("surprise_predictor_enrich")
     
     # TOBデータの注入処理
     try:
