@@ -7079,16 +7079,15 @@ def prepare_sector_ranking_view(conn: sqlite3.Connection):
 class StockSurprisePredictor:
     def __init__(self, weights: dict = None):
         self.weights = weights or {
-            "yoy_sales": 0.1,    # 売上成長の係数
-            "yoy_op": 0.05,      # 営業利益成長の係数
-            "revision": 15.0,    # 上方修正の加点
-            "buyback": 25.0,     # 自社株買いの加点
-            "dividend": 10.0,    # 増配の加点
-            "earnings_exp": 0.3  # 過去の決算期待値・勝率の係数
+            "yoy_sales": 0.05,     # 売上成長（少し下げる）
+            "yoy_op": 0.10,        # 営業利益成長
+            "revision": 20.0,      # 上方修正サプライズ（強化: 15->20）
+            "buyback": 30.0,       # 自社株買いは最強の需給サプライズ（強化: 25->30）
+            "dividend": 15.0,      # 増配（強化: 10->15）
+            "earnings_exp": -0.2   # ★（重要）事前の「期待値」が高いほどハードルが上がるのでマイナスにする！
         }
 
     def _extract_news_flags(self, news_text: str) -> dict:
-        """株探ニュースのテキストからカタリスト（材料）フラグを抽出"""
         text = str(news_text or "")
         return {
             "revision_flag": 1 if "上方修正" in text or "増額修正" in text else 0,
@@ -7097,15 +7096,17 @@ class StockSurprisePredictor:
         }
 
     def calculate_surprise_score(self, data: dict) -> float:
-        """Step 1: サプライズスコアの計算（YoY + ニュース + 過去の決算期待値）"""
+        """Step 1: サプライズスコアの計算"""
         flags = self._extract_news_flags(data.get("株探ニュース(3)", ""))
         
         sales_yoy = float(data.get("直近売上YoY", 0) or 0)
         op_yoy = float(data.get("直近営業益YoY", 0) or 0)
-        accel_bonus = 5.0 if data.get("利益加速フラグ") == 1 else 0.0
         
-        # 既存の「決算期待値」や「決算勝率」をサプライズスコアのブーストに活用
-        earnings_exp = float(data.get("決算期待値", 0) or 0) # 過去の翌日勝率平均等
+        # 利益加速（サプライズ）のボーナスを倍増させる
+        accel_bonus = 10.0 if data.get("利益加速フラグ") == 1 else 0.0
+        
+        # ★期待値が高い（すでに買われている）銘柄はサプライズになりにくい
+        earnings_exp = float(data.get("決算期待値", 0) or 0) 
 
         score = (
             (sales_yoy * self.weights["yoy_sales"]) +
@@ -7113,11 +7114,11 @@ class StockSurprisePredictor:
             (flags["revision_flag"] * self.weights["revision"]) +
             (flags["share_buyback_flag"] * self.weights["buyback"]) +
             (flags["dividend_up_flag"] * self.weights["dividend"]) +
-            (earnings_exp * self.weights["earnings_exp"]) +
+            (earnings_exp * self.weights["earnings_exp"]) + # 期待値をマイナス評価
             accel_bonus
         )
         return max(score, 0.0)
-
+        
     def calculate_fuel_factor(self, data: dict) -> float:
         """Step 2: 需給・踏み上げ係数の計算（燃料 ÷ 抵抗）"""
         volume = float(data.get("出来高", 0) or 1)
@@ -8300,35 +8301,43 @@ def apply_composite_score(conn: sqlite3.Connection,
                           w_rate=0.4, w_rvol=0.4, w_turn=0.2):
     """
     合成スコア = 0.4*rank(前日終値比率) + 0.4*rank(RVOL代金) + 0.2*rank(売買代金億)
-    （rankはパーセンタイル0-100、小数1桁）
+    ※指数（市場が'指数'、またはコードが^で始まるもの）は計算から除外する
     """
     df = pd.read_sql_query("""
-        SELECT コード, 前日終値比率, RVOL代金, 売買代金億
+        SELECT コード, 前日終値比率, RVOL代金, 売買代金億, 市場
         FROM screener
     """, conn)
+
+    # 指数判定フラグを作成（^で始まる、または市場が'指数'）
+    df['is_index'] = df['市場'].astype(str).str.contains('指数') | df['コード'].astype(str).str.startswith('^')
 
     for c in ["前日終値比率", "RVOL代金", "売買代金億"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # パーセンタイル（NaNは0扱い）
+    # 指数を除外した個別株だけでパーセンタイルランクを計算（精度向上）
+    df_stocks = df[~df['is_index']].copy()
+    
     pct = lambda s: (s.rank(pct=True) * 100.0)
-    r_rate = pct(df["前日終値比率"].fillna(-1e18))
-    r_rvol = pct(df["RVOL代金"].fillna(0))
-    r_turn = pct(df["売買代金億"].fillna(0))
+    r_rate = pct(df_stocks["前日終値比率"].fillna(-1e18))
+    r_rvol = pct(df_stocks["RVOL代金"].fillna(0))
+    r_turn = pct(df_stocks["売買代金億"].fillna(0))
 
-    score = (w_rate*r_rate + w_rvol*r_rvol + w_turn*r_turn).round(1)
-    up = list(zip(score.fillna(0).tolist(), df["コード"].astype(str).tolist()))
+    df_stocks['合成スコア'] = (w_rate*r_rate + w_rvol*r_rvol + w_turn*r_turn).round(1)
+
+    # 元のデータフレームに結果をマージ（指数はスコア0.0とする）
+    df['合成スコア'] = df['コード'].map(df_stocks.set_index('コード')['合成スコア']).fillna(0.0)
+
+    up = list(zip(df['合成スコア'].tolist(), df["コード"].astype(str).tolist()))
 
     cur = conn.cursor()
-    # （列が無ければ既にあなたの _ensure_* 系で追加済み。二重ALTERにならないよう注意）
     cur.executemany("UPDATE screener SET 合成スコア=? WHERE コード=?", up)
     conn.commit()
     cur.close()
 
 def apply_fair_value_metrics(conn: sqlite3.Connection):
     """
-    ROEとBPSを用いて適正株価を計算する。
-    ROEが低い・赤字の企業でも、解散価値（PBR 1.0倍 ＝ BPS）を下限（フロア）としてガードする。
+    ROEとBPSを用いて、現在の相場水準（成長期待）に合わせた適正株価を計算する。
+    稼ぐ力（ROE）が高い企業ほど、高いPBRが許容されるロジック。
     """
     try:
         conn.execute("ALTER TABLE screener ADD COLUMN 適正株価 REAL")
@@ -8356,22 +8365,15 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         # ROEは%表記（例：15.5）を想定しているため小数（0.155）に戻す
         roe_decimal = roe / 100.0
         
-        # 1. 通常の理論株価（BPS × (ROE / 期待収益率)）
-        # ROEがマイナス（赤字）の場合は 0 以下になります
-        if roe_decimal > 0:
-            target_price = bps * (roe_decimal / EXPECTED_RETURN)
-        else:
-            target_price = 0.0
+        # 企業の稼ぐ力が期待収益率を下回っている（または赤字）場合でも、
+        # 評価がゼロにならないよう保守的に最低ROE（3%相当）の価値は担保する
+        if roe_decimal < 0.03:
+            roe_decimal = 0.03
             
-        # 2. 【フロアガード】
-        # どんなにROEが低くても、最低限「解散価値（PBR 1.0倍 ＝ BPS）」を下限として保護する
-        # ※もし「PBR 0.8倍あたりを底にしたい」などの場合は bps * 0.8 に調整可能です
-        floor_price = bps 
-        
-        # 理論値が解散価値を下回っている場合は、解散価値を適正株価の最低ラインとする
-        final_fair_value = max(target_price, floor_price)
-        
-        return final_fair_value
+        # 適正株価 = BPS × (ROE / 期待収益率)
+        # 例：BPS 1000円、ROE 14%、期待収益率 7% なら 1000 × (0.14 / 0.07) = 2000円
+        target_price = bps * (roe_decimal / EXPECTED_RETURN)
+        return target_price
 
     # 適正株価の計算
     df["適正株価"] = df.apply(calc_fair_value, axis=1)
@@ -8398,7 +8400,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         cur.executemany("UPDATE screener SET 適正株価=?, 割安度=? WHERE コード=?", updates)
         conn.commit()
         cur.close()
-        print(f"[quant] PBR1倍（BPS）フロアガード付き適正株価/割安度を更新しました: {len(updates)} 銘柄")
+        print(f"[quant] ROEベースの適正株価/割安度を更新しました: {len(updates)} 銘柄")
         
 def _parse_early_tag(detail: str) -> str | None:
     if detail is None:

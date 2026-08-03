@@ -2468,7 +2468,7 @@
   });
 
   // =========================================================
-  // ★ 追加：決算またぎ特化データの高精度コピー機能
+  // ★ 追加：決算またぎ特化プロンプト＆データの高精度コピー機能
   // =========================================================
   $("#copy-earnings-data")?.addEventListener("click", async (e)=>{
     e.preventDefault();
@@ -2478,9 +2478,13 @@
     // 表示中の行（銘柄コード）を取得
     const bodyRows = Array.from(tbl.tBodies[0].rows);
     const codes = bodyRows.map(tr => tr.getAttribute("data-code")).filter(Boolean);
-    if (!codes.length) return;
+    if (!codes.length) {
+      alert("表示されているデータがありません。");
+      return;
+    }
 
     // 抽出するカラムの定義（ラベル名 と 内部データキー）
+    // 💡 ここに最強シグナルの「利益加速フラグ」を追加！
     const targetCols = [
       { label: "コード", key: "コード" },
       { label: "銘柄名", key: "銘柄名" },
@@ -2492,13 +2496,13 @@
       { label: "RVOL代金", key: "RVOL代金" },
       { label: "RS_5", key: "RS_5" },
       { label: "需給OH", key: "需給OH" },
-      { label: "Algo総合判定", key: "Algo_総合判定" },
-      { label: "初動フラグ", key: "初動フラグ" },
-      { label: "右肩早期種別", key: "右肩早期種別" },
-      { label: "決算発表日", key: "決算発表予定日" },
+      { label: "信用倍率", key: "信用倍率" },
+      { label: "利益加速フラグ", key: "利益加速フラグ" }, // 👈 追加
       { label: "決算期待値", key: "決算期待値" },
       { label: "過去反応(8回分)", key: "決算リアクション履歴" },
-      { label: "信用倍率", key: "信用倍率" }
+      { label: "Algo総合判定", key: "Algo_総合判定" },
+      { label: "初動フラグ", key: "初動フラグ" },
+      { label: "右肩早期種別", key: "右肩早期種別" }
     ];
 
     // 全データから高速に検索するためのマップ作成
@@ -2525,25 +2529,52 @@
         let val = r[col.key];
         // 表記揺れのフォロー
         if (col.key === "売買代金(億)" && val == null) val = r["売買代金億"];
+        
+        // ★ 利益加速フラグを見やすく変換（1なら「加速」、それ以外は空欄）
+        if (col.key === "利益加速フラグ") {
+            val = (val == 1 || val === "1") ? "加速" : "";
+        }
+        
         return csvEscape(val);
       }).join(",");
     });
 
-    const text = [headerLine, ...dataLines].join("\n");
+    const csvText = [headerLine, ...dataLines].join("\n");
+
+    // 💡 AIへのプロンプトを追加（決算またぎ特化）
+    const fullText = `以下の日本株データ（計 ${codes.length} 件）は、「決算またぎ」の戦略を検討するための抽出データです。
+過去の決算期待値、需給（空売りや上値の軽さ）、そして「利益加速フラグ」に特に注目して分析してください。
+
+【分析依頼】
+1. 【大化けサプライズ候補】：「利益加速フラグ」が点灯しており、かつ「決算期待値」が低い（ハードルが低い）銘柄をピックアップし、好決算時に急騰するポテンシャルを評価してください。
+2. 【踏み上げ（ショートカバー）候補】：信用倍率や需給OHが低く、売り長（空売りが溜まっている）状態の銘柄を挙げ、好材料が出た際の踏み上げリスク（買い方にとってのリターン）を分析してください。
+3. 【決算またぎの危険サイン】：RS_5やRVOLが高く、すでに情報漏れや期待買いで株価が上がりすぎている（出尽くし売りになりやすい）銘柄を警告してください。
+
+【スクリーニングデータ (CSV)】
+${csvText}
+`;
 
     try {
       if (navigator.clipboard && window.isSecureContext !== false) {
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(fullText);
       } else {
         const ta = document.createElement("textarea");
-        ta.value = text; ta.style.position = "fixed"; ta.style.left = "-9999px";
+        ta.value = fullText; ta.style.position = "fixed"; ta.style.left = "-9999px";
         document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
       }
+      
       const btn = document.getElementById("copy-earnings-data");
       btn?.classList.add("ok");
       const old = btn?.textContent || "";
-      if (btn) btn.textContent = "コピー完了！";
-      setTimeout(()=>{ if(btn){ btn.classList.remove("ok"); btn.textContent = old; } }, 1500);
+      if (btn) btn.textContent = `📋 分析プロンプト作成完了 (${codes.length}件)`;
+      
+      setTimeout(()=>{ 
+          if(btn){ 
+              btn.classList.remove("ok"); 
+              btn.textContent = old; 
+          } 
+      }, 2000);
+      
     } catch (_) {
       alert("コピーに失敗しました");
     }
@@ -3198,9 +3229,6 @@ document.addEventListener("click", async (e) => {
   // 1. 画面上のフィルター条件を通過したデータのみを取得
   const currentData = applyFilter(window.state?.data || window.DATA_CAND || []);
   
-  // ★ 修正1：画面上の「件数表示(<b id="count">)」のテキストを直接取得して信頼性を一致させる
-  // もし取得できなければ、売買代金5億円以上のフィルタリング後の件数を正確にフォールバックとして使う
-  
   // その中から「売買代金 5億円以上」のみを自動抽出（ノイズ排除）
   const filtered = currentData.filter(r => {
     const turn = parseFloat(String(r["売買代金(億)"] || r["売買代金億"] || "0").replace(/[,円]/g, ""));
@@ -3212,26 +3240,34 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
-  // 画面上の表示件数をDOMから直接正確に拾う（タグを除去して数字だけにする）
+  // ★ 修正：画面上の「件数表示(<b id="count">)」のテキストを直接取得して信頼性を一致させる
   const countElem = document.getElementById("count");
   const displayCountText = countElem ? countElem.textContent.trim() : "";
-  // 文字列から数字部分を抽出、なければ filtered.length を使う
   const matchNum = displayCountText.match(/\d+/);
   const totalCountStr = matchNum ? matchNum[0] : filtered.length.toString();
 
-  // 2. Geminiが思考しやすい厳選カラムを指定
+  // 2. Geminiが思考しやすい厳選カラムを指定（利益加速フラグと決算期待値・信用倍率も追加！）
   const cols = [
     "コード", "銘柄名", "セクター", "関連テーマ", 
     "前日終値比率", "売買代金(億)", "RVOL代金", "RS_5", 
-    "時価総額億円", "需給OH", "右肩早期種別", "初動フラグ", "Algo_総合判定"
+    "時価総額億円", "需給OH", "信用倍率",
+    "利益加速フラグ", "決算期待値", // 👈 追加！
+    "右肩早期種別", "初動フラグ", "Algo_総合判定"
   ];
 
   // 3. CSV文字列の生成（タグ除去＆エスケープ処理付き）
   const csvRows = [cols.join(",")];
   filtered.forEach(r => {
     const row = cols.map(c => {
-      let val = String(r[c] ?? "").replace(/<[^>]*>/g, "").replace(/"/g, '""').trim();
-      return /[",\n]/.test(val) ? `"${val}"` : val;
+      let val = r[c];
+      
+      // 利益加速フラグを見やすく変換（1なら「加速」、それ以外は空欄）
+      if (c === "利益加速フラグ") {
+          val = (val == 1 || val === "1") ? "加速" : "";
+      }
+      
+      let strVal = String(val ?? "").replace(/<[^>]*>/g, "").replace(/"/g, '""').trim();
+      return /[",\n]/.test(strVal) ? `"${strVal}"` : strVal;
     });
     csvRows.push(row.join(","));
   });
@@ -3246,20 +3282,21 @@ document.addEventListener("click", async (e) => {
 ${macroContext}
 
 【分析の視点・前提】
-提供されたデータには、短期の爆発力を秘めた銘柄から、中長期でじわじわトレンドを形成する銘柄、需給が締まった銘柄などが混在しています。それぞれの銘柄が「どのような買い方（短期急騰狙い、中期トレンドフォロー、押し目買い等）に向いているか」を意識して分析してください。
+提供されたデータには、短期の爆発力を秘めた銘柄から、中長期でじわじわトレンドを形成する銘柄、需給が締まった銘柄などが混在しています。
+今回は特に「利益加速フラグ」や「決算期待値」などの業績モメンタムと、需給・テクニカルのバランスを重視して、それぞれの銘柄が「どのような買い方（短期急騰狙い、中期トレンドフォロー、押し目買い等）」に向いているか分析してください。
 
 【分析依頼】
 1. 本日の相場概況と資金流入セクター：
-   マクロ環境および高RVOL・高前日比%のデータから、現在どのセクターやテーマに強い資金が流入しているか、その勢い（短期の瞬発力か、中期の継続的なトレンドか）をまとめてください。
+   マクロ環境および高RVOL・高前日比%のデータから、現在どのセクターやテーマに強い資金が流入しているか、その勢い（短期か中期か）をまとめてください。
 
 2. スタイル別【厳選・注目すべき3銘柄】：
-   以下の3つの異なるスタイルに最も適した銘柄をそれぞれ1つずつ（計3銘柄）選出し、その理由と最適なエントリー戦略（短期急騰を狙うのか、中期でじわじわ追うのか）を述べてください。
-   - ①【短期急騰・モメンタム枠】：出来高急増（高RVOL）や初動シグナルが出ており、数日以内の値幅を狙える銘柄
+   以下の3つの異なるスタイルに最も適した銘柄をそれぞれ1つずつ（計3銘柄）選出し、その理由と最適なエントリー戦略を述べてください。
+   - ①【短期急騰・大化け枠】：「利益加速フラグ」や「初動シグナル」が出ており、数日以内の値幅やサプライズ急騰を狙える銘柄
    - ②【中期じわじわ・トレンドフォロー枠】：相対強度（RS_5）やチャートの安定感があり、押し目を丁寧に拾ってじわじわ伸ばせる銘柄
-   - ③【需給・バリュー・逆行高枠】：需給（需給OH等）が軽く、地合いに左右されにくい強さや割安妙味がある銘柄
+   - ③【需給・バリュー・逆行高枠】：需給（需給OH、信用倍率等）が軽く、地合いに左右されにくい強さや割安妙味がある銘柄
 
 3. 警戒すべきセクターおよびリスク要因：
-   マクロ視点で資金が流出しているセクターや、上値が重そうな（需給悪化や高値警戒感のある）パターンを指摘してください。
+   マクロ視点で資金が流出しているセクターや、上値が重そうなパターンを指摘してください。
 
 【スクリーニングデータ (CSV)】
 ` + csvRows.join("\n");
@@ -3279,6 +3316,7 @@ ${macroContext}
       document.body.removeChild(ta);
     }
 
+    // ★修正：エラーの原因だった行を消し、複数のボタンへ同時に反映させる処理に変更
     const oldText = btn.textContent;
     document.querySelectorAll("#btn-gemini-prompt").forEach(b => {
         b.textContent = `📋 コピー完了！ (${filtered.length}件)`;

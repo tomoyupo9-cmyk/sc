@@ -659,7 +659,10 @@ def calc_progress_from_df_op(quarterly_df: pd.DataFrame, forecast_series: pd.Ser
     if forecast_series is None or forecast_series.empty or "営業益" not in forecast_series:
         return (latest_label, 0.0, "予想未発表", -3.0)
 
-    full_op_val = pd.to_numeric(forecast_series.get("営業益"), errors="coerce")
+    # 文字列の「10,000」や「-」などを安全に処理
+    raw_op_val = str(forecast_series.get("営業益", "")).replace(",", "").strip()
+    full_op_val = pd.to_numeric(raw_op_val, errors="coerce")
+    
     if pd.isna(full_op_val):
         return (latest_label, 0.0, "予想データ欠損", -1.0)
     if float(full_op_val) == 0.0:
@@ -1060,9 +1063,16 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
 
             df_forecast_row = pd.Series()
             if not df_full_year.empty and "決算期" in df_full_year.columns:
-                _m = df_full_year["決算期"].astype(str).str.contains("予", na=False)
+                # 「予」という文字に依存せず、一番下の行が未来の日付（または「予」を含む）なら予想行とする、より堅牢なロジック
+                _m = df_full_year["決算期"].astype(str).str.contains("予|予想", na=False)
                 if _m.any():
                     df_forecast_row = df_full_year[_m].iloc[-1]
+                else:
+                    # 「予」という文字が見つからなくても、最新行の決算期が未来なら予想とみなす
+                    latest_fy_str = str(df_full_year["決算期"].iloc[-1]).replace(".", "")
+                    current_yymm = datetime.now().strftime("%Y%m")
+                    if latest_fy_str[:6].isdigit() and latest_fy_str[:6] > current_yymm:
+                        df_forecast_row = df_full_year.iloc[-1]
 
             out_html = os.path.join(out_dir, f"finance_{code_full}.html")
             verdict, score = judge_and_score_performance(df_full_year)
