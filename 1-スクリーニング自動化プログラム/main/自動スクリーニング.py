@@ -77,7 +77,7 @@ EXTRA_CLOSED_PATH   = r"H:\desctop\株攻略\1-スクリーニング自動化プ
 KARAURI_PY_PATH     = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\空売り無しリスト出しスクリプト.py"
 KARA_URI_NASHI_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\空売り無しリスト.txt"
 FUND_SCRIPT         = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\株探ファンダ.py"
-FETCH_PATH          = r"H:\desctop\株攻略\2-トレンドツール\fetch_all.py"
+FETCH_PATH          = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\fetch_all.py"
 MARKER_FILE         = Path(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\last_funda.txt")
 MODEL_PATH          = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
 
@@ -186,70 +186,34 @@ def _run_fetch_all(fetch_path: str | None = None,
                    timeout_sec: int | None = None,
                    use_lock: bool = True) -> None:
     """
-    自分と同じ Python で fetch_all.py をサブプロセス実行。
-    ・stdout を逐次そのままコンソールへ流す
-    ・異常終了/タイムアウト時は例外
-    ・多重起動を避けるため lock ファイル(任意)を利用
+    サブプロセスではなく、Pythonのインポート機能を使って直接 fetch_all.main() を実行する。
     """
-    if not os.path.exists(fetch_path):
-        raise FileNotFoundError(f"fetch_all.py が見つかりません: {fetch_path}")
+    # FETCH_PATH からディレクトリのパスを抽出（例: "H:\\desctop\\株攻略\\2-トレンドツール"）
+    target_path = fetch_path or FETCH_PATH
+    if not os.path.exists(target_path):
+        raise FileNotFoundError(f"fetch_all.py が見つかりません: {target_path}")
 
-    py = sys.executable  # いま実行中の Python を使う（仮想環境の取り違え防止）
-    cmd = [py, "-u", fetch_path]
-    if extra_args:
-        cmd.extend(extra_args)
+    fetch_dir = os.path.dirname(os.path.abspath(target_path))
+    
+    # Pythonの探索パスに一時的に追加
+    if fetch_dir not in sys.path:
+        sys.path.insert(0, fetch_dir)
 
-    # 2) ロック（簡易）
-    lock_path = os.path.splitext(fetch_path)[0] + ".lock"  # 例: fetch_all.lock
-    if use_lock:
-        if os.path.exists(lock_path):
-            # 古いロックは5時間で無視（適当な保険）
-            try:
-                if time.time() - os.path.getmtime(lock_path) < 5*60*60:
-                    print(f"[fetch_all] lock検知のためスキップ: {lock_path}")
-                    return
-            except Exception:
-                pass
-        # 作成
-        try:
-            with open(lock_path, "w", encoding="utf-8") as lf:
-                lf.write(f"pid={os.getpid()}\nstart={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        except Exception:
-            pass
-
-    print(f"[fetch_all] 実行開始: {cmd}")
-    proc = None
+    print(f"[fetch_all] 直接実行を開始します: {target_path}")
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=1,
-            universal_newlines=True,
-        )
-        start = time.time()
-        # 逐次出力
-        for line in proc.stdout:
-            print(line.rstrip())
-            if timeout_sec and (time.time() - start) > timeout_sec:
-                proc.kill()
-                raise TimeoutError(f"fetch_all タイムアウト（{timeout_sec}s）")
+        # 既存のキャッシュやモジュール競合を防ぐため、既にロードされていれば再読み込み
+        import importlib
+        import fetch_all
+        importlib.reload(fetch_all)
 
-        rc = proc.wait()
-        if rc != 0:
-            raise RuntimeError(f"fetch_all 異常終了: returncode={rc}")
+        # fetch_all.py 内の main() 関数をそのまま実行
+        fetch_all.main()
 
         print("[fetch_all] 正常終了")
-    finally:
-        # ロック解除
-        if use_lock:
-            try:
-                if os.path.exists(lock_path):
-                    os.remove(lock_path)
-            except Exception:
-                pass
-
-
+    except Exception as e:
+        print(f"[fetch_all][ERROR] 実行時エラー: {e}")
+        raise e
+        
 def run_fundamental_daily(force: bool = False):
     """株探ファンダメンタルズ情報を取得・更新する外部スクリプトを1日1回実行する"""
     today = date.today()
@@ -5714,6 +5678,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ", "踏み上げ期待スコア",
         "機関空売り合計株数", "本日の増減合計株数", "主要機関の動き",
         "AI目標値", "AI目標値_raw",
+        "予想インパクト_pct", "予測ターゲット価格",
         "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主",
         "Algo_Momentum", "Algo_VolTarget", "Algo_Factor", "Algo_総合判定",
         "短期需給判定",
@@ -7479,13 +7444,59 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     df_cand["Growth_Bias"] = grt20 - topx20 if topx20 is not None and grt20 is not None else None
 
-    def _market_flag(t, n):
+    # ▼▼▼ 修正: 地合い・逆行フラグの判定ロジックを現実に即して緩和 ▼▼▼
+    # 1. 地合いフラグの判定 (TOPIX または 日経平均の 1日の騰落率 で判定)
+    def _market_flag(topx1_val, nikkei1_val):
         try:
-            if t > 0.02 and n > 0.02: return 1
-            if t < -0.02 and n < -0.02: return -1
+            # どちらかが -1.0% 以下なら地合い悪(-1)、+1.0% 以上なら地合い良(1)
+            t_val = topx1_val if topx1_val is not None else 0.0
+            n_val = nikkei1_val if nikkei1_val is not None else 0.0
+            if t_val <= -0.01 or n_val <= -0.01:
+                return -1
+            elif t_val >= 0.01 or n_val >= 0.01:
+                return 1
             return 0
-        except: return 0
-    df_cand["地合いフラグ"] = _market_flag(topx20, nikkei20)
+        except: 
+            return 0
+
+    # topx1 (TOPIXの1日騰落率) は上で計算済み。nikkei1 も取得しておく
+    nikkei1 = idx_cache["^N225"][1] if "^N225" in idx_cache else None
+    
+    # df_allの各行に対して適用するのではなく、市場全体として1つのフラグを立てる
+    market_flag_today = _market_flag(topx1, nikkei1)
+    df_cand["地合いフラグ"] = market_flag_today
+
+    # 2. 逆行フラグの再計算
+    new_rev_strong = []
+    new_rev_weak = []
+
+    for _, r in df_cand.iterrows():
+        # 個別株の1日騰落率
+        try: 
+            stock_pct = (float(r["現在値"]) - float(r["前日終値"])) / float(r["前日終値"])
+        except: 
+            stock_pct = None
+
+        if stock_pct is None:
+            new_rev_strong.append(0)
+            new_rev_weak.append(0)
+        else:
+            # 地合い悪(-1)の日に、個別株が +1% 以上なら「逆行強」
+            if market_flag_today == -1 and stock_pct >= 0.01:
+                new_rev_strong.append(1)
+            else:
+                new_rev_strong.append(0)
+            
+            # 地合い良(1)の日に、個別株が -1% 以下なら「逆行弱」
+            if market_flag_today == 1 and stock_pct <= -0.01:
+                new_rev_weak.append(1)
+            else:
+                new_rev_weak.append(0)
+
+    # リストを上書き
+    df_cand["逆行強フラグ"] = new_rev_strong
+    df_cand["逆行弱フラグ"] = new_rev_weak
+    # ▲▲▲ 修正ここまで ▲▲▲
 
     _p(f"RS/GrowthBias: done dt={( time.perf_counter() - t_rs ): .2f}s")
 
@@ -7557,7 +7568,33 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _tick("vectorize_minimum_fields")
     
     
+    # ==============================================================================
+    # ★【追加】株価上昇幅・インパクト予測エンジンの実行とマージ
+    # ==============================================================================
+    try:
+        predictor = StockSurprisePredictor()
+        pred_returns = []
+        target_prices = []
+        
+        for _, row_series in df_cand.iterrows():
+            row_dict = row_series.to_dict()
+            res = predictor.predict_price_increase(row_dict)
+            pred_returns.append(res["expected_return_pct"])
+            target_prices.append(res["target_price"])
+            
+        df_cand["予想インパクト_pct"] = pred_returns
+        df_cand["予測ターゲット価格"] = target_prices
+                
+        _p("predictor: expected return and target price calculated & injected")
+    except Exception as e:
+        print(f"[predictor][WARN] 予測計算の統合に失敗しました: {e}")
+        # エラー時は0で埋める
+        df_cand["予想インパクト_pct"] = 0.0
+        df_cand["予測ターゲット価格"] = 0.0
+    _tick("surprise_predictor_enrich")
     
+    # ここで生成される rows には、自動的に予測値が含まれるようになります
+    rows = _prepare_rows(df_cand, conn)
     
 
     rows = _prepare_rows(df_cand, conn)
@@ -7625,35 +7662,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             r["決算リアクション履歴"] = match_row.iloc[0].get("決算リアクション履歴")
     _tick("earnings_reaction_enrich")
     
-    # ==============================================================================
-    # ★【追加】株価上昇幅・インパクト予測エンジンの実行とマージ
-    # ==============================================================================
-    try:
-        predictor = StockSurprisePredictor()
-        pred_returns = []
-        target_prices = []
-        
-        for _, row_series in df_cand.iterrows():
-            row_dict = row_series.to_dict()
-            res = predictor.predict_price_increase(row_dict)
-            pred_returns.append(res["expected_return_pct"])
-            target_prices.append(res["target_price"])
-            
-        df_cand["予想インパクト_pct"] = pred_returns
-        df_cand["予測ターゲット価格"] = target_prices
-        
-        # rows 辞書側にも反映させる
-        for r in rows:
-            c4 = str(r.get("コード", "")).zfill(4)
-            match_row = df_cand[df_cand["コード"] == c4]
-            if not match_row.empty:
-                r["予想インパクト_pct"] = match_row.iloc[0].get("予想インパクト_pct")
-                r["予測ターゲット価格"] = match_row.iloc[0].get("予測ターゲット価格")
-                
-        _p("predictor: expected return and target price calculated & injected")
-    except Exception as e:
-        print(f"[predictor][WARN] 予測計算の統合に失敗しました: {e}")
-    _tick("surprise_predictor_enrich")
+   
     
     # TOBデータの注入処理
     try:
@@ -7744,6 +7753,12 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     }
     data_json = dumps_json_clean(data_obj)
     _tick("json clean done")
+
+    # ▼▼▼ ここにファイル保存の処理を追加 ▼▼▼
+    json_export_path = os.path.join(OUTPUT_DIR, "dashboard_data.json")
+    with open(json_export_path, "w", encoding="utf-8") as f:
+        f.write(data_json)
+    # ▲▲▲ 追加ここまで ▲▲▲
 
     # 10) テンプレ描画
     _ensure_template_file(template_dir, overwrite=True)
@@ -8311,46 +8326,56 @@ def apply_composite_score(conn: sqlite3.Connection,
     cur.close()
 
 def apply_fair_value_metrics(conn: sqlite3.Connection):
-    """市場区分ごとのPER/PBR中央値を用いて適正株価と割安度を動的に計算"""
+    """
+    ROEとBPSを用いて、現在の相場水準（成長期待）に合わせた適正株価を計算する。
+    稼ぐ力（ROE）が高い企業ほど、高いPBRが許容されるロジック。
+    """
     try:
         conn.execute("ALTER TABLE screener ADD COLUMN 適正株価 REAL")
         conn.execute("ALTER TABLE screener ADD COLUMN 割安度 REAL")
     except Exception:
         pass # 既に存在する場合はスキップ
 
-    df = pd.read_sql_query("SELECT コード, 市場, 現在値, EPS, BPS FROM screener", conn)
+    df = pd.read_sql_query("SELECT コード, 現在値, EPS, BPS, ROE FROM screener", conn)
     if df.empty: return
 
-    for c in ["現在値", "EPS", "BPS"]:
+    for c in ["現在値", "EPS", "BPS", "ROE"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # 実績値から個別のPER/PBRを逆算 (負値は除外)
-    df["PER"] = np.where(df["EPS"] > 0, df["現在値"] / df["EPS"], np.nan)
-    df["PBR"] = np.where(df["BPS"] > 0, df["現在値"] / df["BPS"], np.nan)
-
-    # 市場区分を正規化
-    df["市場区分"] = df["市場"].astype(str).apply(
-        lambda x: "プライム" if "プライム" in x or "東P" in x 
-        else ("スタンダード" if "スタンダード" in x or "東S" in x 
-        else ("グロース" if "グロース" in x or "東G" in x else "その他"))
-    )
-
-    # 市場区分ごとの中央値を計算（外れ値に強いロバスト推定）
-    medians = df.groupby("市場区分")[["PER", "PBR"]].median()
+    # 期待収益率の設定（日本株の平均的な要求利回りを 7.0% とする）
+    EXPECTED_RETURN = 0.07
 
     def calc_fair_value(row):
-        market = row["市場区分"]
-        if market not in medians.index: return np.nan
+        bps = row["BPS"]
+        roe = row["ROE"]
         
-        med_per, med_pbr = medians.loc[market, "PER"], medians.loc[market, "PBR"]
-        target_per = row["EPS"] * med_per if pd.notna(row["EPS"]) and row["EPS"] > 0 and pd.notna(med_per) else np.nan
-        target_pbr = row["BPS"] * med_pbr if pd.notna(row["BPS"]) and row["BPS"] > 0 and pd.notna(med_pbr) else np.nan
+        # BPSやROEが欠損、または異常値の場合は計算不可
+        if pd.isna(bps) or pd.isna(roe) or bps <= 0:
+            return np.nan
+            
+        # ROEは%表記（例：15.5）を想定しているため小数（0.155）に戻す
+        roe_decimal = roe / 100.0
         
-        targets = [t for t in [target_per, target_pbr] if pd.notna(t)]
-        return np.mean(targets) if targets else np.nan
+        # 企業の稼ぐ力が期待収益率を下回っている（または赤字）場合でも、
+        # 評価がゼロにならないよう保守的に最低ROE（3%相当）の価値は担保する
+        if roe_decimal < 0.03:
+            roe_decimal = 0.03
+            
+        # 適正株価 = BPS × (ROE / 期待収益率)
+        # 例：BPS 1000円、ROE 14%、期待収益率 7% なら 1000 × (0.14 / 0.07) = 2000円
+        target_price = bps * (roe_decimal / EXPECTED_RETURN)
+        return target_price
 
+    # 適正株価の計算
     df["適正株価"] = df.apply(calc_fair_value, axis=1)
-    df["割安度"] = np.where((df["適正株価"] > 0) & (df["現在値"] > 0), (df["適正株価"] / df["現在値"] - 1.0) * 100.0, np.nan)
+    
+    # 割安度の計算: 現在値が適正株価からどれくらいディスカウントされているか（%）
+    # 例：適正 2000円、現在値 1500円 なら (1 - 1500/2000)*100 = 25% 割安
+    df["割安度"] = np.where(
+        (df["適正株価"] > 0) & (df["現在値"] > 0), 
+        (1.0 - (df["現在値"] / df["適正株価"])) * 100.0, 
+        np.nan
+    )
 
     updates = []
     for _, r in df.iterrows():
@@ -8366,8 +8391,8 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         cur.executemany("UPDATE screener SET 適正株価=?, 割安度=? WHERE コード=?", updates)
         conn.commit()
         cur.close()
-        print(f"[quant] 適正株価/割安度を更新しました: {len(updates)} 銘柄")
-
+        print(f"[quant] ROEベースの適正株価/割安度を更新しました: {len(updates)} 銘柄")
+        
 def _parse_early_tag(detail: str) -> str | None:
     if detail is None:
         return None

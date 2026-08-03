@@ -449,77 +449,6 @@
 })(window);
 </script>
 
-<script>
-(function(g,d){
-  function measureRailRight(table){
-    try{
-      var edge = 0;
-      var ths = table.querySelectorAll('thead th');
-      if (!ths || !ths.length) return 0;
-      var limit = Math.min(8, ths.length);
-      for (var i=0; i<limit; i++){
-        var th = ths[i];
-        var rect = th.getBoundingClientRect();
-        var left = th.offsetLeft || 0;
-        var right = left + (th.offsetWidth || rect.width || 0);
-        if (right > edge) edge = right;
-      }
-      return edge;
-    }catch(e){ return 0; }
-  }
-
-  function ensurePadColumn(table){
-    try{
-      var rows = table.querySelectorAll('tbody tr');
-      for (var i=0; i<rows.length; i++){
-        var tr = rows[i];
-        if (!tr.querySelector('td[data-col="__PAD__"]')){
-          var td = d.createElement('td');
-          td.className = 'scroll-pad';
-          td.setAttribute('data-col','__PAD__');
-          tr.appendChild(td);
-        }
-      }
-    }catch(e){}
-  }
-
-  function update(){
-    var table = d.getElementById('tbl-candidate');
-    if (!table) return;
-    ensurePadColumn(table);
-    var w = measureRailRight(table);
-    if (w && w>0){
-      d.documentElement.style.setProperty('--railW', w + 'px');
-    }
-  }
-
-  d.addEventListener('DOMContentLoaded', function(){
-    try{
-      update();
-      g.addEventListener('resize', update);
-      try{
-        var table = d.getElementById('tbl-candidate');
-        if (table && g.MutationObserver){
-          var ticking = false;
-          function queueUpdate(){
-            if (ticking) return;
-            ticking = true;
-            requestAnimationFrame(function(){
-              try { update(); } finally { ticking = false; }
-            });
-          }
-          var obs = new MutationObserver(queueUpdate);
-          var targets = [ table.querySelector('thead'), table.querySelector('tbody') ].filter(Boolean);
-          targets.forEach(function(t){
-            obs.observe(t, { childList: true, attributes: true, characterData: true, subtree: true });
-          });
-        }
-      }catch(_){}
-    }catch(e){ console.warn('[scroll-pad]', e); }
-  });
-})(window, document);
-</script>
-
 <script id="top-hscroll">
 (function(){
   function setToolbarOffset(){
@@ -1149,20 +1078,10 @@
   let sortCriteria = []; // グローバルでソート条件を管理
   let sortableColumns = []; // モーダル用の列情報をキャッシュ
 
-  // 実際のソート処理（既存の処理を独立した関数に切り出し）
+  // 実際のソート処理（データ配列を直接ソートして再描画する高速版）
   function performTableSort() {
-      const table = document.querySelector("#tbl-candidate");
-      if (!table || sortCriteria.length === 0) return;
+      if (sortCriteria.length === 0) return;
 
-      const ths = Array.from(table.querySelectorAll('thead th.sortable'));
-      const tb = table.querySelector('tbody');
-      const rows = Array.from(tb.querySelectorAll('tr'));
-
-      const cellVal = (td) => {
-          if (!td) return '';
-          const ds = td.getAttribute('data-sort');
-          return (ds !== null && ds !== '') ? ds : (td.textContent || '');
-      };
       const toNum = (s) => {
           let t = String(s ?? '').trim().replace(/\s|[円％%]/g,'');
           if (t.indexOf('.') === -1 && /^-?\d+,\d+$/.test(t)) t = t.replace(',', '.'); else t = t.replace(/,/g,'');
@@ -1170,17 +1089,30 @@
           return Number.isFinite(n) ? n : NaN;
       };
 
-      rows.sort((r1, r2) => {
+      // ★ 画面表示用の大元のデータ配列を直接ソートする
+      window.state.data.sort((r1, r2) => {
           for (let crit of sortCriteria) {
-              const aRaw = cellVal(r1.children[crit.colIndex]).trim();
-              const bRaw = cellVal(r2.children[crit.colIndex]).trim();
+              const colKey = crit.colKey;
+              if (!colKey) continue;
+
+              let aRaw = r1[colKey];
+              let bRaw = r2[colKey];
+              
+              // AI目標値などの特殊な独自ソート値の処理
+              if (colKey === "AI目標値") {
+                  aRaw = r1["AI目標値_raw"] ?? -999999;
+                  bRaw = r2["AI目標値_raw"] ?? -999999;
+              } else if (colKey === "機関空売り合計株数" || colKey === "本日の増減合計株数") {
+                  aRaw = r1[colKey] !== "" ? r1[colKey] : -999999;
+                  bRaw = r2[colKey] !== "" ? r2[colKey] : -999999;
+              }
+              
+              aRaw = aRaw != null ? String(aRaw) : "";
+              bRaw = bRaw != null ? String(bRaw) : "";
+
               let cmp = 0;
               
-              const h = ths.find(hx => hx.cellIndex === crit.colIndex);
-              const colName = h ? h.getAttribute("data-col") : "";
-              
-              if (colName === "Algo_Momentum" || colName === "Algo_VolTarget" || colName === "Algo_Factor" || colName === "Algo_総合判定") {
-                  // セルの文字列から "(XX点)" の数字部分を抽出してソートする
+              if (colKey === "Algo_Momentum" || colKey === "Algo_VolTarget" || colKey === "Algo_Factor" || colKey === "Algo_総合判定") {
                   const getScore = (str) => {
                       const m = String(str).match(/\((\d+)点\)/);
                       return m ? parseInt(m[1], 10) : -1;
@@ -1209,21 +1141,27 @@
           return 0;
       });
 
-      rows.forEach(r => tb.appendChild(r));
+      // ★ ソートが終わったらページを1に戻して一気に再描画（DOM書き換えはここで1回だけ走る）
+      state.page = 1;
+      render();
 
       // UI(矢印と優先順位)の更新
-      ths.forEach(h => { h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
-      sortCriteria.forEach((crit, i) => {
-          const h = ths.find(hx => hx.cellIndex === crit.colIndex);
-          if (h) {
-              h.dataset.dir = crit.dir;
-              const arr = h.querySelector('.arrow');
-              if (arr) {
-                  const orderBadge = sortCriteria.length > 1 ? `(${i+1})` : '';
-                  arr.textContent = (crit.dir === 'asc' ? '▲' : '▼') + orderBadge;
+      const table = document.querySelector("#tbl-candidate");
+      if (table) {
+          const ths = Array.from(table.querySelectorAll('thead th.sortable'));
+          ths.forEach(h => { h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
+          sortCriteria.forEach((crit, i) => {
+              const h = ths.find(hx => hx.cellIndex === crit.colIndex);
+              if (h) {
+                  h.dataset.dir = crit.dir;
+                  const arr = h.querySelector('.arrow');
+                  if (arr) {
+                      const orderBadge = sortCriteria.length > 1 ? `(${i+1})` : '';
+                      arr.textContent = (crit.dir === 'asc' ? '▲' : '▼') + orderBadge;
+                  }
               }
-          }
-      });
+          });
+      }
   }
 
   // 既存の wireDomSort をオーバーライド
@@ -1234,8 +1172,9 @@
       // モーダル用に列情報をキャッシュ
       sortableColumns = ths.map(th => ({
           index: th.cellIndex,
-          name: th.textContent.replace('▲', '').replace('▼', '').replace(/\\(\\d+\\)/, '').trim(),
-          type: th.dataset.type || 'text'
+          name: th.textContent.replace('▲', '').replace('▼', '').replace(/\(\d+\)/, '').trim(),
+          type: th.dataset.type || 'text',
+          colKey: th.getAttribute('data-col') // ★追加：データオブジェクトのキーを取得
       }));
       
       ths.forEach((th)=>{
@@ -1258,7 +1197,9 @@
               if (!e.shiftKey) {
                   sortCriteria = [];
               }
-              sortCriteria.unshift({ colIndex, dir, typ });
+              // ★追加：thからdata-colを取得して保存する
+              const colKey = th.getAttribute('data-col'); 
+              sortCriteria.unshift({ colIndex, dir, typ, colKey });
               performTableSort(); // 共通関数を呼び出し
           });
       });
@@ -1304,10 +1245,13 @@
                   const colSelect = row.querySelector('.col-select');
                   const dirSelect = row.querySelector('.dir-select');
                   const selectedOption = colSelect.options[colSelect.selectedIndex];
+                  // ★ colKey を探して追加
+                  const cachedCol = sortableColumns.find(c => c.index === parseInt(colSelect.value, 10));
                   return {
                       colIndex: parseInt(colSelect.value, 10),
                       dir: dirSelect.value,
-                      typ: selectedOption.dataset.type
+                      typ: selectedOption.dataset.type,
+                      colKey: cachedCol ? cachedCol.colKey : "" // ★追加
                   };
               });
               performTableSort(); // ソート実行
@@ -1647,43 +1591,78 @@
     const ls = (window.__mkSet instanceof Set) ? window.__mkSet : mkSet;
     if (ls && ls.has('__NONE__')) return [];
 
-    const q   = ($("#q")?.value||"").trim();
+    // ★ フィルターループの「外」で、あらかじめ画面のチェック状態をすべて読み取っておく
+    const q  = ($("#q")?.value||"").trim();
     const sel = getSelectedTypes();
     const useEarly = sel.length > 0;
     const liveSet = ls;
-    const mkList  = collectMarkets(); 
+    
+    // チェックボックスの状態を先に記憶（数千回の無駄なDOMアクセスをゼロにする）
+    const isRecStrongChecked = $("#f_recstrong")?.checked;
+    const isSmallPosChecked  = $("#f_smallpos")?.checked;
+    const isNoShorChecked    = $("#f_noshor")?.checked;
+    const isSafetyChecked    = $("#f_safety")?.checked;
+    const isHitChecked       = $("#f_hit")?.checked;
+    const isAccelChecked     = $("#f_accel")?.checked;
+    
+    const isRsStrongChecked  = $("#f_rsstrong")?.checked;
+    const isMktGoodChecked   = $("#f_mkt_good")?.checked;
+    const isMktBadChecked    = $("#f_mkt_bad")?.checked;
+    const isRevStrongChecked = $("#f_revstrong")?.checked;
+    const isRevWeakChecked   = $("#f_revweak")?.checked;
+    const isGoodOnlyChecked  = $("#f_goodonly")?.checked;
+    const isTobOnlyChecked   = $("#f_tob_only")?.checked;
 
+    // シグナル一括フィルターの状態も先に記憶
+    const sig_shodou  = document.getElementById("f_shodou")?.checked;
+    const sig_tei     = document.getElementById("f_tei")?.checked;
+    const sig_rightup = document.getElementById("f_rightup")?.checked;
+    const sig_early   = document.getElementById("f_early")?.checked;
+    const sig_news    = document.getElementById("f_news_bluepos")?.checked;
+    const sig_mode    = document.querySelector('input[name="sig_mode"]:checked')?.value || "OR";
+
+    // モメンタム、各数値しきい値の状態も先に記憶
+    const momFilter = document.getElementById("f_algo_momentum")?.value || "";
+    
+    const tr = thRate(), tt = thTurn(), tv = thRvol(), tp = thProg(), ts = thScore();
+    const pmin = thPmin(), pmax = thPmax();
+    const asmin = thAsmin(), asmax = thAsmax();
+    const tmr = thMarginRatio(), tsb = thSellBal(), tbb = thBuyBal();
+    const triG = thTriG(), triS = thTriS(), triV = thTriV();
+
+    // q の検索用に正規表現や検索条件を事前にパースしておく（毎回splitしない）
+    let orGroups = [];
+    if (q) {
+        orGroups = String(q).split(/(?:\s+OR\s+|\s*\|\s*)/).map(group => group.trim().split(/[\u3000\s]+/).filter(Boolean));
+    }
+
+    // -------------------------------------------
+    // ▼ ここから行ごとのループ（超高速化） ▼
+    // -------------------------------------------
     return rows.filter(r=>{
       if (!evaluateExcelFilters(r)) return false;
+
       const sh  = hasKouho(r["初動フラグ"]);
       const te  = hasKouho(r["底打ちフラグ"]);
       const ru  = hasKouho(r["右肩上がりフラグ"]);
       const ea  = hasKouho(r["右肩早期フラグ"]);
-      const etp = (String(r["右肩早期種別"]||"").trim().length>0);
       const ns  = String(r["空売り機関なし_flag"]||"0")==="1";
-      const op  = String(r["営利対時価_flag"]||"0")==="1";
       const isSafeDemand  = String(r["需給安全フラグ"]||"0")==="1";
       const hit = isHitRow(r);
 
-      const rec = (String(r["推奨アクション"]||"").trim());
+      const rec = String(r["推奨アクション"]||"").trim();
       const recStrong = (rec === "エントリー有力");
       const recSmall  = (rec === "小口提案");
 
-      if($("#f_recstrong")?.checked && !recStrong) return false;
-      if($("#f_smallpos")?.checked  && !recSmall)  return false;
-      if($("#f_noshor")?.checked && !ns) return false;
-      if($("#f_safety")?.checked && !isSafeDemand) return false;
-      if($("#f_hit")?.checked    && !hit) return false;
-      if($("#f_accel")?.checked  && Number(r["利益加速フラグ"]) !== 1) return false;
+      // 記憶した変数を使って判定（DOMは見ない）
+      if(isRecStrongChecked && !recStrong) return false;
+      if(isSmallPosChecked  && !recSmall)  return false;
+      if(isNoShorChecked    && !ns) return false;
+      if(isSafetyChecked    && !isSafeDemand) return false;
+      if(isHitChecked       && !hit) return false;
+      if(isAccelChecked     && Number(r["利益加速フラグ"]) !== 1) return false;
 
       // シグナル一括フィルターの処理
-      const sig_shodou = document.getElementById("f_shodou")?.checked;
-      const sig_tei = document.getElementById("f_tei")?.checked;
-      const sig_rightup = document.getElementById("f_rightup")?.checked;
-      const sig_early = document.getElementById("f_early")?.checked;
-      const sig_news = document.getElementById("f_news_bluepos")?.checked;
-      const sig_mode = document.querySelector('input[name="sig_mode"]:checked')?.value || "OR";
-
       let has_blue_news = false;
       const html_news = String(r["株探ニュース(3)"] ?? "");
       if (html_news.includes("bert-pos-dot") || html_news.includes("●")) {
@@ -1693,14 +1672,14 @@
       let active_sigs = 0;
       let matched_sigs = 0;
 
-      if (sig_shodou) { active_sigs++; if (sh) matched_sigs++; }
-      if (sig_tei) { active_sigs++; if (te) matched_sigs++; }
+      if (sig_shodou)  { active_sigs++; if (sh) matched_sigs++; }
+      if (sig_tei)     { active_sigs++; if (te) matched_sigs++; }
       if (sig_rightup) { active_sigs++; if (ru) matched_sigs++; }
-      if (sig_early) { active_sigs++; if (ea) matched_sigs++; }
-      if (sig_news) { active_sigs++; if (has_blue_news) matched_sigs++; }
+      if (sig_early)   { active_sigs++; if (ea) matched_sigs++; }
+      if (sig_news)    { active_sigs++; if (has_blue_news) matched_sigs++; }
 
       if (active_sigs > 0) {
-          if (sig_mode === "OR" && matched_sigs === 0) return false;
+          if (sig_mode === "OR"  && matched_sigs === 0) return false;
           if (sig_mode === "AND" && matched_sigs < active_sigs) return false;
       }
 
@@ -1716,9 +1695,6 @@
       const prog  = num(r["進捗率"]);
       const score = num(r["スコア"]);
 
-      const tr = thRate(), tt = thTurn(), tv = thRvol(), tp = thProg(), ts = thScore();
-      const pmin = thPmin(), pmax = thPmax();
-
       if(pmin!=null && !(price>=pmin)) return false;
       if(pmax!=null && !(price<=pmax)) return false;
       if(tr!=null && !(rate>=tr)) return false;
@@ -1727,13 +1703,10 @@
       if(tp!=null && !(prog>=tp)) return false;
       if(ts!=null && !(score>=ts)) return false;
       
-      const asmin = thAsmin(), asmax = thAsmax();
       const aiScore = num(r["AIスコア"]); 
       if(asmin!=null && !(aiScore >= asmin)) return false;
       if(asmax!=null && !(aiScore <= asmax)) return false;
 
-      // ★ 追加：信用関連の絞り込み判定
-      const tmr = thMarginRatio(), tsb = thSellBal(), tbb = thBuyBal();
       const marginRatio = num(r["信用倍率"]);
       const sellBal = num(r["売り残"]);
       const buyBal = num(r["買い残"]);
@@ -1741,7 +1714,6 @@
       if (tsb != null && !(sellBal >= tsb)) return false;
       if (tbb != null && !(buyBal <= tbb)) return false;
       
-      const triG = thTriG(), triS = thTriS(), triV = thTriV();
       const gr = Number(r["tri_growth"]  ?? 0);
       const sf = Number(r["tri_safety"]  ?? 0);
       const vo = Number(r["tri_vol"]     ?? 0);
@@ -1756,27 +1728,24 @@
         .replace('東Ｐ','東P').replace('東Ｓ','東S');
       if (!mkEmpty && !liveSet.has(mk)) return false;
 
-      if (f_rsstrong?.checked) { if (!(r["RS_5"] > 0)) return false; }
-      if (f_mkt_good?.checked) { if (String(r["地合いフラグ"]) !== "1") return false; }
-      if (f_mkt_bad?.checked)  { if (String(r["地合いフラグ"]) !== "-1") return false; }
-      if (f_revstrong?.checked){ if (String(r["逆行強フラグ"]) !== "1") return false; }
-      if (f_revweak?.checked)  { if (String(r["逆行弱フラグ"]) !== "1") return false; }
+      if (isRsStrongChecked)  { if (!(r["RS_5"] > 0)) return false; }
+      if (isMktGoodChecked)   { if (String(r["地合いフラグ"]) !== "1") return false; }
+      if (isMktBadChecked)    { if (String(r["地合いフラグ"]) !== "-1") return false; }
+      if (isRevStrongChecked) { if (String(r["逆行強フラグ"]) !== "1") return false; }
+      if (isRevWeakChecked)   { if (String(r["逆行弱フラグ"]) !== "1") return false; }
 
-      const f_goodonly = $("#f_goodonly");
-      if (f_goodonly?.checked) {
+      if (isGoodOnlyChecked) {
         if (!(gr >= 70 && sf >= 70 && vo >= 60)) return false;
       }
 
-      const f_tob_only = $("#f_tob_only");
-      if (f_tob_only?.checked) {
+      if (isTobOnlyChecked) {
         const tobVal = String(r["TOB"] || "").trim();
         if (tobVal === "" || tobVal === "-") return false;
       }
 
-      // モメンタムCTAのプルダウン絞り込み
-      const momFilter = document.getElementById("f_algo_momentum")?.value || "";
       if (momFilter && !String(r["Algo_Momentum"]||"").includes(momFilter)) return false;
 
+      // キーワード検索
       if (q) {
         const keys = ["コード","銘柄名","関連テーマ","最新テーマ","セクター","判定理由","右肩早期種別",
               "初動フラグ","底打ちフラグ","右肩上がりフラグ",
@@ -1786,9 +1755,9 @@
           if (k === "株探ニュース(3)") s = s.replace(/<[^>]*>/g, "");
           return s;
         };
-        const orGroups = String(q).split(/(?:\s+OR\s+|\s*\|\s*)/); 
-        const ok = orGroups.some(group => {
-          const terms = group.trim().split(/[\u3000\s]+/).filter(Boolean);
+        
+        // 毎回splitするのをやめ、事前にパースした orGroups を使用
+        const ok = orGroups.some(terms => {
           return terms.every(t => keys.some(k => fields(k).includes(t)));
         });
         if (!ok) return false;
@@ -1798,23 +1767,6 @@
   }
 
   function formatJudgeLabel(r){ return isHitRow(r) ? "当たり！(1)" : "外れ！(1)"; }
-
-  function colorizeTriangleScores(){
-    document.querySelectorAll(".triangle-cell").forEach(cell => {
-      const g = parseInt(cell.dataset.growth || "0", 10);
-      const s = parseInt(cell.dataset.safety || "0", 10);
-      const v = parseInt(cell.dataset.vol || "0", 10);
-      const spans = cell.querySelectorAll(".tri");
-      spans.forEach((sp, idx) => {
-        const score = idx === 0 ? g : (idx === 1 ? s : v);
-        sp.classList.remove("good","normal","bad","verybad");
-        if (score >= 80)      sp.classList.add("good");
-        else if (score >= 60) sp.classList.add("normal");
-        else if (score >= 40) sp.classList.add("bad");
-        else                  sp.classList.add("verybad");
-      });
-    });
-  }
 
   function renderCand(){
     const body = document.querySelector("#tbl-candidate tbody");
@@ -1845,6 +1797,17 @@
       const v2 = parseInt(r["tri_vol"]     ?? 0, 10);  
 
       const triSort = String(g * 10000 + s2 * 100 + v2).padStart(6, "0");
+      
+      // ★ 追加：文字列生成の時点でクラス名を決定しておく
+      const getTriClass = (score) => {
+          if (score >= 80) return "good";
+          if (score >= 60) return "normal";
+          if (score >= 40) return "bad";
+          return "verybad";
+      };
+      const classG = getTriClass(g);
+      const classS = getTriClass(s2);
+      const classV = getTriClass(v2);
       
       const tobList = r.tob_titles || [];
       let tobHtml = "";
@@ -1938,9 +1901,9 @@
         <td><a href="${r["yahoo_url"] ?? "#"}" target="_blank" rel="noopener">Yahoo</a></td>
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
         <td class="num triangle-cell" data-col="三角スコア" data-growth="${g}" data-safety="${s2}" data-vol="${v2}" data-sort="${triSort}">
-            <span class="tri tri-g">${"▲(上昇)" + g}</span>
-            <span class="tri tri-s">${"◆(安定)" + s2}</span>
-            <span class="tri tri-v">${"■(ボラ)" + v2}</span>
+            <span class="tri tri-g ${classG}">${"▲(上昇)" + g}</span>
+            <span class="tri tri-s ${classS}">${"◆(安定)" + s2}</span>
+            <span class="tri tri-v ${classV}">${"■(ボラ)" + v2}</span>
         </td>
         <td>${escapeHtml(r["Algo_Momentum"] || "-")}</td>
         <td>${escapeHtml(r["Algo_VolTarget"] || "-")}</td>
@@ -2007,6 +1970,12 @@
         <td style="text-align:center; font-size:12px; font-weight:bold; color:var(--blue);">${escapeHtml(r["決算発表予定日"] || "-")}</td> <!-- ★追加 -->
         <td class="num">${expHtml}</td>
         <td style="text-align:center; vertical-align:middle;" data-sort="${Number.isFinite(Number(r["決算勝率"])) ? Number(r["決算勝率"]) : -999}">${sparkHtml}</td>
+        <td class="num" style="font-weight:bold; color:${Number(r["予想インパクト_pct"]) > 0 ? '#e11d48' : 'inherit'};" data-sort="${Number.isFinite(Number(r["予想インパクト_pct"])) ? Number(r["予想インパクト_pct"]) : -999999}">
+            ${Number.isFinite(Number(r["予想インパクト_pct"])) ? '+' + Number(r["予想インパクト_pct"]).toFixed(1) + '%' : '-'}
+        </td>
+        <td class="num" data-sort="${Number.isFinite(Number(r["予測ターゲット価格"])) ? Number(r["予測ターゲット価格"]) : -999999}">
+            ${Number.isFinite(Number(r["予測ターゲット価格"])) ? Number(r["予測ターゲット価格"]).toLocaleString() + '円' : '-'}
+        </td>
         <td class="num">${Number.isFinite(Number(r["PBR"])) ? Number(r["PBR"]).toFixed(2) : "-"}</td>
         <td class="num">${r["EPS"] ?? "-"}</td>
         <td class="num">${r["BPS"] ?? "-"}</td>
@@ -2029,7 +1998,6 @@
       </tr>`;
     }
     body.innerHTML = html;
-    colorizeTriangleScores();
     document.querySelector("#count").textContent = String(total);
     document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
     wireDomSort("#tbl-candidate");
@@ -2044,6 +2012,7 @@
     renderCand();
   }
   window.render = render;
+  window.applyFilter = applyFilter;
 
   function fmtTime(ts){
     try{
@@ -2220,39 +2189,16 @@
   }
 
 // ==========================================
-// ブックマーク機能 (Cookieのみ・保存ボタン押下時のみ保存)
+// ブックマーク機能 (localStorage使用)
 // ==========================================
-  const BM_COOKIE_NAME = "pg_dash_bookmarks_v1";
-  const COOKIE_DAYS = 365;
+  const BM_STORAGE_KEY = "pg_dash_bookmarks_v1";
 
-  // --- Cookie操作用の関数 ---
-  function setCookie(name, value, days) {
-    let expires = "";
-    if (days) {
-      const date = new Date();
-      date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-      expires = "; expires=" + date.toUTCString();
-    }
-    document.cookie = name + "=" + (encodeURIComponent(value) || "") + expires + "; path=/; SameSite=Lax";
-  }
-
-  function getCookie(name) {
-    const nameEQ = name + "=";
-    const ca = document.cookie.split(';');
-    for (let i = 0; i < ca.length; i++) {
-      let c = ca[i];
-      while (c.charAt(0) === ' ') c = c.substring(1, c.length);
-      if (c.indexOf(nameEQ) === 0) return decodeURIComponent(c.substring(nameEQ.length, c.length));
-    }
-    return null;
-  }
-
-  // --- ブックマークの読み込み (Cookieのみ) ---
+  // --- ブックマークの読み込み ---
   function loadBookmarks() {
     try {
-      const cookieRaw = getCookie(BM_COOKIE_NAME);
-      if (cookieRaw) {
-        const obj = JSON.parse(cookieRaw);
+      const raw = localStorage.getItem(BM_STORAGE_KEY);
+      if (raw) {
+        const obj = JSON.parse(raw);
         return (obj && typeof obj === "object") ? obj : {};
       }
       return {};
@@ -2262,11 +2208,11 @@
     }
   }
 
-  // --- ブックマークの保存 (Cookieのみ。保存ボタン押下時のみ呼ばれます) ---
+  // --- ブックマークの保存 ---
   function saveBookmarksMap(map) {
     try {
       const jsonStr = JSON.stringify(map);
-      setCookie(BM_COOKIE_NAME, jsonStr, COOKIE_DAYS);
+      localStorage.setItem(BM_STORAGE_KEY, jsonStr);
     } catch (e) {
       console.warn("bookmark save failed", e);
     }
@@ -2319,9 +2265,16 @@
       });
     }
     
-    // 保存されていたExcel風フィルターを復元
+    // ★修正：変数を上書きせず、中身だけを空にしてから詰め込む（定数エラー回避）
     if (typeof excelFilters !== 'undefined') {
-      excelFilters = st.excelFilters ? JSON.parse(JSON.stringify(st.excelFilters)) : {};
+      // 1. まず現在の中身をすべて削除
+      for (const key in excelFilters) {
+        delete excelFilters[key];
+      }
+      // 2. ブックマークのデータを詰め込む
+      if (st.excelFilters) {
+        Object.assign(excelFilters, JSON.parse(JSON.stringify(st.excelFilters)));
+      }
       
       document.querySelectorAll('.filter-icon').forEach(icon => {
         const th = icon.closest('th');
@@ -2356,9 +2309,11 @@
       el.checked = false;
     });
     
-    // Excel風フィルターをすべてクリア
+    // ★修正：変数を上書きせず、中身だけを空にする（定数エラー回避）
     if (typeof excelFilters !== 'undefined') {
-      excelFilters = {};
+      for (const key in excelFilters) {
+        delete excelFilters[key];
+      }
       document.querySelectorAll('.filter-icon').forEach(icon => {
         icon.classList.remove('active');
       });
@@ -3235,7 +3190,10 @@ window.showTobHistory = function(btn, jsonStr) {
 // ==========================================
 // ★ Gemini用プロンプト＆データ一括コピー機能
 // ==========================================
-document.getElementById("btn-gemini-prompt")?.addEventListener("click", async () => {
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("#btn-gemini-prompt");
+  if (!btn) return;
+  e.preventDefault();
   // 1. 画面上のフィルター条件を通過したデータのみを取得
   const currentData = applyFilter(window.state?.data || window.DATA_CAND || []);
   
@@ -3299,13 +3257,18 @@ ${macroContext}
       document.body.removeChild(ta);
     }
 
-    const btn = document.getElementById("btn-gemini-prompt");
+    // ★修正：エラーの原因だった行を消し、複数のボタンへ同時に反映させる処理に変更
     const oldText = btn.textContent;
-    btn.textContent = `📋 コピー完了！ (${filtered.length}件)`;
-    btn.style.backgroundColor = "var(--green)";
+    document.querySelectorAll("#btn-gemini-prompt").forEach(b => {
+        b.textContent = `📋 コピー完了！ (${filtered.length}件)`;
+        b.style.backgroundColor = "var(--green)";
+    });
+
     setTimeout(() => {
-      btn.textContent = oldText;
-      btn.style.backgroundColor = "#7c3aed";
+      document.querySelectorAll("#btn-gemini-prompt").forEach(b => {
+          b.textContent = oldText;
+          b.style.backgroundColor = "#7c3aed";
+      });
     }, 2000);
 
   } catch (err) {
@@ -3401,6 +3364,8 @@ ${macroContext}
             <th class="sortable" data-col="決算発表予定日" data-type="date">決算発表日<span class="arrow"></span></th> <!-- ★追加 -->
             <th class="num sortable" data-col="決算期待値" data-type="num" title="勝率 × 平均上昇幅 ＋ 敗率 × 平均下落幅">決算期待値<span class="arrow"></span></th>
             <th class="sortable" data-col="決算リアクション履歴" data-type="num" title="勝率でソート。過去8回の決算翌日リアクション">過去反応<span class="arrow"></span></th>
+            <th class="num sortable" data-col="予想インパクト_pct" data-type="num" title="決算サプライズ・空売り燃料・時価総額の軽さから試算した上昇率（％）">予想インパクト<span class="arrow"></span></th>
+            <th class="num sortable" data-col="予測ターゲット価格" data-type="num" title="予想インパクトを現在値に反映させた目標価格">予測ターゲット<span class="arrow"></span></th>
             <th class="num sortable" data-col="PBR" data-type="num">PBR<span class="arrow"></span></th>
             <th class="num sortable" data-col="EPS" data-type="num">EPS<span class="arrow"></span></th>
             <th class="num sortable" data-col="BPS" data-type="num">BPS<span class="arrow"></span></th>
@@ -3681,23 +3646,23 @@ window.applyQuickSearch = function(keyword) {
         const avgRet = Number(s.avg_return || 0);
         
         const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
-        let rankHtml = \`\${idx + 1}\`;
-        if (idx === 0) rankHtml = \`<span style="font-size:22px;">🥇</span> 1\`;
-        if (idx === 1) rankHtml = \`<span style="font-size:22px;">🥈</span> 2\`;
-        if (idx === 2) rankHtml = \`<span style="font-size:22px;">🥉</span> 3\`;
+        let rankHtml = `${idx + 1}`;
+        if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
+        if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
+        if (idx === 2) rankHtml = `<span style="font-size:22px;">🥉</span> 3`;
 
-        html += \`
+        html += `
           <tr style="height:44px;">
-            <td style="text-align:center; font-weight:bold; font-size:16px;">\${rankHtml}</td>
+            <td style="text-align:center; font-weight:bold; font-size:16px;">${rankHtml}</td>
             <td style="font-weight:bold; color:var(--blue); font-size:16px;">
-              <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('\${s.セクター}'); return false;" title="このセクターで絞り込み">\${s.セクター}</a>
+              <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${s.セクター}'); return false;" title="このセクターで絞り込み">${s.セクター}</a>
             </td>
-            <td class="num" style="color:\${retColor}; font-weight:bold; font-size:16px;">\${avgRet > 0 ? '+' : ''}\${avgRet.toFixed(2)}%</td>
-            <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">\${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
-            <td class="num" style="font-size:16px;">\${count.toLocaleString('ja-JP')}</td>
-            <td class="num" style="color:#64748b; font-size:16px;">\${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
+            <td class="num" style="color:${retColor}; font-weight:bold; font-size:16px;">${avgRet > 0 ? '+' : ''}${avgRet.toFixed(2)}%</td>
+            <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
+            <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
+            <td class="num" style="color:#64748b; font-size:16px;">${avg.toLocaleString('ja-JP', {maximumFractionDigits:1})}</td>
           </tr>
-        \`;
+        `;
       });
       tbody.innerHTML = html;
     }
@@ -3716,14 +3681,18 @@ window.applyQuickSearch = function(keyword) {
       else { currentSectorSortKey = 'total_turnover'; currentSectorSortAsc = false; }
       renderSectorTable();
     });
+  });
 
-    document.getElementById("btn-sector")?.addEventListener("click", (e) => {
-      e.preventDefault();
-      currentSectorSortKey = null;
-      currentSectorSortAsc = false;
-      renderSectorTable();
-      document.getElementById('sector-modal-overlay').style.display = 'block';
-    });
+  // ★ セクターボタンの処理をこちらに変更
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("#btn-sector");
+    if (!btn) return;
+    e.preventDefault();
+    currentSectorSortKey = null;
+    currentSectorSortAsc = false;
+    renderSectorTable();
+    const overlay = document.getElementById('sector-modal-overlay');
+    if (overlay) overlay.style.display = 'block';
   });
 })();
 
@@ -3797,26 +3766,26 @@ window.applyQuickSearch = function(keyword) {
         const avgRet = Number(t.avg_return || 0);
         
         const retColor = avgRet > 0 ? "#e11d48" : (avgRet < 0 ? "#2563eb" : "var(--fg)");
-        let rankHtml = \`\${idx + 1}\`;
-        if (idx === 0) rankHtml = \`<span style="font-size:22px;">🥇</span> 1\`;
-        if (idx === 1) rankHtml = \`<span style="font-size:22px;">🥈</span> 2\`;
-        if (idx === 2) rankHtml = \`<span style="font-size:22px;">🥉</span> 3\`;
+        let rankHtml = `${idx + 1}`;
+        if (idx === 0) rankHtml = `<span style="font-size:22px;">🥇</span> 1`;
+        if (idx === 1) rankHtml = `<span style="font-size:22px;">🥈</span> 2`;
+        if (idx === 2) rankHtml = `<span style="font-size:22px;">🥉</span> 3`;
 
-        html += \`
+        html += `
           <tr style="height:44px;">
-            <td style="text-align:center; font-weight:bold; font-size:16px;">\${rankHtml}</td>
+            <td style="text-align:center; font-weight:bold; font-size:16px;">${rankHtml}</td>
             <td style="font-weight:bold; color:var(--orange); font-size:16px;">
-              <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('\${t.テーマ}'); return false;" title="このテーマで絞り込み">\${t.テーマ}</a>
+              <a href="#" style="text-decoration:underline; color:inherit; cursor:pointer;" onclick="applyQuickSearch('${t.テーマ}'); return false;" title="このテーマで絞り込み">${t.テーマ}</a>
             </td>
-            <td class="num" style="color:\${retColor}; font-weight:bold; font-size:16px;">\${avgRet > 0 ? '+' : ''}\${avgRet.toFixed(2)}%</td>
-            <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">\${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
-            <td class="num" style="font-size:16px;">\${count.toLocaleString('ja-JP')}</td>
+            <td class="num" style="color:${retColor}; font-weight:bold; font-size:16px;">${avgRet > 0 ? '+' : ''}${avgRet.toFixed(2)}%</td>
+            <td class="num" style="color:#e11d48; font-weight:bold; font-size:16px;">${turn.toLocaleString('ja-JP', {maximumFractionDigits:0})}</td>
+            <td class="num" style="font-size:16px;">${count.toLocaleString('ja-JP')}</td>
             <td class="num" title="メガキャップのノイズを排除した中央値" style="color:#64748b; font-size:16px;">
-              \${median.toLocaleString('ja-JP', {maximumFractionDigits:1})} 
-              <span style="font-size:12px; color:var(--blue);"> (スコア: \${score.toFixed(1)})</span>
+              ${median.toLocaleString('ja-JP', {maximumFractionDigits:1})} 
+              <span style="font-size:12px; color:var(--blue);"> (スコア: ${score.toFixed(1)})</span>
             </td>
           </tr>
-        \`;
+        `;
       });
       tbody.innerHTML = html;
     }
@@ -3835,14 +3804,18 @@ window.applyQuickSearch = function(keyword) {
       else { currentThemeSortKey = 'total_turnover'; currentThemeSortAsc = false; }
       renderThemeTable();
     });
+  });
 
-    document.getElementById("btn-theme")?.addEventListener("click", (e) => {
-      e.preventDefault();
-      currentThemeSortKey = null;
-      currentThemeSortAsc = false;
-      renderThemeTable();
-      document.getElementById('theme-modal-overlay').style.display = 'block';
-    });
+  // ★ テーマボタンの処理をこちらに変更
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("#btn-theme");
+    if (!btn) return;
+    e.preventDefault();
+    currentThemeSortKey = null;
+    currentThemeSortAsc = false;
+    renderThemeTable();
+    const overlay = document.getElementById('theme-modal-overlay');
+    if (overlay) overlay.style.display = 'block';
   });
 })();
 
