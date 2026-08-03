@@ -8327,8 +8327,8 @@ def apply_composite_score(conn: sqlite3.Connection,
 
 def apply_fair_value_metrics(conn: sqlite3.Connection):
     """
-    ROEとBPSを用いて、現在の相場水準（成長期待）に合わせた適正株価を計算する。
-    稼ぐ力（ROE）が高い企業ほど、高いPBRが許容されるロジック。
+    ROEとBPSを用いて適正株価を計算する。
+    ROEが低い・赤字の企業でも、解散価値（PBR 1.0倍 ＝ BPS）を下限（フロア）としてガードする。
     """
     try:
         conn.execute("ALTER TABLE screener ADD COLUMN 適正株価 REAL")
@@ -8356,15 +8356,22 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         # ROEは%表記（例：15.5）を想定しているため小数（0.155）に戻す
         roe_decimal = roe / 100.0
         
-        # 企業の稼ぐ力が期待収益率を下回っている（または赤字）場合でも、
-        # 評価がゼロにならないよう保守的に最低ROE（3%相当）の価値は担保する
-        if roe_decimal < 0.03:
-            roe_decimal = 0.03
+        # 1. 通常の理論株価（BPS × (ROE / 期待収益率)）
+        # ROEがマイナス（赤字）の場合は 0 以下になります
+        if roe_decimal > 0:
+            target_price = bps * (roe_decimal / EXPECTED_RETURN)
+        else:
+            target_price = 0.0
             
-        # 適正株価 = BPS × (ROE / 期待収益率)
-        # 例：BPS 1000円、ROE 14%、期待収益率 7% なら 1000 × (0.14 / 0.07) = 2000円
-        target_price = bps * (roe_decimal / EXPECTED_RETURN)
-        return target_price
+        # 2. 【フロアガード】
+        # どんなにROEが低くても、最低限「解散価値（PBR 1.0倍 ＝ BPS）」を下限として保護する
+        # ※もし「PBR 0.8倍あたりを底にしたい」などの場合は bps * 0.8 に調整可能です
+        floor_price = bps 
+        
+        # 理論値が解散価値を下回っている場合は、解散価値を適正株価の最低ラインとする
+        final_fair_value = max(target_price, floor_price)
+        
+        return final_fair_value
 
     # 適正株価の計算
     df["適正株価"] = df.apply(calc_fair_value, axis=1)
@@ -8391,7 +8398,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         cur.executemany("UPDATE screener SET 適正株価=?, 割安度=? WHERE コード=?", updates)
         conn.commit()
         cur.close()
-        print(f"[quant] ROEベースの適正株価/割安度を更新しました: {len(updates)} 銘柄")
+        print(f"[quant] PBR1倍（BPS）フロアガード付き適正株価/割安度を更新しました: {len(updates)} 銘柄")
         
 def _parse_early_tag(detail: str) -> str | None:
     if detail is None:

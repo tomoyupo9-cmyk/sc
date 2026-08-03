@@ -3188,14 +3188,18 @@ window.showTobHistory = function(btn, jsonStr) {
 // === 追加ここまで ===
 
 // ==========================================
-// ★ Gemini用プロンプト＆データ一括コピー機能
+// ★ Gemini用プロンプト＆データ一括コピー機能（精度向上・刷新版）
 // ==========================================
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest("#btn-gemini-prompt");
   if (!btn) return;
   e.preventDefault();
+
   // 1. 画面上のフィルター条件を通過したデータのみを取得
   const currentData = applyFilter(window.state?.data || window.DATA_CAND || []);
+  
+  // ★ 修正1：画面上の「件数表示(<b id="count">)」のテキストを直接取得して信頼性を一致させる
+  // もし取得できなければ、売買代金5億円以上のフィルタリング後の件数を正確にフォールバックとして使う
   
   // その中から「売買代金 5億円以上」のみを自動抽出（ノイズ排除）
   const filtered = currentData.filter(r => {
@@ -3207,6 +3211,14 @@ document.addEventListener("click", async (e) => {
     alert("現在の条件で、売買代金5億円以上の銘柄が見つかりませんでした。");
     return;
   }
+
+  // 画面上の表示件数をDOMから直接正確に拾う（タグを除去して数字だけにする）
+  const countElem = document.getElementById("count");
+  const displayCountText = countElem ? countElem.textContent.trim() : "";
+  // 文字列から数字部分を抽出、なければ filtered.length を使う
+  const matchNum = displayCountText.match(/\d+/);
+  const totalCountStr = matchNum ? matchNum[0] : filtered.length.toString();
+
   // 2. Geminiが思考しやすい厳選カラムを指定
   const cols = [
     "コード", "銘柄名", "セクター", "関連テーマ", 
@@ -3224,20 +3236,30 @@ document.addEventListener("click", async (e) => {
     csvRows.push(row.join(","));
   });
 
-  // 4. 分析プロンプト ＋ CSV の統合テキストを生成
-  // マクロ環境（VIXや指数位置）の情報を取得してAIの文脈に組み込む
+  // 4. 分析プロンプト ＋ CSV の統合テキストを生成（全面的に刷新）
   const vixInfo = document.getElementById("vix-regime")?.textContent?.replace(" ?", "") || "";
   const idxInfo = document.getElementById("idx-sr-summary")?.textContent?.replace(" ?", "") || "";
   const macroContext = (vixInfo || idxInfo) ? `\n【現在のマクロ環境】\n${idxInfo} / ${vixInfo}` : "";
 
   const fullText = 
-`以下の日本株スクリーニングデータ（フィルター適用後：計 ${filtered.length} 件）を分析してください。
+`以下の日本株スクリーニングデータ（画面表示件数ベース：${totalCountStr} 件中、流動性フィルター通過：計 ${filtered.length} 件）を分析してください。
 ${macroContext}
 
+【分析の視点・前提】
+提供されたデータには、短期の爆発力を秘めた銘柄から、中長期でじわじわトレンドを形成する銘柄、需給が締まった銘柄などが混在しています。それぞれの銘柄が「どのような買い方（短期急騰狙い、中期トレンドフォロー、押し目買い等）に向いているか」を意識して分析してください。
+
 【分析依頼】
-1. 本日の相場概況：上記のマクロ環境も踏まえ、どのセクター・テーマに強い資金（高RVOL・高前日比%）が流入しているか、相場のトレンドをまとめてください。
-2. 明日以降期待できる【最強の3銘柄】：シグナルが出ており、流動性・モメンタム・需給のバランスが最も良い銘柄を3つ厳選し、理由を述べてください。
-3. 警戒すべきセクター/リスク要因：マクロ視点で資金が流出しているセクターや、上値が重そうなパターンを指摘してください。
+1. 本日の相場概況と資金流入セクター：
+   マクロ環境および高RVOL・高前日比%のデータから、現在どのセクターやテーマに強い資金が流入しているか、その勢い（短期の瞬発力か、中期の継続的なトレンドか）をまとめてください。
+
+2. スタイル別【厳選・注目すべき3銘柄】：
+   以下の3つの異なるスタイルに最も適した銘柄をそれぞれ1つずつ（計3銘柄）選出し、その理由と最適なエントリー戦略（短期急騰を狙うのか、中期でじわじわ追うのか）を述べてください。
+   - ①【短期急騰・モメンタム枠】：出来高急増（高RVOL）や初動シグナルが出ており、数日以内の値幅を狙える銘柄
+   - ②【中期じわじわ・トレンドフォロー枠】：相対強度（RS_5）やチャートの安定感があり、押し目を丁寧に拾ってじわじわ伸ばせる銘柄
+   - ③【需給・バリュー・逆行高枠】：需給（需給OH等）が軽く、地合いに左右されにくい強さや割安妙味がある銘柄
+
+3. 警戒すべきセクターおよびリスク要因：
+   マクロ視点で資金が流出しているセクターや、上値が重そうな（需給悪化や高値警戒感のある）パターンを指摘してください。
 
 【スクリーニングデータ (CSV)】
 ` + csvRows.join("\n");
@@ -3257,7 +3279,6 @@ ${macroContext}
       document.body.removeChild(ta);
     }
 
-    // ★修正：エラーの原因だった行を消し、複数のボタンへ同時に反映させる処理に変更
     const oldText = btn.textContent;
     document.querySelectorAll("#btn-gemini-prompt").forEach(b => {
         b.textContent = `📋 コピー完了！ (${filtered.length}件)`;
