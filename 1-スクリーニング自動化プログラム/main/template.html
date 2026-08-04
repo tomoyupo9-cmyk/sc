@@ -1915,19 +1915,21 @@
         <td>${r["底打ちフラグ"] || ""}</td>
         <td>${r["右肩早期フラグ"] || ""}</td>
         <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
+        <td style="text-align:center;">${sfBadge}</td>
         <td class="num" style="text-align:center;">${sqBadge}</td>
-        <td class="num">${Number.isFinite(Number(r["信用倍率"])) ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["需給OH"])) ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
+
+        <td class="num">${Number.isFinite(Number(r["信用倍率"])) ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["買い残"])) ? Number(r["買い残"]).toLocaleString() : "-"}</td>
+        <td class="num">${Number.isFinite(Number(r["売り残"])) ? Number(r["売り残"]).toLocaleString() : "-"}</td>
+
         <td>${escapeHtml(r["空売り機関"] || "-")}</td>
         <td class="num" data-sort="${Number.isFinite(instTotalVal) ? instTotalVal : -999999}">${instTotal}</td>
         <td class="num" style="${instChgStyle}" data-sort="${Number.isFinite(instChgNum) ? instChgNum : -999999}">${instChgText}</td>
+        <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${instMoveText}" data-sort="${instMoveText}">${instMoveText}</td>
         <td style="text-align:center; font-weight:bold; color:var(--blue);" data-sort="${r["空売り更新日"] || "1970-01-01"}">
             ${escapeHtml(r["空売り更新日"] || "N/A")}
         </td>
-        <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${instMoveText}" data-sort="${instMoveText}">${instMoveText}</td>
-        <td style="text-align:center;">${sfBadge}</td>
-        <td class="num">${Number.isFinite(Number(r["売り残"])) ? Number(r["売り残"]).toLocaleString() : "-"}</td>
-        <td class="num">${Number.isFinite(Number(r["買い残"])) ? Number(r["買い残"]).toLocaleString() : "-"}</td>
         <td class="num">${fint(r["最寄り抵抗"])}</td>
         <td class="num">${fint(r["最寄り支持"])}</td>
         <td class="num" style="color: var(--blue); font-weight: bold;">${r["shikomi_txt"] || "-"}</td>
@@ -1966,7 +1968,11 @@
         <td class="num">${r["進捗率"] ?? ""}</td>
         <td class="num">${Number.isFinite(Number(r["直近売上YoY"])) ? Number(r["直近売上YoY"]).toFixed(2) : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["直近営業益YoY"])) ? Number(r["直近営業益YoY"]).toFixed(2) : "-"}</td>
-        <td class="num" style="text-align:center;">${Number(r["利益加速フラグ"]) === 1 ? '<span class="badge b-green">🚀加速</span>' : '-'}</td>
+        <td class="num" style="text-align:center;">${
+            r["利益加速ステータス"] === "⚠️出尽くし警戒" 
+                ? '<span class="badge" style="background:#fff4e6; color:#b45309; border:1px solid #ffe2c2; font-weight:bold;" title="売上YoYに対して営業益YoYが劣後しています（利益率悪化の懸念）">⚠️出尽くし警戒</span>' 
+                : (r["利益加速ステータス"] === "🚀加速" ? '<span class="badge b-green">🚀加速</span>' : '-')
+        }</td>
         <td style="text-align:center; font-size:12px; font-weight:bold; color:var(--blue);">${escapeHtml(r["決算発表予定日"] || "-")}</td> <!-- ★追加 -->
         <td class="num">${expHtml}</td>
         <td style="text-align:center; vertical-align:middle;" data-sort="${Number.isFinite(Number(r["決算勝率"])) ? Number(r["決算勝率"]) : -999}">${sparkHtml}</td>
@@ -2418,6 +2424,7 @@
   }
 
   setupBookmarkUI();
+  
 
   $("#copy-page")?.addEventListener("click", async (e)=>{
     e.preventDefault();
@@ -2467,118 +2474,7 @@
     }
   });
 
-  // =========================================================
-  // ★ 追加：決算またぎ特化プロンプト＆データの高精度コピー機能
-  // =========================================================
-  $("#copy-earnings-data")?.addEventListener("click", async (e)=>{
-    e.preventDefault();
-    const tbl = document.getElementById(getActiveTableId());
-    if (!tbl || !tbl.tBodies.length) return;
-    
-    // 表示中の行（銘柄コード）を取得
-    const bodyRows = Array.from(tbl.tBodies[0].rows);
-    const codes = bodyRows.map(tr => tr.getAttribute("data-code")).filter(Boolean);
-    if (!codes.length) {
-      alert("表示されているデータがありません。");
-      return;
-    }
 
-    // 抽出するカラムの定義（ラベル名 と 内部データキー）
-    // 💡 ここに最強シグナルの「利益加速フラグ」を追加！
-    const targetCols = [
-      { label: "コード", key: "コード" },
-      { label: "銘柄名", key: "銘柄名" },
-      { label: "セクター", key: "セクター" },
-      { label: "現在値", key: "現在値" },
-      { label: "前日比(円)", key: "前日円差" },
-      { label: "時価総額(億)", key: "時価総額億円" },
-      { label: "売買代金(億)", key: "売買代金(億)" },
-      { label: "RVOL代金", key: "RVOL代金" },
-      { label: "RS_5", key: "RS_5" },
-      { label: "需給OH", key: "需給OH" },
-      { label: "信用倍率", key: "信用倍率" },
-      { label: "利益加速フラグ", key: "利益加速フラグ" }, // 👈 追加
-      { label: "決算期待値", key: "決算期待値" },
-      { label: "過去反応(8回分)", key: "決算リアクション履歴" },
-      { label: "Algo総合判定", key: "Algo_総合判定" },
-      { label: "初動フラグ", key: "初動フラグ" },
-      { label: "右肩早期種別", key: "右肩早期種別" }
-    ];
-
-    // 全データから高速に検索するためのマップ作成
-    const allData = window.state?.data || window.DATA_CAND || [];
-    const dataMap = new Map();
-    allData.forEach(item => {
-      const c = String(item["コード"] || "").padStart(4, "0");
-      if (c) dataMap.set(c, item);
-    });
-
-    const csvEscape = (v)=>{
-      let s = String(v ?? "").replace(/<[^>]*>/g, "").trim();
-      if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
-      return s;
-    };
-
-    // ヘッダー行の生成
-    const headerLine = targetCols.map(c => csvEscape(c.label)).join(",");
-
-    // 表示されている銘柄のみ順番にデータを抽出
-    const dataLines = codes.map(code => {
-      const r = dataMap.get(code) || {};
-      return targetCols.map(col => {
-        let val = r[col.key];
-        // 表記揺れのフォロー
-        if (col.key === "売買代金(億)" && val == null) val = r["売買代金億"];
-        
-        // ★ 利益加速フラグを見やすく変換（1なら「加速」、それ以外は空欄）
-        if (col.key === "利益加速フラグ") {
-            val = (val == 1 || val === "1") ? "加速" : "";
-        }
-        
-        return csvEscape(val);
-      }).join(",");
-    });
-
-    const csvText = [headerLine, ...dataLines].join("\n");
-
-    // 💡 AIへのプロンプトを追加（決算またぎ特化）
-    const fullText = `以下の日本株データ（計 ${codes.length} 件）は、「決算またぎ」の戦略を検討するための抽出データです。
-過去の決算期待値、需給（空売りや上値の軽さ）、そして「利益加速フラグ」に特に注目して分析してください。
-
-【分析依頼】
-1. 【大化けサプライズ候補】：「利益加速フラグ」が点灯しており、かつ「決算期待値」が低い（ハードルが低い）銘柄をピックアップし、好決算時に急騰するポテンシャルを評価してください。
-2. 【踏み上げ（ショートカバー）候補】：信用倍率や需給OHが低く、売り長（空売りが溜まっている）状態の銘柄を挙げ、好材料が出た際の踏み上げリスク（買い方にとってのリターン）を分析してください。
-3. 【決算またぎの危険サイン】：RS_5やRVOLが高く、すでに情報漏れや期待買いで株価が上がりすぎている（出尽くし売りになりやすい）銘柄を警告してください。
-
-【スクリーニングデータ (CSV)】
-${csvText}
-`;
-
-    try {
-      if (navigator.clipboard && window.isSecureContext !== false) {
-        await navigator.clipboard.writeText(fullText);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = fullText; ta.style.position = "fixed"; ta.style.left = "-9999px";
-        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
-      }
-      
-      const btn = document.getElementById("copy-earnings-data");
-      btn?.classList.add("ok");
-      const old = btn?.textContent || "";
-      if (btn) btn.textContent = `📋 分析プロンプト作成完了 (${codes.length}件)`;
-      
-      setTimeout(()=>{ 
-          if(btn){ 
-              btn.classList.remove("ok"); 
-              btn.textContent = old; 
-          } 
-      }, 2000);
-      
-    } catch (_) {
-      alert("コピーに失敗しました");
-    }
-  });
   // =========================================================
 
   $("#download-page-csv")?.addEventListener("click", (e)=>{
@@ -2631,7 +2527,7 @@ ${csvText}
 
   $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
-  function getActiveTableId() { return "tbl-candidate"; }
+  
   
   // ==========================================
 // ★ Excel風ポップオーバー フィルター機能
@@ -3216,20 +3112,197 @@ window.showTobHistory = function(btn, jsonStr) {
     document.body.appendChild(ov);
   }
 })();
-// === 追加ここまで ===
 
-// ==========================================
-// ★ Gemini用プロンプト＆データ一括コピー機能（精度向上・刷新版）
-// ==========================================
-document.addEventListener("click", async (e) => {
+// =========================================================
+// ★ 決算またぎ特化プロンプト＆データの高精度コピー機能（修正版）
+// =========================================================
+document.getElementById("copy-earnings-data")?.addEventListener("click", async (e)=>{
+    e.preventDefault();
+    
+    // 1. 子要素をクリックした場合でも確実にボタン要素を取得する
+    const btn = e.target.closest("#copy-earnings-data");
+    if (!btn) return;
+
+    const tbl = document.getElementById("tbl-candidate");
+    if (!tbl || !tbl.tBodies.length) {
+        alert("テーブルが見つかりませんでした。");
+        return;
+    }
+    
+    const bodyRows = Array.from(tbl.tBodies[0].rows);
+    const codes = bodyRows.map(tr => tr.getAttribute("data-code")).filter(Boolean);
+    
+    // 2. データが0件の場合はアラートを出して理由を明確にする
+    if (!codes.length) {
+        alert("現在、画面に表示されている銘柄データがありません。フィルター条件や読み込み状況を確認してください。");
+        return;
+    }
+
+    const targetCols = [
+      { label: "コード", key: "コード" },
+      { label: "銘柄名", key: "銘柄名" },
+      { label: "市場", key: "市場" },
+      { label: "最新テーマ", key: "最新テーマ" },
+      
+      // ① 決算サプライズ＆未来の利益モメンタム
+      { label: "予想インパクト_pct", key: "予想インパクト_pct" },
+      { label: "利益加速フラグ", key: "利益加速フラグ" },
+      { label: "直近営業益YoY", key: "直近営業益YoY" },
+      { label: "直近売上YoY", key: "直近売上YoY" },
+      { label: "決算期待値", key: "決算期待値" },
+      { label: "進捗率", key: "進捗率" },
+      { label: "EPS", key: "EPS" },
+      { label: "ROE", key: "ROE" },
+
+      // ② PTS流動性 & ⑤ 大型株補正
+      { label: "売買代金(億)", key: "売買代金(億)" },
+      { label: "出来高", key: "出来高" },
+      { label: "RVOL代金", key: "RVOL代金" },
+      { label: "Algo_Momentum", key: "Algo_Momentum" },
+      { label: "Algo_VolTarget", key: "Algo_VolTarget" },
+      { label: "Algo_総合判定", key: "Algo_総合判定" },
+      { label: "Growth_Bias", key: "Growth_Bias" },
+
+      // ③ 需給
+      { label: "踏み上げ期待スコア", key: "踏み上げ期待スコア" },
+      { label: "信用倍率", key: "信用倍率" },
+      { label: "買い残", key: "買い残" },
+      { label: "売り残", key: "売り残" },
+      { label: "需給OH", key: "需給OH" },
+      { label: "需給安全フラグ", key: "需給安全フラグ" },
+      { label: "空売り機関", key: "空売り機関" },
+      { label: "機関空売り合計株数", key: "機関空売り合計株数" },
+      { label: "本日の増減合計株数", key: "本日の増減合計株数" },
+
+      // ④ 過去の決算感応度
+      { label: "決算リアクション履歴", key: "決算リアクション履歴" },
+
+      // 🚨 織り込み済みチェック
+      { label: "前日終値比率", key: "前日終値比率" },
+      { label: "RS_5", key: "RS_5" },
+      { label: "RS_20", key: "RS_20" }
+    ];
+
+    const allData = window.state?.data || window.DATA_CAND || [];
+    const dataMap = new Map();
+    allData.forEach(item => {
+      const c = String(item["コード"] || "").padStart(4, "0");
+      if (c) dataMap.set(c, item);
+    });
+
+    const csvEscape = (v)=>{
+      let s = String(v ?? "").replace(/<[^>]*>/g, "").trim();
+      if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+
+    const headerLine = targetCols.map(c => csvEscape(c.label)).join(",");
+
+    const dataLines = codes.map(code => {
+      const r = dataMap.get(code) || {};
+      return targetCols.map(col => {
+        let val = r[col.key];
+        if (col.key === "セクター" && (val == null || val === "")) val = r["市場"]; 
+        if (col.key === "売買代金(億)" && val == null) val = r["売買代金億"];
+        if (col.key === "利益加速フラグ") {
+            // 「利益加速ステータス」が存在すればその文字列（🚀加速 or ⚠️出尽くし警戒）を使用
+            if (r["利益加速ステータス"]) {
+                val = r["利益加速ステータス"];
+            } else {
+                val = (val == 1 || val === "1") ? "加速" : "";
+            }
+        }
+        return csvEscape(val);
+      }).join(",");
+    });
+
+    const csvText = [headerLine, ...dataLines].join("\n");
+
+    const fullText = `
+あなたはプロのクオンツアナリストです。
+以下のCSVデータは、決算発表を控えた銘柄群です。
+過去の負けパターンである「好決算（前年比増益）なのに暴落する銘柄」を回避するため、以下の【目的別スコアロジック】に厳格に従って「決算またぎ翌営業日+5%以上期待ランキング」を作成してください。
+
+【🚨 AGCの教訓：未来利益のトレンドを最重視せよ】
+表面上の「前年比の利益増」や「利益加速フラグ」に騙されないでください。
+・上方修正の有無
+・下期の利益予想（失速しないか）
+・売上営業利益率の改善（本業が儲かっているか）
+これらが伴っていない単なる「純利益の増加（見かけの改善）」や「通期据え置き」は、株価上昇材料になりません。むしろ出尽くしで暴落します。
+
+【目的別スコアロジック】
+① 未来利益サプライズ期待（35%）
+・「予想インパクト_pct」をベースに評価。
+・進捗率が高くても、売上/営業益YoYのバランスが悪い（利益率は悪化している等）場合は「見かけの改善」として大幅に減点。
+
+② PTSアルゴ買い期待（25%）
+・流動性を重視。「売買代金(億)」が1億未満は危険、1〜10億は小型向き、10〜100億が◎、100億以上は大型。
+・「RVOL代金」「Algo_Momentum」「Algo_VolTarget」の勢いを評価。
+
+③ 需給（20%）
+・「踏み上げ期待スコア」「本日の増減合計株数」から決算ギャップアップ後の伸びを評価。
+・「買い残」が過剰な銘柄は、決算失敗時の投げ売り・やれやれ売りリスクとして減点。
+
+④ 過去決算反応（15%）
+・「決算リアクション履歴」から、過去の決算に対する感応度（サプライズで跳ねる体質か）を評価。
+
+⑤ 大型株補正（5%）
+・「売買代金(億)」が大きすぎる大型安定株（PBR低位など）は、短期爆発力が低いため減点。
+
+🚨【最重要：織り込み済みチェック】🚨
+・「前日終値比率」や「RS_5」が高い銘柄は「すでに決算期待で買われている」とみなし、総合スコアから大きく減点。
+
+【出力形式】
+1. 決算またぎ期待総合ランキング TOP 10
+   - 各銘柄の総合スコア（推定値）
+   - 強み、弱み、選定理由の簡潔なコメント（3行程度）
+2. ⚠️ 偽物の利益加速・出尽くし警戒リスト
+   - 表面的な数字（利益加速や進捗率）は良いが、利益率の悪化、通期据え置き懸念、またはすでに株価が高値圏（RS_5高）にあり、決算で暴落するリスクが極めて高い銘柄をリストアップしてください。
+
+▼ 判定用CSVデータ
+${csvText}
+`;
+
+    try {
+      if (navigator.clipboard && window.isSecureContext !== false) {
+        await navigator.clipboard.writeText(fullText);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = fullText;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      
+      const oldText = btn.textContent;
+      const oldColor = btn.style.backgroundColor;
+      btn.textContent = `📋 分析用データコピー完了 (${codes.length}件)`;
+      btn.style.backgroundColor = "var(--green)";
+      
+      setTimeout(() => {
+        btn.textContent = oldText;
+        btn.style.backgroundColor = oldColor;
+      }, 2000);
+
+    } catch (err) {
+      console.error("コピー失敗:", err);
+      alert("コピーに失敗しました。コンソールを確認してください。");
+    }
+});
+
+ // ==========================================
+ // ★ Gemini用プロンプト＆データ一括コピー機能（精度向上・刷新版）
+ // ==========================================
+ document.addEventListener("click", async (e) => {
   const btn = e.target.closest("#btn-gemini-prompt");
   if (!btn) return;
   e.preventDefault();
 
-  // 1. 画面上のフィルター条件を通過したデータのみを取得
   const currentData = applyFilter(window.state?.data || window.DATA_CAND || []);
   
-  // その中から「売買代金 5億円以上」のみを自動抽出（ノイズ排除）
   const filtered = currentData.filter(r => {
     const turn = parseFloat(String(r["売買代金(億)"] || r["売買代金億"] || "0").replace(/[,円]/g, ""));
     return Number.isFinite(turn) && turn >= 5.0;
@@ -3240,30 +3313,34 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
-  // ★ 修正：画面上の「件数表示(<b id="count">)」のテキストを直接取得して信頼性を一致させる
   const countElem = document.getElementById("count");
   const displayCountText = countElem ? countElem.textContent.trim() : "";
   const matchNum = displayCountText.match(/\d+/);
   const totalCountStr = matchNum ? matchNum[0] : filtered.length.toString();
 
-  // 2. Geminiが思考しやすい厳選カラムを指定（利益加速フラグと決算期待値・信用倍率も追加！）
   const cols = [
-    "コード", "銘柄名", "セクター", "関連テーマ", 
+    "コード", "銘柄名", "市場", "最新テーマ", 
     "前日終値比率", "売買代金(億)", "RVOL代金", "RS_5", 
-    "時価総額億円", "需給OH", "信用倍率",
-    "利益加速フラグ", "決算期待値", // 👈 追加！
+    "需給OH", "信用倍率",
+    "利益加速フラグ", "決算期待値",
     "右肩早期種別", "初動フラグ", "Algo_総合判定"
   ];
 
-  // 3. CSV文字列の生成（タグ除去＆エスケープ処理付き）
   const csvRows = [cols.join(",")];
   filtered.forEach(r => {
     const row = cols.map(c => {
       let val = r[c];
       
-      // 利益加速フラグを見やすく変換（1なら「加速」、それ以外は空欄）
+      // 💡 最新テーマが無ければ関連テーマで代用
+      if (c === "最新テーマ" && (val == null || val === "")) val = r["関連テーマ"];
+      if (c === "売買代金(億)" && val == null) val = r["売買代金億"];
+      
       if (c === "利益加速フラグ") {
-          val = (val == 1 || val === "1") ? "加速" : "";
+          if (r["利益加速ステータス"]) {
+              val = r["利益加速ステータス"];
+          } else {
+              val = (val == 1 || val === "1") ? "加速" : "";
+          }
       }
       
       let strVal = String(val ?? "").replace(/<[^>]*>/g, "").replace(/"/g, '""').trim();
@@ -3272,7 +3349,6 @@ document.addEventListener("click", async (e) => {
     csvRows.push(row.join(","));
   });
 
-  // 4. 分析プロンプト ＋ CSV の統合テキストを生成（全面的に刷新）
   const vixInfo = document.getElementById("vix-regime")?.textContent?.replace(" ?", "") || "";
   const idxInfo = document.getElementById("idx-sr-summary")?.textContent?.replace(" ?", "") || "";
   const macroContext = (vixInfo || idxInfo) ? `\n【現在のマクロ環境】\n${idxInfo} / ${vixInfo}` : "";
@@ -3301,7 +3377,6 @@ ${macroContext}
 【スクリーニングデータ (CSV)】
 ` + csvRows.join("\n");
 
-  // 5. クリップボードへコピー
   try {
     if (navigator.clipboard && window.isSecureContext !== false) {
       await navigator.clipboard.writeText(fullText);
@@ -3316,7 +3391,6 @@ ${macroContext}
       document.body.removeChild(ta);
     }
 
-    // ★修正：エラーの原因だった行を消し、複数のボタンへ同時に反映させる処理に変更
     const oldText = btn.textContent;
     document.querySelectorAll("#btn-gemini-prompt").forEach(b => {
         b.textContent = `📋 コピー完了！ (${filtered.length}件)`;
@@ -3334,9 +3408,7 @@ ${macroContext}
     console.error("Copy failed:", err);
     alert("コピーに失敗しました。");
   }
-});
-
-
+ });
 </script>
 
   <section id="tab-candidate" class="tab">
@@ -3370,17 +3442,17 @@ ${macroContext}
             <th class="sortable" data-col="底打ちフラグ" data-type="text">底打ち<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期フラグ" data-type="text">短期<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="text">短期種別<span class="arrow"></span></th>
+            <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
             <th class="num sortable" data-col="踏み上げ期待スコア" data-type="num">踏み上げ<span class="arrow"></span></th>
-            <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<span class="arrow"></span></th>
             <th class="num sortable" data-col="需給OH" data-type="num">需給OH<span class="arrow"></span></th>
+            <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<span class="arrow"></span></th>
+            <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
+            <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
             <th class="sortable" data-col="空売り機関" data-type="text">空売り<span class="arrow"></span></th>
             <th class="num sortable" data-col="機関空売り合計株数" data-type="num">機関空売り合計<span class="arrow"></span></th>
             <th class="num sortable" data-col="本日の増減合計株数" data-type="num">機関増減(当日)<span class="arrow"></span></th>
-            <th class="sortable" data-col="空売り更新日" data-type="date" style="color:var(--blue);">機関更新日<span class="arrow"></span></th>
             <th class="sortable" data-col="主要機関の動き" data-type="text">主要機関の動き<span class="arrow"></span></th>
-            <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
-            <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
-            <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
+            <th class="sortable" data-col="空売り更新日" data-type="date" style="color:var(--blue);">機関更新日<span class="arrow"></span></th>
             <th class="num sortable" data-col="最寄り抵抗" data-type="num">最寄り抵抗<span class="arrow"></span></th>
             <th class="num sortable" data-col="最寄り支持" data-type="num">最寄り支持<span class="arrow"></span></th>
             <th class="num sortable" data-col="仕込み" data-type="num">仕込み目安<span class="arrow"></span></th>

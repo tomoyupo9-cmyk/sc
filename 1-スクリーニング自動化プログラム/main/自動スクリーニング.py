@@ -5589,6 +5589,23 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
         d["tri_safety"] = s
         d["tri_vol"] = v
         d["三角スコア"] = f"▲{g:02d} ◆{s:02d} ■{v:02d}"
+        
+        # ----------------------------------------------------
+        # ★ 【追加】AGCの教訓に基づく「利益加速ステータス」の判定
+        # ----------------------------------------------------
+        sales_yoy = _to_float(d.get("直近売上YoY"))
+        op_yoy = _to_float(d.get("直近営業益YoY"))
+        raw_accel = (d.get("利益加速フラグ") == 1 or str(d.get("利益加速フラグ")) == "1") or (op_yoy is not None and op_yoy > 0)
+        
+        if raw_accel:
+            if sales_yoy is not None and op_yoy is not None and op_yoy >= sales_yoy:
+                d["利益加速ステータス"] = "🚀加速"
+            else:
+                # 利益は増えているが売上の伸びに追いついていない（利益率悪化）
+                d["利益加速ステータス"] = "⚠️出尽くし警戒"
+        else:
+            d["利益加速ステータス"] = "-"
+        # ----------------------------------------------------
 
         
         d = _ensure_links(d)
@@ -5683,6 +5700,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "Algo_Momentum", "Algo_VolTarget", "Algo_Factor", "Algo_総合判定",
         "短期需給判定",
         "直近売上YoY", "直近営業益YoY", "利益加速フラグ",
+        "利益加速ステータス",
         "決算発表予定日",
         "決算勝率", "決算期待値", "決算リアクションスコア", "決算リアクション履歴"
     ] if c in _df.columns]
@@ -7072,66 +7090,83 @@ def prepare_sector_ranking_view(conn: sqlite3.Connection):
         ORDER BY total_turnover DESC;
     """)
     conn.commit()
-# ========================================================
 # ==============================================================================
-# ★ 株価上昇幅・インパクト予測エンジン (StockSurprisePredictor)
+# ★ 株価上昇幅・インパクト予測エンジン (StockSurprisePredictor) 【売上・営業益の伸び率比較版】
 # ==============================================================================
 class StockSurprisePredictor:
     def __init__(self, weights: dict = None):
         self.weights = weights or {
-            "yoy_sales": 0.05,     # 売上成長（少し下げる）
-            "yoy_op": 0.10,        # 営業利益成長
-            "revision": 20.0,      # 上方修正サプライズ（強化: 15->20）
-            "buyback": 30.0,       # 自社株買いは最強の需給サプライズ（強化: 25->30）
-            "dividend": 15.0,      # 増配（強化: 10->15）
-            "earnings_exp": -0.2   # ★（重要）事前の「期待値」が高いほどハードルが上がるのでマイナスにする！
+            "yoy_sales": 0.05,     
+            "yoy_op": 0.15,        # 営業利益の伸びを重視
+            "buyback": 30.0,       # 自社株買い
+            "dividend": 15.0,      # 増配
+            "earnings_exp": -0.3   # 事前の期待値が高い場合のハードル
         }
 
     def _extract_news_flags(self, news_text: str) -> dict:
         text = str(news_text or "")
         return {
-            "revision_flag": 1 if "上方修正" in text or "増額修正" in text else 0,
             "share_buyback_flag": 1 if "自社株買い" in text or "自社株" in text else 0,
             "dividend_up_flag": 1 if "増配" in text or "配当増額" in text else 0
         }
 
     def calculate_surprise_score(self, data: dict) -> float:
-        """Step 1: サプライズスコアの計算"""
+        """Step 1: サプライズスコアの計算（売上YoYと営業益YoYの質的比較）"""
         flags = self._extract_news_flags(data.get("株探ニュース(3)", ""))
         
         sales_yoy = float(data.get("直近売上YoY", 0) or 0)
         op_yoy = float(data.get("直近営業益YoY", 0) or 0)
         
-        # 利益加速（サプライズ）のボーナスを倍増させる
-        accel_bonus = 10.0 if data.get("利益加速フラグ") == 1 else 0.0
+        # 過去の事実としての利益拡大（利益加速フラグまたは営業益プラス）
+        raw_accel = (data.get("利益加速フラグ") == 1 or str(data.get("利益加速フラグ")) == "1") or (op_yoy > 0)
         
-        # ★期待値が高い（すでに買われている）銘柄はサプライズになりにくい
-        earnings_exp = float(data.get("決算期待値", 0) or 0) 
+        # 💡 【核心の判定ロジック】
+        # 「売上の伸び以上に利益が伸びているか（営業益YoY ≧ 売上YoY）」をチェックする
+        is_true_acceleration = False
+        penalty_fake_accel = 0.0
+        
+        if raw_accel:
+            # 営業利益の伸び率が、売上高の伸び率以上であれば「本物の加速」
+            if op_yoy >= sales_yoy:
+                is_true_acceleration = True
+            else:
+                # 利益は増えているが、売上の伸びに対して利益の伸びが低い（＝利益率・効率の悪化）
+                # ここでご要望の「⚠️出尽くし警戒」に相当する強烈なペナルティを課す
+                penalty_fake_accel = 25.0 
+
+        # 本物の加速ならプラスボーナス、見かけならペナルティ
+        accel_bonus = 15.0 if is_true_acceleration else -penalty_fake_accel
+        
+        # 事前の期待値（ハードル）
+        earnings_exp = float(data.get("決算期待値", 0) or 0)  
 
         score = (
             (sales_yoy * self.weights["yoy_sales"]) +
             (op_yoy * self.weights["yoy_op"]) +
-            (flags["revision_flag"] * self.weights["revision"]) +
             (flags["share_buyback_flag"] * self.weights["buyback"]) +
             (flags["dividend_up_flag"] * self.weights["dividend"]) +
-            (earnings_exp * self.weights["earnings_exp"]) + # 期待値をマイナス評価
+            (earnings_exp * self.weights["earnings_exp"]) + 
             accel_bonus
         )
-        return max(score, 0.0)
+        return max(score, -20.0)
         
     def calculate_fuel_factor(self, data: dict) -> float:
         """Step 2: 需給・踏み上げ係数の計算（燃料 ÷ 抵抗）"""
         volume = float(data.get("出来高", 0) or 1)
         
-        # 機関の空売り残高 ＋ 個人の売り残（燃料）
         inst_short = float(data.get("機関空売り合計株数", 0) or 0)
         margin_short = float(data.get("売り残", 0) or 0)
         
         total_short_days = (inst_short + margin_short) / max(volume, 1)
 
-        # 個人の買い残（上値の重さ・抵抗）＝ 需給OH (Days to Cover)
+        # 信用倍率が極端に高い場合は上値の重さを強制的に引き上げる
+        margin_ratio = float(data.get("信用倍率", 1.0) or 1.0)
         buy_oh = float(data.get("需給OH", 1.0) or 1.0)
-        buy_wall = max(buy_oh, 0.1)  # ゼロ除算防止
+        
+        if margin_ratio > 30.0:
+            buy_oh = max(buy_oh * 1.5, 5.0)
+
+        buy_wall = max(buy_oh, 0.1) 
 
         return total_short_days / buy_wall
 
@@ -7140,7 +7175,6 @@ class StockSurprisePredictor:
         mcap = float(data.get("時価総額億円", 100) or 100)
         turnover = float(data.get("売買代金(億)", 1) or 1)
         
-        # 時価総額が小さく、普段の売買代金が少ないほど「少しの資金で跳ねる」
         elasticity_score = 1.0 / math.sqrt(max(mcap * turnover, 1.0))
         return elasticity_score * 1000
 
@@ -7150,16 +7184,14 @@ class StockSurprisePredictor:
         f_factor = self.calculate_fuel_factor(data)
         elasticity = self.calculate_elasticity(data)
 
-        # マクロ環境フィルター（地合いフラグ： 1=追い風, 0=中立, -1=逆風）
         market_flag = float(data.get("地合いフラグ", 0) or 0)
         macro_coef = 1.0 + (market_flag * 0.2)
 
-        # 予想上昇率（％）の算出
         base_multiplier = 0.4
         expected_return_pct = s_score * f_factor * elasticity * base_multiplier * macro_coef
 
-        # 最大上昇率のキャップ（最大30%）
-        expected_return_pct = min(max(expected_return_pct, 0.0), 30.0)
+        # 最大上昇率のキャップ
+        expected_return_pct = min(max(expected_return_pct, -15.0), 30.0)
 
         price_current = float(data.get("現在値", 0) or 0)
         target_price = price_current * (1.0 + expected_return_pct / 100.0)
@@ -7173,7 +7205,6 @@ class StockSurprisePredictor:
                 "Elasticity": round(elasticity, 2)
             }
         }
-
 
 # === [/INJECTED] ===========================================================
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
