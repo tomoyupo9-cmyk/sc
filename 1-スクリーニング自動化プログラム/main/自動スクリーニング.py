@@ -82,10 +82,10 @@ MARKER_FILE         = Path(r"H:\desctop\株攻略\1-スクリーニング自動�
 MODEL_PATH          = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
 
 # --- [2] 実行モード・オプション設定 ---
-RUN_SESSION         = "MIDDAY"   # "EOD" または "MIDDAY"
-#RUN_SESSION         = "EOD"   # "EOD" または "MIDDAY"
-AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAYとEODを強制する
-#AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAYとEODを強制する
+RUN_SESSION         = "EOD"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
+#RUN_SESSION         = "MIDDAY"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
+AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
+#AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
 USE_CSV             = True    # CSV取り込みフラグ
 TEST_MODE           = False   # テストモードフラグ（件数制限）
 TEST_LIMIT          = 50      # テスト時の最大件数
