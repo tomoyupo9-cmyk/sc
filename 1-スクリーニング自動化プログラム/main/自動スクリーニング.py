@@ -82,12 +82,14 @@ MARKER_FILE         = Path(r"H:\desctop\株攻略\1-スクリーニング自動�
 MODEL_PATH          = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
 
 # --- [2] 実行モード・オプション設定 ---
-RUN_SESSION         = "EOD"   # "EOD" または "MIDDAY"
-AUTO_MODE           = True    # 自動判定フラグ
+RUN_SESSION         = "MIDDAY"   # "EOD" または "MIDDAY"
+#RUN_SESSION         = "EOD"   # "EOD" または "MIDDAY"
+AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAYとEODを強制する
+#AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAYとEODを強制する
 USE_CSV             = True    # CSV取り込みフラグ
 TEST_MODE           = False   # テストモードフラグ（件数制限）
 TEST_LIMIT          = 50      # テスト時の最大件数
-PRICE_GUARD_ENABLED = False   # 休日価格補完フラグ
+PRICE_GUARD_ENABLED = True   # 休日価格補完フラグ
 MIDDAY_FILTER_BY_FLAGS = False # MIDDAY対象を絞るか
 
 # --- [3] トレンド・シグナル判定 パラメータ ---
@@ -5492,13 +5494,6 @@ def apply_volume_quality_labels(df: pd.DataFrame) -> pd.DataFrame:
 def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
     rows: list[dict] = []
 
-    # JST/休日判定はループ外で1回だけ
-    today_jst = datetime.now(JST).date()
-    is_holiday = not _is_jp_business_day(today_jst)
-
-    # ここでは “最初から” 接続を取らない（必要になった瞬間にだけ遅延で取る）
-    _conn: sqlite3.Connection | None = conn
-
     # NaN 判定は pandas.isna を使うと型に強い
     def _clean(val):
         return None if pd.isna(val) else val
@@ -5516,16 +5511,6 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
         code4 = (d.get("コード") or "").zfill(4)
         d["yahoo_url"] = _yahoo_quote_url(code4, d.get("市場"), conn) if code4 else ""
         d["x_url"] = f"https://x.com/search?q={quote(d.get('銘柄名') or '')}" if d.get("銘柄名") else ""
-
-        # ---- 価格フィールド（休日のみEODで安全埋め）----
-        if PRICE_GUARD_ENABLED and code4 and is_holiday:
-            try:
-                if _conn is None:
-                    _conn = _get_db_conn()
-                _apply_price_fields(_conn, d, code4)  # ※ここでは close しない
-            except Exception as _e:
-                print(f"[price-guard][WARN] {code4} fill failed: {_e}")
-
 
         # 売買代金(億) 補完
         if d.get("売買代金(億)") is None:
@@ -5689,7 +5674,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "RVOL代金","合成スコア","ATR14%","初動フラグ","底打ちフラグ",
         "右肩上がりフラグ","右肩早期フラグ","空売り機関","シグナル更新日",
         "営業利益","増資リスク","増資スコア","増資理由","財務コメント",
-        "スコア","進捗率","overall_alpha",
+        "スコア","進捗率","過去平均進捗率","季節調整済進捗差分","overall_alpha",
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
         "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
         "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ", "踏み上げ期待スコア",
@@ -5697,6 +5682,7 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "AI目標値", "AI目標値_raw",
         "予想インパクト_pct", "予測ターゲット価格",
         "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主",
+        "過熱需給リスクスコア", "過熱需給判定",  # ← ★これを追加
         "Algo_Momentum", "Algo_VolTarget", "Algo_Factor", "Algo_総合判定",
         "短期需給判定",
         "直近売上YoY", "直近営業益YoY", "利益加速フラグ",
@@ -5811,6 +5797,12 @@ def preload_price_summaries(conn, codes, window_days=200): # ← 期間を200日
             c4 = str(code).zfill(4)
             g = g.sort_values("日付").drop_duplicates(subset=["日付"], keep="last")
             
+            # ▼【修正：ここに追加】ライブ価格追加前の「DB上の確実な直近2営業日」の終値を確保
+            db_last = g.iloc[-1] if len(g) > 0 else None
+            db_prev = g.iloc[-2] if len(g) > 1 else None
+            db_last_close = float(db_last["終値"]) if db_last is not None and pd.notna(db_last["終値"]) else None
+            db_prev_close = float(db_prev["終値"]) if db_prev is not None and pd.notna(db_prev["終値"]) else None
+            
             # ▼当日の現在値をMA計算の末尾に連結
             today_ts = pd.Timestamp(date.today())
             live_px = live_prices.get(c4)
@@ -5840,15 +5832,74 @@ def preload_price_summaries(conn, codes, window_days=200): # ← 期間を200日
                 "ma5":  None if pd.isna(ma5)  else float(ma5),
                 "ma25": None if pd.isna(ma25) else float(ma25),
                 "ma75": None if pd.isna(ma75) else float(ma75),
+                # ▼【修正：ここに追加】
+                "db_last_close": db_last_close,
+                "db_prev_close": db_prev_close,
             }
     return out
 
 def enrich_rows_with_price_summary(rows, summary_map):
     if not rows:
         return rows
+
+    # --- 【修正：ここに追加】価格ガード（時間帯判定） ---
+    do_guard = False
+    if globals().get("PRICE_GUARD_ENABLED", False):
+        try:
+            from zoneinfo import ZoneInfo
+            JST = ZoneInfo("Asia/Tokyo")
+            now_jst = datetime.now(JST)
+        except Exception:
+            now_jst = datetime.now()
+        
+        # すでに定義済みの「場中判定関数」を呼び出し
+        try:
+            is_session = _is_trading_session_now(now_jst)
+        except NameError:
+            # 万が一関数が見えない場合のフォールバック（土日、または9:00前・15:30以降）
+            try:
+                import jpholiday
+                is_biz = (now_jst.weekday() < 5) and (not jpholiday.is_holiday(now_jst.date()))
+            except:
+                is_biz = (now_jst.weekday() < 5)
+            
+            t = now_jst.time()
+            is_session = is_biz and ((dt_time(9,0) <= t <= dt_time(11,30)) or (dt_time(12,30) <= t <= dt_time(15,30)))
+
+        # 場中（9:00-11:30, 12:30-15:30）以外ならガード発動
+        if not is_session:
+            do_guard = True
+            print("[price-guard] 場外時間のため、表示価格を確定した履歴データ(EOD)で上書き保護します")
+    # ------------------------------------------------
+
     for r in rows:
         c4 = str(r.get("コード") or "").zfill(4)
         s = summary_map.get(c4) or {}
+        
+        # --- 【修正：ここに追加】価格ガードの上書き適用 ---
+        if do_guard and s:
+            db_c = s.get("db_last_close")
+            db_p = s.get("db_prev_close")
+            
+            if db_c is not None:
+                r["現在値_raw"] = db_c
+                # 小数点以下が0なら整数表記、それ以外は2桁
+                r["現在値"] = f"{db_c:,.0f}" if abs(db_c - round(db_c)) < 1e-9 else f"{db_c:,.2f}"
+                
+                if db_p is not None and db_p != 0:
+                    r["前日終値"] = f"{db_p:,.0f}" if abs(db_p - round(db_p)) < 1e-9 else f"{db_p:,.2f}"
+                    diff = db_c - db_p
+                    pct = (db_c / db_p - 1.0) * 100.0
+                    r["前日円差"] = f"{diff:,.0f}" if abs(diff - round(diff)) < 1e-9 else f"{diff:,.2f}"
+                    r["前日終値比率_raw"] = pct
+                    r["前日終値比率"] = f"{pct:.2f}%"
+                else:
+                    r["前日終値"] = ""
+                    r["前日円差"] = ""
+                    r["前日終値比率_raw"] = None
+                    r["前日終値比率"] = ""
+        # ------------------------------------------------
+
         if s:
             r["高値"]  = "" if s.get("last_high")  is None else f"{s['last_high']:,.0f}"
             r["安値"]  = "" if s.get("last_low")   is None else f"{s['last_low']:,.0f}"
@@ -7597,6 +7648,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         _attach_latest_theme(df_cand, latest_theme_map)
     df_cand = apply_3algo_labels(df_cand) # ★追加: 3大アルゴリズム列の生成
     df_cand = apply_volume_quality_labels(df_cand) # ★追加: 短期需給(出来高の質)判定
+    df_cand = apply_overheat_risk_labels(df_cand) # ← ★ここに追加
     _tick("vectorize_minimum_fields")
     
     
@@ -8081,6 +8133,85 @@ def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int 
 
     print(f"[oper] 予想優先で営業利益・営利対時価を更新しました rows={len(updates)}")
 
+# ==========================================
+# ★ 追加: 季節調整済み進捗率の計算
+# ==========================================
+def update_seasonal_progress(conn: sqlite3.Connection) -> None:
+    """
+    現在の進捗率と「過去数年の同四半期の平均進捗率」を比較し、
+    季節要因を排除した『季節調整済進捗差分』を計算する。
+    """
+    try:
+        conn.execute("ALTER TABLE screener ADD COLUMN 過去平均進捗率 REAL")
+        conn.execute("ALTER TABLE screener ADD COLUMN 季節調整済進捗差分 REAL")
+    except Exception:
+        pass
+
+    try:
+        # 1. 現在の進捗率と現在の四半期(1Qなど)を取得
+        # ※ finance_notesに current_quarter(例:"1Q") がある想定
+        query_current = """
+            SELECT 
+                s.コード, 
+                s.進捗率 AS 今回進捗率,
+                f.current_quarter AS 現在のQ
+            FROM screener s
+            JOIN finance_notes f ON s.コード = f.コード
+            WHERE s.進捗率 IS NOT NULL AND f.current_quarter IS NOT NULL
+        """
+        df_current = pd.read_sql_query(query_current, conn)
+        
+        if df_current.empty:
+            return
+
+        # 2. 過去の同四半期の進捗率を取得して平均化
+        # ※ pl_quarterテーブルに 四半期(例:"1Q") と 進捗率 が保存されている想定
+        query_history = """
+            SELECT コード, 四半期, AVG(進捗率) AS 過去平均進捗率
+            FROM pl_quarter
+            WHERE 進捗率 IS NOT NULL
+            GROUP BY コード, 四半期
+        """
+        df_hist = pd.read_sql_query(query_history, conn)
+
+        if df_hist.empty:
+            return
+
+        # 3. マージして差分（サプライズ度）を計算
+        df_merged = pd.merge(
+            df_current, 
+            df_hist, 
+            left_on=['コード', '現在のQ'], 
+            right_on=['コード', '四半期'], 
+            how='left'
+        )
+
+        # 今回の進捗率 - 過去の同Q平均進捗率 = 本当の上振れ幅
+        df_merged['季節調整済進捗差分'] = df_merged['今回進捗率'] - df_merged['過去平均進捗率']
+
+        # 4. DB更新
+        updates = []
+        for _, r in df_merged.iterrows():
+            if pd.notna(r['季節調整済進捗差分']):
+                updates.append((
+                    round(r['過去平均進捗率'], 2), 
+                    round(r['季節調整済進捗差分'], 2), 
+                    str(r['コード'])
+                ))
+
+        if updates:
+            cur = conn.cursor()
+            cur.executemany("""
+                UPDATE screener 
+                SET 過去平均進捗率=?, 季節調整済進捗差分=? 
+                WHERE コード=?
+            """, updates)
+            conn.commit()
+            cur.close()
+            print(f"[seasonality] 季節調整済み進捗率を更新しました: {len(updates)}銘柄")
+    except Exception as e:
+        print(f"[seasonality][WARN] 季節調整の計算に失敗しました: {e}")
+
 # --- ここから: 前日終値アップデータ（履歴ベース／唯一の定義） ---
 # ---- 前日終値比率(%)＋現在値から前日終値を逆算してDB更新 ----
 
@@ -8367,72 +8498,218 @@ def apply_composite_score(conn: sqlite3.Connection,
 
 def apply_fair_value_metrics(conn: sqlite3.Connection):
     """
-    ROEとBPSを用いて、現在の相場水準（成長期待）に合わせた適正株価を計算する。
-    稼ぐ力（ROE）が高い企業ほど、高いPBRが許容されるロジック。
+    【機関投資家風・最高峰 動的適正株価＆期待株価算出エンジン】
+    【高成長・PER主軸・PBR完全撤廃版】
+
+    ■ 基本思想
+    - 適正株価はPER法（予想EPS × 動的許容PER）のみで算出
+    - PBR / ROE / BPS、およびテーマ補正・ブレンドは完全撤廃
+    - 営業利益成長、EPS成長、利益率、利益加速、上方修正、信用需給で許容PERを動的算出
+    - 3ヶ月期待株価は企業価値50% ＋ 市場モメンタム（空売り踏み上げ・サプライズ等）50%
     """
     try:
         conn.execute("ALTER TABLE screener ADD COLUMN 適正株価 REAL")
+    except Exception:
+        pass
+
+    try:
         conn.execute("ALTER TABLE screener ADD COLUMN 割安度 REAL")
     except Exception:
-        pass # 既に存在する場合はスキップ
+        pass
 
-    df = pd.read_sql_query("SELECT コード, 現在値, EPS, BPS, ROE FROM screener", conn)
-    if df.empty: return
+    try:
+        conn.execute("ALTER TABLE screener ADD COLUMN 期待株価 REAL")
+    except Exception:
+        pass
 
-    for c in ["現在値", "EPS", "BPS", "ROE"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = pd.read_sql_query("""
+        SELECT
+            s.コード,
+            s.現在値,
+            s.EPS,
+            s.信用倍率,
+            s.需給OH,
+            s.売買代金億,
+            s.売り残,
+            s.買い残,
+            s.RS_5,
+            s.RS_20,
+            s.Growth_Bias,
+            s.AIスコア,
+            s.予想インパクト_pct,
+            s.利益加速フラグ,
+            f.forecast_eps,
+            f.previous_eps,
+            f.直近営業益YoY,
+            f.直近売上YoY,
+            f.決算期待値,
+            f.overall_alpha,
+            f.operating_margin_growth,
+            f.revision_count
+        FROM screener s
+        LEFT JOIN finance_notes f
+            ON s.コード = f.コード
+    """, conn)
 
-    # 期待収益率の設定（日本株の平均的な要求利回りを 7.0% とする）
-    EXPECTED_RETURN = 0.07
+    if df.empty:
+        return
 
-    def calc_fair_value(row):
-        bps = row["BPS"]
-        roe = row["ROE"]
+    numeric_columns = [
+        "現在値", "EPS", "forecast_eps", "previous_eps",
+        "直近営業益YoY", "直近売上YoY", "信用倍率", "需給OH",
+        "売買代金億", "売り残", "買い残", "RS_5", "RS_20",
+        "Growth_Bias", "AIスコア", "予想インパクト_pct",
+        "決算期待値", "利益加速フラグ", "operating_margin_growth", "revision_count"
+    ]
+
+    for c in numeric_columns:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    def calc_dynamic_fair_value(row):
+        price = row["現在値"]
         
-        # BPSやROEが欠損、または異常値の場合は計算不可
-        if pd.isna(bps) or pd.isna(roe) or bps <= 0:
-            return np.nan
-            
-        # ROEは%表記（例：15.5）を想定しているため小数（0.155）に戻す
-        roe_decimal = roe / 100.0
-        
-        # 企業の稼ぐ力が期待収益率を下回っている（または赤字）場合でも、
-        # 評価がゼロにならないよう保守的に最低ROE（3%相当）の価値は担保する
-        if roe_decimal < 0.03:
-            roe_decimal = 0.03
-            
-        # 適正株価 = BPS × (ROE / 期待収益率)
-        # 例：BPS 1000円、ROE 14%、期待収益率 7% なら 1000 × (0.14 / 0.07) = 2000円
-        target_price = bps * (roe_decimal / EXPECTED_RETURN)
-        return target_price
+        # 1. 予想EPSの確定
+        forecast_eps = row["forecast_eps"] if pd.notna(row["forecast_eps"]) else row["EPS"]
+        if pd.isna(forecast_eps) or forecast_eps <= 0:
+            return np.nan, np.nan
 
-    # 適正株価の計算
-    df["適正株価"] = df.apply(calc_fair_value, axis=1)
-    
-    # 割安度の計算: 現在値が適正株価からどれくらいディスカウントされているか（%）
-    # 例：適正 2000円、現在値 1500円 なら (1 - 1500/2000)*100 = 25% 割安
+        # 2. 特徴量の抽出
+        op_yoy = row["直近営業益YoY"] if pd.notna(row["直近営業益YoY"]) else 0.0
+        
+        prev_eps = row["previous_eps"] if pd.notna(row["previous_eps"]) else row["EPS"]
+        eps_growth = 0.0
+        if pd.notna(prev_eps) and prev_eps > 0:
+            eps_growth = ((forecast_eps / prev_eps) - 1.0) * 100.0
+
+        # 赤字脱却・V字回復判定
+        turnaround_flag = False
+        if pd.notna(prev_eps) and prev_eps > 0 and prev_eps < forecast_eps * 0.1:
+            turnaround_flag = True
+            eps_growth_effect = eps_growth * 0.3
+        else:
+            eps_growth_effect = eps_growth
+
+        rs5 = np.clip(row["RS_5"] if pd.notna(row["RS_5"]) else 0.0, -1.0, 1.0)
+        rs20 = np.clip(row["RS_20"] if pd.notna(row["RS_20"]) else 0.0, -1.0, 1.0)
+        growth_bias = np.clip(row["Growth_Bias"] if pd.notna(row["Growth_Bias"]) else 0.0, -1.0, 1.0)
+
+        ai_score = row["AIスコア"] if pd.notna(row["AIスコア"]) else 50.0
+        demand_days = row["需給OH"] if pd.notna(row["需給OH"]) else 2.0
+
+        turnover_oku = row["売買代金億"] if pd.notna(row["売買代金億"]) else 5.0
+        sell_margin = row["売り残"] if pd.notna(row["売り残"]) else 0.0
+        buy_margin = row["買い残"] if pd.notna(row["買い残"]) else 0.0
+
+        if pd.notna(price) and price > 0 and turnover_oku > 0:
+            short_margin_days = (sell_margin * price / 1e8) / max(turnover_oku, 0.5)
+            buy_margin_days = (buy_margin * price / 1e8) / max(turnover_oku, 0.5)
+        else:
+            short_margin_days = 0.0
+            buy_margin_days = demand_days
+
+        expected_impact = row["予想インパクト_pct"] if pd.notna(row["予想インパクト_pct"]) else 0.0
+        accel_flag = row["利益加速フラグ"] if pd.notna(row["利益加速フラグ"]) else 0
+        alpha_rank = str(row["overall_alpha"]).strip() if pd.notna(row["overall_alpha"]) else ""
+        margin_growth = row["operating_margin_growth"] if pd.notna(row["operating_margin_growth"]) else 0.0
+        revision_count = row["revision_count"] if pd.notna(row["revision_count"]) else 0
+
+        # 3. 動的許容PERの算出（PER法100%）
+        target_per = 12.0
+
+        if op_yoy > 0:
+            target_per += math.sqrt(max(op_yoy, 0)) * 0.22
+
+        if eps_growth_effect > 0:
+            target_per += min(math.sqrt(max(eps_growth_effect, 0)) * 0.35, 7.0)
+
+        if margin_growth > 2.0:
+            target_per += 2.0
+        elif margin_growth < -2.0:
+            target_per -= 3.0
+
+        if accel_flag == 1 or accel_flag == "1":
+            target_per += 1.0
+
+        if alpha_rank in ["S++", "S"]:
+            target_per += 1.5
+        elif alpha_rank in ["A+", "A"]:
+            target_per += 0.8
+
+        if revision_count >= 3:
+            target_per += 2.0
+        if revision_count >= 5:
+            target_per += 1.0
+
+        if buy_margin_days > 20.0 or demand_days > 30.0:
+            target_per -= 3.0
+        elif buy_margin_days > 10.0 or demand_days > 15.0:
+            target_per -= 1.5
+        elif buy_margin_days < 3.0 or (0 < demand_days < 5.0):
+            target_per += 1.0
+
+        max_per = 36.0
+        if turnaround_flag:
+            max_per = min(max_per, 25.0)
+
+        target_per = np.clip(target_per, 8.0, max_per)
+
+        # 4. 適正株価 = 予想EPS × 許容PER
+        fair_per = forecast_eps * target_per
+        target_price = fair_per
+
+        # 5. 3ヶ月期待株価の算出（企業価値50% ＋ 市場モメンタム50%）
+        short_squeeze_bonus = min(math.sqrt(max(short_margin_days, 0)) * 0.015, 0.12)
+        
+        raw_momentum_multiplier = (
+            1.0 
+            + (rs20 * 0.20) 
+            + (expected_impact * 0.005) 
+            + (max(ai_score - 50, 0) * 0.001)
+            + short_squeeze_bonus
+            + (0.05 if revision_count >= 3 else 0.0)
+        )
+        
+        clamped_momentum_mult = np.clip(raw_momentum_multiplier, 0.75, 1.55)
+        expected_3m_price = (target_price * 0.5) + ((price * clamped_momentum_mult) * 0.5)
+
+        return float(target_price), float(expected_3m_price)
+
+    results = df.apply(calc_dynamic_fair_value, axis=1)
+    df["適正株価"] = [r[0] for r in results]
+    df["期待株価"] = [r[1] for r in results]
+
     df["割安度"] = np.where(
-        (df["適正株価"] > 0) & (df["現在値"] > 0), 
-        (1.0 - (df["現在値"] / df["適正株価"])) * 100.0, 
+        (df["適正株価"] > 0) & (df["現在値"] > 0),
+        ((df["適正株価"] - df["現在値"]) / df["現在値"]) * 100.0,
         np.nan
     )
 
     updates = []
     for _, r in df.iterrows():
-        if pd.notna(r["適正株価"]) or pd.notna(r["割安度"]):
+        if pd.notna(r["適正株価"]) or pd.notna(r["割安度"]) or pd.notna(r["期待株価"]):
             updates.append((
                 round(r["適正株価"], 1) if pd.notna(r["適正株価"]) else None,
                 round(r["割安度"], 2) if pd.notna(r["割安度"]) else None,
+                round(r["期待株価"], 1) if pd.notna(r["期待株価"]) else None,
                 str(r["コード"])
             ))
 
     if updates:
         cur = conn.cursor()
-        cur.executemany("UPDATE screener SET 適正株価=?, 割安度=? WHERE コード=?", updates)
+        cur.executemany("""
+            UPDATE screener
+            SET
+                適正株価=?,
+                割安度=?,
+                期待株価=?
+            WHERE コード=?
+        """, updates)
         conn.commit()
         cur.close()
-        print(f"[quant] ROEベースの適正株価/割安度を更新しました: {len(updates)} 銘柄")
-        
+        print(f"[quant] 高成長・PER主軸・PBR完全撤廃型エンジンによる更新完了: {len(updates)} 銘柄")
+
+
 def _parse_early_tag(detail: str) -> str | None:
     if detail is None:
         return None
@@ -9109,8 +9386,8 @@ def batch_update_all_financials(conn,
                     pbr = _safe_num(k.get("priceToBook"))
                     
                     # ▼ ここから追加 ▼
-                    eps = _safe_num(k.get("trailingEps"))
-                    if eps is None: eps = _safe_num(k.get("forwardEps"))
+                    eps = _safe_num(k.get("forwardEps"))
+                    if eps is None: eps = _safe_num(k.get("trailingEps"))
                     bps = _safe_num(k.get("bookValue"))
                     
                     roe_raw = _safe_num(f_dat.get("returnOnEquity"))
@@ -9446,6 +9723,10 @@ def phase_sync_finance_comments(conn):
     if "overall_alpha" not in fn_cols:
         cur.execute("ALTER TABLE finance_notes ADD COLUMN overall_alpha TEXT;")
         added_overall = True
+        
+    # ★ ここを追加（カラム不在によるエラーを防止）
+    if "forecast_eps" not in fn_cols:
+        cur.execute("ALTER TABLE finance_notes ADD COLUMN forecast_eps REAL;")
 
     # まとめて実行
     cur.execute("BEGIN IMMEDIATE")
@@ -9501,9 +9782,10 @@ def phase_sync_finance_comments(conn):
         cur.execute("""
             UPDATE screener AS s
                SET 財務コメント = COALESCE(NULLIF((SELECT n.財務コメント      FROM finance_notes n WHERE n.コード = s.コード), ''), s.財務コメント),
-                   スコア       = COALESCE((SELECT n.score            FROM finance_notes n WHERE n.コード = s.コード), s.スコア),
-                   進捗率       = COALESCE((SELECT n.progress_percent FROM finance_notes n WHERE n.コード = s.コード), s.進捗率),
-                   overall_alpha= COALESCE(NULLIF((SELECT n.overall_alpha FROM finance_notes n WHERE n.コード = s.コード), ''), s.overall_alpha)
+                   スコア        = COALESCE((SELECT n.score            FROM finance_notes n WHERE n.コード = s.コード), s.スコア),
+                   進捗率        = COALESCE((SELECT n.progress_percent FROM finance_notes n WHERE n.コード = s.コード), s.進捗率),
+                   overall_alpha= COALESCE(NULLIF((SELECT n.overall_alpha FROM finance_notes n WHERE n.コード = s.コード), ''), s.overall_alpha),
+                   EPS          = COALESCE((SELECT n.forecast_eps      FROM finance_notes n WHERE n.コード = s.コード), s.EPS)
         """)
 
         if SYNC_HTML:
@@ -9529,6 +9811,56 @@ def phase_sync_finance_comments(conn):
     finally:
         try: cur.close()
         except Exception: pass
+        
+def apply_overheat_risk_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """短期的なイナゴ集中と売り浴びせリスク（過熱需給）を判定する"""
+    if df is None or getattr(df, "empty", True):
+        return df
+
+    # 安全な数値取得（既存の _safe_get_numeric ユーティリティを使用）
+    rs5 = _safe_get_numeric(df, "RS_5", 0.0)
+    pct = _safe_get_numeric(df, ["前日終値比率_raw", "前日終値比率"], 0.0)
+    rvol = _safe_get_numeric(df, ["RVOL代金", "RVOL_売買代金"], 1.0)
+    margin_ratio = _safe_get_numeric(df, "信用倍率", 1.0)
+    inst_short = _safe_get_numeric(df, "機関空売り合計株数", 0.0)
+
+    # 1. 価格過熱度 (0〜40点)
+    # 5日間の相対強度(RS_5)と前日比を組み合わせる。TOPIXを10%アウトパフォーム、あるいは単日10%急騰などで満点。
+    score_price = np.clip((rs5 / 0.10) * 20 + (pct / 10.0) * 20, 0, 40)
+
+    # 2. 出来高過熱度 (0〜30点)
+    # RVOL(20日平均に対する商いの倍率)が2倍以上で加点開始、5倍以上で満点。
+    score_vol = np.clip(((rvol - 2.0) / 3.0) * 30, 0, 30)
+
+    # 3. 需給の偏り（イナゴ度） (0〜20点)
+    # 信用倍率が高い（3倍以上で加点、20倍で満点）。
+    score_margin = np.clip(((margin_ratio - 3.0) / 17.0) * 20, 0, 20)
+    
+    # 4. 機関の売り待機 (0〜10点)
+    # すでに機関の空売りが積み上がっている場合は危険度アップ。
+    score_inst = np.where(inst_short > 0, 10, 0)
+
+    # --- 総合スコア算出 ---
+    raw_score = score_price + score_vol + score_margin + score_inst
+    
+    # ⚠️重要: 「価格が上がっていない（= RS_5も前日比も低い）」場合は、単なるパニック売りや決算暴落の可能性が高いため、過熱リスクを大幅に割り引く
+    final_score = np.where(score_price < 10, raw_score * 0.3, raw_score)
+    final_score = np.round(np.clip(final_score, 0, 100)).astype(int)
+
+    # ラベル付け
+    cond_danger = final_score >= 75
+    cond_warn = final_score >= 50
+
+    label = np.select(
+        [cond_danger, cond_warn],
+        ["⚠️極度過熱(イナゴ化)", "🟠警戒(過熱気味)"],
+        default="🟢正常"
+    )
+
+    df["過熱需給リスクスコア"] = final_score
+    df["過熱需給判定"] = pd.Series(label, index=df.index).astype(str) + " (" + pd.Series(final_score, index=df.index).astype(str) + "点)"
+
+    return df
 
 def _run_charts60(py_path: str):
     py = Path(py_path)
@@ -9590,18 +9922,22 @@ def _timed(name, func, *args, **kwargs):
 
 # ===== 実行モード判定ユーティリティ =====
 def _auto_run_mode():
-    """JSTで 9:00-15:25 は MIDDAY（場中）、それ以外は EOD"""
+    """休場日を考慮し、JST営業日の 9:00-15:25 は MIDDAY（場中）、それ以外は EOD"""
     if not AUTO_MODE:
         return RUN_SESSION.upper()
 
-    now = datetime.now(ZoneInfo("Asia/Tokyo")).time()
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
 
-    # 場中（前場＋後場＋昼休みも含めて）を MIDDAY 扱いにする
-    if dt_time(9, 0) <= now < dt_time(15, 25):
+    # 休日・祝日の場合は、時間帯に関わらず EOD（引け後）扱いとする
+    if not _is_jp_business_day(now_jst.date()):
+        return "EOD"
+
+    now_time = now_jst.time()
+    # 営業日の場中（前場＋後場＋昼休みも含めて）を MIDDAY 扱いにする
+    if dt_time(9, 0) <= now_time < dt_time(15, 25):
         return "MIDDAY"
     else:
         return "EOD"
-
 
 
 # ===== メイン処理 =====
@@ -9738,8 +10074,10 @@ def main():
                     _timed_daily_once("update_market_cap_all", update_market_cap_all, conn, batch_size=100, max_workers=4)
                     try:
                         _timed_daily_once("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
+                        # ★ここに追加：営業利益計算のあとに季節調整を実行
+                        _timed_daily_once("update_seasonal_progress", update_seasonal_progress, conn)
                     except Exception as e:
-                        print("[operating-income][WARN]", e)
+                        print("[operating-income/seasonality][WARN]", e)
                 else:
                     print("[SKIP] 営業利益・時価総額の更新（12:30以降のためスキップ）")
 
@@ -9777,7 +10115,7 @@ def main():
                            200,      # chunk_size
                            False,    # force_refresh
                            True)     # verbose
-                    _timed_daily_once("apply_fair_value_metrics", apply_fair_value_metrics, conn)
+                    _timed("apply_fair_value_metrics", apply_fair_value_metrics, conn)
 
                     _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
                     _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)

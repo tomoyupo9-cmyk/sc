@@ -19,3 +19,6 @@
 2026-07-25 10:14:34,944 [INFO] Analyze request received: 4373
 2026-07-25 10:15:37,475 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)
 2026-08-04 14:53:54,217 [INFO] ヤフ板分析スクリプト正常終了: 7729
+2026-08-07 10:39:47,357 [INFO] ヤフ板分析スクリプト正常終了: 7267
+2026-08-07 15:49:39,397 [INFO] Analyze request received: 6227
+2026-08-07 15:50:41,881 [ERROR] Ollama API呼び出しエラー: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)

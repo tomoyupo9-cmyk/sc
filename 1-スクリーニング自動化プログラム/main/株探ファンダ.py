@@ -273,6 +273,7 @@ def batch_record_to_sqlite(results: list[dict]):
             ("updated_at","TEXT"),
             ("overall_alpha","TEXT"),          # ★ 追加列：アルファ評価
             ("forecast_op", "REAL"),   # ★追加列：予想営業利益
+            ("forecast_eps", "REAL"),          # ★これを追加
             ("past_earnings_dates", "TEXT"),   # ★追加列：過去の決算発表日リスト
         ]:
             try:
@@ -295,13 +296,14 @@ def batch_record_to_sqlite(results: list[dict]):
                     ts,
                     res.get('overall_alpha') or None,   
                     res.get('forecast_op') or None,
+                    res.get('forecast_eps') or None,  # ★これを追加
                     res.get('past_earnings_dates') or "[]", # ★ 追加
                 ))
         if data_to_insert:
-            # ★修正: 列、プレースホルダの数、全角カンマの排除
+            # ★修正: INSERTの列名とVALUESの?の数をそれぞれ10個に揃える
             cur.executemany("""
-            INSERT INTO finance_notes (コード, 財務コメント, score, progress_percent, html_path, updated_at, overall_alpha, forecast_op, past_earnings_dates)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO finance_notes (コード, 財務コメント, score, progress_percent, html_path, updated_at, overall_alpha, forecast_op, forecast_eps, past_earnings_dates)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(コード) DO UPDATE SET
               財務コメント    = excluded.財務コメント,
               score           = excluded.score,
@@ -310,6 +312,7 @@ def batch_record_to_sqlite(results: list[dict]):
               updated_at      = excluded.updated_at,
               overall_alpha   = excluded.overall_alpha,
               forecast_op     = excluded.forecast_op,
+              forecast_eps    = excluded.forecast_eps,
               past_earnings_dates = excluded.past_earnings_dates;
             """, data_to_insert)
             conn.commit()
@@ -1080,13 +1083,20 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
             qp = calc_progress_from_df_op(df_quarterly, df_forecast_row)
             progress_percent_db = qp[3] if qp is not None else None
             
-            # --- ★ここから追加：予想営業益（百万円）の抽出 ---
+            # --- ★ここから追加：予想営業益（百万円）と予想EPSの抽出 ---
             forecast_op = None
-            if not df_forecast_row.empty and "営業益" in df_forecast_row:
-                try:
-                    forecast_op = float(str(df_forecast_row["営業益"]).replace(",", ""))
-                except Exception:
-                    pass
+            forecast_eps = None  # ★これを追加
+            if not df_forecast_row.empty:
+                if "営業益" in df_forecast_row:
+                    try:
+                        forecast_op = float(str(df_forecast_row["営業益"]).replace(",", ""))
+                    except Exception:
+                        pass
+                if "修正1株益" in df_forecast_row:  # ★これを追加
+                    try:
+                        forecast_eps = float(str(df_forecast_row["修正1株益"]).replace(",", ""))
+                    except Exception:
+                        pass
             # --- 追加ここまで ---
             
             # =========================================================
@@ -1155,6 +1165,7 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                 'formatted_verdict': formatted_v,
                 'out_html': out_html,
                 'forecast_op': forecast_op,
+                'forecast_eps': forecast_eps,  # ★これを追加
                 'sales_yoy': sales_yoy,             
                 'op_yoy': op_yoy,                   
                 'accel_flag': accel_flag,           

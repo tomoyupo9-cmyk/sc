@@ -638,6 +638,10 @@
     <button class="btn" id="copy-earnings-data" style="background-color: #ec4899;">決算またぎ用データ コピー</button>
     <button id="download-page-csv" class="btn">今のページの銘柄をCSVダウンロード</button>
     <button class="btn" id="download-csv">CSVダウンロード</button>
+    
+    <!-- ワンクリック抽出ボタン（新規追加） -->
+    <button class="btn" id="btn-quick-undervalued" style="background-color: #0ea5e9;">✨ 割安銘柄</button>
+    <button class="btn" id="btn-quick-postearnings" style="background-color: #059669;">✅ 決算通過 ＆ 割安</button>
   </div>
 
 <script>
@@ -682,7 +686,10 @@
     "買い残": "信用買い残高（株数）。将来の売り要因。",
     "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
     "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
-    "財務スコア":"財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。","進捗率":"着手済み作業/想定全体の比率（%）。",
+    "財務スコア":"財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。",
+    "進捗率":"今回の決算における通期に対する進捗率（%）。",
+    "過去平均進捗率":"過去数年における、同四半期の平均的な進捗率（%）。企業の季節性を測る基準になります。",
+    "季節調整済進捗差分":"今回の進捗率から過去平均を引いた値（%）。プラスなら例年より好調、マイナスなら例年より遅れ気味（出尽くし警戒）と判断できます。",
     "増資リスク":"将来の増資・MSワラント等による希薄化リスクのラベル（高/中/低など）。",
     "増資スコア":"増資リスクを0〜100で数値化した指標。値が高いほど希薄化リスクが高い。",
     "PBR": "株価純資産倍率。1倍割れは解散価値を下回る割安水準。",
@@ -773,7 +780,11 @@
     "・🎈値飛び：出来高を伴わない弱い上げ。板が薄く値段だけ上がったフェイクの可能性大。\n\n" +
     "【下げの場合】\n" +
     "・💥強い売り/吸収：出来高を伴う強い下げ、または大口の押し目買い(吸収)。\n" +
-    "・🍂需給薄：出来高を伴わない弱い下げ。買い手がいないだけで落ちているフェイク下げ。"
+    "・🍂需給薄：出来高を伴わない弱い下げ。買い手がいないだけで落ちているフェイク下げ。",
+    "過熱需給判定": "短期的なイナゴ集中と売り浴びせリスク（過熱需給）を判定します。\n\n" +
+                    "・⚠️極度過熱(イナゴ化)：急騰×商い急増×信用買い過多。利確や空売りの標的になりやすい危険水域。\n" +
+                    "・🟠警戒(過熱気味)：短期的な資金集中が見られ、調整リスクが高まっている状態。\n" +
+                    "・🟢正常：過熱感はなし。パニック売りによる下落時は、過熱ではないため「正常」となります。"
   };
 
   window.DATACOL_TO_HELPKEY = {
@@ -796,6 +807,8 @@
     "逆行強フラグ":"逆行強フラグ",
     "逆行弱フラグ":"逆行弱フラグ",
     "進捗率":"進捗率",
+    "過去平均進捗率":"過去平均進捗率",
+    "季節調整済進捗差分":"季節調整済進捗差分",
     "決算発表予定日":"決算発表予定日",
     "EPS":"EPS",
     "BPS":"BPS",
@@ -804,6 +817,7 @@
     "増資スコア":"増資スコア",
     "三角スコア": "三角スコア",
     "短期需給判定": "短期需給判定",
+    "過熱需給判定": "過熱需給判定",
   };
 </script>
 
@@ -1660,7 +1674,7 @@
       if(isNoShorChecked    && !ns) return false;
       if(isSafetyChecked    && !isSafeDemand) return false;
       if(isHitChecked       && !hit) return false;
-      if(isAccelChecked     && Number(r["利益加速フラグ"]) !== 1) return false;
+      if(isAccelChecked     && r["利益加速ステータス"] !== "🚀加速") return false; // 👈 ここを修正！
 
       // シグナル一括フィルターの処理
       let has_blue_news = false;
@@ -1841,6 +1855,13 @@
       else if (jq.includes("強い売り")) jqBadge = `<span class="badge b-orange" style="font-weight:bold;">${escapeHtml(jq)}</span>`;
       else if (jq.includes("需給薄")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
       
+      const oh_risk = r["過熱需給判定"] || "🟢正常";
+      let ohRiskBadge = oh_risk;
+      if (oh_risk.includes("極度過熱")) ohRiskBadge = `<span class="badge" style="background:#fee2e2; color:#be123c; border:1px solid #fecaca; font-weight:bold;">${escapeHtml(oh_risk)}</span>`;
+      else if (oh_risk.includes("警戒")) ohRiskBadge = `<span class="badge b-orange">${escapeHtml(oh_risk)}</span>`;
+      else if (oh_risk.includes("正常")) ohRiskBadge = `<span class="badge b-gray">${escapeHtml(oh_risk)}</span>`;
+      
+      
       // =========================================================
       // ★ ここに以下のコードをごっそり追加します！ ★
       // =========================================================
@@ -1909,6 +1930,7 @@
         <td>${escapeHtml(r["Algo_VolTarget"] || "-")}</td>
         <td style="font-weight:bold; font-size:1.05em; background-color:#f8fafc;">${escapeHtml(r["Algo_総合判定"] || "-")}</td>
         <td style="font-weight:bold; color:#f97316;">${escapeHtml(r["短期需給判定"] || "-")}</td>
+        <td style="text-align:center;">${ohRiskBadge}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num" data-sort="${r['AI目標値_raw'] ?? -999999}">${r["AI目標値"] || "-"}</td>
         <td>${r["初動フラグ"] || ""}</td>
@@ -1966,6 +1988,10 @@
         <td>${escapeHtml(r["overall_alpha"] ?? "")}</td>
         <td class="num">${r["スコア"] ?? ""}</td>
         <td class="num">${r["進捗率"] ?? ""}</td>
+        <td class="num">${Number.isFinite(Number(r["過去平均進捗率"])) ? Number(r["過去平均進捗率"]).toFixed(1) + '%' : "-"}</td>
+        <td class="num" style="font-weight:bold; color:${Number(r["季節調整済進捗差分"]) > 0 ? '#e11d48' : (Number(r["季節調整済進捗差分"]) < 0 ? '#2563eb' : 'inherit')};">
+            ${Number.isFinite(Number(r["季節調整済進捗差分"])) ? (Number(r["季節調整済進捗差分"]) > 0 ? '+' : '') + Number(r["季節調整済進捗差分"]).toFixed(1) + '%' : '-'}
+        </td>
         <td class="num">${Number.isFinite(Number(r["直近売上YoY"])) ? Number(r["直近売上YoY"]).toFixed(2) : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["直近営業益YoY"])) ? Number(r["直近営業益YoY"]).toFixed(2) : "-"}</td>
         <td class="num" style="text-align:center;">${
@@ -2428,7 +2454,7 @@
 
   $("#copy-page")?.addEventListener("click", async (e)=>{
     e.preventDefault();
-    const tbl = document.getElementById(getActiveTableId());
+    const tbl = document.getElementById("tbl-candidate");
     if (!tbl || !tbl.tHead || !tbl.tBodies.length) return;
     const csvEscape = (v)=>{
       let s = String(v ?? "");
@@ -2445,7 +2471,8 @@
     const headerLine = headerCells
       .map(th => csvEscape(th.getAttribute("data-col") || (th.textContent || "").trim()))
       .join(",");
-    const bodyRows = Array.from(tbl.tBodies[0].rows);
+    // ▼ 非表示にされている行を除外するフィルターを追加
+    const bodyRows = Array.from(tbl.tBodies[0].rows).filter(tr => tr.style.display !== "none");
     const dataLines = bodyRows.map(tr => {
       const tds = Array.from(tr.cells);
       return tds.map(td => csvEscape(getCellValue(td))).join(",");
@@ -2479,7 +2506,7 @@
 
   $("#download-page-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
-    const tblId = getActiveTableId();
+    const tblId = "tbl-candidate";
     const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
     const lines = rows.map(tr => {
       const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
@@ -2503,7 +2530,7 @@
 
   $("#download-csv")?.addEventListener("click", (e)=>{
     e.preventDefault();
-    const tblId = getActiveTableId();
+    const tblId = "tbl-candidate";
     const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
     const lines = rows.map(tr => {
       const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
@@ -2650,6 +2677,10 @@ function evaluateExcelFilters(r) {
     const cond = excelFilters[col];
     let cellVal = r[col];
     
+    if (col === "利益加速フラグ") {
+      cellVal = r["利益加速ステータス"] || (r["利益加速フラグ"] == 1 || r["利益加速フラグ"] === "1" ? "🚀加速" : "");
+    }
+    
     let numVal = null;
     if (cellVal !== null && cellVal !== undefined) {
        const s = String(cellVal).replace(/[,円％%]/g, '');
@@ -2789,6 +2820,7 @@ function generatePromptJson(code) {
     early_uptrend_type: safeStr(r["右肩早期種別"]),
     judge: safeStr(r["判定"]),
     judge_reason: safeStr(r["判定理由"]),
+    overheat_risk: safeStr(r["過熱需給判定"]),
     action: safeStr(r["推奨アクション"]),
     ratio: safeStr(r["推奨比率"]),
     signal_date: safeStr(r["シグナル更新日"]),
@@ -3114,7 +3146,7 @@ window.showTobHistory = function(btn, jsonStr) {
 })();
 
 // =========================================================
-// ★ 決算またぎ特化プロンプト＆データの高精度コピー機能（修正版）
+// ★ 決算またぎ特化プロンプト＆データの高精度コピー機能（完全版）
 // =========================================================
 document.getElementById("copy-earnings-data")?.addEventListener("click", async (e)=>{
     e.preventDefault();
@@ -3129,8 +3161,32 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
         return;
     }
     
+    // 全データマップを作成
+    const allData = window.state?.data || window.DATA_CAND || [];
+    const dataMap = new Map();
+    allData.forEach(item => {
+      const c = String(item["コード"] || "").padStart(4, "0");
+      if (c) dataMap.set(c, item);
+    });
+
     const bodyRows = Array.from(tbl.tBodies[0].rows);
-    const codes = bodyRows.map(tr => tr.getAttribute("data-code")).filter(Boolean);
+    
+    // 足切りフィルターを適用
+    const codes = bodyRows.map(tr => tr.getAttribute("data-code")).filter(code => {
+        if (!code) return false;
+        const r = dataMap.get(code);
+        if (!r) return false;
+
+        // ① 流動性フィルター：売買代金が 3.0億円未満の銘柄は除外
+        const turn = parseFloat(String(r["売買代金(億)"] || r["売買代金億"] || "0").replace(/[,円]/g, ""));
+        if (!Number.isFinite(turn) || turn < 3.0) return false;
+
+        // ② 市場フィルター：名証、札証、福証 を除外
+        const market = String(r["市場"] || "");
+        if (market.includes("名証") || market.includes("札証") || market.includes("福証")) return false;
+
+        return true; 
+    });
     
     // 2. データが0件の場合はアラートを出して理由を明確にする
     if (!codes.length) {
@@ -3143,18 +3199,19 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
       { label: "銘柄名", key: "銘柄名" },
       { label: "市場", key: "市場" },
       { label: "最新テーマ", key: "最新テーマ" },
-      
-      // ① 決算サプライズ＆未来の利益モメンタム
       { label: "予想インパクト_pct", key: "予想インパクト_pct" },
       { label: "利益加速フラグ", key: "利益加速フラグ" },
       { label: "直近営業益YoY", key: "直近営業益YoY" },
       { label: "直近売上YoY", key: "直近売上YoY" },
+      { label: "実質サプライズギャップ", key: "実質サプライズギャップ" },
       { label: "決算期待値", key: "決算期待値" },
       { label: "進捗率", key: "進捗率" },
       { label: "EPS", key: "EPS" },
       { label: "ROE", key: "ROE" },
-
-      // ② PTS流動性 & ⑤ 大型株補正
+      { label: "財務評価", key: "overall_alpha" },
+      { label: "財務スコア", key: "スコア" },
+      { label: "AIスコア", key: "AIスコア" },
+      { label: "AI判定", key: "AI判定" },
       { label: "売買代金(億)", key: "売買代金(億)" },
       { label: "出来高", key: "出来高" },
       { label: "RVOL代金", key: "RVOL代金" },
@@ -3162,8 +3219,6 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
       { label: "Algo_VolTarget", key: "Algo_VolTarget" },
       { label: "Algo_総合判定", key: "Algo_総合判定" },
       { label: "Growth_Bias", key: "Growth_Bias" },
-
-      // ③ 需給
       { label: "踏み上げ期待スコア", key: "踏み上げ期待スコア" },
       { label: "信用倍率", key: "信用倍率" },
       { label: "買い残", key: "買い残" },
@@ -3173,22 +3228,11 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
       { label: "空売り機関", key: "空売り機関" },
       { label: "機関空売り合計株数", key: "機関空売り合計株数" },
       { label: "本日の増減合計株数", key: "本日の増減合計株数" },
-
-      // ④ 過去の決算感応度
       { label: "決算リアクション履歴", key: "決算リアクション履歴" },
-
-      // 🚨 織り込み済みチェック
       { label: "前日終値比率", key: "前日終値比率" },
       { label: "RS_5", key: "RS_5" },
       { label: "RS_20", key: "RS_20" }
     ];
-
-    const allData = window.state?.data || window.DATA_CAND || [];
-    const dataMap = new Map();
-    allData.forEach(item => {
-      const c = String(item["コード"] || "").padStart(4, "0");
-      if (c) dataMap.set(c, item);
-    });
 
     const csvEscape = (v)=>{
       let s = String(v ?? "").replace(/<[^>]*>/g, "").trim();
@@ -3205,61 +3249,96 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
         if (col.key === "セクター" && (val == null || val === "")) val = r["市場"]; 
         if (col.key === "売買代金(億)" && val == null) val = r["売買代金億"];
         if (col.key === "利益加速フラグ") {
-            // 「利益加速ステータス」が存在すればその文字列（🚀加速 or ⚠️出尽くし警戒）を使用
             if (r["利益加速ステータス"]) {
                 val = r["利益加速ステータス"];
             } else {
                 val = (val == 1 || val === "1") ? "加速" : "";
             }
         }
+
+        // 実質サプライズギャップの動的計算
+        if (col.key === "実質サプライズギャップ") {
+            const rs5 = parseFloat(r["RS_5"]);
+            const valOku = parseFloat(r["売買代金(億)"] || r["売買代金億"]);
+            const opYoY = parseFloat(String(r["直近営業益YoY"] || "0").replace(/[^0-9.-]/g, ""));
+
+            let rs5Factor = 1.0;
+            if (!isNaN(rs5)) {
+                if (rs5 < 0.0) rs5Factor = 1.2;
+                else if (rs5 > 0.20) rs5Factor = 0.5;
+            }
+
+            let liqFactor = 1.0;
+            if (!isNaN(valOku)) {
+                if (valOku >= 10 && valOku <= 100) liqFactor = 1.2;
+                else if (valOku >= 500) liqFactor = 0.8;
+                else if (valOku < 1) liqFactor = 0.5;
+            }
+
+            const yoyNum = isNaN(opYoY) ? 0 : opYoY;
+            const rs5Val = isNaN(rs5) ? 0 : rs5;
+
+            const gap = yoyNum * (1 - rs5Val) * liqFactor * rs5Factor;
+            val = gap.toFixed(2);
+        }
+
         return csvEscape(val);
       }).join(",");
     });
 
     const csvText = [headerLine, ...dataLines].join("\n");
 
-    const fullText = `
-あなたはプロのクオンツアナリストです。
-以下のCSVデータは、決算発表を控えた銘柄群です。
-過去の負けパターンである「好決算（前年比増益）なのに暴落する銘柄」を回避するため、以下の【目的別スコアロジック】に厳格に従って「決算またぎ翌営業日+5%以上期待ランキング」を作成してください。
+    const fullText = `あなたはプロのクオンツアナリストです。
+以下のCSVデータ（全 ${codes.length} 銘柄）を分析し、厳格に評価およびランキングを作成してください。
 
-【🚨 AGCの教訓：未来利益のトレンドを最重視せよ】
-表面上の「前年比の利益増」や「利益加速フラグ」に騙されないでください。
-・上方修正の有無
-・下期の利益予想（失速しないか）
-・売上営業利益率の改善（本業が儲かっているか）
-これらが伴っていない単なる「純利益の増加（見かけの改善）」や「通期据え置き」は、株価上昇材料になりません。むしろ出尽くしで暴落します。
+ニュース
+一般論
+想像
+外部情報
+は禁止します。
 
-【目的別スコアロジック】
-① 未来利益サプライズ期待（35%）
-・「予想インパクト_pct」をベースに評価。
-・進捗率が高くても、売上/営業益YoYのバランスが悪い（利益率は悪化している等）場合は「見かけの改善」として大幅に減点。
+############################################################
+【絶対ルール】
+############################################################
+・CSV内の全 ${codes.length} 件を評価すること
+・省略禁止
+・代表例のみ紹介禁止
+・CSV順を維持
+・全件評価が終わるまでランキング禁止
+・全件評価が終わるまで総評禁止
+・最後に
+評価件数
+${codes.length}/${codes.length}
+を表示してください。
 
-② PTSアルゴ買い期待（25%）
-・流動性を重視。「売買代金(億)」が1億未満は危険、1〜10億は小型向き、10〜100億が◎、100億以上は大型。
-・「RVOL代金」「Algo_Momentum」「Algo_VolTarget」の勢いを評価。
+############################################################
+【採点基準】
+############################################################
+評価対象は
+「決算後の株価上昇期待値」
+です。
+企業の質ではありません。
 
-③ 需給（20%）
-・「踏み上げ期待スコア」「本日の増減合計株数」から決算ギャップアップ後の伸びを評価。
-・「買い残」が過剰な銘柄は、決算失敗時の投げ売り・やれやれ売りリスクとして減点。
+重み付け
+① 決算サプライズ期待 40点
+・決算期待値 ・利益加速フラグ ・市場期待との差 ・コンセンサス超過余地
+※「🚀加速」は本物の好業績として加点対象。「⚠️出尽くし警戒」は見かけの改善（利益率悪化・通期据え置きリスク）として大幅減点または除外。
 
-④ 過去決算反応（15%）
-・「決算リアクション履歴」から、過去の決算に対する感応度（サプライズで跳ねる体質か）を評価。
+② PTSアルゴ買い期待 25点
+・流動性を重視。「売買代金(億)」が1億未満は危険、1〜10億は小型向き、10〜100億が最高、100億以上は大型。
+・「RVOL代金」「Algo判定」の勢いを評価。
 
-⑤ 大型株補正（5%）
-・「売買代金(億)」が大きすぎる大型安定株（PBR低位など）は、短期爆発力が低いため減点。
+③ 需給 20点
+・「踏み上げ期待スコア」「売り残」「機関空売り増減」から、決算ギャップアップ後の伸び（ショートカバー）を評価。
+・「買い残」が多すぎる銘柄は、決算失敗時の投げ売りリスクとして減点。
 
-🚨【最重要：織り込み済みチェック】🚨
-・「前日終値比率」や「RS_5」が高い銘柄は「すでに決算期待で買われている」とみなし、総合スコアから大きく減点。
+④ 過去決算反応 15点
+・「決算リアクション履歴」から感応度を評価。
 
-【出力形式】
-1. 決算またぎ期待総合ランキング TOP 10
-   - 各銘柄の総合スコア（推定値）
-   - 強み、弱み、選定理由の簡潔なコメント（3行程度）
-2. ⚠️ 偽物の利益加速・出尽くし警戒リスト
-   - 表面的な数字（利益加速や進捗率）は良いが、利益率の悪化、通期据え置き懸念、またはすでに株価が高値圏（RS_5高）にあり、決算で暴落するリスクが極めて高い銘柄をリストアップしてください。
+🚨織り込み済みチェック（地雷回避）
+・「前日終値比率」や「RS_5」が極端に高い銘柄は、決算前の事前買われすぎとみなし大きく減点。
 
-▼ 判定用CSVデータ
+▼ スクリーニングデータ (CSV)
 ${csvText}
 `;
 
@@ -3277,23 +3356,24 @@ ${csvText}
         document.body.removeChild(ta);
       }
       
-      const oldText = btn.textContent;
-      const oldColor = btn.style.backgroundColor;
-      btn.textContent = `📋 分析用データコピー完了 (${codes.length}件)`;
-      btn.style.backgroundColor = "var(--green)";
+      btn.classList.add("ok");
+      const old = btn.textContent || "";
+      btn.textContent = `📋 分析プロンプト作成完了 (${codes.length}件)`;
       
-      setTimeout(() => {
-        btn.textContent = oldText;
-        btn.style.backgroundColor = oldColor;
+      setTimeout(()=>{ 
+          if(btn){ 
+              btn.classList.remove("ok"); 
+              btn.textContent = old; 
+          } 
       }, 2000);
-
+      
     } catch (err) {
       console.error("コピー失敗:", err);
       alert("コピーに失敗しました。コンソールを確認してください。");
     }
 });
 
- // ==========================================
+// ==========================================
  // ★ Gemini用プロンプト＆データ一括コピー機能（精度向上・刷新版）
  // ==========================================
  document.addEventListener("click", async (e) => {
@@ -3322,8 +3402,8 @@ ${csvText}
     "コード", "銘柄名", "市場", "最新テーマ", 
     "前日終値比率", "売買代金(億)", "RVOL代金", "RS_5", 
     "需給OH", "信用倍率",
-    "利益加速フラグ", "決算期待値",
-    "右肩早期種別", "初動フラグ", "Algo_総合判定"
+    "利益加速フラグ", "決算期待値", "進捗率", "季節調整済進捗差分",
+    "右肩早期種別", "初動フラグ", "Algo_総合判定", "過熱需給判定"
   ];
 
   const csvRows = [cols.join(",")];
@@ -3336,6 +3416,7 @@ ${csvText}
       if (c === "売買代金(億)" && val == null) val = r["売買代金億"];
       
       if (c === "利益加速フラグ") {
+          // 「利益加速ステータス」が存在すればその文字列（🚀加速 or ⚠️出尽くし警戒）を使用
           if (r["利益加速ステータス"]) {
               val = r["利益加速ステータス"];
           } else {
@@ -3360,6 +3441,7 @@ ${macroContext}
 【分析の視点・前提】
 提供されたデータには、短期の爆発力を秘めた銘柄から、中長期でじわじわトレンドを形成する銘柄、需給が締まった銘柄などが混在しています。
 今回は特に「利益加速フラグ」や「決算期待値」などの業績モメンタムと、需給・テクニカルのバランスを重視して、それぞれの銘柄が「どのような買い方（短期急騰狙い、中期トレンドフォロー、押し目買い等）」に向いているか分析してください。
+※「利益加速フラグ」列には「🚀加速（本物の好業績）」と「⚠️出尽くし警戒（見かけの好業績で下落リスクあり）」の2種類が存在します。
 
 【分析依頼】
 1. 本日の相場概況と資金流入セクター：
@@ -3367,12 +3449,12 @@ ${macroContext}
 
 2. スタイル別【厳選・注目すべき3銘柄】：
    以下の3つの異なるスタイルに最も適した銘柄をそれぞれ1つずつ（計3銘柄）選出し、その理由と最適なエントリー戦略を述べてください。
-   - ①【短期急騰・大化け枠】：「利益加速フラグ」や「初動シグナル」が出ており、数日以内の値幅やサプライズ急騰を狙える銘柄
+   - ①【短期急騰・大化け枠】：「利益加速フラグ」が「🚀加速」となっている、または「初動シグナル」が出ており、数日以内の値幅やサプライズ急騰を狙える銘柄
    - ②【中期じわじわ・トレンドフォロー枠】：相対強度（RS_5）やチャートの安定感があり、押し目を丁寧に拾ってじわじわ伸ばせる銘柄
    - ③【需給・バリュー・逆行高枠】：需給（需給OH、信用倍率等）が軽く、地合いに左右されにくい強さや割安妙味がある銘柄
 
 3. 警戒すべきセクターおよびリスク要因：
-   マクロ視点で資金が流出しているセクターや、上値が重そうなパターンを指摘してください。
+   マクロ視点で資金が流出しているセクターや、上値が重そうなパターンを指摘してください。また、「利益加速フラグ」が「⚠️出尽くし警戒」となっている銘柄があれば、罠銘柄として注意喚起してください。
 
 【スクリーニングデータ (CSV)】
 ` + csvRows.join("\n");
@@ -3436,6 +3518,7 @@ ${macroContext}
             <th class="sortable" data-col="Algo_VolTarget" data-type="text">ボラターゲット<span class="arrow"></span></th>
             <th class="sortable" data-col="Algo_総合判定" data-type="text" style="color:var(--blue);">総合判定<span class="arrow"></span></th>
             <th class="sortable" data-col="短期需給判定" data-type="text" style="color:#f97316;">短期需給<span class="arrow"></span></th>
+            <th class="sortable" data-col="過熱需給判定" data-type="text" style="color:#e11d48;">過熱需給<span class="arrow"></span></th>
             <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
             <th class="sortable" data-col="初動フラグ" data-type="text">初動<span class="arrow"></span></th>
@@ -3489,6 +3572,8 @@ ${macroContext}
             <th class="sortable" data-col="overall_alpha" data-type="text">α<span class="arrow"></span></th>
             <th class="num sortable" data-col="財務スコア" data-type="num">財務スコア<span class="arrow"></span></th>
             <th class="num sortable" data-col="進捗率" data-type="num">進捗率<span class="arrow"></span></th>
+            <th class="num sortable" data-col="過去平均進捗率" data-type="num" title="過去数年の同四半期における平均進捗率">過去平均<span class="arrow"></span></th>
+            <th class="num sortable" data-col="季節調整済進捗差分" data-type="num" title="今回の進捗率 − 過去平均進捗率">進捗差分<span class="arrow"></span></th>
             <th class="sortable" data-col="直近売上YoY" data-type="number">売上YoY(%)<span class="arrow"></span></th>
             <th class="sortable" data-col="直近営業益YoY" data-type="number">営益YoY(%)<span class="arrow"></span></th>
             <th class="sortable" data-col="利益加速フラグ" data-type="number">🚀加速<span class="arrow"></span></th>
@@ -3950,6 +4035,72 @@ window.applyQuickSearch = function(keyword) {
   });
 })();
 
+
+// =========================================================
+// ★ ワンクリックフィルタリング機能（割安 / 決算通過＋割安）
+// =========================================================
+function quickFilter(mode) {
+    const tbl = document.getElementById("tbl-candidate") || document.querySelector("table");
+    if (!tbl || !tbl.tBodies.length) return;
+
+    // ヘッダーから列のインデックスを取得
+    const ths = Array.from(tbl.querySelectorAll("thead th"));
+    const idxFactor = ths.findIndex(th => th.dataset.col === "Algo_Factor");
+    const idxDiscount = ths.findIndex(th => th.dataset.col === "割安度");
+    const idxEarningsDate = ths.findIndex(th => th.dataset.col === "決算発表予定日");
+
+    // 今日の日付文字列（YYYY/MM/DD）を取得
+    const today = new Date();
+    const todayStr = today.getFullYear() + "/" + 
+                     String(today.getMonth() + 1).padStart(2, '0') + "/" + 
+                     String(today.getDate()).padStart(2, '0');
+
+    let hitCount = 0;
+    const rows = Array.from(tbl.tBodies[0].rows);
+
+    rows.forEach(tr => {
+        // セルの値を取得
+        const factorText = idxFactor !== -1 ? tr.cells[idxFactor].textContent : "";
+        const discountText = idxDiscount !== -1 ? tr.cells[idxDiscount].textContent.replace(/[^0-9.-]/g, "") : "0";
+        const discountVal = parseFloat(discountText) || 0;
+        
+        // 日付フォーマットの統一（ハイフンをスラッシュに置換）
+        let dateText = idxEarningsDate !== -1 ? tr.cells[idxEarningsDate].textContent.trim() : "";
+        dateText = dateText.replace(/-/g, "/"); 
+
+        // ① 割安の条件（ファクターが「超割安」か「割安」、かつ割安度が20以上）
+        const isUndervalued = (factorText.includes("超割安") || factorText.includes("割安")) && (discountVal >= 20);
+
+        // ② 決算通過の条件（日付が今日より前、またはすでに発表済みで空欄）
+        const isPostEarnings = dateText === "" || dateText < todayStr;
+
+        // モード別の表示判定
+        let show = false;
+        if (mode === "undervalued") {
+            show = isUndervalued;
+        } else if (mode === "post_earnings") {
+            show = isUndervalued && isPostEarnings;
+        }
+
+        // 行の表示・非表示を切り替え
+        if (show) {
+            tr.style.display = "";
+            hitCount++;
+        } else {
+            tr.style.display = "none";
+        }
+    });
+
+    // 件数表示の更新
+    const countElem = document.getElementById("count");
+    if (countElem) {
+        countElem.textContent = hitCount;
+    }
+}
+
+// ボタンにイベントを紐付け
+document.getElementById("btn-quick-undervalued")?.addEventListener("click", () => quickFilter("undervalued"));
+document.getElementById("btn-quick-postearnings")?.addEventListener("click", () => quickFilter("post_earnings"));
 </script>
 </body>
 </html>

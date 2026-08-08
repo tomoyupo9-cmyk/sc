@@ -5,6 +5,7 @@ import time
 from datetime import date
 import sys
 import re  # ★追加：正規表現モジュール
+import json # ★追加：過去の決算日(JSON)を読み込むため
 
 # 既存のデータベースのパスに合わせて変更してください
 DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
@@ -161,19 +162,43 @@ def scrape_kabutan_all_themes():
             # ==========================================
             # 3. ★追加：決算発表予定日の取得・保存ロジック
             # ==========================================
+            kessan_date = None
             kessan_div = soup.find("div", id="kessan_happyoubi")
             if kessan_div:
                 time_tag = kessan_div.find("time")
                 if time_tag:
                     kessan_date = time_tag.text.strip() # 例: "2026/08/14"
-                    # screenerテーブルへ直接アップデート
-                    cur.execute("""
-                        UPDATE screener SET 決算発表予定日 = ? WHERE コード = ?
-                    """, (kessan_date, code))
+
+            if kessan_date:
+                # ① 株探から予定日が取得できた場合
+                cur.execute("""
+                    UPDATE screener SET 決算発表予定日 = ? WHERE コード = ?
+                """, (kessan_date, code))
+            else:
+                # ② 取得できなかった場合は finance_notes の past_earnings_dates を参照
+                cur.execute("SELECT past_earnings_dates FROM finance_notes WHERE コード = ?", (code,))
+                fn_row = cur.fetchone()
+                
+                fallback_date = None
+                if fn_row and fn_row[0]:
+                    try:
+                        past_dates = json.loads(fn_row[0])
+                        if isinstance(past_dates, list) and len(past_dates) > 0:
+                            # リストの最後が直近の過去決算日 ("YYYY-MM-DD" を "YYYY/MM/DD" に整形)
+                            last_date = past_dates[-1].replace("-", "/")
+                            # ダッシュボードで見た時に予定日ではないことが分かるよう目印をつける
+                            fallback_date = f"{last_date} (過去実績)"
+                    except Exception:
+                        pass
+                
+                # フォールバック日があればそれを入れ、なければ古いデータを消すためにNULLでリセット
+                cur.execute("""
+                    UPDATE screener SET 決算発表予定日 = ? WHERE コード = ?
+                """, (fallback_date, code))
 
             # 変更を確定
             conn.commit()
-            print(f"[{i+1}/{len(codes)}] {code} : テーマ({len(extracted_themes)}件) ＆ 信用残 更新完了")
+            print(f"[{i+1}/{len(codes)}] {code} : テーマ({len(extracted_themes)}件) ＆ 信用残 ＆ 決算日 更新完了")
 
         except Exception as e:
             print(f"[{i+1}/{len(codes)}] {code} : エラー発生 -> {e}")
