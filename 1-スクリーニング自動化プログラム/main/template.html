@@ -641,6 +641,7 @@
     
     <!-- ワンクリック抽出ボタン（新規追加） -->
     <button class="btn" id="btn-quick-undervalued" style="background-color: #0ea5e9;">✨ 割安銘柄</button>
+    <button class="btn" id="btn-quick-nextday" style="background-color: #ef4444; color: white; font-weight: bold;">🔥 翌日+5%狙い (総当たり)</button>
     <button class="btn" id="btn-quick-postearnings" style="background-color: #059669;">✅ 決算通過 ＆ 割安</button>
   </div>
 
@@ -681,11 +682,15 @@
     "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
     "信用倍率": "信用買い残 ÷ 信用売り残。1を割ると売り長（将来の買い戻し圧力）、高いと買い長（将来の売り圧力）。",
     "需給安全": "信用倍率1.0～3.0 かつ 出来高OH(買い残÷20日平均出来高)3.0以下の、機関の標的になりにくい銘柄。",
-    "需給OH": "出来高オーバーハング（Days to Cover）。買い残が直近20日平均出来高の何日分あるか。3.0以下がノイズの少ない安全圏。",
+    "需給OH": "出来高オーバーハング（Days to Cover）。買い残が直近20日平均出来高の何日分(何回転)あるか。0.5日分未満は軽く、4日分超はかなり重い。",
+    "買い残/浮動株": "信用買い残 ÷ 浮動株数(%)。1%未満は問題なし、5%以上は買い過多、10%以上は過度な買い長で危険。",
+    "買い残増減20日": "20日前（または決算前20日）からの信用買い残の増減率(%)。決算期待等で急増(+30%超)している場合は捕まり玉のリスク大。",
+    "需給負荷": "浮動株比率・出来高回転日数(需給OH)・買い残増加率から算出した総合的な上値の重さ（0〜100点）。高得点ほど売り圧力大。",
     "売り残": "信用売り残高（株数）。将来の買い戻し要因。",
     "買い残": "信用買い残高（株数）。将来の売り要因。",
     "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
     "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
+    "初動S":"テーマ強度(市場全体の資金流入度) × 個別の勢いを評価した初動期待スコア(100点満点)。",
     "財務スコア":"財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。",
     "進捗率":"今回の決算における通期に対する進捗率（%）。",
     "過去平均進捗率":"過去数年における、同四半期の平均的な進捗率（%）。企業の季節性を測る基準になります。",
@@ -784,7 +789,10 @@
     "過熱需給判定": "短期的なイナゴ集中と売り浴びせリスク（過熱需給）を判定します。\n\n" +
                     "・⚠️極度過熱(イナゴ化)：急騰×商い急増×信用買い過多。利確や空売りの標的になりやすい危険水域。\n" +
                     "・🟠警戒(過熱気味)：短期的な資金集中が見られ、調整リスクが高まっている状態。\n" +
-                    "・🟢正常：過熱感はなし。パニック売りによる下落時は、過熱ではないため「正常」となります。"
+                    "・🟢正常：過熱感はなし。パニック売りによる下落時は、過熱ではないため「正常」となります。",
+    "イナゴ過熱判定": "【短期の買い過熱】今まさに資金が殺到しているか。株価下落や低出来高ならスコア低下。",
+    "信用需給判定": "【将来の投げ売り圧力】信用倍率ベースの重さ。決算前などで高いと危険。",
+    "機関売り判定": "【大口の売り浴びせリスク】実際の空売り残高と本日の増減ペース。",
   };
 
   window.DATACOL_TO_HELPKEY = {
@@ -793,9 +801,12 @@
     "信用倍率":"信用倍率",
     "需給安全フラグ":"需給安全",
     "需給OH":"需給OH",
+    "信用買い残_浮動株比率":"買い残/浮動株",
+    "信用買い残増減率_20d":"買い残増減20日",
+    "信用需給負荷スコア":"需給負荷",
     "売り残":"売り残",
     "買い残":"買い残",
-    "初動フラグ":"初動","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
+    "初動フラグ":"初動","初動スコア":"初動S","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
     "判定":"判定","判定理由":"判定理由","推奨アクション":"推奨","推奨比率":"推奨比率%","シグナル更新日":"更新",
     "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日",
     "抵抗帯中心":"抵抗帯中心","抵抗最終日":"抵抗最終日","最寄り抵抗":"最寄り抵抗","支持帯中心":"支持帯中心","支持最終日":"支持最終日","最寄り支持":"最寄り支持",
@@ -818,6 +829,9 @@
     "三角スコア": "三角スコア",
     "短期需給判定": "短期需給判定",
     "過熱需給判定": "過熱需給判定",
+    "イナゴ過熱判定": "イナゴ過熱判定",
+    "信用需給判定": "信用需給判定",
+    "機関売り判定": "機関売り判定",
   };
 </script>
 
@@ -1126,7 +1140,7 @@
 
               let cmp = 0;
               
-              if (colKey === "Algo_Momentum" || colKey === "Algo_VolTarget" || colKey === "Algo_Factor" || colKey === "Algo_総合判定") {
+              if (colKey === "Algo_Momentum" || colKey === "Algo_VolTarget" || colKey === "Algo_Factor" || colKey === "Algo_総合判定" || colKey === "イナゴ過熱判定" || colKey === "信用需給判定" || colKey === "機関売り判定") {
                   const getScore = (str) => {
                       const m = String(str).match(/\((\d+)点\)/);
                       return m ? parseInt(m[1], 10) : -1;
@@ -1855,12 +1869,6 @@
       else if (jq.includes("強い売り")) jqBadge = `<span class="badge b-orange" style="font-weight:bold;">${escapeHtml(jq)}</span>`;
       else if (jq.includes("需給薄")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
       
-      const oh_risk = r["過熱需給判定"] || "🟢正常";
-      let ohRiskBadge = oh_risk;
-      if (oh_risk.includes("極度過熱")) ohRiskBadge = `<span class="badge" style="background:#fee2e2; color:#be123c; border:1px solid #fecaca; font-weight:bold;">${escapeHtml(oh_risk)}</span>`;
-      else if (oh_risk.includes("警戒")) ohRiskBadge = `<span class="badge b-orange">${escapeHtml(oh_risk)}</span>`;
-      else if (oh_risk.includes("正常")) ohRiskBadge = `<span class="badge b-gray">${escapeHtml(oh_risk)}</span>`;
-      
       
       // =========================================================
       // ★ ここに以下のコードをごっそり追加します！ ★
@@ -1930,21 +1938,26 @@
         <td>${escapeHtml(r["Algo_VolTarget"] || "-")}</td>
         <td style="font-weight:bold; font-size:1.05em; background-color:#f8fafc;">${escapeHtml(r["Algo_総合判定"] || "-")}</td>
         <td style="font-weight:bold; color:#f97316;">${escapeHtml(r["短期需給判定"] || "-")}</td>
-        <td style="text-align:center;">${ohRiskBadge}</td>
+        <td style="font-weight:bold;" data-sort="${r['イナゴ過熱スコア'] ?? 0}">${escapeHtml(r["イナゴ過熱判定"] || "🟢静 (0点)")}</td>
+        <td style="font-weight:bold;" data-sort="${r['信用需給スコア'] ?? 0}">${escapeHtml(r["信用需給判定"] || "🟢正常 (0点)")}</td>
+        <td style="font-weight:bold;" data-sort="${r['機関売りスコア'] ?? 0}">${escapeHtml(r["機関売り判定"] || "🟢なし (0点)")}</td>
         <td style="font-weight:bold; ${r["AI判定"]==='★GO'?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
         <td class="num" data-sort="${r['AI目標値_raw'] ?? -999999}">${r["AI目標値"] || "-"}</td>
         <td>${r["初動フラグ"] || ""}</td>
+        <td class="num" style="font-weight:bold;">${r["初動スコア"] ?? ""}</td>
         <td>${r["底打ちフラグ"] || ""}</td>
         <td>${r["右肩早期フラグ"] || ""}</td>
         <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
         <td style="text-align:center;">${sfBadge}</td>
         <td class="num" style="text-align:center;">${sqBadge}</td>
-        <td class="num">${Number.isFinite(Number(r["需給OH"])) ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
-
         <td class="num">${Number.isFinite(Number(r["信用倍率"])) ? Number(r["信用倍率"]).toFixed(2) : "-"}</td>
-        <td class="num">${Number.isFinite(Number(r["買い残"])) ? Number(r["買い残"]).toLocaleString() : "-"}</td>
+        <td class="num" style="${Number(r['需給OH']) >= 4.0 ? 'color:#e11d48; font-weight:bold;' : (Number(r['需給OH']) < 0.5 ? 'color:#15803d;' : '')}">${Number.isFinite(Number(r["需給OH"])) ? Number(r["需給OH"]).toFixed(2) : "-"}</td>
+        <td class="num" style="${Number(r['信用買い残_浮動株比率']) >= 5.0 ? 'color:#e11d48; font-weight:bold;' : ''}">${Number.isFinite(Number(r["信用買い残_浮動株比率"])) ? Number(r["信用買い残_浮動株比率"]).toFixed(1) + '%' : "-"}</td>
+        <td class="num" style="${Number(r['信用買い残増減率_20d']) >= 30.0 ? 'color:#e11d48; font-weight:bold;' : ''}">${Number.isFinite(Number(r["信用買い残増減率_20d"])) ? (Number(r["信用買い残増減率_20d"]) > 0 ? '+' : '') + Number(r["信用買い残増減率_20d"]).toFixed(1) + '%' : "-"}</td>
+        <td class="num" style="font-weight:bold; ${Number(r['信用需給負荷スコア']) >= 70.0 ? 'color:#e11d48;' : (Number(r['信用需給負荷スコア']) <= 30.0 ? 'color:#15803d;' : '')}">${Number.isFinite(Number(r["信用需給負荷スコア"])) ? Number(r["信用需給負荷スコア"]).toFixed(1) : "-"}</td>
+        <td style="text-align:center;">${sfBadge}</td>
         <td class="num">${Number.isFinite(Number(r["売り残"])) ? Number(r["売り残"]).toLocaleString() : "-"}</td>
-
+        <td class="num">${Number.isFinite(Number(r["買い残"])) ? Number(r["買い残"]).toLocaleString() : "-"}</td>
         <td>${escapeHtml(r["空売り機関"] || "-")}</td>
         <td class="num" data-sort="${Number.isFinite(instTotalVal) ? instTotalVal : -999999}">${instTotal}</td>
         <td class="num" style="${instChgStyle}" data-sort="${Number.isFinite(instChgNum) ? instChgNum : -999999}">${instChgText}</td>
@@ -2790,6 +2803,9 @@ function generatePromptJson(code) {
     credit_ratio: safeStr(r["信用倍率"]),
     credit_sell_balance: safeStr(r["売り残"]),
     credit_buy_balance: safeStr(r["買い残"]),
+    credit_buy_float_ratio: safeStr(r["信用買い残_浮動株比率"]),
+    credit_buy_change_20d: safeStr(r["信用買い残増減率_20d"]),
+    credit_supply_risk_score: safeStr(r["信用需給負荷スコア"]),
     latest_theme: safeStr(r["最新テーマ"]),
     high: safeStr(r["高値"]),
     low: safeStr(r["安値"]),
@@ -2820,7 +2836,9 @@ function generatePromptJson(code) {
     early_uptrend_type: safeStr(r["右肩早期種別"]),
     judge: safeStr(r["判定"]),
     judge_reason: safeStr(r["判定理由"]),
-    overheat_risk: safeStr(r["過熱需給判定"]),
+    inago_heat: safeStr(r["イナゴ過熱判定"]),
+    margin_risk: safeStr(r["信用需給判定"]),
+    inst_sell: safeStr(r["機関売り判定"]),
     action: safeStr(r["推奨アクション"]),
     ratio: safeStr(r["推奨比率"]),
     signal_date: safeStr(r["シグナル更新日"]),
@@ -3218,9 +3236,15 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
       { label: "Algo_Momentum", key: "Algo_Momentum" },
       { label: "Algo_VolTarget", key: "Algo_VolTarget" },
       { label: "Algo_総合判定", key: "Algo_総合判定" },
+      { label: "イナゴ過熱判定", key: "イナゴ過熱判定" },
+      { label: "信用需給判定", key: "信用需給判定" },
+      { label: "機関売り判定", key: "機関売り判定" },
       { label: "Growth_Bias", key: "Growth_Bias" },
       { label: "踏み上げ期待スコア", key: "踏み上げ期待スコア" },
       { label: "信用倍率", key: "信用倍率" },
+      { label: "買い残/浮動株比率", key: "信用買い残_浮動株比率" },
+      { label: "買い残増減20日", key: "信用買い残増減率_20d" },
+      { label: "信用需給負荷スコア", key: "信用需給負荷スコア" },
       { label: "買い残", key: "買い残" },
       { label: "売り残", key: "売り残" },
       { label: "需給OH", key: "需給OH" },
@@ -3401,9 +3425,10 @@ ${csvText}
   const cols = [
     "コード", "銘柄名", "市場", "最新テーマ", 
     "前日終値比率", "売買代金(億)", "RVOL代金", "RS_5", 
-    "需給OH", "信用倍率",
+    "需給OH", "信用倍率", "信用買い残_浮動株比率", "信用買い残増減率_20d", "信用需給負荷スコア",
     "利益加速フラグ", "決算期待値", "進捗率", "季節調整済進捗差分",
-    "右肩早期種別", "初動フラグ", "Algo_総合判定", "過熱需給判定"
+    "右肩早期種別", "初動フラグ", "Algo_総合判定",
+    "イナゴ過熱判定", "信用需給判定", "機関売り判定"
   ];
 
   const csvRows = [cols.join(",")];
@@ -3518,19 +3543,26 @@ ${macroContext}
             <th class="sortable" data-col="Algo_VolTarget" data-type="text">ボラターゲット<span class="arrow"></span></th>
             <th class="sortable" data-col="Algo_総合判定" data-type="text" style="color:var(--blue);">総合判定<span class="arrow"></span></th>
             <th class="sortable" data-col="短期需給判定" data-type="text" style="color:#f97316;">短期需給<span class="arrow"></span></th>
-            <th class="sortable" data-col="過熱需給判定" data-type="text" style="color:#e11d48;">過熱需給<span class="arrow"></span></th>
+            <th class="sortable" data-col="イナゴ過熱判定" data-type="text" style="color:#e11d48;">イナゴ過熱<span class="arrow"></span></th>
+            <th class="sortable" data-col="信用需給判定" data-type="text" style="color:#b45309;">信用需給<span class="arrow"></span></th>
+            <th class="sortable" data-col="機関売り判定" data-type="text" style="color:#2563eb;">機関売り<span class="arrow"></span></th>
             <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AI目標値" data-type="num">AI目標<span class="arrow"></span></th>
             <th class="sortable" data-col="初動フラグ" data-type="text">初動<span class="arrow"></span></th>
+            <th class="num sortable" data-col="初動スコア" data-type="num" style="color:var(--orange);">初動S<span class="arrow"></span></th>
             <th class="sortable" data-col="底打ちフラグ" data-type="text">底打ち<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期フラグ" data-type="text">短期<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="text">短期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
             <th class="num sortable" data-col="踏み上げ期待スコア" data-type="num">踏み上げ<span class="arrow"></span></th>
-            <th class="num sortable" data-col="需給OH" data-type="num">需給OH<span class="arrow"></span></th>
             <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<span class="arrow"></span></th>
-            <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
+            <th class="num sortable" data-col="需給OH" data-type="num">需給OH<span class="arrow"></span></th>
+            <th class="num sortable" data-col="信用買い残_浮動株比率" data-type="num">買い残/浮動株%<span class="arrow"></span></th>
+            <th class="num sortable" data-col="信用買い残増減率_20d" data-type="num">買い残増減20日%<span class="arrow"></span></th>
+            <th class="num sortable" data-col="信用需給負荷スコア" data-type="num" style="color:#e11d48;">需給負荷<span class="arrow"></span></th>
+            <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
             <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
+            <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
             <th class="sortable" data-col="空売り機関" data-type="text">空売り<span class="arrow"></span></th>
             <th class="num sortable" data-col="機関空売り合計株数" data-type="num">機関空売り合計<span class="arrow"></span></th>
             <th class="num sortable" data-col="本日の増減合計株数" data-type="num">機関増減(当日)<span class="arrow"></span></th>
@@ -4101,6 +4133,123 @@ function quickFilter(mode) {
 // ボタンにイベントを紐付け
 document.getElementById("btn-quick-undervalued")?.addEventListener("click", () => quickFilter("undervalued"));
 document.getElementById("btn-quick-postearnings")?.addEventListener("click", () => quickFilter("post_earnings"));
+
+// =========================================================
+// ★ 翌日+5%期待（スコアリング方式・並び替え付き・検証モード）
+// =========================================================
+document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
+    const tbl = document.getElementById("tbl-candidate") || document.querySelector("table");
+    if (!tbl || !tbl.tBodies.length) return;
+
+    const tbody = tbl.tBodies[0];
+    const rows = Array.from(tbody.rows);
+
+    // ★修正箇所：ここで全データからコードをキーにしたMapを作成する
+    const allData = window.state?.data || window.DATA_CAND || [];
+    const localDataMap = new Map();
+    allData.forEach(item => {
+        const c = String(item["コード"] || "").padStart(4, "0");
+        if (c) localDataMap.set(c, item);
+    });
+
+    rows.forEach(tr => {
+        const code = tr.getAttribute("data-code");
+        // ★修正箇所：localDataMap から銘柄データを取得する
+        const r = localDataMap.get(code);
+        if (!r) {
+            tr.dataset.score = -1;
+            return;
+        }
+
+        // 💡 列名のズレを吸収！どちらの名前でも拾えるように OR (||) で繋ぐ
+        const algoMom  = String(r["Algo_Momentum"] || r["モメンタムCTA"] || "");
+        const algoSogo = String(r["Algo_総合判定"] || r["総合判定"] || "");
+        const tanki    = String(r["短期需給判定"] || r["短期需給"] || "");
+        const kikan    = String(r["機関売り判定"] || r["空売り機関"] || "");
+        const shinyo   = String(r["信用需給判定"] || r["信用需給"] || "");
+        
+        const rvol = parseFloat(String(r["RVOL代金"] || "0").replace(/[^0-9.-]/g, ""));
+        const rs5  = parseFloat(String(r["RS_5"] || "0").replace(/[^0-9.-]/g, ""));
+        const rs20 = parseFloat(String(r["RS_20"] || "0").replace(/[^0-9.-]/g, ""));
+
+        // 三角スコア（△Score）から上昇スコアを抽出
+        const sankaku = String(r["三角スコア"] || r["△Score"] || "");
+        const upMatch = sankaku.match(/▲.*?(\d+)/);
+        const upScore = upMatch ? parseInt(upMatch[1], 10) : 0;
+
+        // --------------------------------------------------
+        // 📊 100点満点の加点ロジック
+        // --------------------------------------------------
+        let score = 0;
+        if (algoMom.includes("強気")) score += 20;
+        if (algoSogo.includes("買い")) score += 15;
+        if (tanki.includes("本物") || tanki.includes("吸い上げ")) score += 20;
+        if (upScore >= 70) score += 15;
+        if (rvol >= 1.5) score += 10;
+        if (rs5 > 0) score += 5;
+        if (rs20 > 0) score += 5;
+        if (!kikan.includes("売増") && kikan !== "") score += 5;
+        if (!shinyo.includes("需給悪") && shinyo !== "") score += 5;
+
+        // 🚨 致命的な地雷フィルター（スコアが良くても即除外）
+        const isMine = algoMom.includes("弱気") || 
+                       tanki.includes("強い売り") || tanki.includes("吸収") ||
+                       tanki.includes("需給薄");
+
+        // 行のデータ属性にスコアを保存（地雷は強制-1点）
+        tr.dataset.score = isMine ? -1 : score;
+    });
+
+    // --------------------------------------------------
+    // 🎯 スコアが高い順（降順）にテーブルの行を並び替え
+    // --------------------------------------------------
+    rows.sort((a, b) => Number(b.dataset.score) - Number(a.dataset.score));
+    rows.forEach(tr => tbody.appendChild(tr));
+
+    // --------------------------------------------------
+    // 🎨 点数に応じた表示分け（今回は検証のため0点以上を全表示）
+    // --------------------------------------------------
+    let count80 = 0, count70 = 0, count60 = 0, countOther = 0;
+    
+    rows.forEach(tr => {
+        const score = Number(tr.dataset.score);
+        
+        if (score >= 0) { // ★地雷（-1点）以外はすべて表示する
+            tr.style.display = "";
+            
+            if (score >= 80) {
+                count80++;
+                tr.style.backgroundColor = "rgba(239, 68, 68, 0.15)"; // 薄い赤
+                tr.setAttribute("title", `🔥 翌日+5%候補 : ${score}点`);
+            } else if (score >= 70) {
+                count70++;
+                tr.style.backgroundColor = "rgba(234, 179, 8, 0.15)"; // 薄い黄色
+                tr.setAttribute("title", `👀 監視 : ${score}点`);
+            } else if (score >= 60) {
+                count60++;
+                tr.style.backgroundColor = "rgba(59, 130, 246, 0.1)"; // 薄い青
+                tr.setAttribute("title", `🤔 保留 : ${score}点`);
+            } else {
+                countOther++;
+                tr.style.backgroundColor = ""; // 通常
+                tr.setAttribute("title", `📉 点数不足 : ${score}点`);
+            }
+        } else {
+            tr.style.display = "none";
+        }
+    });
+
+    // 件数表示の更新
+    const totalVisible = count80 + count70 + count60 + countOther;
+    const countElem = document.getElementById("count");
+    if (countElem) {
+        countElem.innerHTML = `<span style="color: #ef4444; font-weight:bold;">${totalVisible} 件表示</span> (🔥80点以上:${count80} 👀70点台:${count70} 🤔60点台:${count60})`;
+    }
+
+    // ユーザーへの通知
+    alert(`📊 スコアリング完了！\n\n🔥 80点以上 (候補): ${count80}件\n👀 70〜79点 (監視): ${count70}件\n🤔 60〜69点 (保留): ${count60}件\n📉 59点以下: ${countOther}件\n\n地雷銘柄以外をすべて表示し、スコアが高い順に並び替えました。\n行にマウスを合わせると獲得スコアが確認できます！`);
+});
+
 </script>
 </body>
 </html>

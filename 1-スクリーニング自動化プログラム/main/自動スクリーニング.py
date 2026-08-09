@@ -82,14 +82,14 @@ MARKER_FILE         = Path(r"H:\desctop\株攻略\1-スクリーニング自動�
 MODEL_PATH          = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
 
 # --- [2] 実行モード・オプション設定 ---
-RUN_SESSION         = "EOD"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
-#RUN_SESSION         = "MIDDAY"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
-AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
-#AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
+#RUN_SESSION         = "EOD"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
+RUN_SESSION         = "MIDDAY"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
+#AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
+AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
 USE_CSV             = True    # CSV取り込みフラグ
 TEST_MODE           = False   # テストモードフラグ（件数制限）
 TEST_LIMIT          = 50      # テスト時の最大件数
-PRICE_GUARD_ENABLED = True   # 休日価格補完フラグ
+PRICE_GUARD_ENABLED = False   # 休日価格補完フラグ
 MIDDAY_FILTER_BY_FLAGS = False # MIDDAY対象を絞るか
 
 # --- [3] トレンド・シグナル判定 パラメータ ---
@@ -2535,68 +2535,110 @@ def load_tob_titles_map(days=180):
 
 
 # ==============================================================
-# ★ 追加：正式なフェーズとして信用残とDTC (需給OH) をDBに永続化
+# ★ 修正：信用需給の立体評価（浮動株比率・増減率・需給負荷スコア）の実装
 # ==============================================================
 def phase_update_margin_metrics(conn: sqlite3.Connection):
     """
-    信用残データと需給OH（Days to Cover）、および踏み上げ期待スコアを計算し、
-    screenerテーブルを更新する。
+    信用残データ、時系列変化（5日/20日/決算前）、浮動株比率、
+    信用需給負荷スコア等を一括計算してscreenerテーブルを更新する。
     """
     cur = conn.cursor()
     
-    # 必要なカラムがscreenerテーブルにあるか確認し、なければ追加
+    # 新規指標用のカラムを追加
     columns_to_ensure = [
         ("信用倍率", "REAL"), ("売り残", "REAL"), ("買い残", "REAL"), 
-        ("需給OH", "REAL"), ("需給安全フラグ", "INTEGER"), ("踏み上げ期待スコア", "REAL")
+        ("需給OH", "REAL"), ("需給安全フラグ", "INTEGER"), ("踏み上げ期待スコア", "REAL"),
+        ("信用買い残_浮動株比率", "REAL"), ("信用買い残増減率_5d", "REAL"),
+        ("信用買い残増減率_20d", "REAL"), ("決算前20日買い残増加率", "REAL"),
+        ("信用需給負荷スコア", "REAL"), ("浮動株数", "REAL")
     ]
     for col, decl in columns_to_ensure:
         try:
             cur.execute(f'ALTER TABLE screener ADD COLUMN "{col}" {decl}')
         except Exception:
             pass
-            
-    # 最新の信用残データを stock_credit_margin テーブルから取得
+
+    # 1. 信用残データの時系列を取得（最新、5期前、20期前）
     try:
-        sql_margin = """
-            SELECT s.コード, s.売り残, s.買い残, s.倍率
-            FROM stock_credit_margin s
-            INNER JOIN (
-                SELECT コード, MAX(基準日) as max_date 
-                FROM stock_credit_margin GROUP BY コード
-            ) latest ON s.コード = latest.コード AND s.基準日 = latest.max_date
+        sql_margin_hist = """
+            SELECT コード, 基準日, 売り残, 買い残, 倍率
+            FROM stock_credit_margin
+            ORDER BY コード, 基準日 DESC
         """
-        margin_df = pd.read_sql_query(sql_margin, conn)
-        margin_df['コード'] = margin_df['コード'].astype(str).str.zfill(4)
+        margin_hist_df = pd.read_sql_query(sql_margin_hist, conn)
+        margin_hist_df['コード'] = margin_hist_df['コード'].astype(str).str.zfill(4)
     except Exception as e:
         print(f"[margin][WARN] stock_credit_margin の読み込みに失敗しました: {e}")
         return
+
+    # 時系列データの変化率計算
+    margin_summary = []
+    for code, group in margin_hist_df.groupby('コード'):
+        group = group.reset_index(drop=True)
+        latest = group.iloc[0]
+        buy_latest = float(latest['買い残']) if pd.notna(latest['買い残']) else 0.0
+        sell_latest = float(latest['売り残']) if pd.notna(latest['売り残']) else 0.0
+        ratio_latest = float(latest['倍率']) if pd.notna(latest['倍率']) else None
         
-    # 現在値と20日平均代金を screener から取得
-    sc_df = pd.read_sql_query("SELECT コード, 現在値, 売買代金20日平均億 FROM screener", conn)
+        # 5期前(~5週前)・20期前(~20週前/決算スパン前)のデータ取得
+        buy_5d = float(group.iloc[1]['買い残']) if len(group) > 1 and pd.notna(group.iloc[1]['買い残']) else None
+        buy_20d = float(group.iloc[4]['買い残']) if len(group) > 4 and pd.notna(group.iloc[4]['買い残']) else None
+        
+        # 増減率 (%)
+        diff_5d = ((buy_latest - buy_5d) / buy_5d * 100.0) if buy_5d and buy_5d > 0 else None
+        diff_20d = ((buy_latest - buy_20d) / buy_20d * 100.0) if buy_20d and buy_20d > 0 else None
+
+        margin_summary.append({
+            'コード': code,
+            '売り残': sell_latest,
+            '買い残': buy_latest,
+            '倍率': ratio_latest,
+            '信用買い残増減率_5d': diff_5d,
+            '信用買い残増減率_20d': diff_20d,
+            '決算前20日買い残増加率': diff_20d
+        })
+    
+    margin_df = pd.DataFrame(margin_summary)
+
+    # 2. screenerから浮動株数、現在値、売買代金を取得
+    sc_df = pd.read_sql_query("SELECT コード, 現在値, 売買代金20日平均億, 浮動株数 FROM screener", conn)
     sc_df['コード'] = sc_df['コード'].astype(str).str.zfill(4)
     
     df = pd.merge(sc_df, margin_df, on='コード', how='left')
     
-    # ベクトル計算の前処理
+    # 3. 指標の個別計算
     bb = pd.to_numeric(df['買い残'], errors='coerce').fillna(0)
     bs = pd.to_numeric(df['売り残'], errors='coerce').fillna(0)
     price = pd.to_numeric(df['現在値'], errors='coerce').fillna(0)
     turn20 = pd.to_numeric(df['売買代金20日平均億'], errors='coerce').fillna(0)
+    float_shares = pd.to_numeric(df['浮動株数'], errors='coerce')
     
-    # 現在値と20日平均代金から20日平均出来高(株数)を逆算
+    # 20日平均出来高（株数）
     v20 = np.where(price > 0, (turn20 * 1e8) / price, np.nan)
     v20 = np.where(v20 == 0, np.nan, v20)
     
-    # 需給OH (Days to Cover) と信用倍率の計算
+    # ① 需給OH (Days to Cover)
     df['需給OH'] = bb / v20
     df['信用倍率_calc'] = np.where(bs > 0, bb / bs, 999.9)
     
-    # 安全圏の判定
+    # ② 信用買い残 ÷ 浮動株数 (%)
+    df['信用買い残_浮動株比率'] = np.where((float_shares.notna()) & (float_shares > 0), (bb / float_shares) * 100.0, None)
+
+    # ③ 信用需給負荷スコア（100点満点：浮動株比率40% + 出来高回転日数30% + 20日買い残急増率30%）
+    score_float = np.where(
+        df['信用買い残_浮動株比率'].notna(),
+        np.clip(df['信用買い残_浮動株比率'].fillna(0) / 10.0 * 40.0, 0, 40),
+        np.clip(df['需給OH'].fillna(0) / 4.0 * 40.0, 0, 40) # 浮動株数が無い場合は需給OHで補填
+    )
+    score_oh = np.clip(df['需給OH'].fillna(0) / 4.0 * 30.0, 0, 30)
+    score_inc = np.clip(df['信用買い残増減率_20d'].fillna(0) / 50.0 * 30.0, 0, 30)
+    df['信用需給負荷スコア'] = np.round(score_float + score_oh + score_inc, 1)
+
+    # 需給安全フラグ・踏み上げ期待スコア
     cond_ratio = df['信用倍率_calc'].between(1.0, 3.0)
     cond_overhang = df['需給OH'] <= 3.0
     df['需給安全フラグ'] = np.where(cond_ratio & cond_overhang, 1, 0)
     
-    # 【追加】踏み上げ（ショートスクイーズ）期待スコアの計算
     cond_sq_high = (df['信用倍率_calc'] <= 1.0) & (bs >= 50000)
     cond_sq_mid  = (df['信用倍率_calc'] <= 2.0) & (bs >= 10000)
     df['踏み上げ期待スコア'] = np.select(
@@ -2605,7 +2647,7 @@ def phase_update_margin_metrics(conn: sqlite3.Connection):
         default=0.0
     )
     
-    # DBへの UPDATE レコード作成
+    # DBへの UPDATE 実行
     updates = []
     for _, r in df.iterrows():
         updates.append((
@@ -2615,18 +2657,25 @@ def phase_update_margin_metrics(conn: sqlite3.Connection):
             float(r['需給OH']) if pd.notna(r['需給OH']) else None,
             int(r['需給安全フラグ']) if pd.notna(r['需給安全フラグ']) else 0,
             float(r['踏み上げ期待スコア']) if pd.notna(r['踏み上げ期待スコア']) else 0.0,
+            float(r['信用買い残_浮動株比率']) if pd.notna(r['信用買い残_浮動株比率']) else None,
+            float(r['信用買い残増減率_5d']) if pd.notna(r['信用買い残増減率_5d']) else None,
+            float(r['信用買い残増減率_20d']) if pd.notna(r['信用買い残増減率_20d']) else None,
+            float(r['決算前20日買い残増加率']) if pd.notna(r['決算前20日買い残増加率']) else None,
+            float(r['信用需給負荷スコア']) if pd.notna(r['信用需給負荷スコア']) else 0.0,
             str(r['コード'])
         ))
         
     if updates:
         cur.executemany("""
             UPDATE screener
-            SET 信用倍率=?, 売り残=?, 買い残=?, 需給OH=?, 需給安全フラグ=?, 踏み上げ期待スコア=?
+            SET 信用倍率=?, 売り残=?, 買い残=?, 需給OH=?, 需給安全フラグ=?, 踏み上げ期待スコア=?,
+                信用買い残_浮動株比率=?, 信用買い残増減率_5d=?, 信用買い残増減率_20d=?,
+                決算前20日買い残増加率=?, 信用需給負荷スコア=?
             WHERE コード=?
         """, updates)
         conn.commit()
     cur.close()
-    print(f"[margin] 需給OH・踏み上げ期待スコアを更新しました: {len(updates)} 銘柄")
+    print(f"[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: {len(updates)} 銘柄")
     
 # ==== [Short-term Trading Enhancements] Derived Metrics (schema assumed) ====
 
@@ -4186,6 +4235,161 @@ def phase_update_shodou_multipliers(conn):
         print("[shodou-mults] no updates")
     cur.close()
 
+# ==========================================
+# ★ 追加: 相対強度(RS)・地合い・逆行フラグのDB永続化
+# ==========================================
+def phase_update_market_metrics(conn: sqlite3.Connection):
+    """
+    個別株の相対強度（RS_5, RS_20）、グロースバイアス、地合い、逆行フラグを計算し、
+    screenerテーブルに永続保存する。
+    """
+    # 1. カラムの追加（すでにあればスキップ）
+    columns_to_add = [
+        ("RS_5", "REAL"),
+        ("RS_20", "REAL"),
+        ("Growth_Bias", "REAL"),
+        ("地合いフラグ", "INTEGER"),
+        ("逆行強フラグ", "INTEGER"),
+        ("逆行弱フラグ", "INTEGER")
+    ]
+    cur = conn.cursor()
+    for col_name, dtype in columns_to_add:
+        try:
+            cur.execute(f"ALTER TABLE screener ADD COLUMN {col_name} {dtype}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+
+    print("[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...")
+
+    # 2. 現在値と前日終値の取得
+    df_cand = pd.read_sql_query("SELECT コード, 市場, 現在値, 前日終値 FROM screener", conn)
+    if df_cand.empty:
+        return
+
+    df_cand["現在値"] = pd.to_numeric(df_cand["現在値"], errors="coerce")
+    df_cand["前日終値"] = pd.to_numeric(df_cand["前日終値"], errors="coerce")
+
+    # 3. 過去価格(5日前, 20日前)の取得
+    q20 = """
+        SELECT A.コード, A.終値 AS 終値20日前 FROM price_history A
+        JOIN latest_prices L ON L.コード = A.コード
+        WHERE A.日付 = (SELECT 日付 FROM price_history WHERE コード = A.コード ORDER BY 日付 DESC LIMIT 1 OFFSET 20)
+    """
+    df_20 = pd.read_sql_query(q20, conn)
+
+    q5 = """
+        SELECT A.コード, A.終値 AS 終値5日前 FROM price_history A
+        JOIN latest_prices L ON L.コード = A.コード
+        WHERE A.日付 = (SELECT 日付 FROM price_history WHERE コード = A.コード ORDER BY 日付 DESC LIMIT 1 OFFSET 5)
+    """
+    df_5 = pd.read_sql_query(q5, conn)
+
+    df_cand = df_cand.merge(df_5, on="コード", how="left")
+    df_cand = df_cand.merge(df_20, on="コード", how="left")
+
+    # 4. 指数(TOPIX, 日経, グロース)のリターン取得
+    def _get_index_returns(code, days_list=[1,5,20]):
+        aliases = [code]
+        if code in ("^TOPX", "^TOPIX"):
+            aliases = ["^TOPX", "^TOPIX", "TOPIX", "998405.T"]
+        in_clause = ",".join(f"'{c}'" for c in aliases)
+        q = f"SELECT 日付, 終値 FROM price_history WHERE コード IN ({in_clause}) ORDER BY 日付 ASC"
+        df = pd.read_sql_query(q, conn)
+        if df.empty: return {d: None for d in days_list}
+        try:
+            last = df["終値"].iloc[-1]
+            out = {}
+            for d in days_list:
+                if len(df) > d:
+                    before = df["終値"].iloc[-(d+1)]
+                    out[d] = float(last - before) / before
+                else:
+                    out[d] = None
+            return out
+        except Exception:
+            return {d: None for d in days_list}
+
+    idx_cache = {}
+    for sym in ["^TOPX", "^N225", "^GRT250"]:
+        idx_cache[sym] = _get_index_returns(sym, days_list=[1,5,20])
+
+    def _resolve_index_symbol(market_str):
+        if "グロース" in str(market_str): return "^GRT250"
+        return "^TOPX"
+
+    # 5. 地合いフラグの判定
+    topx1 = idx_cache["^TOPX"].get(1)
+    nikkei1 = idx_cache["^N225"].get(1)
+    
+    def _market_flag(t_val, n_val):
+        t_val = t_val if t_val is not None else 0.0
+        n_val = n_val if n_val is not None else 0.0
+        if t_val <= -0.01 or n_val <= -0.01: return -1
+        if t_val >= 0.01 or n_val >= 0.01: return 1
+        return 0
+    
+    market_flag_today = _market_flag(topx1, nikkei1)
+
+    # 6. 個別銘柄の計算ループ
+    rs5_list, rs20_list, new_rev_strong, new_rev_weak = [], [], [], []
+
+    for _, r in df_cand.iterrows():
+        idx = _resolve_index_symbol(r.get("市場"))
+        idx5 = idx_cache.get(idx, {}).get(5)
+        idx20 = idx_cache.get(idx, {}).get(20)
+
+        st5 = (r["現在値"] - r["終値5日前"]) / r["終値5日前"] if pd.notna(r.get("終値5日前")) and pd.notna(r.get("現在値")) else None
+        st20 = (r["現在値"] - r["終値20日前"]) / r["終値20日前"] if pd.notna(r.get("終値20日前")) and pd.notna(r.get("現在値")) else None
+
+        rs5_list.append(st5 - idx5 if st5 is not None and idx5 is not None else None)
+        rs20_list.append(st20 - idx20 if st20 is not None and idx20 is not None else None)
+
+        # 1日騰落率
+        try: 
+            stock_pct = (r["現在値"] - r["前日終値"]) / r["前日終値"]
+        except: 
+            stock_pct = None
+
+        if stock_pct is None:
+            new_rev_strong.append(0)
+            new_rev_weak.append(0)
+        else:
+            new_rev_strong.append(1 if market_flag_today == -1 and stock_pct >= 0.01 else 0)
+            new_rev_weak.append(1 if market_flag_today == 1 and stock_pct <= -0.01 else 0)
+
+    df_cand["RS_5"] = rs5_list
+    df_cand["RS_20"] = rs20_list
+    df_cand["逆行強フラグ"] = new_rev_strong
+    df_cand["逆行弱フラグ"] = new_rev_weak
+    df_cand["地合いフラグ"] = market_flag_today
+
+    topx20 = idx_cache["^TOPX"].get(20)
+    grt20 = idx_cache["^GRT250"].get(20)
+    df_cand["Growth_Bias"] = grt20 - topx20 if topx20 is not None and grt20 is not None else None
+
+    # 7. DBへ保存
+    updates = []
+    for _, r in df_cand.iterrows():
+        updates.append((
+            round(r["RS_5"], 4) if pd.notna(r["RS_5"]) else None,
+            round(r["RS_20"], 4) if pd.notna(r["RS_20"]) else None,
+            round(r["Growth_Bias"], 4) if pd.notna(r["Growth_Bias"]) else None,
+            int(r["地合いフラグ"]),
+            int(r["逆行強フラグ"]),
+            int(r["逆行弱フラグ"]),
+            str(r["コード"])
+        ))
+
+    cur.executemany("""
+        UPDATE screener 
+        SET RS_5=?, RS_20=?, Growth_Bias=?, 地合いフラグ=?, 逆行強フラグ=?, 逆行弱フラグ=?
+        WHERE コード=?
+    """, updates)
+    conn.commit()
+    cur.close()
+    print(f"[MarketMetrics] RS等のDB保存が完了しました: {len(updates)} 銘柄")
+
 def phase_derive_update(conn: sqlite3.Connection):
     cur = conn.cursor()
     cur.execute("SELECT コード, 初動株価, 現在値, UP継続回数, DOWN継続回数, 登録日, UPDOWN, 出来高, 時価総額億円 FROM screener")
@@ -5671,23 +5875,20 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
     cols_passthru = [c for c in [
         "コード","銘柄名","市場","現在値","前日終値","前日円差","前日終値比率",
         "出来高","時価総額億円","売買代金(億)","売買代金20日平均億",
-        "RVOL代金","合成スコア","ATR14%","初動フラグ","底打ちフラグ",
+        "RVOL代金","合成スコア","ATR14%","初動フラグ","初動スコア","底打ちフラグ",
         "右肩上がりフラグ","右肩早期フラグ","空売り機関","シグナル更新日",
         "営業利益","増資リスク","増資スコア","増資理由","財務コメント",
-        "スコア","進捗率","過去平均進捗率","季節調整済進捗差分","overall_alpha",
+        "スコア","進捗率","overall_alpha",
         "抵抗帯中心","抵抗最終日","最寄り抵抗",
         "支持帯中心","支持最終日","最寄り支持","関連テーマ","最新テーマ",
         "信用倍率", "売り残", "買い残", "需給OH", "需給安全フラグ", "踏み上げ期待スコア",
-        "機関空売り合計株数", "本日の増減合計株数", "主要機関の動き",
+        "信用買い残_浮動株比率", "信用買い残増減率_20d", "信用需給負荷スコア", # ★追加
         "AI目標値", "AI目標値_raw",
-        "予想インパクト_pct", "予測ターゲット価格",
         "PBR", "EPS", "BPS", "ROE", "適正株価", "割安度", "現金同等物", "有利子負債", "大株主",
-        "過熱需給リスクスコア", "過熱需給判定",  # ← ★これを追加
         "Algo_Momentum", "Algo_VolTarget", "Algo_Factor", "Algo_総合判定",
         "短期需給判定",
         "直近売上YoY", "直近営業益YoY", "利益加速フラグ",
-        "利益加速ステータス",
-        "決算発表予定日",
+        "決算発表予定日", 
         "決算勝率", "決算期待値", "決算リアクションスコア", "決算リアクション履歴"
     ] if c in _df.columns]
 
@@ -6501,7 +6702,7 @@ def _update_kabutan_theme_ranking(conn: sqlite3.Connection,
         return
 
     html = r.text
-    soup = BeautifulSoup(html, "lxml")
+    soup = bs4.BeautifulSoup(html, "lxml")
     today = date.today().isoformat()
 
     try:
@@ -7404,8 +7605,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             _p("theme: attached '最新テーマ'")
     except Exception as _e:
         print("[theme][WARN] attach to DataFrame failed:", _e)
-    
-
+    try:
         _p("shinyo & safety_metrics: attached")
     except Exception as _e:
         print(f"[shinyo][WARN] attach to DataFrame failed: {_e}")
@@ -7437,151 +7637,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     _round2_inplace(df_cand)
     _p(f"rename/round: done dt={( time.perf_counter() - t_rename ): .2f}s")
-
-    # --- RS_5 / RS_20 / Growth_Bias / 地合い / 逆行フラグ 追加 ---
-    t_rs = time.perf_counter()
-    _p("RS/GrowthBias: start")
-
-    def _get_index_returns(conn, code, days_list=[1,5,20]):
-        aliases = [code]
-        if code in ("^TOPX", "^TOPIX"):
-            aliases = ["^TOPX", "^TOPIX", "TOPIX", "998405.T"]
-        in_clause = ",".join(f"'{c}'" for c in aliases)
-        q = f"SELECT 日付, 終値 FROM price_history WHERE コード IN ({in_clause}) ORDER BY 日付 ASC"
-        df = pd.read_sql_query(q, conn)
-        if df.empty: return {d: None for d in days_list}
-        df = df.sort_values("日付")
-        out = {}
-        try:
-            last = df["終値"].iloc[-1]
-            for d in days_list:
-                if len(df) > d:
-                    before = df["終値"].iloc[-(d+1)]
-                    out[d] = float(last - before) / before
-                else:
-                    out[d] = None
-        except Exception:
-            out = {d: None for d in days_list}
-        return out
-
-    def _resolve_index_symbol(row):
-        m = str(row.get("市場") or "")
-        if "グロース" in m: return "^GRT250"
-        return "^TOPX"
-
-    try:
-        q20 = """
-            SELECT A.コード, A.終値 AS 終値20日前 FROM price_history A
-            JOIN latest_prices L ON L.コード = A.コード
-            WHERE A.日付 = (SELECT 日付 FROM price_history WHERE コード = A.コード ORDER BY 日付 DESC LIMIT 1 OFFSET 20)
-        """
-        df_20 = pd.read_sql_query(q20, conn)
-
-        q5 = """
-            SELECT A.コード, A.終値 AS 終値5日前 FROM price_history A
-            JOIN latest_prices L ON L.コード = A.コード
-            WHERE A.日付 = (SELECT 日付 FROM price_history WHERE コード = A.コード ORDER BY 日付 DESC LIMIT 1 OFFSET 5)
-        """
-        df_5 = pd.read_sql_query(q5, conn)
-
-        df_cand = df_cand.merge(df_5, on="コード", how="left")
-        df_cand = df_cand.merge(df_20, on="コード", how="left")
-    except Exception as _e:
-        print("[RS][WARN] failed to load past prices", _e)
-
-    idx_cache = {}
-    for sym in ["^TOPX", "^N225", "^GRT250"]:
-        idx_cache[sym] = _get_index_returns(conn, sym, days_list=[1,5,20])
-
-    rs5, rs20, rev_strong, rev_weak = [], [], [], []
-    topx1 = idx_cache["^TOPX"][1] if "^TOPX" in idx_cache else None
-
-    for _, r in df_cand.iterrows():
-        idx = _resolve_index_symbol(r)
-        idx5 = idx_cache[idx].get(5)
-        idx20 = idx_cache[idx].get(20)
-
-        st5 = (r["現在値"] - r["終値5日前"]) / r["終値5日前"] if r.get("終値5日前") else None
-        st20 = (r["現在値"] - r["終値20日前"]) / r["終値20日前"] if r.get("終値20日前") else None
-
-        rs5.append(st5 - idx5 if st5 is not None and idx5 is not None else None)
-        rs20.append(st20 - idx20 if st20 is not None and idx20 is not None else None)
-
-        try: stock1 = (r["現在値"] - r["前日終値"]) / r["前日終値"]
-        except: stock1 = None
-
-        if stock1 is None or topx1 is None:
-            rev_strong.append(0); rev_weak.append(0)
-        else:
-            rev_strong.append(1 if topx1 < -0.015 and stock1 > 0.01 else 0)
-            rev_weak.append(1 if topx1 > 0.015 and stock1 < -0.01 else 0)
-
-    df_cand["RS_5"] = rs5
-    df_cand["RS_20"] = rs20
-    df_cand["逆行強フラグ"] = rev_strong
-    df_cand["逆行弱フラグ"] = rev_weak
-
-    topx20 = idx_cache["^TOPX"][20]
-    grt20 = idx_cache["^GRT250"][20]
-    nikkei20 = idx_cache["^N225"][20]
-
-    df_cand["Growth_Bias"] = grt20 - topx20 if topx20 is not None and grt20 is not None else None
-
-    # ▼▼▼ 修正: 地合い・逆行フラグの判定ロジックを現実に即して緩和 ▼▼▼
-    # 1. 地合いフラグの判定 (TOPIX または 日経平均の 1日の騰落率 で判定)
-    def _market_flag(topx1_val, nikkei1_val):
-        try:
-            # どちらかが -1.0% 以下なら地合い悪(-1)、+1.0% 以上なら地合い良(1)
-            t_val = topx1_val if topx1_val is not None else 0.0
-            n_val = nikkei1_val if nikkei1_val is not None else 0.0
-            if t_val <= -0.01 or n_val <= -0.01:
-                return -1
-            elif t_val >= 0.01 or n_val >= 0.01:
-                return 1
-            return 0
-        except: 
-            return 0
-
-    # topx1 (TOPIXの1日騰落率) は上で計算済み。nikkei1 も取得しておく
-    nikkei1 = idx_cache["^N225"][1] if "^N225" in idx_cache else None
-    
-    # df_allの各行に対して適用するのではなく、市場全体として1つのフラグを立てる
-    market_flag_today = _market_flag(topx1, nikkei1)
-    df_cand["地合いフラグ"] = market_flag_today
-
-    # 2. 逆行フラグの再計算
-    new_rev_strong = []
-    new_rev_weak = []
-
-    for _, r in df_cand.iterrows():
-        # 個別株の1日騰落率
-        try: 
-            stock_pct = (float(r["現在値"]) - float(r["前日終値"])) / float(r["前日終値"])
-        except: 
-            stock_pct = None
-
-        if stock_pct is None:
-            new_rev_strong.append(0)
-            new_rev_weak.append(0)
-        else:
-            # 地合い悪(-1)の日に、個別株が +1% 以上なら「逆行強」
-            if market_flag_today == -1 and stock_pct >= 0.01:
-                new_rev_strong.append(1)
-            else:
-                new_rev_strong.append(0)
-            
-            # 地合い良(1)の日に、個別株が -1% 以下なら「逆行弱」
-            if market_flag_today == 1 and stock_pct <= -0.01:
-                new_rev_weak.append(1)
-            else:
-                new_rev_weak.append(0)
-
-    # リストを上書き
-    df_cand["逆行強フラグ"] = new_rev_strong
-    df_cand["逆行弱フラグ"] = new_rev_weak
-    # ▲▲▲ 修正ここまで ▲▲▲
-
-    _p(f"RS/GrowthBias: done dt={( time.perf_counter() - t_rs ): .2f}s")
 
     # --- 株探ニュース(3) ---
     try:
@@ -7648,7 +7703,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         _attach_latest_theme(df_cand, latest_theme_map)
     df_cand = apply_3algo_labels(df_cand) # ★追加: 3大アルゴリズム列の生成
     df_cand = apply_volume_quality_labels(df_cand) # ★追加: 短期需給(出来高の質)判定
-    df_cand = apply_overheat_risk_labels(df_cand) # ← ★ここに追加
+    df_cand = apply_risk_factors_labels(df_cand) # ← ★変更
     _tick("vectorize_minimum_fields")
     
     
@@ -7839,8 +7894,16 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _tick("json clean done")
 
     # ▼▼▼ ここにファイル保存の処理を追加 ▼▼▼
+    # 1. 今まで通り、常に最新版として上書き保存（最新ダッシュボード用）
     json_export_path = os.path.join(OUTPUT_DIR, "dashboard_data.json")
     with open(json_export_path, "w", encoding="utf-8") as f:
+        f.write(data_json)
+
+    # 2. 履歴用としてタイムスタンプ付きのファイル名で保存（過去ダッシュボード用）
+    # 例: dashboard_data_20260808_1442.json
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    json_history_path = os.path.join(OUTPUT_DIR, f"dashboard_data_{timestamp}.json")
+    with open(json_history_path, "w", encoding="utf-8") as f:
         f.write(data_json)
     # ▲▲▲ 追加ここまで ▲▲▲
 
@@ -8022,10 +8085,12 @@ def export_llm_dataset(df_cand, filename="llm_dataset.csv"):
 
         # 2) LLMが思考しやすい「厳選カラム」だけを指定
         target_cols = [
-            "コード", "銘柄名", "セクター", "関連テーマ", 
+            "コード", "銘柄名", "市場", "最新テーマ", 
             "前日終値比率", turnover_col, "RVOL代金", "RS_5", 
-            "時価総額億円", "需給OH", 
-            "右肩早期種別", "初動フラグ", "Algo_総合判定"
+            "需給OH", "信用倍率", "信用買い残_浮動株比率", "信用買い残増減率_20d", "信用需給負荷スコア",
+            "利益加速フラグ", "決算期待値", "進捗率", "季節調整済進捗差分",
+            "右肩早期種別", "初動フラグ", "Algo_総合判定",
+            "イナゴ過熱判定", "信用需給判定", "機関売り判定"
         ]
         
         # 実際にDataFrameに存在するカラムのみ抽出
@@ -8495,6 +8560,62 @@ def apply_composite_score(conn: sqlite3.Connection,
     cur.executemany("UPDATE screener SET 合成スコア=? WHERE コード=?", up)
     conn.commit()
     cur.close()
+
+def apply_shodou_score(conn: sqlite3.Connection):
+    """
+    「テーマ全体の強さ」を加味した新・初動スコア(100点満点)を計算。
+    """
+    try:
+        conn.execute("ALTER TABLE screener ADD COLUMN 初動スコア REAL")
+    except Exception:
+        pass
+
+    df_theme = pd.read_sql_query("""
+        SELECT printf('%04d', CAST(t.コード AS INTEGER)) AS コード, m.theme_name AS テーマ
+        FROM stock_theme_kabutan t
+        JOIN theme_master m ON t.theme_id = m.theme_id
+        WHERE t.theme_id IN (
+            SELECT DISTINCT theme_id FROM stock_theme_kabutan WHERE 取得日 >= date('now', '-30 days')
+        )
+    """, conn)
+    
+    df_s = pd.read_sql_query("SELECT コード, 前日終値比率, RVOL代金, RS_5, 売買代金億 FROM screener", conn)
+    df_s['コード'] = df_s['コード'].astype(str).str.strip().str.zfill(4)
+    df_s['売買代金(億)'] = pd.to_numeric(df_s['売買代金億'], errors='coerce').fillna(0)
+    
+    df_mrg = pd.merge(df_theme, df_s, on='コード', how='inner')
+    theme_stats = df_mrg.groupby('テーマ').agg(
+        median_turnover=('売買代金(億)', 'median'),
+        active_stocks=('コード', 'count')
+    ).reset_index()
+    theme_stats = theme_stats[theme_stats['active_stocks'] >= 3]
+    theme_stats['true_flow_score'] = theme_stats['median_turnover'] * (1 + (1 / theme_stats['active_stocks']))
+    
+    df_theme_score = pd.merge(df_theme, theme_stats[['テーマ', 'true_flow_score']], on='テーマ', how='left')
+    stock_theme_max = df_theme_score.groupby('コード')['true_flow_score'].max().reset_index()
+    
+    df = pd.merge(df_s, stock_theme_max, on='コード', how='left')
+    df['true_flow_score'] = df['true_flow_score'].fillna(0)
+    
+    for c in ['前日終値比率', 'RVOL代金', 'RS_5']:
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
+    rank_theme = df['true_flow_score'].rank(pct=True)
+    rank_rvol  = df['RVOL代金'].rank(pct=True)
+    rank_mom   = df['前日終値比率'].rank(pct=True)
+    rank_heat  = 1.0 - (df['RS_5'].abs().rank(pct=True)) 
+    
+    score_theme_match = 20.0
+    raw_score = (rank_theme * 30.0) + score_theme_match + (rank_rvol * 20.0) + (rank_mom * 15.0) + (rank_heat * 10.0)
+    
+    df['初動スコア'] = np.where(rank_theme < 0.4, np.clip(raw_score, 0, 60), raw_score).round(1)
+    
+    updates = list(zip(df['初動スコア'].tolist(), df['コード'].tolist()))
+    cur = conn.cursor()
+    cur.executemany("UPDATE screener SET 初動スコア=? WHERE コード=?", updates)
+    conn.commit()
+    cur.close()
+    print(f"[shodou_score] テーマ強度を加味した初動スコアを更新しました。")
 
 def apply_fair_value_metrics(conn: sqlite3.Connection):
     """
@@ -9222,7 +9343,8 @@ def batch_update_all_financials(conn,
         ("配当1年合計", "REAL"), ("自社株買い4Q合計", "REAL"),
         ("増資リスク", "INTEGER"), ("増資スコア", "REAL"), ("増資理由", "TEXT"),
         ("PBR", "REAL"), ("現金同等物", "REAL"), ("有利子負債", "REAL"), ("大株主", "TEXT"),
-        ("EPS", "REAL"), ("BPS", "REAL"), ("ROE", "REAL")
+        ("EPS", "REAL"), ("BPS", "REAL"), ("ROE", "REAL"),
+        ("浮動株数", "REAL"), ("発行済株式数", "REAL") # ★追加
     ]:
         try:
             conn.execute(f'ALTER TABLE screener ADD COLUMN "{name}" {decl}')
@@ -9264,6 +9386,7 @@ def batch_update_all_financials(conn,
                   "EPS"               = ?,
                   "BPS"               = ?,
                   "ROE"               = ?
+                  -- ※「浮動株数」「発行済株式数」は「浮動.py」で独立取得するため更新から除外
                 WHERE "コード" = ?
             """, metrics_rows)
             conn.commit()
@@ -9385,14 +9508,17 @@ def batch_update_all_financials(conn,
                     
                     pbr = _safe_num(k.get("priceToBook"))
                     
-                    # ▼ ここから追加 ▼
-                    eps = _safe_num(k.get("forwardEps"))
-                    if eps is None: eps = _safe_num(k.get("trailingEps"))
+                    # ▼ ここから追加・修正 ▼
+                    eps = _safe_num(k.get("trailingEps"))
+                    if eps is None: eps = _safe_num(k.get("forwardEps"))
                     bps = _safe_num(k.get("bookValue"))
                     
                     roe_raw = _safe_num(f_dat.get("returnOnEquity"))
                     roe = roe_raw * 100.0 if roe_raw is not None else None
-                    # ▲ ここまで追加 ▲
+                    
+                    # ※「浮動株数」「発行済株式数」の取得はここで行わず、
+                    # 別タスクとして「浮動.py」で独立して取得・DB保存を行う運用に変更しました。
+                    # ▲ ここまで追加・修正 ▲
 
                     # --- balance_sheet ---
                     bsobj = sym_raw.get("balance_sheet")
@@ -9507,10 +9633,11 @@ def batch_update_all_financials(conn,
                 float(cash) if cash is not None else None,
                 float(debt) if debt is not None else None,
                 str(holders_str) if holders_str else "",
-                # ▼ 以下3行を追加
+                # ▼ 以下追加
                 float(eps) if eps is not None else None,
                 float(bps) if bps is not None else None,
                 float(roe) if roe is not None else None,
+                # ※ float_shares, shares_out は「浮動.py」で更新するため削除
                 # WHERE句
                 c
             ))
@@ -9812,53 +9939,49 @@ def phase_sync_finance_comments(conn):
         try: cur.close()
         except Exception: pass
         
-def apply_overheat_risk_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """短期的なイナゴ集中と売り浴びせリスク（過熱需給）を判定する"""
+def apply_risk_factors_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """過熱と需給リスクを3階層（イナゴ過熱、信用需給、機関売り）に分解して独立判定する"""
     if df is None or getattr(df, "empty", True):
         return df
 
-    # 安全な数値取得（既存の _safe_get_numeric ユーティリティを使用）
+    import numpy as np
+    import pandas as pd
+
     rs5 = _safe_get_numeric(df, "RS_5", 0.0)
     pct = _safe_get_numeric(df, ["前日終値比率_raw", "前日終値比率"], 0.0)
     rvol = _safe_get_numeric(df, ["RVOL代金", "RVOL_売買代金"], 1.0)
     margin_ratio = _safe_get_numeric(df, "信用倍率", 1.0)
     inst_short = _safe_get_numeric(df, "機関空売り合計株数", 0.0)
+    inst_change = _safe_get_numeric(df, "本日の増減合計株数", 0.0)
 
-    # 1. 価格過熱度 (0〜40点)
-    # 5日間の相対強度(RS_5)と前日比を組み合わせる。TOPIXを10%アウトパフォーム、あるいは単日10%急騰などで満点。
-    score_price = np.clip((rs5 / 0.10) * 20 + (pct / 10.0) * 20, 0, 40)
+    # ① 短期イナゴ過熱 (Max 40点)
+    raw_heat = np.clip((rs5 / 0.10) * 20 + (pct / 5.0) * 20, 0, 40)
+    score_heat = np.where((pct < 0) | (rvol < 1.2), raw_heat * 0.2, raw_heat)
+    score_heat = np.where((pct > 0) & (rvol > 2.0), score_heat * 1.2, score_heat)
+    score_heat = np.clip(score_heat, 0, 40).round().astype(int)
 
-    # 2. 出来高過熱度 (0〜30点)
-    # RVOL(20日平均に対する商いの倍率)が2倍以上で加点開始、5倍以上で満点。
-    score_vol = np.clip(((rvol - 2.0) / 3.0) * 30, 0, 30)
+    # ② 信用需給リスク (Max 35点)
+    score_margin = np.clip(((margin_ratio - 3.0) / 17.0) * 35, 0, 35).round().astype(int)
 
-    # 3. 需給の偏り（イナゴ度） (0〜20点)
-    # 信用倍率が高い（3倍以上で加点、20倍で満点）。
-    score_margin = np.clip(((margin_ratio - 3.0) / 17.0) * 20, 0, 20)
-    
-    # 4. 機関の売り待機 (0〜10点)
-    # すでに機関の空売りが積み上がっている場合は危険度アップ。
-    score_inst = np.where(inst_short > 0, 10, 0)
+    # ③ 機関売り圧力 (Max 25点)
+    base_inst = np.where(inst_short > 0, 10, 0)
+    add_inst = np.where(inst_change > 0, 15, np.where(inst_change < 0, -5, 0))
+    score_inst = np.clip(base_inst + add_inst, 0, 25).round().astype(int)
 
-    # --- 総合スコア算出 ---
-    raw_score = score_price + score_vol + score_margin + score_inst
-    
-    # ⚠️重要: 「価格が上がっていない（= RS_5も前日比も低い）」場合は、単なるパニック売りや決算暴落の可能性が高いため、過熱リスクを大幅に割り引く
-    final_score = np.where(score_price < 10, raw_score * 0.3, raw_score)
-    final_score = np.round(np.clip(final_score, 0, 100)).astype(int)
+    # 生スコアの保存
+    df["イナゴ過熱スコア"] = score_heat
+    df["信用需給スコア"] = score_margin
+    df["機関売りスコア"] = score_inst
 
     # ラベル付け
-    cond_danger = final_score >= 75
-    cond_warn = final_score >= 50
+    lbl_heat = np.select([score_heat >= 30, score_heat >= 15], ["🔥過熱", "🟡微熱"], default="🟢静")
+    lbl_margin = np.select([score_margin >= 25, score_margin >= 15], ["🚨需給悪", "🟡重め"], default="🟢正常")
+    lbl_inst = np.select([score_inst >= 20, score_inst > 0], ["🚨売増", "🟡空売有"], default="🟢なし")
 
-    label = np.select(
-        [cond_danger, cond_warn],
-        ["⚠️極度過熱(イナゴ化)", "🟠警戒(過熱気味)"],
-        default="🟢正常"
-    )
-
-    df["過熱需給リスクスコア"] = final_score
-    df["過熱需給判定"] = pd.Series(label, index=df.index).astype(str) + " (" + pd.Series(final_score, index=df.index).astype(str) + "点)"
+    # 表示用テキスト生成
+    df["イナゴ過熱判定"] = pd.Series(lbl_heat, index=df.index).astype(str) + " (" + df["イナゴ過熱スコア"].astype(str) + "点)"
+    df["信用需給判定"] = pd.Series(lbl_margin, index=df.index).astype(str) + " (" + df["信用需給スコア"].astype(str) + "点)"
+    df["機関売り判定"] = pd.Series(lbl_inst, index=df.index).astype(str) + " (" + df["機関売りスコア"].astype(str) + "点)"
 
     return df
 
@@ -10058,7 +10181,10 @@ def main():
                 _timed_daily_once("compute_right_up_early_triggers", compute_right_up_early_triggers, conn)
                 _timed("update_margin_metrics", phase_update_margin_metrics, conn)
                 _timed("derive_update", phase_derive_update, conn)
+                # ★ ここに追加！他のスコア計算よりも前にRSと地合いをDBへ書き込む
+                _timed("update_market_metrics", phase_update_market_metrics, conn)
                 _timed("signal_detection", phase_signal_detection, conn)
+                _timed("apply_shodou_score", apply_shodou_score, conn)
                 _timed("update_since_dates", phase_update_since_dates, conn)
 
             else:
@@ -10083,8 +10209,11 @@ def main():
 
                 _timed("snapshot_shodou_baseline", phase_snapshot_shodou_baseline, conn)
                 _timed("update_shodou_multipliers", phase_update_shodou_multipliers, conn)
+                # ★ ここに追加！（EODモードの昼時間帯向け）
                 _timed("derive_update", phase_derive_update, conn)
+                _timed("update_market_metrics", phase_update_market_metrics, conn)
                 _timed("signal_detection", phase_signal_detection, conn)
+                _timed("apply_shodou_score", apply_shodou_score, conn)
                 _timed("update_since_dates", phase_update_since_dates, conn)
 
                 try:
@@ -10115,6 +10244,8 @@ def main():
                            200,      # chunk_size
                            False,    # force_refresh
                            True)     # verbose
+                    # ★ ここに追加！（夜の最終処理向け）適正株価計算の前にRSを確定
+                    _timed("update_market_metrics", phase_update_market_metrics, conn)
                     _timed("apply_fair_value_metrics", apply_fair_value_metrics, conn)
 
                     _timed_daily_once("compute_right_up_persistent", compute_right_up_persistent, conn)
@@ -10122,7 +10253,9 @@ def main():
                     _timed("update_margin_metrics", phase_update_margin_metrics, conn)
                     _timed("derive_update", phase_derive_update, conn)
                     _timed("signal_detection", phase_signal_detection, conn)
+                    _timed("apply_shodou_score", apply_shodou_score, conn)
                     _timed("update_since_dates", phase_update_since_dates, conn)
+                    
 
                 else:
                     print(f"[EOD] skip (current time = {_now})")
