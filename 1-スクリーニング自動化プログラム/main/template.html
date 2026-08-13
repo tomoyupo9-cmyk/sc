@@ -569,6 +569,130 @@
 })();
 </script>
 
+
+<style id="purpose-preset-ui-v1">
+  /* ===== ワンタッチ抽出 + 整理UI ===== */
+  #purpose-preset-panel{
+    margin:10px 0 10px;
+    padding:12px 14px 13px;
+    border:1px solid #cbd5e1;
+    border-radius:14px;
+    background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);
+    box-shadow:0 4px 16px rgba(15,23,42,.06);
+  }
+  #purpose-preset-panel .purpose-head{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    margin-bottom:9px;
+  }
+  #purpose-preset-panel .purpose-title{
+    font-size:15px; font-weight:900; color:#0f172a; letter-spacing:.01em;
+  }
+  #purpose-preset-panel .purpose-sub{
+    margin-left:8px; font-size:11px; font-weight:500; color:#64748b;
+  }
+  #purpose-preset-panel .purpose-status{
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:11px;
+  }
+  #purpose-active-label{
+    padding:4px 9px; border-radius:999px; background:#eef2ff; color:#3730a3;
+    font-weight:800; border:1px solid #c7d2fe;
+  }
+  #purpose-clear{
+    border:1px solid #cbd5e1; background:#fff; color:#475569; border-radius:8px;
+    padding:5px 10px; cursor:pointer; font-weight:700;
+  }
+  #purpose-clear:hover{background:#f1f5f9}
+  .purpose-grid{
+    display:grid;
+    grid-template-columns:repeat(5,minmax(145px,1fr));
+    gap:8px;
+  }
+  .purpose-btn{
+    position:relative; min-height:68px; padding:9px 10px 8px;
+    border:0; border-radius:12px; cursor:pointer; color:#fff;
+    text-align:left; box-shadow:0 2px 7px rgba(15,23,42,.12);
+    transition:transform .12s ease,box-shadow .12s ease,filter .12s ease;
+    overflow:hidden;
+  }
+  .purpose-btn:hover{transform:translateY(-1px);box-shadow:0 5px 14px rgba(15,23,42,.16);filter:saturate(1.06)}
+  .purpose-btn.active{outline:3px solid rgba(15,23,42,.20);outline-offset:2px}
+  .purpose-btn .p-main{display:block;font-size:13px;font-weight:900;line-height:1.2;margin-bottom:5px}
+  .purpose-btn .p-desc{display:block;font-size:10px;font-weight:650;line-height:1.25;opacity:.93}
+  .purpose-btn .p-count{
+    position:absolute;right:8px;top:7px;min-width:22px;padding:2px 6px;border-radius:999px;
+    background:rgba(255,255,255,.20);font-size:10px;font-weight:900;text-align:center;
+  }
+  .purpose-now{background:linear-gradient(135deg,#2563eb,#1d4ed8)}
+  .purpose-pullback{background:linear-gradient(135deg,#16a34a,#15803d)}
+  .purpose-rebound{background:linear-gradient(135deg,#0f766e,#0d9488)}
+  .purpose-range{background:linear-gradient(135deg,#ea580c,#c2410c)}
+  .purpose-safe{background:linear-gradient(135deg,#475569,#334155)}
+  .purpose-foot{
+    margin-top:8px;font-size:10px;color:#64748b;display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  }
+  .purpose-foot b{color:#334155}
+
+  /* 相場環境は独立した細い帯にする */
+  #toolbar .ui-market-strip{
+    width:100%; display:flex; flex-wrap:wrap; align-items:center; gap:7px;
+    padding:6px 8px; border-radius:9px; background:#f8fafc; border:1px solid #e2e8f0;
+    box-sizing:border-box;
+  }
+  #toolbar .ui-market-strip .res-filters{margin:0 !important}
+  #toolbar .ui-market-strip .env-row{margin:0 !important}
+
+  /* 基本入力 */
+  #toolbar .ui-basic-panel{
+    width:100%; padding:8px 9px; border:1px solid #dbe4ef; border-radius:10px;
+    background:#fff; box-sizing:border-box;
+  }
+  #toolbar .ui-section-head{
+    display:flex;align-items:center;gap:8px;margin-bottom:6px;
+    font-size:11px;font-weight:900;color:#334155;
+  }
+  #toolbar .ui-section-head small{font-weight:500;color:#94a3b8}
+  #toolbar .ui-basic-body{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  #toolbar .ui-basic-body > .group{border:0 !important;box-shadow:none !important;background:transparent !important;padding:0 !important;margin:0 !important}
+  #toolbar .ui-basic-body .label{display:none}
+
+  /* 詳細・ツールは普段閉じる */
+  #toolbar details.ui-fold{
+    width:100%; border:1px solid #e2e8f0; border-radius:10px; background:#fff; overflow:visible;
+  }
+  #toolbar details.ui-fold > summary{
+    list-style:none; cursor:pointer; user-select:none;
+    padding:7px 10px; font-size:11px; font-weight:800; color:#475569; background:#f8fafc;
+    border-radius:10px;
+  }
+  #toolbar details.ui-fold > summary::-webkit-details-marker{display:none}
+  #toolbar details.ui-fold > summary::before{content:"▶";display:inline-block;margin-right:7px;font-size:9px;color:#64748b}
+  #toolbar details.ui-fold[open] > summary::before{content:"▼"}
+  #toolbar details.ui-fold[open] > summary{border-bottom:1px solid #e2e8f0;border-radius:10px 10px 0 0}
+  #toolbar details.ui-fold > .group{margin:0 !important;border:0 !important;border-radius:0 0 10px 10px !important;background:#fff !important;padding:8px !important}
+  #toolbar details.ui-fold .group > .label{display:none}
+  #toolbar .ui-advanced-fold .group.checks label{background:#f8fafc !important}
+
+  /* フッターはページ/市場だけが見えるようスッキリ */
+  #toolbar .group.footer{
+    border-style:solid !important;background:#fafafa !important;
+    padding:6px 8px !important;margin-top:0 !important;
+  }
+
+  /* 旧toolbar cardは縦方向に整列 */
+  #toolbar .toolbar-card{
+    display:flex !important; flex-direction:column !important;
+    align-items:stretch !important; gap:6px !important;
+  }
+
+  @media (max-width:1100px){
+    .purpose-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}
+  }
+  @media (max-width:700px){
+    .purpose-grid{grid-template-columns:1fr 1fr}
+    #purpose-preset-panel .purpose-sub{display:block;margin:3px 0 0}
+  }
+</style>
+
 </head>
 <body>
 <script id="__DATA__" type="application/json">{}</script>
@@ -1883,6 +2007,8 @@ function applyFilter(rows){
     // -------------------------------------------
     return rows.filter(r=>{
       if (!evaluateExcelFilters(r)) return false;
+      // v9: ワンタッチ目的別プリセット。既存フィルターに追加で掛けるだけ。
+      if (typeof window.__purposePresetPass === "function" && !window.__purposePresetPass(r)) return false;
 
       // 今日の決算跨ぎ S/A:
       // 決算日=今日 × 主モード=決算前 × S/A のみ
@@ -4672,5 +4798,338 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
 });
 
 </script>
+
+<script id="purpose-preset-ui-js-v1">
+(function(){
+  "use strict";
+
+  const PRESETS = {
+    now: {
+      label:"🚀 今から上を狙う",
+      desc:"上向き・高値追随・過熱しすぎない",
+      className:"purpose-now"
+    },
+    pullback: {
+      label:"🟢 強い押し目",
+      desc:"中期は強い・支持/MA近辺の軽い調整",
+      className:"purpose-pullback"
+    },
+    rebound: {
+      label:"↗️ 反転初動",
+      desc:"底打ち後・短期の上向き確認",
+      className:"purpose-rebound"
+    },
+    range: {
+      label:"🔥 値幅狙い",
+      desc:"動ける銘柄・ただし極端な過熱は回避",
+      className:"purpose-range"
+    },
+    safe: {
+      label:"🛡️ 低リスク",
+      desc:"需給/安定性を優先・荒すぎる銘柄を回避",
+      className:"purpose-safe"
+    }
+  };
+
+  window.__purposePreset = "";
+
+  function n(v){
+    const x=parseFloat(String(v??"").replace(/[,\s円％%]/g,""));
+    return Number.isFinite(x)?x:NaN;
+  }
+  function hasFlag(v){
+    const s=String(v??"");
+    return s.includes("候補") || s==="1" || s==="true" || s==="○" || s==="有";
+  }
+  function hasAny(s,words){
+    const x=String(s??"");
+    return words.some(w=>x.includes(w));
+  }
+  function between(v,lo,hi){
+    return !Number.isFinite(v) || (v>=lo && v<=hi);
+  }
+  function gapPct(px,base){
+    return Number.isFinite(px)&&Number.isFinite(base)&&base!==0 ? (px/base-1)*100 : NaN;
+  }
+
+  window.__purposePresetPass = function(r){
+    const key=window.__purposePreset;
+    if(!key) return true;
+
+    const px=n(r["現在値"]);
+    const rate=n(r["前日終値比率"]);
+    const rvol=n(r["RVOL代金"]);
+    const rs5=n(r["RS_5"]);
+    const rs20=n(r["RS_20"]);
+    const ma5=n(r["MA5"] ?? r["5日"] ?? r["５日"]);
+    const ma25=n(r["MA25"] ?? r["25日"] ?? r["２５日"]);
+    const sup=n(r["最寄り支持"] ?? r["支持帯中心"]);
+    const res=n(r["最寄り抵抗"] ?? r["抵抗帯中心"]);
+    const oh=n(r["需給OH"]);
+    const buyFloat=n(r["信用買い残_浮動株比率"]);
+    const gr=n(r["tri_growth"]);
+    const sf=n(r["tri_safety"]);
+    const vo=n(r["tri_vol"]);
+
+    const ma5Gap=gapPct(px,ma5);
+    const ma25Gap=gapPct(px,ma25);
+    const supportGap=gapPct(px,sup);       // 支持より何%上か
+    const resistanceRoom=gapPct(res,px);   // 現値から抵抗まで何%あるか
+
+    const initial=hasFlag(r["初動フラグ"]);
+    const bottom=hasFlag(r["底打ちフラグ"]);
+    const right=hasFlag(r["右肩上がりフラグ"]);
+    const early=hasFlag(r["右肩早期フラグ"]);
+    const safeDemand=String(r["需給安全フラグ"]??"")==="1" || hasAny(r["需給安全フラグ"],["安全","○"]);
+
+    const mom=String(r["Algo_Momentum"] ?? r["モメンタムCTA"] ?? "");
+    const tanki=String(r["短期需給判定"] ?? r["短期需給"] ?? "");
+    const heat=String(r["イナゴ過熱判定"] ?? "");
+    const weak=hasAny(mom,["弱気"]) || hasAny(tanki,["強い売り","需給薄"]);
+    const hot=hasAny(heat,["過熱","危険","高熱"]) || (Number.isFinite(rate)&&rate>10);
+    const momUp=hasAny(mom,["強気","初動"]);
+    const trendSignal=right||early||initial||momUp;
+
+    if(key==="now"){
+      // Algo_Momentum の「弱気」は母集団の大半に付くためハード除外に使わない。
+      // 本当に危険な短期需給「強い売り」だけを除外し、右肩/初動/早期/強気シグナルを主役にする。
+      const hardSell=hasAny(tanki,["強い売り"]);
+      return !hardSell && !hot && trendSignal
+        && (!Number.isFinite(rs5) || rs5>0)
+        && (!Number.isFinite(rs20) || rs20>=-1)
+        && between(rate,-1.5,6)
+        && between(ma5Gap,-1.5,5)
+        && (!Number.isFinite(ma25Gap) || ma25Gap>=-2)
+        && (!Number.isFinite(resistanceRoom) || resistanceRoom>=1.0);
+    }
+
+    if(key==="pullback"){
+      const nearSupport=(Number.isFinite(supportGap) && supportGap>=-0.5 && supportGap<=4.0);
+      const nearMA=(between(ma5Gap,-2.0,2.5) || between(ma25Gap,-1.0,3.0));
+      return !weak && !hot && (right||early||(!Number.isFinite(rs20)||rs20>=0))
+        && (nearSupport || nearMA)
+        && between(rate,-4.0,2.5)
+        && (!Number.isFinite(rs20) || rs20>=0);
+    }
+
+    if(key==="rebound"){
+      const nearSupport=(Number.isFinite(supportGap) && supportGap>=-1.0 && supportGap<=3.0);
+      return !weak && (bottom||nearSupport)
+        && (initial||early||momUp)
+        && (!Number.isFinite(rate) || rate>0)
+        && (!Number.isFinite(rs5) || rs5>=-1);
+    }
+
+    if(key==="range"){
+      // 値幅狙いでも Algo_Momentum「弱気」をハード除外すると候補が消える。
+      // 強い売りだけ除外し、RVOL・RS5・ボラ・トレンドシグナルで値幅候補を選ぶ。
+      const hardSell=hasAny(tanki,["強い売り"]);
+      return !hardSell && !hot && trendSignal
+        && (!Number.isFinite(rvol) || rvol>=1.2)
+        && (!Number.isFinite(rs5) || rs5>0)
+        && (!Number.isFinite(vo) || (vo>=40 && vo<=80))
+        && between(rate,-1.0,8.0);
+    }
+
+    if(key==="safe"){
+      const supplyOK=safeDemand || (!Number.isFinite(sf) || sf>=70);
+      return !weak && !hot && supplyOK
+        && (!Number.isFinite(vo) || vo<=70)
+        && (!Number.isFinite(oh) || oh<=3)
+        && (!Number.isFinite(buyFloat) || buyFloat<5)
+        && (!Number.isFinite(rate) || rate<=5)
+        && (!Number.isFinite(supportGap) || supportGap<=6);
+    }
+
+    return true;
+  };
+
+  function sourceRows(){
+    if(Array.isArray(window.state?.data)) return window.state.data;
+    if(Array.isArray(window.DATA_CAND)) return window.DATA_CAND;
+    return [];
+  }
+
+  function updatePresetCounts(){
+    const rows=sourceRows();
+    Object.keys(PRESETS).forEach(key=>{
+      const el=document.querySelector(`[data-purpose-count="${key}"]`);
+      if(!el) return;
+      const old=window.__purposePreset;
+      window.__purposePreset=key;
+      let count=0;
+      try{ count=rows.reduce((a,r)=>a+(window.__purposePresetPass(r)?1:0),0); }catch(_){}
+      window.__purposePreset=old;
+      el.textContent=count?String(count):"—";
+    });
+  }
+
+  function updateActiveUI(){
+    document.querySelectorAll(".purpose-btn").forEach(b=>{
+      b.classList.toggle("active",b.dataset.purpose===window.__purposePreset);
+    });
+    const lab=document.getElementById("purpose-active-label");
+    if(lab){
+      lab.textContent=window.__purposePreset
+        ? `選択中: ${PRESETS[window.__purposePreset]?.label||window.__purposePreset}`
+        : "選択中: なし";
+    }
+  }
+
+  function resetCommonManualFilters(){
+    // 既存の「解除」を使えばExcel列フィルターも含めて安全に戻せる。
+    const bmClear=document.getElementById("bm_clear");
+    if(bmClear){
+      try{ bmClear.click(); }catch(_){}
+    }
+
+    const tb=document.getElementById("toolbar");
+    if(tb){
+      tb.querySelectorAll('input[type="checkbox"]').forEach(cb=>{
+        if(cb.id==="mk_all" || cb.dataset.mk!=null || cb.id.startsWith("mk_")) return;
+        cb.checked=false;
+      });
+      const q=document.getElementById("q");
+      if(q) q.value="";
+      const mom=document.getElementById("f_algo_momentum");
+      if(mom) mom.value="";
+      tb.querySelectorAll(".early-filter input[type=checkbox]").forEach(cb=>cb.checked=false);
+      tb.querySelectorAll('#signal-popover input[type=checkbox]').forEach(cb=>cb.checked=false);
+      const orRadio=tb.querySelector('#signal-popover input[name="sig_mode"][value="OR"]');
+      if(orRadio) orRadio.checked=true;
+    }
+    window.__earningsBridgeOnly=false;
+  }
+
+  function applyPurpose(key){
+    window.__purposePreset=(window.__purposePreset===key)?"":key;
+    if(window.__purposePreset){
+      // 一発抽出として使いやすいよう、手動条件を一度リセット。市場チェックは維持。
+      resetCommonManualFilters();
+    }
+    if(window.state) window.state.page=1;
+    updateActiveUI();
+    if(typeof window.render==="function") window.render();
+  }
+
+  function clearPurpose(){
+    window.__purposePreset="";
+    if(window.state) window.state.page=1;
+    updateActiveUI();
+    if(typeof window.render==="function") window.render();
+  }
+
+  function buildPurposePanel(){
+    if(document.getElementById("purpose-preset-panel")) return;
+    const tb=document.getElementById("toolbar");
+    if(!tb) return;
+
+    const panel=document.createElement("section");
+    panel.id="purpose-preset-panel";
+    panel.innerHTML=`
+      <div class="purpose-head">
+        <div>
+          <span class="purpose-title">⚡ ワンタッチ抽出</span>
+          <span class="purpose-sub">まずここから。必要なら下の手動条件を追加</span>
+        </div>
+        <div class="purpose-status">
+          <span id="purpose-active-label">選択中: なし</span>
+          <button type="button" id="purpose-clear">条件解除</button>
+        </div>
+      </div>
+      <div class="purpose-grid">
+        ${Object.entries(PRESETS).map(([key,p])=>`
+          <button type="button" class="purpose-btn ${p.className}" data-purpose="${key}"
+                  title="${p.desc}">
+            <span class="p-count" data-purpose-count="${key}">—</span>
+            <span class="p-main">${p.label}</span>
+            <span class="p-desc">${p.desc}</span>
+          </button>`).join("")}
+      </div>
+      <div class="purpose-foot">
+        <span><b>プリセットはJSだけ</b>で既存データを絞り込みます。</span>
+        <span>押すと手動条件を一度クリアし、<b>市場チェックは維持</b>します。</span>
+        <span>その後、下の手動フィルターで追加調整できます。</span>
+      </div>`;
+    tb.parentNode.insertBefore(panel,tb);
+
+    panel.querySelectorAll("[data-purpose]").forEach(btn=>{
+      btn.addEventListener("click",()=>applyPurpose(btn.dataset.purpose));
+    });
+    panel.querySelector("#purpose-clear")?.addEventListener("click",clearPurpose);
+    updatePresetCounts();
+    updateActiveUI();
+  }
+
+  function tidyToolbar(){
+    const tb=document.getElementById("toolbar");
+    const card=tb?.querySelector(".toolbar-card");
+    if(!tb||!card||card.dataset.purposeTidied==="1") return;
+    card.dataset.purposeTidied="1";
+
+    const checks=card.querySelector(":scope > .group.checks");
+    const texts=card.querySelector(":scope > .group.texts");
+    const selects=card.querySelector(":scope > .group.selects");
+    const buttons=card.querySelector(":scope > .group.buttons");
+    const footer=card.querySelector(":scope > .group.footer");
+
+    // 相場環境と行色ガイドは、フィルター群から分離して常時見える細い帯へ。
+    const marketStrip=document.createElement("div");
+    marketStrip.className="ui-market-strip";
+    const res=card.querySelector(".res-filters");
+    const env=card.querySelector(".env-row");
+    if(res) marketStrip.appendChild(res);
+    if(env) marketStrip.appendChild(env);
+    if(marketStrip.childElementCount) card.prepend(marketStrip);
+
+    // 基本入力
+    const basic=document.createElement("section");
+    basic.className="ui-basic-panel";
+    basic.innerHTML=`<div class="ui-section-head">🔎 基本入力 <small>検索・数値・主要プルダウン</small></div><div class="ui-basic-body"></div>`;
+    const basicBody=basic.querySelector(".ui-basic-body");
+    if(texts) basicBody.appendChild(texts);
+    if(selects) basicBody.appendChild(selects);
+
+    // 詳細条件
+    const adv=document.createElement("details");
+    adv.className="ui-fold ui-advanced-fold";
+    adv.innerHTML="<summary>⚙️ 詳細条件・チェック項目（必要なときだけ開く）</summary>";
+    if(checks) adv.appendChild(checks);
+
+    // その他ツール
+    const tools=document.createElement("details");
+    tools.className="ui-fold ui-tools-fold";
+    tools.innerHTML="<summary>🧰 ツール・コピー・CSV・既存クイック抽出</summary>";
+    if(buttons) tools.appendChild(buttons);
+
+    if(footer){
+      card.insertBefore(basic,footer);
+      if(checks) card.insertBefore(adv,footer);
+      if(buttons) card.insertBefore(tools,footer);
+    }else{
+      card.appendChild(basic);
+      if(checks) card.appendChild(adv);
+      if(buttons) card.appendChild(tools);
+    }
+  }
+
+  function init(){
+    buildPurposePanel();
+    // 既存のDOMContentLoaded再配置が終わった後に整える
+    setTimeout(()=>{
+      tidyToolbar();
+      updatePresetCounts();
+      try{ window.dispatchEvent(new Event("resize")); }catch(_){}
+    },0);
+  }
+
+  if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",init);
+  }else{
+    init();
+  }
+})();
+</script>
+
 </body>
 </html>
