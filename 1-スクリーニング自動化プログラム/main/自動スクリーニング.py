@@ -1,4 +1,59 @@
-﻿# --- 標準ライブラリ ---
+# === 2026-08-13 v14: 次期急回復型（6340型）Python連携 ===
+# - shinden_logic_v24_next_turn.py を自動スクリーニングから安全に実行
+# - 次期転換8列をDB→JSON/HTML/LLM CSVへ一貫して伝播
+# - backfill実行中はシンデン更新を自動SKIP
+# - template_next_turn_python_backed.html が同階層にあれば優先使用（無ければtemplate.html）
+# === 2026-08-13 v13: 季節進捗 1年度fallback ===
+# - 過去同Qが1年度しかない銘柄も参考値として表示
+# - 2年以上は従来どおり正式平均、1年参考/2年以上をログで監査
+# === 2026-08-13 v12: 季節進捗 quarterly_actual_history 実DB準拠 ===
+# - pl_quarter依存を廃止
+# - quarterly_actual_history 28k件から3ヵ月営業利益を年度内累積
+# - tdnet_xbrl_metrics.actual_opを通期実績の第一ソースに採用
+# - 現在年度除外・直近最大5年度・2年度以上で過去平均を算出
+# === 2026-08-13 v11: 季節進捗の全空欄修正 ===
+# - 全NULL化→途中returnで全空欄になる事故を修正
+# - pl_quarter完了年度4Q合計を通期実績fallbackに追加
+# === 2026-08-13 v10: 決算跨ぎS/AワンクリックUI対応 ===
+# - dashboard用に決算発表予定日・シンデン主要列の存在を保証
+# - template側の「今日の決算跨ぎ S/A」フィルターを安全に利用可能
+# === 2026-08-12 v9: 過去決算反応の復元・診断強化 ===
+# - Gmailアプリパスワードは環境変数 GMAIL_APP_PASSWORD から取得（ハードコード廃止）
+# - finance_notes.past_earnings_dates が空のとき明示WARN
+# - コード型を4桁文字列に統一して結合漏れを防止
+# - 既存の反応列があってもmerge suffixで消えないよう再計算値を優先
+# - UI表記に合わせ直近8回で勝率/期待値/履歴を計算
+# === 2026-08-12 v8: 季節進捗を実績から再構成 ===
+# - pl_quarter.進捗率という不存在列への依存を廃止
+# - 3ヵ月営業利益累積 / 完了年度actual_op で過去同Q進捗を再構成
+# - current_quarter不要、過去2期以上のみ採用
+# === 2026-08-12 v7: TTM pandas互換修正 + seasonality schema-safe ===
+# - groupby.applyを廃止し直近4行→groupby.aggへ変更
+# - DeprecationWarningとrename失敗を解消
+# - v6のcurrent_quarter非依存季節調整を維持
+# === 2026-08-12 v6: 季節調整 schema-safe 修正 ===
+# - finance_notes.current_quarter 依存を廃止
+# - pl_quarter 最新行から現在Qを判定
+# - 現在期自身を過去同Q平均から除外
+# - 旧失敗マーカー回避のため daily phase を v2 化
+# === 2026-08-12 v5: CatBoost学習/推論19特徴量完全一致 ===
+# - body/RSI/stop_hunt/POC を学習側と統一
+# - perfect_order/trend_strong/market3特徴量のダミー0を廃止
+# - model metadata の validation閾値/target_pct を使用
+# - AIスコアの強制モメンタム上書きを廃止
+# - 特徴量不足を0埋めせず判定対象外
+# === 2026-08-12 v4: シンデン日次バッチ分離 + backfill時fetch_all自動SKIP ===
+# - v25 worker heartbeat優先
+# - v24以前のrunning CLAIMも互換検出
+# - stale状態は6時間で無効
+#
+# === 2026-08-12 再点検版 ===
+# - shinden_logic v2(history guard)対応
+# - 株探ファンダ日次呼び出しの誤引数修正
+# - _prepare_rows二重実行を除去
+# - LLM用CSVへシンデン主要列を追加
+#
+# --- 標準ライブラリ ---
 import decimal
 import email
 import html
@@ -64,6 +119,13 @@ import warnings as __wn_patch_v8
 import os as __os_patch_v8
 import sys as __sys_patch_v8
 
+
+# === シンデン型スコア ===
+# v4: 自動スクリーニングではシンデン再計算を行わない。
+# shinden_logic.py を日次バッチ/手動で別実行し、
+# screener に保存済みのシンデン列をHTML/CSVへ表示するだけ。
+# === /シンデン型スコア ===
+
 # ==============================================================================
 # 【全体設定・定数群】（パラメータの調整やパスの変更はここで行います）
 # ==============================================================================
@@ -78,18 +140,19 @@ KARAURI_PY_PATH     = r"H:\desctop\株攻略\1-スクリーニング自動化プ
 KARA_URI_NASHI_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\空売り無しリスト.txt"
 FUND_SCRIPT         = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\株探ファンダ.py"
 FETCH_PATH          = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\fetch_all.py"
+SHINDEN_SCRIPT_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\shinden_logic_v24_next_turn.py"
 MARKER_FILE         = Path(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\last_funda.txt")
 MODEL_PATH          = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model\stock_predictor_lv3.pkl"
 
 # --- [2] 実行モード・オプション設定 ---
-#RUN_SESSION         = "EOD"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
-RUN_SESSION         = "MIDDAY"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
-#AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
-AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
+RUN_SESSION         = "EOD"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
+#RUN_SESSION         = "MIDDAY"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
+AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
+#AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
 USE_CSV             = True    # CSV取り込みフラグ
 TEST_MODE           = False   # テストモードフラグ（件数制限）
 TEST_LIMIT          = 50      # テスト時の最大件数
-PRICE_GUARD_ENABLED = False   # 休日価格補完フラグ
+PRICE_GUARD_ENABLED = True   # 休日価格補完フラグ
 MIDDAY_FILTER_BY_FLAGS = False # MIDDAY対象を絞るか
 
 # --- [3] トレンド・シグナル判定 パラメータ ---
@@ -140,7 +203,7 @@ HISTORY_PERIOD_FULL = "12mo"
 
 GMAIL_USER          = "tomoyupo9@gmail.com"
 GMAIL_TO            = "tomoyupo9@gmail.com"
-GMAIL_APP_PASSWORD  = "pzunutpfqophuoae"
+GMAIL_APP_PASSWORD  = os.environ.get("GMAIL_APP_PASSWORD", "")
 GMAIL_SUBJ          = "スクリーニング レポート"
 GMAIL_BODY          = "index.html を添付します（オフラインで開けます）。"
 SEND_HTML_AS_ZIP    = False
@@ -183,6 +246,116 @@ def run_karauri_script():
         print(f"[karauri][WARN] 起動に失敗しました: {e}")
 
 
+
+BACKFILL_ACTIVE_TTL_MINUTES = 360
+
+
+def _detect_active_forecast_backfill(
+    db_path: str = DB_PATH,
+    ttl_minutes: int = BACKFILL_ACTIVE_TTL_MINUTES,
+) -> tuple[bool, list[str]]:
+    """
+    fetch_all の過去バックフィルが別プロセスで動作中かを判定する。
+
+    優先:
+      v25+ forecast_backfill_workers の heartbeat
+    互換:
+      v24以前 forecast_backfill_status の running CLAIM
+
+    強制終了で残った古い状態は ttl_minutes 経過後に無効扱い。
+    DBがロックされて状態確認できない場合は、安全側で「実行中」とみなす。
+    """
+    ttl_minutes = max(1, int(ttl_minutes or BACKFILL_ACTIVE_TTL_MINUTES))
+    now = datetime.now()
+    details: list[str] = []
+    conn = None
+
+    def _parse_dt(v):
+        if not v:
+            return None
+        s = str(v).strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(s[:19], fmt)
+            except Exception:
+                pass
+        return None
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=3.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=3000;")
+
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+        # v25+: worker heartbeat が最も確実。
+        if "forecast_backfill_workers" in tables:
+            rows = conn.execute("""
+                SELECT worker_token,pid,host,last_seen,requested_years,status
+                FROM forecast_backfill_workers
+                WHERE status='running'
+            """).fetchall()
+            for r in rows:
+                dt = _parse_dt(r["last_seen"])
+                if dt is None:
+                    continue
+                age_min = max(0.0, (now - dt).total_seconds() / 60.0)
+                if age_min <= ttl_minutes:
+                    details.append(
+                        f"worker {r['host'] or '?'} pid={r['pid'] or '?'} "
+                        f"years={r['requested_years'] or '?'} age={age_min:.1f}m"
+                    )
+
+        # v24以前との互換。worker heartbeatが無くてもCLAIMを検出。
+        if not details and "forecast_backfill_status" in tables:
+            cols = {
+                r[1] for r in conn.execute(
+                    "PRAGMA table_info(forecast_backfill_status)"
+                ).fetchall()
+            }
+            time_expr = (
+                "COALESCE(claim_started_at,updated_at,started_at)"
+                if "claim_started_at" in cols
+                else "COALESCE(updated_at,started_at)"
+            )
+            rows = conn.execute(f"""
+                SELECT コード,{time_expr} AS active_at
+                FROM forecast_backfill_status
+                WHERE status='running'
+                LIMIT 20
+            """).fetchall()
+            for r in rows:
+                dt = _parse_dt(r["active_at"])
+                if dt is None:
+                    continue
+                age_min = max(0.0, (now - dt).total_seconds() / 60.0)
+                if age_min <= ttl_minutes:
+                    details.append(
+                        f"claim code={r['コード']} age={age_min:.1f}m"
+                    )
+
+        return bool(details), details
+
+    except sqlite3.OperationalError as e:
+        # バックフィル書込と競合して状態確認すらできない場合は安全側でSKIP。
+        if "locked" in str(e).lower() or "busy" in str(e).lower():
+            return True, [f"DB busy/locked while checking backfill: {e}"]
+        print(f"[fetch_all][BACKFILL CHECK WARN] {e}")
+        return False, []
+    except Exception as e:
+        print(f"[fetch_all][BACKFILL CHECK WARN] {e}")
+        return False, []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 def _run_fetch_all(fetch_path: str | None = None,
                    extra_args: list[str] | None = None,
                    timeout_sec: int | None = None,
@@ -190,7 +363,15 @@ def _run_fetch_all(fetch_path: str | None = None,
     """
     サブプロセスではなく、Pythonのインポート機能を使って直接 fetch_all.main() を実行する。
     """
-    # FETCH_PATH からディレクトリのパスを抽出（例: "H:\\desctop\\株攻略\\2-トレンドツール"）
+    # 過去バックフィルが動作中なら、通常fetch_allは自動SKIP。
+    active, active_details = _detect_active_forecast_backfill()
+    if active:
+        print("[fetch_all][AUTO SKIP] forecast backfill 実行中のため通常収集をスキップ")
+        for d in active_details[:5]:
+            print(f"[fetch_all][AUTO SKIP] {d}")
+        return
+
+    # FETCH_PATH からディレクトリのパスを抽出
     target_path = fetch_path or FETCH_PATH
     if not os.path.exists(target_path):
         raise FileNotFoundError(f"fetch_all.py が見つかりません: {target_path}")
@@ -216,6 +397,57 @@ def _run_fetch_all(fetch_path: str | None = None,
         print(f"[fetch_all][ERROR] 実行時エラー: {e}")
         raise e
         
+def run_shinden_daily(force: bool = False) -> bool:
+    """シンデン型＋次期急回復型をDBへ更新する。
+
+    - 計算本体は shinden_logic_v24_next_turn.py に集約する。
+    - forecast backfill 実行中はDB競合を避けるため安全にSKIP。
+    - v24側が同日増分判定を持つため、通常は毎回呼んでも重複計算を抑制できる。
+    """
+    active, active_details = _detect_active_forecast_backfill()
+    if active:
+        print("[shinden][AUTO SKIP] forecast backfill 実行中のため更新をスキップ")
+        for d in active_details[:5]:
+            print(f"[shinden][AUTO SKIP] {d}")
+        return False
+
+    script = Path(SHINDEN_SCRIPT_PATH)
+    if not script.exists():
+        print(f"[shinden][WARN] v24スクリプトが見つかりません: {script}")
+        print("[shinden][WARN] DB保存済みの既存値を使用して処理を継続します")
+        return False
+
+    cmd = [sys.executable, str(script), "--db", str(DB_PATH), "--quiet"]
+    if force:
+        cmd.append("--full")
+
+    env = os.environ.copy()
+    env["SHINDEN_DB_PATH"] = str(DB_PATH)
+    print(f"[shinden] 次期急回復型を含む日次更新開始: {script.name}")
+    try:
+        res = subprocess.run(
+            cmd,
+            check=False,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if res.stdout.strip():
+            print(res.stdout.strip())
+        if res.returncode != 0:
+            if res.stderr.strip():
+                print(f"[shinden][ERROR] {res.stderr.strip()}")
+            print(f"[shinden][ERROR] returncode={res.returncode}。保存済み値で処理継続")
+            return False
+        print("[shinden] 日次更新 OK")
+        return True
+    except Exception as e:
+        print(f"[shinden][WARN] 日次更新失敗: {e}。保存済み値で処理継続")
+        return False
+
+
 def run_fundamental_daily(force: bool = False):
     """株探ファンダメンタルズ情報を取得・更新する外部スクリプトを1日1回実行する"""
     today = date.today()
@@ -2275,197 +2507,436 @@ def add_price_features(df):
 # ========= end price series features =========
 
 def calc_rsi(series, period=14):
+    """CatBoost学習側と完全に同じRSI定義。"""
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    # ゼロ除算を避けるための処理
-    return 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
+    gain = delta.clip(lower=0).rolling(period, min_periods=period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period, min_periods=period).mean()
+
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+
+    only_gain = (loss == 0) & (gain > 0)
+    flat = (loss == 0) & (gain == 0)
+    rsi = rsi.mask(only_gain, 100.0)
+    rsi = rsi.mask(flat, 50.0)
+    return rsi
+
+
+def _ai_safe_div(num, den):
+    """CatBoost学習側と同じ0除算処理。"""
+    if isinstance(den, pd.Series):
+        den = den.replace(0, np.nan)
+    return num / den
+
+
+def _ai_true_rolling_poc_close(df: pd.DataFrame, window: int = 20) -> pd.Series:
+    """
+    各銘柄について「直近window営業日で出来高最大だった日の終値」を毎日再計算。
+    学習側の定義と一致させる。
+    """
+    out = pd.Series(np.nan, index=df.index, dtype=float)
+
+    for _, idx in df.groupby("コード", sort=False).groups.items():
+        positions = np.asarray(list(idx), dtype=int)
+        vol = df.loc[positions, "volume"].to_numpy(dtype=float)
+        close = df.loc[positions, "close"].to_numpy(dtype=float)
+        n = len(positions)
+
+        if n < window:
+            continue
+
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            windows = sliding_window_view(vol, window_shape=window)
+            argmax = np.argmax(windows, axis=1)
+            starts = np.arange(len(windows))
+            poc_values = close[starts + argmax]
+            out.loc[positions[window - 1:]] = poc_values
+        except Exception:
+            for i in range(window - 1, n):
+                s = i - window + 1
+                j = s + int(np.argmax(vol[s:i + 1]))
+                out.loc[positions[i]] = close[j]
+
+    return out
+
+
+def _ai_load_model_metadata():
+    """
+    新学習コードが保存する metadata.json を読む。
+    無い場合は従来互換の既定値。
+    """
+    meta = {
+        "decision_threshold": 0.55,
+        "target_pct": 1.10,
+        "min_price": 300.0,
+        "label_mode": "touch",
+    }
+
+    try:
+        meta_path = Path(MODEL_PATH).with_suffix(".metadata.json")
+        if meta_path.exists():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                meta.update(loaded)
+    except Exception as e:
+        print(f"[AI][WARN] model metadata 読込失敗。既定値を使用: {e}")
+
+    try:
+        th = float(meta.get("decision_threshold", 0.55))
+        meta["decision_threshold"] = th if 0.0 < th < 1.0 else 0.55
+    except Exception:
+        meta["decision_threshold"] = 0.55
+
+    try:
+        tp = float(meta.get("target_pct", 1.10))
+        meta["target_pct"] = tp if tp > 1.0 else 1.10
+    except Exception:
+        meta["target_pct"] = 1.10
+
+    try:
+        mp = float(meta.get("min_price", 300.0))
+        meta["min_price"] = max(0.0, mp)
+    except Exception:
+        meta["min_price"] = 300.0
+
+    return meta
+
+
+def _ai_market_daily_features(
+    conn: sqlite3.Connection,
+    latest_target_date: pd.Timestamp,
+    lookback_calendar_days: int = 45,
+) -> pd.DataFrame:
+    """
+    学習側の market_return / market_sentiment をDB全銘柄から再現する。
+    """
+    if latest_target_date is None or pd.isna(latest_target_date):
+        return pd.DataFrame(columns=["date", "market_return", "market_sentiment"])
+
+    end_date = pd.Timestamp(latest_target_date).normalize()
+    start_date = end_date - pd.Timedelta(days=lookback_calendar_days)
+
+    sql = """
+        SELECT コード, 日付, 終値, 出来高
+        FROM price_history
+        WHERE 日付 >= ? AND 日付 <= ?
+        ORDER BY コード, 日付
+    """
+    mdf = pd.read_sql_query(
+        sql,
+        conn,
+        params=(
+            start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d"),
+        ),
+    )
+
+    if mdf.empty:
+        return pd.DataFrame(columns=["date", "market_return", "market_sentiment"])
+
+    mdf["date"] = pd.to_datetime(mdf["日付"], errors="coerce")
+    mdf["close"] = pd.to_numeric(mdf["終値"], errors="coerce")
+    mdf["volume"] = pd.to_numeric(mdf["出来高"], errors="coerce")
+
+    mdf = mdf.dropna(subset=["コード", "date", "close", "volume"])
+    mdf = mdf[(mdf["close"] > 0) & (mdf["volume"] >= 0)].copy()
+    if mdf.empty:
+        return pd.DataFrame(columns=["date", "market_return", "market_sentiment"])
+
+    mdf = mdf.sort_values(["コード", "date"]).reset_index(drop=True)
+    mdf["return_1d"] = (
+        mdf.groupby("コード", sort=False)["close"]
+        .pct_change(1, fill_method=None)
+    )
+
+    market_return = (
+        mdf.groupby("date")["return_1d"]
+        .mean()
+        .rename("market_return")
+    )
+    up_counts = (
+        mdf[mdf["return_1d"] > 0]
+        .groupby("date")["コード"]
+        .count()
+    )
+    total_counts = mdf.groupby("date")["コード"].count()
+    market_sentiment = (
+        (up_counts / total_counts)
+        .fillna(0)
+        .rename("market_sentiment")
+    )
+
+    return pd.concat([market_return, market_sentiment], axis=1).reset_index()
+
 
 def add_ai_analysis(conn, rows):
     """
-    19特徴量対応モデルで分析し、55%以上のスコアで判定を出す統合版関数
+    CatBoost 19特徴量・学習/推論完全一致版。
+
+    - 学習側と19特徴量の計算式を一致
+    - market系3特徴量をDB全銘柄から実計算
+    - 特徴量不足銘柄を0埋めしない
+    - AIスコアは純粋なpredict_proba
+    - metadata.jsonのvalidation閾値/target_pctを利用
     """
     if not os.path.exists(MODEL_PATH):
         print(f"[AI] モデルファイルが見つかりません: {MODEL_PATH}")
         return rows
 
-    target_codes = [r['コード'] for r in rows if r.get('現在値')]
+    target_codes = [
+        str(r["コード"]).strip()
+        for r in rows
+        if r.get("コード") is not None and r.get("現在値")
+    ]
+    target_codes = list(dict.fromkeys(c for c in target_codes if c))
     if not target_codes:
         return rows
 
-    print(f"[AI] {len(target_codes)}銘柄の分析を開始（19特徴量・3段階判定版）...")
+    print(f"[AI] {len(target_codes)}銘柄の分析を開始（CatBoost 19特徴量・学習定義一致版）...")
 
     try:
         model = joblib.load(MODEL_PATH)
-        
-        # 1. データの取得
-        codes_in = "'" + "','".join(target_codes) + "'"
-        hist_q = f"SELECT コード, 日付, 始値, 高値, 安値, 終値, 出来高 FROM price_history WHERE コード IN ({codes_in}) ORDER BY コード, 日付"
-        df = pd.read_sql(hist_q, conn)
-        df = df.rename(columns={'始値': 'open', '高値': 'high', '安値': 'low', '終値': 'close', '出来高': 'volume'})
-        
-        # 2. 特徴量の計算
-        grp = df.groupby('コード', sort=False)
-        df['return_1d'] = grp['close'].pct_change(fill_method=None)
-        df['range'] = (df['high'] - df['low']) / df['close']
-        df['body'] = (df['close'] - df['open']) / df['close']
-        df['upper_shadow'] = (df['high'] - df[['open', 'close']].max(axis=1)) / df['close']
-        
+        meta = _ai_load_model_metadata()
+
+        attention_prob = float(meta["decision_threshold"])
+        strong_prob = min(0.99, max(0.65, attention_prob + 0.10))
+        target_pct = float(meta["target_pct"])
+        min_price = float(meta["min_price"])
+
+        print(
+            f"[AI] threshold={attention_prob:.3f} "
+            f"strong={strong_prob:.3f} "
+            f"target=+{(target_pct - 1.0) * 100:.1f}% "
+            f"min_price={min_price:.0f}"
+        )
+
+        # 1. 対象銘柄の価格履歴
+        placeholders = ",".join("?" for _ in target_codes)
+        hist_q = f"""
+            SELECT コード, 日付, 始値, 高値, 安値, 終値, 出来高
+            FROM price_history
+            WHERE コード IN ({placeholders})
+            ORDER BY コード, 日付
+        """
+        df = pd.read_sql_query(hist_q, conn, params=target_codes)
+        if df.empty:
+            print("[AI][WARN] 対象銘柄の price_history がありません")
+            return rows
+
+        df = df.rename(
+            columns={
+                "始値": "open",
+                "高値": "high",
+                "安値": "low",
+                "終値": "close",
+                "出来高": "volume",
+            }
+        )
+        df["date"] = pd.to_datetime(df["日付"], errors="coerce")
+
+        for c in ["open", "high", "low", "close", "volume"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        # 学習側と同じ基礎クリーニング
+        df = df.dropna(
+            subset=["コード", "date", "open", "high", "low", "close", "volume"]
+        )
+        df = df[
+            (df["open"] > 0)
+            & (df["high"] > 0)
+            & (df["low"] > 0)
+            & (df["close"] > 0)
+            & (df["volume"] >= 0)
+        ].copy()
+
+        if df.empty:
+            return rows
+
+        df = df.sort_values(["コード", "date"]).reset_index(drop=True)
+        grp = df.groupby("コード", sort=False)
+
+        # 2. 学習側と一致する特徴量
+        df["return_1d"] = grp["close"].pct_change(1, fill_method=None)
+        df["range"] = _ai_safe_div(df["high"] - df["low"], df["close"])
+
+        # 学習側は /open
+        df["body"] = _ai_safe_div(df["close"] - df["open"], df["open"])
+
+        df["upper_shadow"] = _ai_safe_div(
+            df["high"] - df[["close", "open"]].max(axis=1),
+            df["close"],
+        )
+
         for p in [5, 25, 75]:
-            ma = grp['close'].transform(lambda x: x.rolling(p).mean())
-            df[f'kairi_{p}'] = (df['close'] - ma) / ma
+            ma = grp["close"].transform(
+                lambda x, w=p: x.rolling(w, min_periods=w).mean()
+            )
+            df[f"ma_{p}"] = ma
+            df[f"kairi_{p}"] = _ai_safe_div(df["close"] - ma, ma)
 
-        df['rsi_14'] = grp['close'].transform(lambda x: calc_rsi(x)).fillna(50)
-        ma20 = grp['close'].transform(lambda x: x.rolling(20).mean())
-        std20 = grp['close'].transform(lambda x: x.rolling(20).std())
-        df['bb_pos'] = (df['close'] - ma20) / (2 * std20.replace(0, 1))
-        df['vol_ratio'] = df['volume'] / grp['volume'].transform(lambda x: x.rolling(5).mean()).replace(0, 1)
-        
-        df['min_low_5d'] = grp['low'].shift(1).rolling(5).min()
-        df['stop_hunt_reversal'] = ((df['low'] < df['min_low_5d']) & (df['close'] > df['open'])).astype(int)
-        
-        poc = df['close'].where(df['volume'] == grp['volume'].transform(lambda x: x.rolling(20).max())).groupby(df['コード']).ffill().fillna(df['close'])
-        df['dist_from_poc'] = (df['close'] - poc) / poc
-        
-        
-        # 1. 売買代金カラムを先に計算
-        df['turnover'] = df['close'] * df['volume']
-        # 2. transform を使って一括計算
-        df['turnover_20d_avg'] = grp['turnover'].transform(lambda x: x.rolling(20).mean())
-        # ----------------
-        df['liquidity_class'] = np.select([df['turnover_20d_avg'] < 1e8, df['turnover_20d_avg'] < 3e9], [0, 1], default=2)
-        
-        # モデルが期待するダミー特徴量
-        for col in ['perfect_order', 'trend_strong', 'market_return', 'market_sentiment', 'relative_strength']:
-            if col not in df.columns: df[col] = 0
+        df["rsi_14"] = grp["close"].transform(calc_rsi)
 
-        df_latest = df.groupby('コード', sort=False).tail(1).set_index('コード')
+        ma20 = grp["close"].transform(
+            lambda x: x.rolling(20, min_periods=20).mean()
+        )
+        std20 = grp["close"].transform(
+            lambda x: x.rolling(20, min_periods=20).std()
+        )
+        df["bb_pos"] = _ai_safe_div(df["close"] - ma20, 2 * std20)
 
-        # 3. 推論実行
-        features = [
-            'return_1d','range','body','upper_shadow','kairi_5','kairi_25','kairi_75',
-            'rsi_14','bb_pos','vol_ratio','perfect_order','trend_strong',
-            'market_return','market_sentiment','relative_strength',
-            'stop_hunt_reversal', 'dist_from_poc', 'turnover_20d_avg', 'liquidity_class'
+        vol_ma5 = grp["volume"].transform(
+            lambda x: x.rolling(5, min_periods=5).mean()
+        )
+        df["vol_ratio"] = _ai_safe_div(df["volume"], vol_ma5)
+
+        # 旧版ではダミー0だった2特徴量
+        df["perfect_order"] = (
+            (df["ma_5"] > df["ma_25"])
+            & (df["ma_25"] > df["ma_75"])
+        ).astype(int)
+        df["trend_strong"] = (
+            (df["close"] > df["ma_5"])
+            & (df["close"] > df["ma_25"])
+        ).astype(int)
+
+        # stop_hunt: 銘柄別rolling + 下ヒゲ条件
+        df["min_low_5d"] = grp["low"].transform(
+            lambda x: x.shift(1).rolling(5, min_periods=5).min()
+        )
+        df["stop_hunt_reversal"] = (
+            (df["low"] < df["min_low_5d"])
+            & (df["close"] > df["open"])
+            & ((df["open"] - df["low"]) > (df["close"] - df["open"]))
+        ).astype(int)
+
+        # 真の20日POC
+        df["poc_20d_close"] = _ai_true_rolling_poc_close(df, window=20)
+        df["dist_from_poc"] = _ai_safe_div(
+            df["close"] - df["poc_20d_close"],
+            df["poc_20d_close"],
+        )
+
+        # 流動性
+        df["turnover"] = df["close"] * df["volume"]
+        df["turnover_20d_avg"] = grp["turnover"].transform(
+            lambda x: x.rolling(20, min_periods=20).mean()
+        )
+        conditions = [
+            df["turnover_20d_avg"] < 100_000_000,
+            (df["turnover_20d_avg"] >= 100_000_000)
+            & (df["turnover_20d_avg"] < 3_000_000_000),
+            df["turnover_20d_avg"] >= 3_000_000_000,
         ]
-        
-        X = df_latest[features].fillna(0)
-        probs = model.predict_proba(X)[:, 1]
-        scores = dict(zip(df_latest.index, probs)) # 高速計算されたスコアの辞書
-        
-        # 4. 結果反映（理想のIN株価 → 目標株価 表記）
+        df["liquidity_class"] = np.select(
+            conditions, [0, 1, 2], default=1
+        ).astype(int)
+
+        # 3. 市場特徴量をDB全銘柄から計算
+        latest_target_date = df["date"].max()
+        market_daily = _ai_market_daily_features(
+            conn,
+            latest_target_date=latest_target_date,
+            lookback_calendar_days=45,
+        )
+
+        if not market_daily.empty:
+            df = df.merge(market_daily, on="date", how="left", sort=False)
+        else:
+            df["market_return"] = np.nan
+            df["market_sentiment"] = np.nan
+
+        df["relative_strength"] = df["return_1d"] - df["market_return"]
+
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df = df.sort_values(["コード", "date"]).reset_index(drop=True)
+
+        # 4. 最新行のみ推論
+        features = [
+            "return_1d", "range", "body", "upper_shadow",
+            "kairi_5", "kairi_25", "kairi_75",
+            "rsi_14", "bb_pos", "vol_ratio",
+            "perfect_order", "trend_strong",
+            "market_return", "market_sentiment", "relative_strength",
+            "stop_hunt_reversal", "dist_from_poc",
+            "turnover_20d_avg", "liquidity_class",
+        ]
+
+        df_latest = (
+            df.groupby("コード", sort=False)
+            .tail(1)
+            .set_index("コード")
+        )
+
+        # 学習価格帯と一致
+        valid_mask = df_latest["close"] >= min_price
+
+        # 学習側は特徴量欠損行をdropしているため、推論側も0埋めしない
+        valid_mask &= df_latest[features].notna().all(axis=1)
+
+        df_valid = df_latest.loc[valid_mask].copy()
+        excluded_count = int((~valid_mask).sum())
+
+        if excluded_count:
+            print(
+                f"[AI] 特徴量不足/学習価格帯外のため {excluded_count}銘柄を判定対象外"
+            )
+
+        scores = {}
+        if not df_valid.empty:
+            X = df_valid[features].copy()
+            X["liquidity_class"] = X["liquidity_class"].astype(int)
+            probs = model.predict_proba(X)[:, 1]
+            scores = dict(zip(df_valid.index.astype(str), probs))
+
+        # 5. 結果反映
         for r in rows:
-            code = r.get('コード')
-            # スコアが計算されていない銘柄はスキップ
+            code = str(r.get("コード") or "").strip()
+
             if code not in scores:
-                r['AIスコア'] = '-'
-                r['AI判定'] = '-'
-                r['AI目標値'] = '-'
-                r['AI目標値_raw'] = -999999 # ソートで沈めるためのダミー値
+                r["AIスコア"] = "-"
+                r["AI判定"] = "-"
+                r["AI目標値"] = "-"
+                r["AI目標値_raw"] = -999999
                 continue
-                
-            prob = scores[code]
+
+            prob = float(scores[code])
+
+            # 純粋なモデル確率。旧版の+5/+10%強制底上げは廃止。
             score_val = round(prob * 100, 1)
-            
-            # ★追加: 大陽線・急騰時の強制モメンタム補正（AIモデルの遅行をカバー）
-            pct_val = 0
-            try:
-                if r.get('前日終値比率_raw') is not None:
-                    pct_val = float(r.get('前日終値比率_raw'))
-                elif r.get('前日終値比率'):
-                    pct_val = float(str(r.get('前日終値比率')).replace('%', ''))
-            except Exception: pass
+            r["AIスコア"] = score_val
 
-            if pct_val >= 10.0:
-                score_val = max(score_val, 75.0)  # +10%超えは強制的に「超強気」へ
-            elif pct_val >= 5.0:
-                score_val = max(score_val, 60.0)  # +5%超えは強制的に「注目」へ
+            if prob >= strong_prob:
+                r["AI判定"] = "★超強気"
+            elif prob >= attention_prob:
+                r["AI判定"] = "△注目"
+            else:
+                r["AI判定"] = "◯様子見"
 
-            r['AIスコア'] = score_val
-            
-            # 1) 基準となる現在値の取得
+            # AI教師ラベルと同じ target_pct を目標値として表示
             try:
-                p_val = float(str(r.get('現在値', 0)).replace(',', ''))
+                p_val = float(str(r.get("現在値", 0)).replace(",", ""))
             except Exception:
-                p_val = 0
+                p_val = 0.0
 
             if p_val <= 0:
-                r['AI判定'] = '-'
-                r['AI目標値'] = '-'
-                r['AI目標値_raw'] = -999999
+                r["AI目標値"] = "-"
+                r["AI目標値_raw"] = -999999
                 continue
 
-            # 2) ATR（1日の平均値幅）の取得。無ければ現在値の2.5%を疑似ATRとする
-            try:
-                atr_val = float(str(r.get('ATR14', r.get('ATR20', 0))).replace(',', ''))
-            except Exception:
-                atr_val = 0
-            if atr_val <= 0:
-                atr_val = p_val * 0.025
+            tgt = int(round(p_val * target_pct))
+            current_int = int(round(p_val))
+            diff_val = tgt - current_int
 
-            # 3) 支持線（サポート）と抵抗線（レジスタンス）の取得
-            sup_zone = r.get('支持帯中心')
-            sup_near = r.get('最寄り支持')
-            sup_ll   = r.get('Sup_LL')
-            
-            res_zone = r.get('抵抗帯中心')
-            res_near = r.get('最寄り抵抗')
-            res_hh   = r.get('Res_HH')
+            r["AI目標値"] = f"{current_int}→{tgt} (+{diff_val}円)"
+            r["AI目標値_raw"] = diff_val
 
-            # 数値変換の安全関数
-            def get_valid_price(*candidates):
-                for c in candidates:
-                    try:
-                        if c and str(c).strip() not in ("None", "", "NaN", "nan"):
-                            v = float(str(c).replace(',', ''))
-                            if v > 0: return v
-                    except Exception:
-                        pass
-                return None
+    except Exception:
+        logging.error("[AI] 分析エラー", exc_info=True)
 
-            # 4) IN株価（押し目）の決定
-            # 優先順位: ①支持帯中心 ②最寄り支持 ③直近安値 ④どれもなければ「ATRの0.5日分下」
-            ideal_in = get_valid_price(sup_zone, sup_near, sup_ll)
-            if ideal_in is None or ideal_in >= p_val:
-                ideal_in = p_val - (atr_val * 0.5)
-            ideal_in = int(ideal_in)
-
-            # 5) 目標株価の決定
-            # 優先順位: ①抵抗帯中心 ②最寄り抵抗 ③直近高値
-            target_out = get_valid_price(res_zone, res_near, res_hh)
-
-            # 6) 判定と表記の生成（ATRを活用した青天井ターゲットの実装）
-            diff_val = None
-            if score_val >= 65:
-                r['AI判定'] = '★超強気'
-                # 超強気は「現在値」からエントリーし、抵抗線か「青天井（現在値 + ATR 3日分）」を狙う
-                tgt = target_out if (target_out and target_out > p_val * 1.03) else (p_val + (atr_val * 3))
-                tgt = int(tgt)
-                diff_val = tgt - int(p_val)
-                r['AI目標値'] = f"{int(p_val)}→{tgt} (+{diff_val}円)"
-
-            elif score_val >= 55:
-                r['AI判定'] = '△注目'
-                # 注目は「押し目(ideal_in)」からエントリーし、抵抗線か「青天井（+ ATR 4日分）」を狙う
-                tgt = target_out if (target_out and target_out > ideal_in) else (ideal_in + (atr_val * 4))
-                tgt = int(tgt)
-                diff_val = tgt - ideal_in
-                r['AI目標値'] = f"{ideal_in}→{tgt} (+{diff_val}円)"
-
-            else:
-                r['AI判定'] = '◯様子見'
-                # 様子見も「押し目(ideal_in)」からエントリー。抵抗が無ければ控えめに「+ ATR 2日分」
-                tgt = target_out if (target_out and target_out > ideal_in) else (ideal_in + (atr_val * 2))
-                tgt = int(tgt)
-                diff_val = tgt - ideal_in
-                r['AI目標値'] = f"{ideal_in}→{tgt} (+{diff_val}円)"
-                
-            r['AI目標値_raw'] = diff_val if diff_val is not None else -999999
-
-    except Exception as e:
-        logging.error(f"[AI] 分析エラー", exc_info=True)
-        
     return rows
+
 # ==========================================
 # ★追加: DBからTOB情報を取得する関数
 # ==========================================
@@ -3184,8 +3655,14 @@ def enhance_with_chart_flags(
 
 # === [/charts60 flags integration] ===========================================
 
-# template.html の場所を指定（自動スクリーニング.pyと同じフォルダ）
-template_path = os.path.join(os.path.dirname(__file__), "template.html")
+# ダッシュボードテンプレート（次期急回復型対応版を優先）
+_template_base = os.path.dirname(__file__)
+_template_candidates = [
+    os.path.join(_template_base, "template_next_turn_python_backed.html"),
+    os.path.join(_template_base, "template.html"),
+]
+template_path = next((p for p in _template_candidates if os.path.exists(p)), _template_candidates[-1])
+print(f"[template] using: {template_path}")
 
 # ファイルからHTMLの文字列を読み込んで変数に入れる
 with open(template_path, "r", encoding="utf-8") as f:
@@ -5889,7 +6366,15 @@ def _prepare_rows_fast(df: pd.DataFrame, conn):
         "短期需給判定",
         "直近売上YoY", "直近営業益YoY", "利益加速フラグ",
         "決算発表予定日", 
-        "決算勝率", "決算期待値", "決算リアクションスコア", "決算リアクション履歴"
+        "決算勝率", "決算期待値", "決算リアクションスコア", "決算リアクション履歴",
+        # シンデン型・次期急回復型（高速行生成時も落とさない）
+        "シンデン総合スコア", "シンデン判定", "予想ギャップスコア", "予想信頼性スコア",
+        "予想根拠スコア", "予想可視性スコア", "未織り込みスコア",
+        "予想達成履歴信頼度", "予想達成履歴期数",
+        "営業益予想ギャップ_pct", "EPS予想ギャップ_pct", "予想平均達成率_pct", "予想最低達成率_pct",
+        "シンデン判定理由", "シンデン需給注釈",
+        "次期転換期待スコア", "次期転換判定", "反動余地スコア", "履歴土台スコア",
+        "根拠可視性スコア", "次期未織込スコア", "回復兆候スコア", "次期転換理由"
     ] if c in _df.columns]
 
     # ループ内で必ず yahoo/x を合成して rows に積む
@@ -6114,103 +6599,238 @@ def enrich_rows_with_price_summary(rows, summary_map):
 # ==== [/BULK PRICE SUMMARIES - TOP LEVEL] ===============================
 
 def enrich_earnings_reaction(conn: sqlite3.Connection, df_cand: pd.DataFrame) -> pd.DataFrame:
-    """finance_notesの決算日リストとprice_historyを使って、過去の決算翌日のリアクション（期待値）を計算する"""
+    """
+    過去8回の決算翌日リアクションを付与。
+
+    優先:
+      earnings_reaction_labels（fetch_allで作った実反応ラベル）
+    フォールバック:
+      旧 finance_notes.past_earnings_dates + price_history
+    """
     if df_cand is None or df_cand.empty or "コード" not in df_cand.columns:
         return df_cand
-        
+
+    df_cand = df_cand.copy()
+    df_cand["コード"] = (
+        df_cand["コード"].astype(str).str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+
+    reaction_cols = ["決算勝率", "決算期待値", "決算リアクションスコア", "決算リアクション履歴"]
+
     try:
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+        # ============================================================
+        # 新ルート: earnings_reaction_labels を直接利用
+        # ============================================================
+        if "earnings_reaction_labels" in tables:
+            target_codes = sorted(set(df_cand["コード"].dropna().astype(str)))
+            if target_codes:
+                qmarks = ",".join(["?"] * len(target_codes))
+                rdf = pd.read_sql_query(
+                    f"""
+                    SELECT コード, 発表日時, D1終値騰落率
+                    FROM earnings_reaction_labels
+                    WHERE 引け後=1
+                      AND D1終値騰落率 IS NOT NULL
+                      AND コード IN ({qmarks})
+                    ORDER BY コード, 発表日時
+                    """,
+                    conn,
+                    params=target_codes,
+                )
+            else:
+                rdf = pd.DataFrame()
+
+            if not rdf.empty:
+                rdf["コード"] = (
+                    rdf["コード"].astype(str).str.strip()
+                    .str.replace(r"\.0$", "", regex=True)
+                )
+                rdf["D1終値騰落率"] = pd.to_numeric(
+                    rdf["D1終値騰落率"], errors="coerce"
+                )
+                rdf = rdf.dropna(subset=["D1終値騰落率"])
+
+                reaction_records = []
+                for code, g in rdf.groupby("コード", sort=False):
+                    g = g.tail(8)
+                    rets = g["D1終値騰落率"].astype(float).tolist()
+                    if not rets:
+                        continue
+
+                    ups = [v for v in rets if v > 0]
+                    downs = [v for v in rets if v <= 0]
+                    win_prob = len(ups) / len(rets)
+                    lose_prob = len(downs) / len(rets)
+                    avg_up = sum(ups) / len(ups) if ups else 0.0
+                    avg_down = sum(downs) / len(downs) if downs else 0.0
+                    expected_value = (win_prob * avg_up) + (lose_prob * avg_down)
+                    score = max(
+                        0.0,
+                        min(100.0, (expected_value + 2.0) / 7.0 * 100.0)
+                    )
+                    spark = ",".join(f"{v:.1f}" for v in rets)
+
+                    reaction_records.append({
+                        "コード": code,
+                        "決算勝率": win_prob * 100.0,
+                        "決算期待値": expected_value,
+                        "決算リアクションスコア": score,
+                        "決算リアクション履歴": spark,
+                    })
+
+                if reaction_records:
+                    react_df = pd.DataFrame(reaction_records)
+                    df_cand = df_cand.drop(
+                        columns=[c for c in reaction_cols if c in df_cand.columns],
+                        errors="ignore"
+                    )
+                    df_cand = df_cand.merge(react_df, on="コード", how="left")
+
+                    # 欠損は「0%」ではなく本当に欠損のまま。
+                    # UI側で "-" 表示させる。
+                    if "決算リアクション履歴" in df_cand.columns:
+                        df_cand["決算リアクション履歴"] = df_cand["決算リアクション履歴"].fillna("")
+                    for c in ["決算勝率", "決算期待値", "決算リアクションスコア"]:
+                        if c in df_cand.columns:
+                            df_cand[c] = pd.to_numeric(df_cand[c], errors="coerce")
+
+                    print(
+                        f"[REACTION] earnings_reaction_labels直結: "
+                        f"反応計算={len(reaction_records)}銘柄 / 元行={len(rdf)}"
+                    )
+                    return df_cand
+
+        # ============================================================
+        # 旧ルート fallback
+        # ============================================================
         import json
-        # finance_notesから過去決算日リストを取得
-        fn_df = pd.read_sql_query("SELECT コード, past_earnings_dates FROM finance_notes WHERE past_earnings_dates IS NOT NULL AND past_earnings_dates != '[]'", conn)
-        if fn_df.empty:
+
+        cur = conn.cursor()
+        fn_cols = [r[1] for r in cur.execute("PRAGMA table_info(finance_notes)")]
+        cur.close()
+
+        if "past_earnings_dates" not in fn_cols:
+            print("[REACTION][WARN] reaction_labelsなし / finance_notes.past_earnings_datesなし")
             return df_cand
-            
+
+        fn_df = pd.read_sql_query(
+            "SELECT コード, past_earnings_dates FROM finance_notes",
+            conn,
+        )
+        if fn_df.empty:
+            print("[REACTION][WARN] finance_notes が空です")
+            return df_cand
+
         dates_map = {}
-        for _, r in fn_df.iterrows():
-            c = str(r["コード"]).zfill(4)
+        for _, rr in fn_df.iterrows():
+            c = str(rr["コード"]).strip()
+            if c.endswith(".0"):
+                c = c[:-2]
+            raw = rr.get("past_earnings_dates")
+            if raw is None or str(raw).strip() in ("", "[]", "null", "None"):
+                continue
             try:
-                dates = json.loads(r["past_earnings_dates"])
+                dates = json.loads(raw) if isinstance(raw, str) else raw
                 if isinstance(dates, list) and dates:
-                    dates_map[c] = dates
+                    norm_dates = []
+                    for v in dates:
+                        dt = pd.to_datetime(v, errors="coerce")
+                        if pd.notna(dt):
+                            norm_dates.append(pd.Timestamp(dt).date().isoformat())
+                    norm_dates = sorted(set(norm_dates))[-8:]
+                    if norm_dates:
+                        dates_map[c] = norm_dates
             except Exception:
                 pass
-                
+
         if not dates_map:
+            print("[REACTION][WARN] fallback側も過去決算日なし")
             return df_cand
 
-        # 計算対象のコードだけ履歴を取得（メモリ節約）
         target_codes = tuple(dates_map.keys())
         qmarks = ",".join(["?"] * len(target_codes))
-        
         ph_df = pd.read_sql_query(
-            f"SELECT コード, 日付, 始値, 高値, 安値, 終値 FROM price_history WHERE コード IN ({qmarks}) ORDER BY コード, 日付", 
-            conn, params=target_codes
+            f"SELECT コード, 日付, 終値 FROM price_history "
+            f"WHERE コード IN ({qmarks}) ORDER BY コード, 日付",
+            conn,
+            params=target_codes,
         )
-        if ph_df.empty: return df_cand
-        ph_df['日付'] = pd.to_datetime(ph_df['日付'])
-        
+        if ph_df.empty:
+            return df_cand
+
+        ph_df["コード"] = ph_df["コード"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        ph_df["日付"] = pd.to_datetime(ph_df["日付"], errors="coerce")
+        ph_df["終値"] = pd.to_numeric(ph_df["終値"], errors="coerce")
+        ph_df = ph_df.dropna(subset=["日付", "終値"])
+
         reaction_records = []
-        for code, group in ph_df.groupby("コード"):
-            c4 = str(code).zfill(4)
-            dates = dates_map.get(c4)
-            if not dates: continue
-                
+        for code, group in ph_df.groupby("コード", sort=False):
+            dates = dates_map.get(code)
+            if not dates:
+                continue
             group = group.sort_values("日付").reset_index(drop=True)
             rets = []
-            
-            for d_str in dates:
-                d = pd.to_datetime(d_str)
-                # 決算日のインデックスを探す（発表日が休日の場合は直前の営業日を基準にする）
-                idx_list = group.index[group['日付'] <= d].tolist()
-                if not idx_list: continue
+            for d_str in dates[-8:]:
+                d = pd.to_datetime(d_str, errors="coerce")
+                if pd.isna(d):
+                    continue
+                idx_list = group.index[group["日付"] <= d].tolist()
+                if not idx_list:
+                    continue
                 idx = idx_list[-1]
-                    
-                # 翌営業日が存在するか確認
-                if idx + 1 < len(group):
-                    prev_close = group.loc[idx, '終値']
-                    next_close = group.loc[idx+1, '終値']
-                    
-                    if pd.notna(prev_close) and prev_close > 0 and pd.notna(next_close):
-                        # 翌日の終値ベースの騰落率（%）
-                        ret = (next_close - prev_close) / prev_close * 100.0
-                        rets.append(ret)
-            
-            if rets:
-                ups = [r for r in rets if r > 0]
-                downs = [r for r in rets if r <= 0]
-                
-                win_prob = len(ups) / len(rets)
-                lose_prob = len(downs) / len(rets)
-                
-                avg_up = sum(ups) / len(ups) if ups else 0.0
-                avg_down = sum(downs) / len(downs) if downs else 0.0
-                
-                # 💡 指示いただいた「期待値」の計算式
-                expected_value = (win_prob * avg_up) + (lose_prob * avg_down)
-                
-                # 期待値を 0〜100 のスコアにマッピング（期待値-2%で0点、+5%以上で100点とする）
-                score = max(0.0, min(100.0, (expected_value + 2.0) / 7.0 * 100.0))
-                
-                # スパークライン用（直近8回分を文字列化）
-                spark = ",".join([f"{r:.1f}" for r in rets[-8:]])
-                
-                reaction_records.append({
-                    "コード": c4,
-                    "決算勝率": win_prob * 100.0,
-                    "決算期待値": expected_value,
-                    "決算リアクションスコア": score,
-                    "決算リアクション履歴": spark
-                })
-                
+                if idx + 1 >= len(group):
+                    continue
+                prev_close = group.loc[idx, "終値"]
+                next_close = group.loc[idx + 1, "終値"]
+                if pd.notna(prev_close) and prev_close > 0 and pd.notna(next_close):
+                    rets.append((next_close - prev_close) / prev_close * 100.0)
+
+            rets = rets[-8:]
+            if not rets:
+                continue
+
+            ups = [v for v in rets if v > 0]
+            downs = [v for v in rets if v <= 0]
+            win_prob = len(ups) / len(rets)
+            lose_prob = len(downs) / len(rets)
+            avg_up = sum(ups) / len(ups) if ups else 0.0
+            avg_down = sum(downs) / len(downs) if downs else 0.0
+            expected_value = (win_prob * avg_up) + (lose_prob * avg_down)
+            score = max(0.0, min(100.0, (expected_value + 2.0) / 7.0 * 100.0))
+            spark = ",".join(f"{v:.1f}" for v in rets)
+            reaction_records.append({
+                "コード": code,
+                "決算勝率": win_prob * 100.0,
+                "決算期待値": expected_value,
+                "決算リアクションスコア": score,
+                "決算リアクション履歴": spark,
+            })
+
         if reaction_records:
             react_df = pd.DataFrame(reaction_records)
+            df_cand = df_cand.drop(
+                columns=[c for c in reaction_cols if c in df_cand.columns],
+                errors="ignore"
+            )
             df_cand = df_cand.merge(react_df, on="コード", how="left")
-            
+            if "決算リアクション履歴" in df_cand.columns:
+                df_cand["決算リアクション履歴"] = df_cand["決算リアクション履歴"].fillna("")
+            for c in ["決算勝率", "決算期待値", "決算リアクションスコア"]:
+                if c in df_cand.columns:
+                    df_cand[c] = pd.to_numeric(df_cand[c], errors="coerce")
+            print(f"[REACTION] fallback復元OK: {len(reaction_records)}銘柄")
+
     except Exception as e:
         print(f"[REACTION] 決算リアクションの計算エラー: {e}")
-        
-    return df_cand
 
+    return df_cand
 
 
 # 軽いメモリキャッシュ（ラン内のみ）
@@ -7630,12 +8250,43 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         percent = ["前日終値比率","前日終値比率（％）","フォロー高値pct","最大逆行pct","リターン終値pct","推奨比率","ATR14%","進捗率"]
         money   = ["売買代金(億)","売買代金億","売買代金20日平均億","RVOL代金","時価総額億円"]
         price   = ["現在値","前日終値","前日円差","始値","高値","安値","終値"]
-        score   = ["右肩早期スコア","合成スコア","スコア"]
+        score   = [
+            "右肩早期スコア","合成スコア","スコア",
+            "シンデン総合スコア","予想ギャップスコア","予想信頼性スコア",
+            "予想根拠スコア","予想可視性スコア","未織り込みスコア",
+            "営業益予想ギャップ_pct","EPS予想ギャップ_pct",
+            "予想平均達成率_pct","予想最低達成率_pct",
+            "次期転換期待スコア","反動余地スコア","履歴土台スコア",
+            "根拠可視性スコア","次期未織込スコア","回復兆候スコア"
+        ]
         for c in percent + money + price + score:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
 
     _round2_inplace(df_cand)
+
+    # === 決算跨ぎワンクリックUI用 必須列ガード ===
+    # shinden_logic.py が screener に保存した列をHTMLへ渡す。
+    # 万一列が欠けてもtemplate側JSが落ちないよう空列を保証する。
+    _earnings_bridge_cols = [
+        "決算発表予定日",
+        "シンデン総合スコア",
+        "シンデン判定",
+        "シンデン判定理由",
+        "次期転換期待スコア",
+        "次期転換判定",
+        "次期転換理由",
+    ]
+    _earnings_bridge_missing = []
+    for _c in _earnings_bridge_cols:
+        if _c not in df_cand.columns:
+            df_cand[_c] = None
+            _earnings_bridge_missing.append(_c)
+    if _earnings_bridge_missing:
+        print(f"[earnings-bridge][WARN] 欠損列を空列で補完: {_earnings_bridge_missing}")
+    else:
+        _p("earnings-bridge: required columns OK")
+
     _p(f"rename/round: done dt={( time.perf_counter() - t_rename ): .2f}s")
 
     # --- 株探ニュース(3) ---
@@ -7732,12 +8383,44 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         df_cand["予測ターゲット価格"] = 0.0
     _tick("surprise_predictor_enrich")
     
-    # ここで生成される rows には、自動的に予測値が含まれるようになります
-    rows = _prepare_rows(df_cand, conn)
-    
+    # ============================================================
+    # 季節調整進捗を実行して、更新後のDB値をdf_candへ戻す
+    # （旧版は関数を定義しただけで呼んでいなかった）
+    # ============================================================
+    try:
+        update_seasonal_progress(conn)
+        season_df = pd.read_sql_query(
+            """
+            SELECT コード, 過去平均進捗率, 季節調整済進捗差分
+            FROM screener
+            """,
+            conn,
+        )
+        if not season_df.empty:
+            season_df["コード"] = (
+                season_df["コード"].astype(str).str.strip()
+                .str.replace(r"\.0$", "", regex=True)
+            )
+            df_cand["コード"] = (
+                df_cand["コード"].astype(str).str.strip()
+                .str.replace(r"\.0$", "", regex=True)
+            )
+            df_cand = df_cand.drop(
+                columns=[c for c in ["過去平均進捗率", "季節調整済進捗差分"] if c in df_cand.columns],
+                errors="ignore",
+            )
+            df_cand = df_cand.merge(season_df, on="コード", how="left")
+            print(
+                f"[seasonality] df_cand反映: "
+                f"過去平均あり={int(df_cand['過去平均進捗率'].notna().sum())} / "
+                f"差分あり={int(df_cand['季節調整済進捗差分'].notna().sum())}"
+            )
+    except Exception as e:
+        print(f"[seasonality][WARN] 実行/反映失敗: {e}")
 
+    # ここで生成される rows には、自動的に予測値が含まれるようになります
+    # 全銘柄の行整形は1回だけ実行する
     rows = _prepare_rows(df_cand, conn)
-    
     # 🎯 60日（2ヶ月）スイング・トレンドフォロー算出モデル
     for r in rows:
         try:
@@ -8089,6 +8772,15 @@ def export_llm_dataset(df_cand, filename="llm_dataset.csv"):
             "前日終値比率", turnover_col, "RVOL代金", "RS_5", 
             "需給OH", "信用倍率", "信用買い残_浮動株比率", "信用買い残増減率_20d", "信用需給負荷スコア",
             "利益加速フラグ", "決算期待値", "進捗率", "季節調整済進捗差分",
+            "シンデン総合スコア", "シンデン判定",
+            "予想ギャップスコア", "予想信頼性スコア",
+            "予想根拠スコア", "予想可視性スコア", "未織り込みスコア",
+            "予想達成履歴信頼度", "予想達成履歴期数",
+            "営業益予想ギャップ_pct", "EPS予想ギャップ_pct",
+            "シンデン判定理由", "シンデン需給注釈",
+            "次期転換期待スコア", "次期転換判定",
+            "反動余地スコア", "履歴土台スコア", "根拠可視性スコア",
+            "次期未織込スコア", "回復兆候スコア", "次期転換理由",
             "右肩早期種別", "初動フラグ", "Algo_総合判定",
             "イナゴ過熱判定", "信用需給判定", "機関売り判定"
         ]
@@ -8133,16 +8825,76 @@ def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int 
         df_fwd = pd.DataFrame(columns=["コード", "営業利益_fwd"])
 
     # 2. 直近4Q実績 (TTM) の取得 (既存の pl_quarter から)
+    # pandas 2.x/将来版で groupby.apply の仕様が変わるため apply は使わない。
     try:
-        pl = pd.read_sql_query("SELECT コード, 決算期, 四半期, 営業利益 FROM pl_quarter", conn)
-        pl["決算期_ord"] = pd.to_datetime(pl["決算期"], errors="coerce")
-        pl = pl.dropna(subset=["決算期_ord"]).sort_values(["コード", "決算期_ord", "四半期"])
-        
-        def _sum_last4(group: pd.DataFrame) -> Optional[float]:
-            vals = group.tail(4)["営業利益"].dropna()
-            return float(vals.sum()) if not vals.empty else None
-            
-        df_ttm = pl.groupby("コード").apply(_sum_last4).rename("営業利益_ttm").reset_index()
+        pl = pd.read_sql_query(
+            "SELECT コード, 決算期, 四半期, 営業利益 FROM pl_quarter",
+            conn,
+        )
+
+        if pl.empty:
+            df_ttm = pd.DataFrame(columns=["コード", "営業利益_ttm"])
+        else:
+            pl["コード"] = pl["コード"].astype(str).str.strip()
+            pl["決算期_ord"] = pd.to_datetime(pl["決算期"], errors="coerce")
+            pl["営業利益"] = pd.to_numeric(pl["営業利益"], errors="coerce")
+
+            # 四半期を安定ソートする補助列
+            def _quarter_ord(v):
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    return 99
+                s = str(v).strip().upper().replace(" ", "")
+                import re as _re
+
+                m = _re.search(r"([1-4])\s*Q", s)
+                if m:
+                    return int(m.group(1))
+
+                m = _re.search(r"Q\s*([1-4])", s)
+                if m:
+                    return int(m.group(1))
+
+                m = _re.search(r"第?\s*([1-4])\s*四半期", s)
+                if m:
+                    return int(m.group(1))
+
+                if any(k in s for k in ("通期", "本決算", "FULL", "FY")):
+                    return 4
+
+                return 99
+
+            pl["四半期_ord"] = pl["四半期"].map(_quarter_ord)
+
+            pl = (
+                pl.dropna(subset=["コード", "決算期_ord", "営業利益"])
+                .sort_values(
+                    ["コード", "決算期_ord", "四半期_ord"],
+                    kind="stable",
+                )
+            )
+
+            if pl.empty:
+                df_ttm = pd.DataFrame(columns=["コード", "営業利益_ttm"])
+            else:
+                # 各銘柄の直近4レコードだけを抽出して合計。
+                # groupby.apply を使わないためDeprecationWarningも出ない。
+                last4 = (
+                    pl.groupby("コード", sort=False, group_keys=False)
+                    .tail(4)
+                )
+
+                df_ttm = (
+                    last4.groupby("コード", as_index=False, sort=False)
+                    .agg(営業利益_ttm=("営業利益", "sum"))
+                )
+
+                df_ttm["営業利益_ttm"] = pd.to_numeric(
+                    df_ttm["営業利益_ttm"], errors="coerce"
+                )
+                df_ttm = df_ttm.dropna(subset=["営業利益_ttm"])
+
+        print(f"[oper] TTM算出 rows={len(df_ttm)} (groupby.apply不使用)")
+
     except Exception as e:
         print("[oper][WARN] pl_quarter (TTM) 読み込み失敗:", e)
         df_ttm = pd.DataFrame(columns=["コード", "営業利益_ttm"])
@@ -8203,82 +8955,488 @@ def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int 
 # ==========================================
 def update_seasonal_progress(conn: sqlite3.Connection) -> None:
     """
-    現在の進捗率と「過去数年の同四半期の平均進捗率」を比較し、
-    季節要因を排除した『季節調整済進捗差分』を計算する。
+    季節調整済み進捗差分 v13
+    quarterly_actual_history + tdnet_xbrl_metrics 実DB準拠版
+
+    現在進捗率:
+        screener.進捗率
+        （finance_notes.progress_percent 由来の既存値を利用）
+
+    現在Q:
+        quarterly_actual_history の銘柄別・最新 fiscal_key / quarter_no
+
+    過去同Q進捗率:
+        quarterly_actual_history の3ヵ月単独 operating_profit を
+        同一 fiscal_key 内で quarter_no 順に累積し、
+        その年度の最終通期営業利益 actual_op で割る。
+
+    通期営業利益 actual_op:
+        1) tdnet_xbrl_metrics.actual_op を最優先
+        2) forecast_achievement_history.actual_op を補完
+        3) quarterly_actual_history が1Q〜4Q揃う年度は4Q合計を最終fallback
+
+    過去平均:
+        現在 fiscal_key を除外した同じ quarter_no の過去最大5年度。
+        原則2年度以上で採用。
+
+    季節調整済進捗差分:
+        今回進捗率 - 過去平均進捗率
     """
-    try:
-        conn.execute("ALTER TABLE screener ADD COLUMN 過去平均進捗率 REAL")
-        conn.execute("ALTER TABLE screener ADD COLUMN 季節調整済進捗差分 REAL")
-    except Exception:
-        pass
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
 
-    try:
-        # 1. 現在の進捗率と現在の四半期(1Qなど)を取得
-        # ※ finance_notesに current_quarter(例:"1Q") がある想定
-        query_current = """
-            SELECT 
-                s.コード, 
-                s.進捗率 AS 今回進捗率,
-                f.current_quarter AS 現在のQ
-            FROM screener s
-            JOIN finance_notes f ON s.コード = f.コード
-            WHERE s.進捗率 IS NOT NULL AND f.current_quarter IS NOT NULL
-        """
-        df_current = pd.read_sql_query(query_current, conn)
-        
-        if df_current.empty:
-            return
-
-        # 2. 過去の同四半期の進捗率を取得して平均化
-        # ※ pl_quarterテーブルに 四半期(例:"1Q") と 進捗率 が保存されている想定
-        query_history = """
-            SELECT コード, 四半期, AVG(進捗率) AS 過去平均進捗率
-            FROM pl_quarter
-            WHERE 進捗率 IS NOT NULL
-            GROUP BY コード, 四半期
-        """
-        df_hist = pd.read_sql_query(query_history, conn)
-
-        if df_hist.empty:
-            return
-
-        # 3. マージして差分（サプライズ度）を計算
-        df_merged = pd.merge(
-            df_current, 
-            df_hist, 
-            left_on=['コード', '現在のQ'], 
-            right_on=['コード', '四半期'], 
-            how='left'
+    required_tables = {"screener", "quarterly_actual_history"}
+    missing_tables = required_tables - tables
+    if missing_tables:
+        raise RuntimeError(
+            "季節調整に必要なテーブルがありません: "
+            + ", ".join(sorted(missing_tables))
         )
 
-        # 今回の進捗率 - 過去の同Q平均進捗率 = 本当の上振れ幅
-        df_merged['季節調整済進捗差分'] = df_merged['今回進捗率'] - df_merged['過去平均進捗率']
+    screener_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(screener)").fetchall()
+    }
+    qah_cols = {
+        r[1]
+        for r in conn.execute(
+            "PRAGMA table_info(quarterly_actual_history)"
+        ).fetchall()
+    }
 
-        # 4. DB更新
-        updates = []
-        for _, r in df_merged.iterrows():
-            if pd.notna(r['季節調整済進捗差分']):
-                updates.append((
-                    round(r['過去平均進捗率'], 2), 
-                    round(r['季節調整済進捗差分'], 2), 
-                    str(r['コード'])
-                ))
+    required_sc = {"コード", "進捗率"}
+    required_qah = {
+        "コード", "fiscal_key", "quarter_no",
+        "operating_profit", "announcement_date"
+    }
 
-        if updates:
-            cur = conn.cursor()
-            cur.executemany("""
-                UPDATE screener 
-                SET 過去平均進捗率=?, 季節調整済進捗差分=? 
-                WHERE コード=?
-            """, updates)
-            conn.commit()
-            cur.close()
-            print(f"[seasonality] 季節調整済み進捗率を更新しました: {len(updates)}銘柄")
-    except Exception as e:
-        print(f"[seasonality][WARN] 季節調整の計算に失敗しました: {e}")
+    miss_sc = required_sc - screener_cols
+    miss_qah = required_qah - qah_cols
+    if miss_sc:
+        raise RuntimeError(
+            "screener に季節調整用の必須列がありません: "
+            + ", ".join(sorted(miss_sc))
+        )
+    if miss_qah:
+        raise RuntimeError(
+            "quarterly_actual_history に必須列がありません: "
+            + ", ".join(sorted(miss_qah))
+        )
 
-# --- ここから: 前日終値アップデータ（履歴ベース／唯一の定義） ---
-# ---- 前日終値比率(%)＋現在値から前日終値を逆算してDB更新 ----
+    if "過去平均進捗率" not in screener_cols:
+        conn.execute("ALTER TABLE screener ADD COLUMN 過去平均進捗率 REAL")
+    if "季節調整済進捗差分" not in screener_cols:
+        conn.execute("ALTER TABLE screener ADD COLUMN 季節調整済進捗差分 REAL")
+    conn.commit()
+
+    # --------------------------------------------------------
+    # 1. 現在進捗率
+    # --------------------------------------------------------
+    current = pd.read_sql_query(
+        """
+        SELECT コード, 進捗率 AS 今回進捗率
+        FROM screener
+        WHERE 進捗率 IS NOT NULL
+        """,
+        conn,
+    )
+    if current.empty:
+        print("[seasonality] screener.進捗率 が空のため更新なし")
+        return
+
+    current["コード"] = (
+        current["コード"].astype(str).str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    current["今回進捗率"] = pd.to_numeric(
+        current["今回進捗率"], errors="coerce"
+    )
+    # -1/-2等のステータス値は除外
+    current = current[
+        current["今回進捗率"].notna()
+        & (current["今回進捗率"] >= 0)
+        & np.isfinite(current["今回進捗率"])
+    ].copy()
+
+    if current.empty:
+        print("[seasonality] 有効な現在進捗率なし")
+        return
+
+    # --------------------------------------------------------
+    # 2. 四半期単独実績
+    # --------------------------------------------------------
+    q = pd.read_sql_query(
+        """
+        SELECT
+            コード,
+            fiscal_key,
+            quarter_no,
+            quarter_label,
+            announcement_date,
+            operating_profit
+        FROM quarterly_actual_history
+        WHERE fiscal_key IS NOT NULL
+          AND quarter_no IS NOT NULL
+          AND operating_profit IS NOT NULL
+        """,
+        conn,
+    )
+    if q.empty:
+        print("[seasonality] quarterly_actual_history が空のため更新なし")
+        return
+
+    q["コード"] = (
+        q["コード"].astype(str).str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    q["fiscal_key"] = q["fiscal_key"].astype(str).str.strip()
+    q["quarter_no"] = pd.to_numeric(q["quarter_no"], errors="coerce")
+    q["operating_profit"] = pd.to_numeric(
+        q["operating_profit"], errors="coerce"
+    )
+    q["announcement_date"] = pd.to_datetime(
+        q["announcement_date"], errors="coerce"
+    )
+
+    q = q[
+        q["quarter_no"].isin([1, 2, 3, 4])
+        & q["operating_profit"].notna()
+    ].copy()
+    if q.empty:
+        print("[seasonality] 有効な四半期営業利益なし")
+        return
+
+    q["quarter_no"] = q["quarter_no"].astype(int)
+
+    # 同一 fiscal_key / Q に重複がある場合は発表日の新しい行を採用
+    q = (
+        q.sort_values(
+            ["コード", "fiscal_key", "quarter_no", "announcement_date"]
+        )
+        .drop_duplicates(
+            subset=["コード", "fiscal_key", "quarter_no"],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    # 3ヵ月単独値を年度内で累積
+    q = q.sort_values(
+        ["コード", "fiscal_key", "quarter_no"]
+    ).reset_index(drop=True)
+    q["累積営業利益"] = (
+        q.groupby(["コード", "fiscal_key"], sort=False)["operating_profit"]
+        .cumsum()
+    )
+
+    # --------------------------------------------------------
+    # 3. 通期営業利益 actual_op
+    # --------------------------------------------------------
+    actual_frames = []
+
+    # 3-A. tdnet_xbrl_metrics を最優先
+    if "tdnet_xbrl_metrics" in tables:
+        xcols = {
+            r[1]
+            for r in conn.execute(
+                "PRAGMA table_info(tdnet_xbrl_metrics)"
+            ).fetchall()
+        }
+        if {
+            "コード", "提出時刻", "actual_fiscal_key", "actual_op"
+        }.issubset(xcols):
+            x = pd.read_sql_query(
+                """
+                SELECT
+                    コード,
+                    提出時刻,
+                    actual_fiscal_key AS fiscal_key,
+                    actual_op
+                FROM tdnet_xbrl_metrics
+                WHERE actual_fiscal_key IS NOT NULL
+                  AND actual_op IS NOT NULL
+                """,
+                conn,
+            )
+            if not x.empty:
+                x["コード"] = (
+                    x["コード"].astype(str).str.strip()
+                    .str.replace(r"\.0$", "", regex=True)
+                )
+                x["fiscal_key"] = x["fiscal_key"].astype(str).str.strip()
+                x["actual_op"] = pd.to_numeric(
+                    x["actual_op"], errors="coerce"
+                )
+                x["提出時刻"] = pd.to_datetime(
+                    x["提出時刻"], errors="coerce"
+                )
+                # 同一年度に複数行があれば最新の確定値
+                x = (
+                    x[x["actual_op"].notna()]
+                    .sort_values(
+                        ["コード", "fiscal_key", "提出時刻"]
+                    )
+                    .drop_duplicates(
+                        ["コード", "fiscal_key"], keep="last"
+                    )
+                )
+                x = x[x["actual_op"] > 0].copy()
+                if not x.empty:
+                    x = x[["コード", "fiscal_key", "actual_op"]]
+                    x["actual_source"] = "tdnet_xbrl"
+                    actual_frames.append(x)
+
+    # 3-B. forecast_achievement_history を補完
+    if "forecast_achievement_history" in tables:
+        ah_cols = {
+            r[1]
+            for r in conn.execute(
+                "PRAGMA table_info(forecast_achievement_history)"
+            ).fetchall()
+        }
+        if {"コード", "fiscal_key", "actual_op"}.issubset(ah_cols):
+            ah = pd.read_sql_query(
+                """
+                SELECT コード, fiscal_key, actual_op
+                FROM forecast_achievement_history
+                WHERE fiscal_key IS NOT NULL
+                  AND actual_op IS NOT NULL
+                """,
+                conn,
+            )
+            if not ah.empty:
+                ah["コード"] = (
+                    ah["コード"].astype(str).str.strip()
+                    .str.replace(r"\.0$", "", regex=True)
+                )
+                ah["fiscal_key"] = ah["fiscal_key"].astype(str).str.strip()
+                ah["actual_op"] = pd.to_numeric(
+                    ah["actual_op"], errors="coerce"
+                )
+                ah = ah[ah["actual_op"] > 0].copy()
+                if not ah.empty:
+                    ah = (
+                        ah[["コード", "fiscal_key", "actual_op"]]
+                        .drop_duplicates(
+                            ["コード", "fiscal_key"], keep="last"
+                        )
+                    )
+                    ah["actual_source"] = "achievement"
+                    actual_frames.append(ah)
+
+    # 3-C. 1Q〜4Qが揃う年度は四半期合計を fallback
+    q_year = (
+        q.groupby(["コード", "fiscal_key"], as_index=False)
+        .agg(
+            q_count=("quarter_no", "nunique"),
+            actual_op=("operating_profit", "sum"),
+        )
+    )
+    q_year = q_year[
+        (q_year["q_count"] == 4)
+        & q_year["actual_op"].notna()
+        & (q_year["actual_op"] > 0)
+    ].copy()
+    if not q_year.empty:
+        q_year = q_year[["コード", "fiscal_key", "actual_op"]]
+        q_year["actual_source"] = "quarter_sum"
+        actual_frames.append(q_year)
+
+    if not actual_frames:
+        print("[seasonality] 通期営業利益 actual_op を作れず更新なし")
+        return
+
+    actual = pd.concat(actual_frames, ignore_index=True)
+
+    # 優先順位: XBRL > achievement > quarter_sum
+    actual["_pri"] = actual["actual_source"].map(
+        {"tdnet_xbrl": 0, "achievement": 1, "quarter_sum": 2}
+    ).fillna(9)
+
+    actual = (
+        actual.sort_values(["コード", "fiscal_key", "_pri"])
+        .drop_duplicates(["コード", "fiscal_key"], keep="first")
+        .drop(columns=["_pri"])
+        .reset_index(drop=True)
+    )
+
+    # --------------------------------------------------------
+    # 4. 過去各Qの進捗率
+    # --------------------------------------------------------
+    hist = q.merge(
+        actual,
+        on=["コード", "fiscal_key"],
+        how="inner",
+    )
+    if hist.empty:
+        print("[seasonality] 四半期実績と通期実績の年度一致なし")
+        return
+
+    hist["過去進捗率"] = (
+        hist["累積営業利益"] / hist["actual_op"] * 100.0
+    )
+
+    # 赤字通期は既に除外。極端値だけ安全のため除外
+    hist = hist[
+        hist["過去進捗率"].notna()
+        & np.isfinite(hist["過去進捗率"])
+        & (hist["過去進捗率"] >= -100.0)
+        & (hist["過去進捗率"] <= 300.0)
+    ].copy()
+
+    if hist.empty:
+        print("[seasonality] 有効な過去進捗率なし")
+        return
+
+    # --------------------------------------------------------
+    # 5. 現在Q / 現在fiscal_key
+    # --------------------------------------------------------
+    # 最新announcement_dateを優先し、同日ならquarter_no大を採用
+    latest_q = (
+        q.sort_values(
+            ["コード", "announcement_date", "fiscal_key", "quarter_no"]
+        )
+        .groupby("コード", sort=False)
+        .tail(1)[
+            ["コード", "fiscal_key", "quarter_no", "announcement_date"]
+        ]
+        .rename(
+            columns={
+                "fiscal_key": "現在fiscal_key",
+                "quarter_no": "現在Q",
+                "announcement_date": "現在Q発表日",
+            }
+        )
+    )
+
+    current = current.merge(latest_q, on="コード", how="inner")
+    if current.empty:
+        print("[seasonality] 現在Qを特定できる銘柄なし")
+        return
+
+    # --------------------------------------------------------
+    # 6. 同Qの過去最大5年度から平均
+    # --------------------------------------------------------
+    hist_for_avg = hist.merge(
+        latest_q[["コード", "現在fiscal_key", "現在Q"]],
+        left_on=["コード", "quarter_no"],
+        right_on=["コード", "現在Q"],
+        how="inner",
+    )
+
+    # 現在年度を教師に混ぜない
+    hist_for_avg = hist_for_avg[
+        hist_for_avg["fiscal_key"] != hist_for_avg["現在fiscal_key"]
+    ].copy()
+
+    if hist_for_avg.empty:
+        print("[seasonality] 過去同Q履歴なし")
+        return
+
+    # fiscal_key YYYY-MM を時系列化し、直近5年度のみ
+    hist_for_avg["_fy_sort"] = pd.to_datetime(
+        hist_for_avg["fiscal_key"] + "-01",
+        errors="coerce",
+    )
+    hist_for_avg = (
+        hist_for_avg.sort_values(
+            ["コード", "quarter_no", "_fy_sort"],
+            ascending=[True, True, False],
+        )
+        .groupby(["コード", "quarter_no"], group_keys=False)
+        .head(5)
+        .copy()
+    )
+
+    avg = (
+        hist_for_avg.groupby(
+            ["コード", "quarter_no"], as_index=False
+        )
+        .agg(
+            過去平均進捗率=("過去進捗率", "mean"),
+            過去進捗標準偏差=("過去進捗率", "std"),
+            過去同Q件数=("過去進捗率", "count"),
+        )
+        .rename(columns={"quarter_no": "現在Q"})
+    )
+
+    # v13:
+    # 2年度以上は正式採用、1年度のみは参考値としてfallback採用。
+    # 表示列は増やさず、履歴数はログで監査する。
+    avg = avg[avg["過去同Q件数"] >= 1].copy()
+    if avg.empty:
+        print("[seasonality] 過去同Q履歴がある銘柄なし")
+        return
+
+    merged = current.merge(
+        avg,
+        on=["コード", "現在Q"],
+        how="inner",
+    )
+    if merged.empty:
+        print("[seasonality] 現在Qと過去同Q平均の一致なし")
+        return
+
+    merged["季節調整済進捗差分"] = (
+        merged["今回進捗率"] - merged["過去平均進捗率"]
+    )
+
+    # --------------------------------------------------------
+    # 7. DB更新
+    # --------------------------------------------------------
+    updates = []
+    for _, r in merged.iterrows():
+        if (
+            pd.notna(r["過去平均進捗率"])
+            and pd.notna(r["季節調整済進捗差分"])
+        ):
+            updates.append(
+                (
+                    round(float(r["過去平均進捗率"]), 2),
+                    round(float(r["季節調整済進捗差分"]), 2),
+                    str(r["コード"]),
+                )
+            )
+
+    if not updates:
+        print("[seasonality] 計算可能な銘柄なし")
+        return
+
+    cur = conn.cursor()
+    try:
+        cur.executemany(
+            """
+            UPDATE screener
+            SET 過去平均進捗率=?,
+                季節調整済進捗差分=?
+            WHERE コード=?
+            """,
+            updates,
+        )
+        conn.commit()
+    finally:
+        cur.close()
+
+    q_counts = (
+        merged["現在Q"].value_counts().sort_index().to_dict()
+    )
+    hist_median = float(merged["過去同Q件数"].median())
+    source_counts = actual["actual_source"].value_counts().to_dict()
+    hist_tiers = {
+        "1年参考": int((merged["過去同Q件数"] == 1).sum()),
+        "2年以上": int((merged["過去同Q件数"] >= 2).sum()),
+    }
+
+    print(
+        f"[seasonality] v13 更新={len(updates)}銘柄 "
+        f"Q内訳={q_counts} "
+        f"過去同Q件数中央値={hist_median:.1f} "
+        f"履歴内訳={hist_tiers} "
+        f"actual_source={source_counts}"
+    )
 
 def _to_raw(v):
     if isinstance(v, dict):
@@ -10135,7 +11293,7 @@ def main():
 
         ensure_runlog_schema(conn)
         # 基礎データ（日次更新）【同日スキップ】
-        _timed_daily_once("run_fundamental_daily", run_fundamental_daily, conn)
+        _timed_daily_once("run_fundamental_daily", run_fundamental_daily)
         # [v12] removed: lib.parse import quote as quote
 
         extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
@@ -10201,7 +11359,7 @@ def main():
                     try:
                         _timed_daily_once("update_operating_income_and_ratio", update_operating_income_and_ratio, conn)
                         # ★ここに追加：営業利益計算のあとに季節調整を実行
-                        _timed_daily_once("update_seasonal_progress", update_seasonal_progress, conn)
+                        _timed_daily_once("update_seasonal_progress_v3", update_seasonal_progress, conn)
                     except Exception as e:
                         print("[operating-income/seasonality][WARN]", e)
                 else:
@@ -10268,6 +11426,10 @@ def main():
         
             # (7.1) 財務コメント追加
             phase_sync_finance_comments(conn)
+
+            # (7.15) シンデン型＋次期急回復型スコア
+            # 計算本体は外部v24に集約。backfill中はrun_shinden_daily側で安全にSKIP。
+            _timed("shinden_pattern_metrics_v24", run_shinden_daily, False)
             
             # (7.2) チャート生成
             try:

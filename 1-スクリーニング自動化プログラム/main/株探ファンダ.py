@@ -1,3 +1,16 @@
+# === 2026-08-13 PTS対応 ===
+# - 株探 financeページ上部のPTS株価/時刻を同じHTTP取得から抽出
+# - screener.PTS株価 / screener.PTS時刻 に保存
+# - 同日再取得したい場合は --force-refresh を使用
+# === 2026-08-12 v14: 四半期実績履歴DB化（ソリトン型対応の土台） ===
+# - 株探 3ヵ月決算【実績】を quarterly_actual_history へ保存
+# - fiscal_key / quarter_no / 発表日 / 売上 / 営業益 / 経常益 / 最終益 / EPS を保持
+# - 既存 finance_notes の意味は変更しない（actual_operating_profit は従来通り直近通期実績）
+# === 2026-08-12 v13: 過去決算反応データ復元 ===
+# - 四半期実績の発表日から past_earnings_dates を再生成（直近8回）
+# - return へ past_earnings_dates を復帰
+# - 取得失敗/空配列で既存履歴を消さない保護を追加
+# - 過去反応列の元データを自己修復可能にする
 # -*- coding: utf-8 -*-
 
 #💻 コマンドラインオプションの使い方一覧
@@ -144,6 +157,49 @@ def safe_float(value: Any) -> Optional[float]:
     if s in ("-", "--", "N/A", "NA"): return None
     try: return float(s)
     except Exception: return None
+
+def _parse_kabutan_pts(soup: BeautifulSoup) -> dict:
+    """株探ページ上部の PTS 株価・表示時刻を取得する。
+
+    例:
+      <div class="si_i1_3">
+        <div class="kabuka1">PTS</div>
+        <div class="kabuka2">5,003円</div>
+        <div class="kabuka3">17:32　08/13</div>
+      </div>
+
+    PTS表示が無い場合は None を返す。
+    """
+    out = {"pts_price": None, "pts_time": None}
+    try:
+        # まず既知の株価ブロック単位で探し、別の kabuka2 を誤取得しないようにする。
+        for block in soup.select("div.si_i1_3"):
+            label = block.select_one("div.kabuka1")
+            if label and label.get_text(" ", strip=True).upper() == "PTS":
+                price_el = block.select_one("div.kabuka2")
+                time_el = block.select_one("div.kabuka3")
+                if price_el:
+                    out["pts_price"] = safe_float(price_el.get_text(" ", strip=True))
+                if time_el:
+                    out["pts_time"] = time_el.get_text(" ", strip=True) or None
+                return out
+
+        # HTML構造変更への保険。PTSラベルの親要素から価格/時刻を探す。
+        for label in soup.find_all("div", class_="kabuka1"):
+            if label.get_text(" ", strip=True).upper() != "PTS":
+                continue
+            block = label.parent
+            price_el = block.find("div", class_="kabuka2") if block else None
+            time_el = block.find("div", class_="kabuka3") if block else None
+            if price_el:
+                out["pts_price"] = safe_float(price_el.get_text(" ", strip=True))
+            if time_el:
+                out["pts_time"] = time_el.get_text(" ", strip=True) or None
+            return out
+    except Exception:
+        pass
+    return out
+
 
 def safe_div(a: Any, b: Any) -> Optional[float]:
     a, b = safe_float(a), safe_float(b)
@@ -311,6 +367,14 @@ def batch_record_to_sqlite(results: list[dict]):
             except sqlite3.OperationalError: cur.execute(f"ALTER TABLE finance_notes ADD COLUMN {col} {coltype};")
         conn.commit()
 
+        # PTSはダッシュボードで直接使うため screener に保持する。
+        for col, coltype in [("PTS株価", "REAL"), ("PTS時刻", "TEXT")]:
+            try:
+                cur.execute(f"ALTER TABLE screener ADD COLUMN {col} {coltype};")
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+
         ts = datetime.now().isoformat(timespec="seconds")
         data_to_insert = []
         for res in results:
@@ -320,7 +384,7 @@ def batch_record_to_sqlite(results: list[dict]):
                     res.get('overall_alpha'), res.get('forecast_op'), res.get('forecast_eps'), res.get('actual_eps'), res.get('prev_eps'),
                     res.get('forecast_revenue'), res.get('actual_revenue'), res.get('prev_revenue'),
                     res.get('forecast_net_profit'), res.get('actual_net_profit'), res.get('prev_net_profit'),
-                    res.get('actual_operating_profit'), res.get('prev_operating_profit'), res.get('bps'), res.get('equity'), res.get('past_earnings_dates') or "[]"
+                    res.get('actual_operating_profit'), res.get('prev_operating_profit'), res.get('bps'), res.get('equity'), res.get('past_earnings_dates')
                 ))
 
         if data_to_insert:
@@ -340,9 +404,33 @@ def batch_record_to_sqlite(results: list[dict]):
                 prev_eps = excluded.prev_eps, forecast_revenue = excluded.forecast_revenue, actual_revenue = excluded.actual_revenue,
                 prev_revenue = excluded.prev_revenue, forecast_net_profit = excluded.forecast_net_profit, actual_net_profit = excluded.actual_net_profit,
                 prev_net_profit = excluded.prev_net_profit, actual_operating_profit = excluded.actual_operating_profit,
-                prev_operating_profit = excluded.prev_operating_profit, bps = excluded.bps, equity = excluded.equity, past_earnings_dates = excluded.past_earnings_dates;
+                prev_operating_profit = excluded.prev_operating_profit, bps = excluded.bps, equity = excluded.equity,
+                past_earnings_dates = CASE
+                    WHEN excluded.past_earnings_dates IS NOT NULL
+                     AND TRIM(excluded.past_earnings_dates) NOT IN ('', '[]')
+                    THEN excluded.past_earnings_dates
+                    ELSE finance_notes.past_earnings_dates
+                END;
             """, data_to_insert)
             conn.commit()
+
+        pts_updates = [
+            (res.get("pts_price"), res.get("pts_time"), res.get("code"))
+            for res in results
+            if res.get("status") == "OK" and res.get("code")
+        ]
+        if pts_updates:
+            cur.executemany(
+                "UPDATE screener SET PTS株価=?, PTS時刻=? WHERE コード=?",
+                pts_updates,
+            )
+            conn.commit()
+            pts_count = sum(1 for p, _, _ in pts_updates if p is not None)
+            print(f"[PTS] screener 更新={len(pts_updates)}銘柄 / PTS表示あり={pts_count}銘柄")
+
+        q_saved = upsert_quarterly_actual_history(conn, results)
+        if q_saved:
+            print(f"[QUARTERLY_HISTORY] {q_saved}行 UPSERT")
 
     except Exception as e:
         print(f"[DB][CRITICAL ERROR] 予期せぬエラー: {e}")
@@ -391,11 +479,18 @@ async def fetch_quarterly_financials(code: str, session: aiohttp.ClientSession) 
 async def fetch_full_year_financials(code: str, session: aiohttp.ClientSession) -> tuple[pd.DataFrame, dict]:
     url = f"https://kabutan.jp/stock/finance?code={code}"
     print(f"[INFO] fetching full year actual data: {url}")
-    extra_data = {"bps": None, "equity": None}
+    extra_data = {"bps": None, "equity": None, "pts_price": None, "pts_time": None}
 
     try:
         html_content = await _fetch_text_with_retry(session, url, timeout_sec=15)
         soup = BeautifulSoup(html_content, "lxml")
+
+        # 株探ページ上部のPTS表示も、このHTTP取得のついでに回収する。
+        pts_data = _parse_kabutan_pts(soup)
+        extra_data.update(pts_data)
+        if pts_data.get("pts_price") is not None:
+            print(f"[PTS] {code}: {pts_data.get('pts_price')}円 / {pts_data.get('pts_time') or '-'}")
+
         tables = soup.find_all('table')
         
         target_annual, target_financial = None, None
@@ -606,6 +701,181 @@ def get_latest_announce_date(quarterly_df: pd.DataFrame) -> datetime | None:
     if quarterly_df["発表日"].isna().all(): return None
     try: return pd.to_datetime(quarterly_df["発表日"].iloc[-1])
     except Exception: return None
+
+
+
+# ===== v14: 四半期実績履歴（株探3ヵ月決算） =====
+def ensure_quarterly_actual_history_schema(conn: sqlite3.Connection):
+    """株探の3ヵ月決算【実績】を、後から同Q比較できる形で保存する。"""
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS quarterly_actual_history(
+        コード TEXT NOT NULL,
+        fiscal_key TEXT NOT NULL,
+        quarter_no INTEGER NOT NULL,
+        quarter_label TEXT,
+        announcement_date TEXT,
+        sales REAL,
+        operating_profit REAL,
+        ordinary_profit REAL,
+        net_profit REAL,
+        eps REAL,
+        source TEXT DEFAULT 'kabutan_3m_actual',
+        updated_at TEXT,
+        PRIMARY KEY(コード, fiscal_key, quarter_no)
+    );
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_quarterly_actual_code_date
+    ON quarterly_actual_history(コード, announcement_date DESC);
+    """)
+    conn.execute("""
+    CREATE INDEX IF NOT EXISTS idx_quarterly_actual_code_fiscal_q
+    ON quarterly_actual_history(コード, fiscal_key, quarter_no);
+    """)
+    conn.commit()
+
+
+def _quarter_end_month_from_label(q_label: str) -> int | None:
+    if not isinstance(q_label, str):
+        return None
+    trans = str.maketrans({'／':'/', '－':'-', '―':'-', 'ー':'-', '．':'.'})
+    s = q_label.translate(trans).replace('/', '.')
+    m = re.search(r'(?P<yy>\d{2})[\.](?P<m1>\d{2})[-–-](?P<m2>\d{2})', s)
+    return int(m.group('m2')) if m else None
+
+
+def _quarter_no_from_label(q_label: str, fiscal_end_month: int | None) -> int | None:
+    """3ヵ月区間の終了月から会計年度内Q番号(1..4)を復元。"""
+    end_m = _quarter_end_month_from_label(q_label)
+    if end_m is None or fiscal_end_month is None:
+        return None
+    diff = (int(end_m) - int(fiscal_end_month)) % 12
+    if diff == 0:
+        return 4
+    if diff in (3, 6, 9):
+        return diff // 3
+    return None
+
+
+def build_quarterly_actual_history_rows(
+    code: str,
+    quarterly_df: pd.DataFrame,
+    forecast_series: pd.Series,
+) -> list[dict]:
+    """
+    fetch_quarterly_financials() で既に取得済みの3ヵ月実績をDB保存用に整形。
+    fiscal_key は forecast 行の決算月を基準に各3ヵ月ラベルから復元する。
+    """
+    if quarterly_df is None or quarterly_df.empty or "決算期" not in quarterly_df.columns:
+        return []
+
+    fiscal_end_month = None
+    try:
+        key_f = _fiscal_key(str(forecast_series.get("決算期", ""))) if forecast_series is not None and not forecast_series.empty else None
+        if key_f:
+            m = re.search(r"(\d{4})\.(\d{1,2})", key_f)
+            fiscal_end_month = int(m.group(2)) if m else None
+    except Exception:
+        fiscal_end_month = None
+
+    # 予想行が取れない会社でも、直近の年次決算月が通常固定なので、
+    # 3ヵ月ラベル4本の終了月パターンからは安全に推定できない。無理に推測せず保存を見送る。
+    if fiscal_end_month is None:
+        return []
+
+    rows = []
+    ts = datetime.now().isoformat(timespec="seconds")
+    for _, row in quarterly_df.iterrows():
+        label = str(row.get("決算期") or "").strip()
+        fk_dot = _fiscal_key_from_quarter_label(label, fiscal_end_month)
+        qno = _quarter_no_from_label(label, fiscal_end_month)
+        if not fk_dot or qno not in (1, 2, 3, 4):
+            continue
+        fk = fk_dot.replace('.', '-')
+
+        ad = row.get("発表日")
+        try:
+            ad_iso = pd.Timestamp(ad).date().isoformat() if pd.notna(ad) else None
+        except Exception:
+            ad_iso = None
+
+        def fv(col):
+            if col not in quarterly_df.columns:
+                return None
+            v = pd.to_numeric(row.get(col), errors="coerce")
+            return None if pd.isna(v) else float(v)
+
+        rows.append({
+            "コード": str(code).strip(),
+            "fiscal_key": fk,
+            "quarter_no": int(qno),
+            "quarter_label": label,
+            "announcement_date": ad_iso,
+            "sales": fv("売上高"),
+            "operating_profit": fv("営業益"),
+            "ordinary_profit": fv("経常益"),
+            "net_profit": fv("最終益"),
+            "eps": fv("修正1株益"),
+            "source": "kabutan_3m_actual",
+            "updated_at": ts,
+        })
+    return rows
+
+
+def upsert_quarterly_actual_history(conn: sqlite3.Connection, results: list[dict]) -> int:
+    """process_single_code の戻り値に含めた四半期履歴を一括UPSERT。"""
+    ensure_quarterly_actual_history_schema(conn)
+    vals = []
+    for r in results or []:
+        for q in (r.get("quarterly_history_rows") or []):
+            vals.append((
+                q.get("コード"), q.get("fiscal_key"), q.get("quarter_no"),
+                q.get("quarter_label"), q.get("announcement_date"),
+                q.get("sales"), q.get("operating_profit"), q.get("ordinary_profit"),
+                q.get("net_profit"), q.get("eps"), q.get("source"), q.get("updated_at"),
+            ))
+    if not vals:
+        return 0
+    conn.executemany("""
+        INSERT INTO quarterly_actual_history(
+          コード,fiscal_key,quarter_no,quarter_label,announcement_date,
+          sales,operating_profit,ordinary_profit,net_profit,eps,source,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(コード,fiscal_key,quarter_no) DO UPDATE SET
+          quarter_label=excluded.quarter_label,
+          announcement_date=COALESCE(excluded.announcement_date, quarterly_actual_history.announcement_date),
+          sales=COALESCE(excluded.sales, quarterly_actual_history.sales),
+          operating_profit=COALESCE(excluded.operating_profit, quarterly_actual_history.operating_profit),
+          ordinary_profit=COALESCE(excluded.ordinary_profit, quarterly_actual_history.ordinary_profit),
+          net_profit=COALESCE(excluded.net_profit, quarterly_actual_history.net_profit),
+          eps=COALESCE(excluded.eps, quarterly_actual_history.eps),
+          source=excluded.source,
+          updated_at=excluded.updated_at;
+    """, vals)
+    conn.commit()
+    return len(vals)
+
+def build_past_earnings_dates(quarterly_df: pd.DataFrame, limit: int = 8) -> str | None:
+    """
+    3ヵ月決算【実績】の発表日から、過去決算日のJSON配列を作る。
+
+    - HTML側の「過去8回」に合わせ、直近 limit 回を保存。
+    - 取得失敗・発表日欠損時は None を返す。
+      DB更新側は None/空配列を既存値の上書きに使わない。
+    """
+    if quarterly_df is None or quarterly_df.empty or "発表日" not in quarterly_df.columns:
+        return None
+    try:
+        ser = pd.to_datetime(quarterly_df["発表日"], errors="coerce").dropna()
+        if ser.empty:
+            return None
+        dates = sorted({pd.Timestamp(v).date().isoformat() for v in ser})
+        if limit and limit > 0:
+            dates = dates[-int(limit):]
+        return json.dumps(dates, ensure_ascii=False) if dates else None
+    except Exception as e:
+        print(f"[REACTION][WARN] past_earnings_dates 生成失敗: {e}")
+        return None
 
 # ===== HTML出力 =====
 def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verdict_str: str = ""):
@@ -993,6 +1263,14 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                     prev = df_actual.iloc[-2]
                     prev_eps, prev_revenue, prev_op, prev_net = _safe_float_from_df(prev.get("修正1株益")), _safe_float_from_df(prev.get("売上高")), _safe_float_from_df(prev.get("営業益")), _safe_float_from_df(prev.get("最終益"))
 
+            # 過去決算反応の元データ。四半期実績の発表日から直近8回を再構成する。
+            past_earnings_dates = build_past_earnings_dates(df_quarterly, limit=8)
+
+            # v14: 取得済みの3ヵ月実績を捨てず、同Q比較用の履歴として保存する。
+            quarterly_history_rows = build_quarterly_actual_history_rows(
+                code_full, df_quarterly, df_forecast_row
+            )
+
             sales_yoy, op_yoy, accel_flag = None, None, 0
             if df_quarterly is not None and len(df_quarterly) >= 5:
                 try:
@@ -1017,13 +1295,16 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                 'status': 'OK', 'code': code_full, 'score': score, 'overall_alpha': overall_alpha,
                 'progress_percent': progress_percent_db, 'formatted_verdict': formatted_v, 'out_html': out_html,
                 'bps': extra_data.get('bps'), 'equity': extra_data.get('equity'),
+                'pts_price': extra_data.get('pts_price'), 'pts_time': extra_data.get('pts_time'),
                 'forecast_op': forecast_op, 'forecast_eps': forecast_eps,
                 'forecast_revenue': forecast_revenue, 'forecast_net_profit': forecast_net_profit,
+                'past_earnings_dates': past_earnings_dates,
                 'actual_eps': actual_eps, 'prev_eps': prev_eps,
                 'actual_revenue': actual_revenue, 'prev_revenue': prev_revenue,
                 'actual_operating_profit': actual_op, 'prev_operating_profit': prev_op,
                 'actual_net_profit': actual_net, 'prev_net_profit': prev_net,
-                'sales_yoy': sales_yoy, 'op_yoy': op_yoy, 'accel_flag': accel_flag
+                'sales_yoy': sales_yoy, 'op_yoy': op_yoy, 'accel_flag': accel_flag,
+                'quarterly_history_rows': quarterly_history_rows
             }
         except Exception as e:
             print(f"[ERROR] {code_full}: {e}")
@@ -1052,6 +1333,10 @@ async def main_async(target_code: str | None = None):
 
     successful_results = [r for r in all_results if isinstance(r, dict) and r.get('status') == 'OK']
 
+    if successful_results:
+        reaction_ready = sum(1 for r in successful_results if r.get("past_earnings_dates") not in (None, "", "[]"))
+        print(f"[REACTION] past_earnings_dates 再構成: {reaction_ready}/{len(successful_results)}銘柄")
+
     if successful_results and not getattr(_ARGS, 'no_db', False):
         try:
             conn = sqlite3.connect(DB_PATH, timeout=20)
@@ -1072,10 +1357,18 @@ async def main_async(target_code: str | None = None):
                 except sqlite3.OperationalError: cur.execute(f"ALTER TABLE finance_notes ADD COLUMN {col} {coltype};")
             conn.commit()
 
+            # PTS株価/時刻は screener に永続保存。既存DBは自動マイグレーションする。
+            for col, coltype in [("PTS株価", "REAL"), ("PTS時刻", "TEXT")]:
+                try:
+                    cur.execute(f"ALTER TABLE screener ADD COLUMN {col} {coltype};")
+                except sqlite3.OperationalError:
+                    pass
+            conn.commit()
+
             ts = datetime.now().isoformat(timespec="seconds")
             data_to_insert = [(
                 r['code'], r.get('formatted_verdict') or "", r.get('score'), r.get('progress_percent'), r.get('out_html') or "", ts,
-                r.get('overall_alpha'), r.get('forecast_op'), r.get('forecast_eps'), r.get('past_earnings_dates') or "[]",
+                r.get('overall_alpha'), r.get('forecast_op'), r.get('forecast_eps'), r.get('past_earnings_dates'),
                 r.get('bps'), r.get('equity_ratio'), r.get('assets'), r.get('equity'), r.get('interest_debt_ratio'),
                 r.get('actual_eps'), r.get('prev_eps'), r.get('forecast_revenue'), r.get('actual_revenue'), r.get('prev_revenue'),
                 r.get('actual_operating_profit'), r.get('prev_operating_profit'), r.get('forecast_net_profit'), r.get('actual_net_profit'), r.get('prev_net_profit')
@@ -1094,7 +1387,13 @@ async def main_async(target_code: str | None = None):
                 ON CONFLICT(コード) DO UPDATE SET
                   財務コメント = excluded.財務コメント, score = excluded.score, progress_percent = excluded.progress_percent,
                   html_path = excluded.html_path, updated_at = excluded.updated_at, overall_alpha = excluded.overall_alpha,
-                  forecast_op = excluded.forecast_op, forecast_eps = excluded.forecast_eps, past_earnings_dates = excluded.past_earnings_dates,
+                  forecast_op = excluded.forecast_op, forecast_eps = excluded.forecast_eps,
+                  past_earnings_dates = CASE
+                    WHEN excluded.past_earnings_dates IS NOT NULL
+                     AND TRIM(excluded.past_earnings_dates) NOT IN ('', '[]')
+                    THEN excluded.past_earnings_dates
+                    ELSE finance_notes.past_earnings_dates
+                  END,
                   bps = excluded.bps, equity_ratio = excluded.equity_ratio, assets = excluded.assets, equity = excluded.equity,
                   interest_debt_ratio = excluded.interest_debt_ratio, actual_eps = excluded.actual_eps, prev_eps = excluded.prev_eps,
                   forecast_revenue = excluded.forecast_revenue, actual_revenue = excluded.actual_revenue, prev_revenue = excluded.prev_revenue,
@@ -1102,6 +1401,11 @@ async def main_async(target_code: str | None = None):
                   forecast_net_profit = excluded.forecast_net_profit, actual_net_profit = excluded.actual_net_profit, prev_net_profit = excluded.prev_net_profit;
                 """, data_to_insert)
                 conn.commit()
+
+                # v14: 株探の四半期実績を履歴DBへ。シンデンB型（期中実績先行）の元データ。
+                q_saved = upsert_quarterly_actual_history(conn, successful_results)
+                if q_saved:
+                    print(f"[QUARTERLY_HISTORY] {q_saved}行 UPSERT")
 
                 for col, coltype in [("直近売上YoY", "REAL"), ("直近営業益YoY", "REAL"), ("利益加速フラグ", "INTEGER")]:
                     try: cur.execute(f"ALTER TABLE screener ADD COLUMN {col} {coltype};")
@@ -1112,6 +1416,21 @@ async def main_async(target_code: str | None = None):
                 if screener_updates:
                     cur.executemany("UPDATE screener SET 直近売上YoY=?, 直近営業益YoY=?, 利益加速フラグ=? WHERE コード=?", screener_updates)
                     conn.commit()
+
+                # 成功取得した銘柄はPTSも更新。株探にPTS表示が無い場合はNULLにして
+                # 前回値を残さない（古いPTSを今日の値と誤認するのを防ぐ）。
+                pts_updates = [
+                    (r.get('pts_price'), r.get('pts_time'), r['code'])
+                    for r in successful_results
+                ]
+                if pts_updates:
+                    cur.executemany(
+                        "UPDATE screener SET PTS株価=?, PTS時刻=? WHERE コード=?",
+                        pts_updates
+                    )
+                    conn.commit()
+                    pts_count = sum(1 for p, _, _ in pts_updates if p is not None)
+                    print(f"[PTS] screener 更新={len(pts_updates)}銘柄 / PTS表示あり={pts_count}銘柄")
         finally:
             try: conn.close()
             except Exception: pass

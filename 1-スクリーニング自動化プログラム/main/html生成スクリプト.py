@@ -3,15 +3,16 @@ import json
 import os
 import re
 import math
+import argparse
 from datetime import datetime
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup, escape
 
 # ==============================================================================
-# --- 入出力パスの完全固定 ---
+# --- デフォルトの入出力パス ---
 # ==============================================================================
-INPUT_JSON_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data\dashboard_data.json"
-OUTPUT_FILEPATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data\index.html"
+DEFAULT_INPUT_JSON_PATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data\dashboard_data.json"
+DEFAULT_OUTPUT_FILEPATH = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data\index.html"
 
 # template.html はこのスクリプトと同じ階層にある前提
 TEMPLATE_FILEPATH = os.path.join(os.path.dirname(__file__), "template.html")
@@ -119,13 +120,22 @@ def generate_html(json_path, template_path, output_path):
 
 
 if __name__ == "__main__":
-    if not os.path.exists(INPUT_JSON_PATH):
-        print(f"❌ エラー: JSONファイルが見つかりません -> {INPUT_JSON_PATH}")
+    # --- 引数処理の追加 ---
+    parser = argparse.ArgumentParser(description="JSONファイルからHTMLダッシュボードを生成します。")
+    parser.add_argument("-i", "--input", default=DEFAULT_INPUT_JSON_PATH, help="入力するJSONファイルのパスを指定します。")
+    parser.add_argument("-o", "--output", default=DEFAULT_OUTPUT_FILEPATH, help="出力するHTMLファイルのパスを指定します。")
+    
+    args = parser.parse_args()
+
+    input_json = args.input
+    output_html = args.output
+
+    if not os.path.exists(input_json):
+        print(f"❌ エラー: JSONファイルが見つかりません -> {input_json}")
         sys.exit(1)
         
     if not os.path.exists(TEMPLATE_FILEPATH):
         print(f"❌ エラー: テンプレートが見つかりません -> {TEMPLATE_FILEPATH}")
         sys.exit(1)
 
-    # 固定パスで実行
-    generate_html(INPUT_JSON_PATH, TEMPLATE_FILEPATH, OUTPUT_FILEPATH)
+    generate_html(input_json, TEMPLATE_FILEPATH, output_html)
