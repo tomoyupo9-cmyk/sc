@@ -1,0 +1,347 @@
+
+
+===== 2026-08-17T08:01:36 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all.py =====
+=== fetch_all: TDnetデータ収集開始 ===
+[backfill][DOC CACHE HIT] 8798 2026-08-14 25,124文字 （再訂正・数値データ再訂正）「2025年9月期 決算短信〔日本基準〕（連結）」の
+[backfill][DOC CACHE HIT] 8798 2026-08-14 13,911文字 （訂正・数値データ訂正）「2026年9月期 第1四半期決算短信〔日本基準〕（連結
+[backfill][DOC CACHE HIT] 4011 2026-08-14 8,368文字 2026年12月期　第２四半期決算短信補足説明資料
+[backfill][DOC CACHE HIT] 4011 2026-08-14 18,610文字 2026年12月期　第２四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 8798 2026-08-14 17,367文字 （訂正）「2025年9月期 第2四半期決算短信〔日本基準〕（連結）」の 一部訂正
+[backfill][DOC CACHE HIT] 8798 2026-08-14 19,286文字 （訂正・数値データ訂正）「2025年9月期 第3四半期決算短信〔日本基準〕（連結
+[backfill][DOC CACHE HIT] 8798 2026-08-14 11,313文字 （再訂正）「2024年9月期 第1四半期決算短信〔日本基準〕（連結）」の一部訂正
+[backfill][DOC CACHE HIT] 8798 2026-08-14 14,002文字 （再訂正）「2024年9月期 第2四半期決算短信〔日本基準〕（連結）」の一部訂正
+[backfill][DOC CACHE HIT] 8798 2026-08-14 13,074文字 （再訂正・数値データ再訂正）「2024年9月期 第3四半期決算短信〔日本基準〕（
+[backfill][DOC CACHE HIT] 8798 2026-08-14 23,486文字 （訂正）「2024年9月期 決算短信〔日本基準〕（連結）」の一部訂正について
+[backfill][DOC CACHE HIT] 8798 2026-08-14 19,979文字 （再訂正）「2023年9月期 決算短信〔日本基準〕（連結）」の一部訂正について
+[backfill][DOC CACHE HIT] 8798 2026-08-14 19,803文字 （再訂正）「2021年9月期 決算短信〔日本基準〕（連結）」の一部訂正について
+[backfill][DOC CACHE HIT] 8798 2026-08-14 23,011文字 （再訂正）「2022年9月期 決算短信〔日本基準〕（連結）」の一部訂正について
+[backfill][DOC CACHE HIT] 8798 2026-08-14 15,711文字 2026年9月期 第2四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 8798 2026-08-14 16,401文字 2026年9月期第2四半期（2025年10月～2026年3月）業績説明資料
+[backfill][DOC CACHE HIT] 8798 2026-08-14 1,403文字 2026年9月期の剰余金配当（中間配当）無配及び株主優待制度の休止継続に関するお
+[backfill][DOC CACHE HIT] 3905 2026-08-14 18,594文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 8798 2026-08-14 6,055文字 過年度の有価証券報告書等の訂正報告書の提出及び過年度の決算短信等の訂正に関するお
+[backfill][DOC CACHE HIT] 7578 2026-08-14 1,281文字 連結決算への移行に伴う連結業績予想の公表及び個別業績予想の修正（取り下げ）に関す
+[backfill][DOC CACHE HIT] 7578 2026-08-14 13,259文字 2027年3月期第1四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 5868 2026-08-14 458文字 （訂正）中間配当の実施に関するお知らせ
+[backfill][DOC CACHE HIT] 3323 2026-08-14 5,742文字 子会社の半期決算情報に関するお知らせ
+[backfill][DOC CACHE HIT] 3664 2026-08-14 15,183文字 第23期（2026年12月期）第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 6071 2026-08-14 1,075文字 （訂正・数値データ訂正）「2026年12月期 第２四半期（中間期）決算短信[日本
+[backfill][DOC CACHE HIT] 3777 2026-08-14 13,767文字 2026年12月期第2四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7057 2026-08-14 8,752文字 2027年3月期 第1四半期 決算短信[日本基準]（連結）
+[backfill][DOC CACHE HIT] 7057 2026-08-14 18,595文字 2027年3月期第1四半期 決算説明資料
+[backfill][DOC CACHE HIT] 7057 2026-08-14 582文字 2027年3月期第1四半期　決算説明会のお知らせ
+[backfill][DOC CACHE HIT] 7790 2026-08-14 20,508文字 2026年12月期第2四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7707 2026-08-14 1,246文字 (訂正)「期末配当（復配）に関するお知らせ」の一部訂正について
+[backfill][DOC CACHE HIT] 9760 2026-08-14 10,438文字 2027年３月期第１四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 4563 2026-08-14 39,099文字 2026年12月期第２四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3664 2026-08-14 18,156文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 3664 2026-08-14 6,956文字 2026年12月期通期連結業績予想の公表に関するお知らせ
+[backfill][DOC CACHE HIT] 3664 2026-08-14 847文字 営業外費用の計上（連結決算及び個別決算）に関するお知らせ
+[backfill][DOC CACHE HIT] 2134 2026-08-14 16,855文字 2027年３月期第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 252A 2026-08-14 6,901文字 2026年12月期 中間決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 308A 2026-08-14 11,431文字 2026年６月期　決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 310A 2026-08-14 13,019文字 2026年12月期  中間決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 326A 2026-08-14 7,891文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3775 2026-08-14 15,262文字 2026年12月期　第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 4068 2026-08-14 14,806文字 2026年６月期  決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 4068 2026-08-14 35,550文字 2026年6月期 決算説明資料（事業計画および成長可能性に関する事項）
+[backfill][DOC CACHE HIT] 4445 2026-08-14 10,921文字 2026年９月期　第３四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 4445 2026-08-14 16,106文字 2026年９月期　第３四半期決算説明資料
+[backfill][DOC CACHE HIT] 5019 2026-08-14 49,949文字 2027年３月期第１四半期決算短信〔IFRS〕(連結）（監査法人による期中レビュ
+[backfill][DOC CACHE HIT] 5028 2026-08-14 7,993文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 5028 2026-08-14 22,685文字 2026年12月期 第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 5028 2026-08-14 1,120文字 （訂正）「2025年12月期 通期決算説明資料」及び「2026年12月期 第１四
+[backfill][DOC CACHE HIT] 5868 2026-08-14 11,686文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 5868 2026-08-14 12,511文字 2026年12月期 第２四半期 決算短信補足説明資料
+[backfill][DOC CACHE HIT] 5868 2026-08-14 729文字 中間配当の実施に関するお知らせ
+[backfill][DOC CACHE HIT] 7063 2026-08-14 32,298文字 2026年６月期 決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7063 2026-08-14 1,564文字 2026年６月期通期連結業績予想と実績値との差異に関するお知らせ
+[backfill][DOC CACHE HIT] 7063 2026-08-14 1,327文字 通期業績予想に関するお知らせ
+[backfill][DOC CACHE HIT] 7370 2026-08-14 16,228文字 （訂正・数値データ訂正）「2026年５月期 決算短信〔日本基準〕(連結)」の一部
+[backfill][DOC CACHE HIT] 7383 2026-08-14 3,673文字 [本編書き起こし]2027年３月期 第１四半期 決算説明会
+[backfill][DOC CACHE HIT] 7691 2026-08-14 8,203文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 9219 2026-08-14 931文字 通期連結業績予想と実績値の差異に関するお知らせ
+[backfill][DOC CACHE HIT] 9219 2026-08-14 12,233文字 2026年６月期 決算説明資料
+[backfill][DOC CACHE HIT] 9219 2026-08-14 15,518文字 2026年６月期 決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 9257 2026-08-14 2,217文字 剰余金の配当（中間配当）に関するお知らせ
+[backfill][DOC CACHE HIT] 9257 2026-08-14 23,404文字 2026年12月期第２四半期（中間期）決算短信〔ＳＦＲＳ(Ｉ)及びＩＦＲＳ〕（連
+[backfill][DOC CACHE HIT] 9563 2026-08-14 8,470文字 2026年12月期第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 9563 2026-08-14 14,001文字 2026年12月期第２四半期決算説明資料
+[backfill][DOC CACHE HIT] 9563 2026-08-14 2,356文字 2026年12月期 第2四半期累計期間の業績予想値と実績値との差異、通期業績予想
+[backfill][DOC CACHE HIT] 7699 2026-08-14 18,229文字 2027年３月期　第１四半期決算短信〔SFRS〕(連結)
+[backfill][DOC CACHE HIT] 254A 2026-08-14 14,710文字 2027年３月期 第１四半期決算短信〔ＩＦＲＳ〕（連結）
+[backfill][DOC CACHE HIT] 254A 2026-08-14 6,780文字 (訂正・数値データ訂正)「2026年３月期決算短信〔ＩＦＲＳ〕（連結）」の一部訂
+[backfill][DOC CACHE HIT] 4444 2026-08-14 13,331文字 2027年３月期第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 4444 2026-08-14 13,207文字 2027年3月期第1四半期決算説明
+[backfill][DOC CACHE HIT] 5241 2026-08-14 1,183文字 剰余金の配当（中間配当）に関するお知らせ
+[backfill][DOC CACHE HIT] 5241 2026-08-14 10,178文字 2026年12月期第２四半期（中間期）決算短信〔日本基準〕(非連結)
+[backfill][DOC CACHE HIT] 7363 2026-08-14 10,157文字 2026年12月期第２四半期（中間期）決算短信〔日本基準〕(非連結)
+[backfill][DOC CACHE HIT] 7793 2026-08-14 7,930文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 7793 2026-08-14 5,848文字 2026年12月期 第２四半期決算説明資料
+[backfill][DOC CACHE HIT] 173A 2026-08-14 11,521文字 2027年３月期第１四半期決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 173A 2026-08-14 35,778文字 2027年３月期第１四半期決算説明資料
+[backfill][DOC CACHE HIT] 173A 2026-08-14 2,682文字 配当方針の変更（配当性向の目標の設定とDOE指標の新設、中間配当の導入）及び配当
+[backfill][DOC CACHE HIT] 1491 2026-08-14 8,809文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 1491 2026-08-14 1,265文字 2027年３月期第２四半期（中間期）業績予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 1551 2026-08-14 8,154文字 2026年7月期（2025年7月9日～2026年7月8日）決算短信
+[backfill][DOC CACHE HIT] 1563 2026-08-14 8,716文字 2026年7月期（2025年7月9日～2026年7月8日）決算短信
+[backfill][DOC CACHE HIT] 157A 2026-08-14 16,058文字 2026年６月期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 157A 2026-08-14 14,735文字 2026年6月期通期決算説明資料
+[backfill][DOC CACHE HIT] 157A 2026-08-14 3,298文字 2026年6月期通期業績予想と実績値との差異、固定資産の減損損失の計上及び202
+[backfill][DOC CACHE HIT] 160A 2026-08-14 10,929文字 2027年３月期　第１四半期決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 160A 2026-08-14 35,680文字 2027年3月期第1四半期決算説明資料
+[backfill][DOC CACHE HIT] 1783 2026-08-14 10,339文字 2026年９月期第３四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 206A 2026-08-14 13,299文字 2026年９月期第３四半期決算短信〔日本基準〕(非連結)
+[backfill][DOC CACHE HIT] 2158 2026-08-14 21,740文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 2160 2026-08-14 18,712文字 2026年12月期 第２四半期（中間期）決算短信〔ＩＦＲＳ〕（連結）
+[backfill][DOC CACHE HIT] 2160 2026-08-14 1,866文字 通期業績予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 2183 2026-08-14 8,842文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 2183 2026-08-14 2,861文字 2027年3月期 第1四半期決算 補足説明資料
+[backfill][DOC CACHE HIT] 2215 2026-08-14 9,476文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 227A 2026-08-14 9,382文字 2026年12月期　中間決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 247A 2026-08-14 7,897文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 247A 2026-08-14 11,751文字 2027年３月期 第１四半期決算説明資料
+[backfill][DOC CACHE HIT] 2516 2026-08-14 11,369文字 2026年7月期（2025年7月9日～2026年7月8日）決算短信
+[backfill][DOC CACHE HIT] 2597 2026-08-14 1,604文字 業績予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 2597 2026-08-14 8,552文字 2026年12月期　第2四半期(中間期)決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 2654 2026-08-14 20,687文字 2027年３月期第１四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 2721 2026-08-14 14,577文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 286A 2026-08-14 15,798文字 2026年12月期 第2四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 286A 2026-08-14 7,120文字 2026年12月期 第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 2928 2026-08-14 13,067文字 2027年３月期  第１四半期決算短信〔ＩＦＲＳ〕（連結）
+[backfill][DOC CACHE HIT] 3053 2026-08-14 2,057文字 2026年12月期 中間期業績予想値と実績値との差異及び通期業績予想値の修正に関
+[backfill][DOC CACHE HIT] 3053 2026-08-14 9,004文字 中期経営計画の進捗及び見直しに関するお知らせ
+[backfill][DOC CACHE HIT] 3053 2026-08-14 14,594文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 305A 2026-08-14 10,982文字 2026年12月期  中間決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3133 2026-08-14 15,194文字 2027年３月期第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3133 2026-08-14 2,785文字 2027年3月期第1四半期決算短信のレビュー結論不表明に関するお知らせ
+[backfill][DOC CACHE HIT] 3133 2026-08-14 4,719文字 （開示事項の経過）連結子会社におけるネパール水力発電事業の進捗状況および収益化予
+[backfill][DOC CACHE HIT] 3175 2026-08-14 13,167文字 2027年３月期第１四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 3175 2026-08-14 25,206文字 2027年3月期 第1四半期 決算報告
+[backfill][DOC CACHE HIT] 319A 2026-08-14 10,116文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 319A 2026-08-14 21,190文字 2026年12月期第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 320A 2026-08-14 13,854文字 2026年６月期 決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 3667 2026-08-14 11,657文字 2026年12月期第２四半期（中間期）決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 3667 2026-08-14 8,296文字 2026年12月期第２四半期決算説明資料
+[backfill][DOC CACHE HIT] 370A 2026-08-14 12,520文字 2026年６月期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 3726 2026-08-14 9,200文字 2026年９月期第３四半期決算説明資料
+[backfill][DOC CACHE HIT] 3726 2026-08-14 2,777文字 2026年9月期通期連結業績予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 3726 2026-08-14 19,725文字 2026年９月期第３四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 375A 2026-08-14 11,113文字 2026年12月期  中間決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3763 2026-08-14 18,522文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3769 2026-08-14 51,427文字 2026年９月期 第３四半期決算説明会
+[backfill][DOC CACHE HIT] 3775 2026-08-14 13,348文字 2026年12月期　第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 3808 2026-08-14 14,784文字 2026年６月期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 3808 2026-08-14 2,298文字 株式会社オーケーウェブ2026年６月期決算補足資料
+[backfill][DOC CACHE HIT] 3808 2026-08-14 1,617文字 特別損失の計上及び連結・個別業績と前期実績値との差異に関するお知らせ
+[backfill][DOC CACHE HIT] 3849 2026-08-14 9,486文字 2027年３月期　第１四半期決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 3858 2026-08-14 9,318文字 2027年3月期第1四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3909 2026-08-14 10,211文字 2027年3月期 第1四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 3933 2026-08-14 12,665文字 2027年３月期第１四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 3936 2026-08-14 10,610文字 2027年3月期 第1四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 3936 2026-08-14 10,204文字 2027年3月期 第1四半期 決算説明資料
+[backfill][DOC CACHE HIT] 4019 2026-08-14 852文字 2026年12月期中間連結会計期間の業績予想と実績との差異に関するお知らせ
+[backfill][DOC CACHE HIT] 4019 2026-08-14 1,907文字 通期連結業績予想及び配当予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 4019 2026-08-14 9,709文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][SOURCE 1/3] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料
+[backfill][TRY 1/3] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 https://webapi.yanoshin.jp/rd.php?https://www.release.tdnet.info/inbs/140120260814521109.pdf
+[backfill][UNUSABLE] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 ctype=application/pdf bytes=8,729,152
+[backfill][TRY 2/3] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 http://webapi.yanoshin.jp/rd.php?https://www.release.tdnet.info/inbs/140120260814521109.pdf
+[backfill][UNUSABLE] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 ctype=application/pdf bytes=8,729,152
+[backfill][TRY 3/3] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 https://www.release.tdnet.info/inbs/140120260814521109.pdf
+[backfill][UNUSABLE] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 ctype=application/pdf bytes=8,729,152
+[backfill][JPX FAST 2/3] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 https://www2.jpx.co.jp/disc/40190/140120260814521109.pdf
+[backfill][TRY 1/1] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 https://www2.jpx.co.jp/disc/40190/140120260814521109.pdf
+[backfill][UNUSABLE] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 ctype=application/pdf bytes=8,729,152
+[backfill][SOURCE 3/3] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料
+[backfill][SKIP FAILCACHE] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 https://www.release.tdnet.info/inbs/140120260814521109.pdf
+[backfill][TRY 2/2] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料 http://www.release.tdnet.info/inbs/140120260814521109.pdf
+[backfill][TIMEOUT 5s] 2026-08-14 2026年12月期　第2四半期（中間期）決算説明資料
+[backfill][DOC EMPTY] 4019 2026-08-14 16:00:00 2026年12月期　第2四半期（中間期）決算説明資料 raw=https://webapi.yanoshin.jp/rd.php?https://www.release.tdnet.info/inbs/140120260814521
+[backfill][DOC CACHE HIT] 4059 2026-08-14 7,995文字 2026年９月期 第３四半期決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 4177 2026-08-14 10,663文字 2027年３月期 第１四半期決算説明資料
+[backfill][DOC CACHE HIT] 4177 2026-08-14 7,391文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 430A 2026-08-14 10,482文字 2026年12月期　中間決算短信〔日本基準〕(非連結）
+[backfill][DOC CACHE HIT] 4371 2026-08-14 9,577文字 2026年12月期　第2四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 4371 2026-08-14 14,505文字 2026年12月期　第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 4376 2026-08-14 9,364文字 2026年９月期 第３四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 4376 2026-08-14 8,433文字 2026年９月期 第３四半期決算説明資料
+[backfill][DOC CACHE HIT] 4393 2026-08-14 6,269文字 2026年９月期　第３四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 4393 2026-08-14 13,091文字 2026年９月期　第３四半期決算説明資料
+[backfill][DOC CACHE HIT] 4427 2026-08-14 13,119文字 2026年９月期第３四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 4427 2026-08-14 34,496文字 2026年９月期第３四半期決算説明資料
+[backfill][DOC CACHE HIT] 4493 2026-08-14 9,828文字 2026年12月期 第2四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 4493 2026-08-14 16,830文字 2026年12月期 第2四半期 決算説明資料
+[backfill][DOC CACHE HIT] 4496 2026-08-14 11,788文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 4496 2026-08-14 28,290文字 2027年３月期 第１四半期決算説明資料
+[backfill][DOC CACHE HIT] 4766 2026-08-14 11,613文字 令和8年12月期第2四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 477A 2026-08-14 6,928文字 2027年3月期 第1四半期決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 477A 2026-08-14 38,572文字 2027年3月期 第1四半期 決算説明資料
+[backfill][DOC CACHE HIT] 481A 2026-08-14 6,673文字 2026年12月期  中間決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 481A 2026-08-14 1,470文字 連結決算への移行に伴う連結業績予想の公表に関するお知らせ
+[backfill][DOC CACHE HIT] 4833 2026-08-14 16,716文字 2027年3月期　第1四半期決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 4833 2026-08-14 19,790文字 2027年3月期　第1四半期決算説明資料
+[backfill][DOC CACHE HIT] 4925 2026-08-14 9,057文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 506A 2026-08-14 6,476文字 2026年12月期中間決算短信〔日本基準〕(非連結)
+[backfill][DOC CACHE HIT] 506A 2026-08-14 918文字 剰余金の配当（中間配当無配）に関するお知らせ
+[backfill][DOC CACHE HIT] 5240 2026-08-14 8,381文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 5240 2026-08-14 12,055文字 2026年12月期第２四半期決算説明資料
+[backfill][DOC CACHE HIT] 5247 2026-08-14 31,203文字 2027年３月期 第１四半期決算説明資料
+[backfill][DOC CACHE HIT] 5247 2026-08-14 6,139文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 5251 2026-08-14 9,753文字 2026年12月期 中間決算短信 [日本基準] (非連結)
+[backfill][DOC CACHE HIT] 5251 2026-08-14 1,973文字 中間決算説明資料の開示に関するお知らせ
+[backfill][DOC CACHE HIT] 5255 2026-08-14 18,246文字 2026年12月期 第２四半期決算短信〔ＩＦＲＳ〕（連結）
+[backfill][DOC CACHE HIT] 5255 2026-08-14 1,522文字 2026年12月期通期業績予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 5255 2026-08-14 18,131文字 2026年12月期 第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 526A 2026-08-14 7,534文字 2026年7月期（2026年3月10日～2026年7月8日）決算短信
+[backfill][DOC CACHE HIT] 5721 2026-08-14 11,296文字 2027年3月期第1四半期決算短信〔日本基準〕(非連結)
+[backfill][DOC CACHE HIT] 583A 2026-08-14 9,563文字 2026年12月期　中間決算短信〔日本基準〕(非連結）
+[backfill][DOC CACHE HIT] 593A 2026-08-14 9,191文字 2026年９月期 第３四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 593A 2026-08-14 17,497文字 2026年９月期　第３四半期決算説明資料
+[backfill][DOC CACHE HIT] 5987 2026-08-14 21,490文字 2026年６月期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 601A 2026-08-14 8,811文字 2026年12月期　中間決算短信〔日本基準〕（非連結）
+[backfill][DOC CACHE HIT] 6034 2026-08-14 11,277文字 2026年12月期　第２四半期期（中間期）決算短信〔IFRS〕（連結）
+[backfill][DOC CACHE HIT] 6034 2026-08-14 4,634文字 2026年12月期　第２四半期 決算補足説明資料
+[backfill][DOC CACHE HIT] 6034 2026-08-14 3,048文字 上場維持基準への適合に向けた計画(改善期間入り)に基づく進捗について
+[backfill][DOC CACHE HIT] 6081 2026-08-14 17,745文字 2026年12月期第２四半期決算説明資料
+[backfill][DOC CACHE HIT] 6081 2026-08-14 12,560文字 2026年12月期第2四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 6092 2026-08-14 10,624文字 2027年3月期 第1四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 6092 2026-08-14 17,200文字 2027年3月期 第1四半期決算説明資料
+[backfill][DOC CACHE HIT] 6198 2026-08-14 1,202文字 業績予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 6198 2026-08-14 10,657文字 2026年9月期 第3四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 6268 2026-08-14 23,443文字 （訂正・数値データ訂正）「2026年12月期 第２四半期（中間期）決算短信〔ＩＦ
+[backfill][DOC CACHE HIT] 6276 2026-08-14 10,896文字 2026年12月期  第２四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 6494 2026-08-14 10,378文字 2027年３月期 第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 6545 2026-08-14 12,297文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 6545 2026-08-14 11,960文字 2027年３月期第１四半期決算補足説明資料
+[backfill][DOC CACHE HIT] 6561 2026-08-14 14,006文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 6561 2026-08-14 23,687文字 2026年12月期 第2四半期決算補足説明資料
+[backfill][DOC CACHE HIT] 6573 2026-08-14 13,995文字 2026年12月期第２四半期（中間期）決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 6573 2026-08-14 1,071文字 2026年12月期第２四半期（中間期）連結業績予想と実績値との差異に関するお知ら
+[backfill][DOC CACHE HIT] 6721 2026-08-14 22,170文字 2026年12月期　第２四半期(中間期)決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 6731 2026-08-14 27,220文字 2026年9月期第3四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 6819 2026-08-14 8,574文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7042 2026-08-14 11,077文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7071 2026-08-14 9,131文字 2026年９月期第３四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 7071 2026-08-14 22,345文字 2026年９月期第３四半期決算説明資料
+[backfill][DOC CACHE HIT] 7093 2026-08-14 8,983文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7093 2026-08-14 25,288文字 2026年12月期 中間期決算説明資料
+[backfill][DOC CACHE HIT] 7112 2026-08-14 10,275文字 2026年12月期　第2四半期（中間期）決算短信[日本基準](非連結)
+[backfill][DOC CACHE HIT] 7112 2026-08-14 16,263文字 2026年12月期　第2四半期決算説明会資料
+[backfill][DOC CACHE HIT] 7345 2026-08-14 8,260文字 2027年３月期第１四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 7345 2026-08-14 22,192文字 2027年３月期第１四半期 決算説明資料
+[backfill][DOC CACHE HIT] 7362 2026-08-14 9,295文字 2026年12月期第2四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7362 2026-08-14 14,021文字 2026年12月期第2四半期決算説明資料
+[backfill][DOC CACHE HIT] 7677 2026-08-14 10,350文字 2027年3月期 第1四半期決算短信〔日本基準〕(連結）
+[backfill][DOC CACHE HIT] 7695 2026-08-14 10,825文字 2027年3月期 第1四半期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 7695 2026-08-14 19,451文字 2027年3月期 第1四半期決算説明資料
+[backfill][DOC CACHE HIT] 7707 2026-08-14 16,725文字 2026年６月期決算短信〔日本基準〕(連結)
+[backfill][DOC CACHE HIT] 7707 2026-08-14 851文字 2026年６月期 通期連結業績予想と連結実績との差異に関するお知らせ
+[backfill][DOC CACHE HIT] 7707 2026-08-14 953文字 2026年６月期通期 個別業績の前期実績値との差異に関するお知らせ
+[backfill][DOC CACHE HIT] 7707 2026-08-14 692文字 期末配当（復配）に関するお知らせ
+[backfill][DOC CACHE HIT] 7781 2026-08-14 24,353文字 2026年6月期　決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7781 2026-08-14 885文字 期末配当予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 7782 2026-08-14 13,943文字 2026年12月期　第2四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 7782 2026-08-14 13,633文字 2026年12月期　第2四半期（中間期）決算説明資料
+[backfill][DOC CACHE HIT] 8202 2026-08-14 9,709文字 2026年12月期 第２四半期（中間期）決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 8306 2026-08-14 3,048文字 2027年3月期 第1四半期 自己資本比率について
+[backfill][XBRL TRY] 1551 https://www.release.tdnet.info/inbs/081220260814521146.zip
+[backfill][XBRL TRY] 1551 https://www.release.tdnet.info/inbs/091220260814521146.zip
+[backfill][XBRL TRY] 1551 https://www2.jpx.co.jp/disc/15510/081220260814521146.zip
+[backfill][XBRL TRY] 1551 https://www2.jpx.co.jp/disc/15510/091220260814521146.zip
+[backfill][XBRL TRY] 1563 https://www.release.tdnet.info/inbs/081220260814521151.zip
+[backfill][XBRL TRY] 1563 https://www.release.tdnet.info/inbs/091220260814521151.zip
+[backfill][XBRL TRY] 1563 https://www2.jpx.co.jp/disc/15630/081220260814521151.zip
+[backfill][XBRL TRY] 1563 https://www2.jpx.co.jp/disc/15630/091220260814521151.zip
+[backfill][XBRL TRY] 2160 https://www.release.tdnet.info/inbs/081220260813520097.zip
+[backfill][XBRL TRY] 2160 https://www.release.tdnet.info/inbs/091220260813520097.zip
+[backfill][XBRL TRY] 2160 https://www2.jpx.co.jp/disc/21600/081220260813520097.zip
+[backfill][XBRL TRY] 2160 https://www2.jpx.co.jp/disc/21600/091220260813520097.zip
+[backfill][XBRL TRY] 227A https://www.release.tdnet.info/inbs/081220260807515691.zip
+[backfill][XBRL TRY] 227A https://www.release.tdnet.info/inbs/091220260807515691.zip
+[backfill][XBRL TRY] 227A https://www2.jpx.co.jp/disc/227A0/081220260807515691.zip
+[backfill][XBRL TRY] 227A https://www2.jpx.co.jp/disc/227A0/091220260807515691.zip
+[backfill][XBRL TRY] 2516 https://www.release.tdnet.info/inbs/081220260814521154.zip
+[backfill][XBRL TRY] 2516 https://www.release.tdnet.info/inbs/091220260814521154.zip
+[backfill][XBRL TRY] 2516 https://www2.jpx.co.jp/disc/25160/081220260814521154.zip
+[backfill][XBRL TRY] 2516 https://www2.jpx.co.jp/disc/25160/091220260814521154.zip
+[backfill][XBRL TRY] 2597 https://www.release.tdnet.info/inbs/081220260814520974.zip
+[backfill][XBRL TRY] 2597 https://www.release.tdnet.info/inbs/091220260814520974.zip
+[backfill][XBRL TRY] 2597 https://www2.jpx.co.jp/disc/25970/081220260814520974.zip
+[backfill][XBRL TRY] 2597 https://www2.jpx.co.jp/disc/25970/091220260814520974.zip
+[backfill][XBRL TRY] 305A https://www.release.tdnet.info/inbs/081220260814520484.zip
+[backfill][XBRL TRY] 305A https://www.release.tdnet.info/inbs/091220260814520484.zip
+[backfill][XBRL TRY] 305A https://www2.jpx.co.jp/disc/305A0/081220260814520484.zip
+[backfill][XBRL TRY] 305A https://www2.jpx.co.jp/disc/305A0/091220260814520484.zip
+[backfill][XBRL TRY] 320A https://www.release.tdnet.info/inbs/081220260814521293.zip
+[backfill][XBRL TRY] 320A https://www.release.tdnet.info/inbs/091220260814521293.zip
+[backfill][XBRL TRY] 320A https://www2.jpx.co.jp/disc/320A0/081220260814521293.zip
+[backfill][XBRL TRY] 320A https://www2.jpx.co.jp/disc/320A0/091220260814521293.zip
+[backfill][XBRL TRY] 370A https://www.release.tdnet.info/inbs/081220260804508847.zip
+[backfill][XBRL TRY] 370A https://www.release.tdnet.info/inbs/091220260804508847.zip
+[backfill][XBRL TRY] 370A https://www2.jpx.co.jp/disc/370A0/081220260804508847.zip
+[backfill][XBRL TRY] 370A https://www2.jpx.co.jp/disc/370A0/091220260804508847.zip
+[backfill][XBRL TRY] 3726 https://www.release.tdnet.info/inbs/081220260814520386.zip
+[backfill][XBRL TRY] 3726 https://www.release.tdnet.info/inbs/091220260814520386.zip
+[backfill][XBRL TRY] 3726 https://www2.jpx.co.jp/disc/37260/081220260814520386.zip
+[backfill][XBRL TRY] 3726 https://www2.jpx.co.jp/disc/37260/091220260814520386.zip
+[backfill][XBRL TRY] 375A https://www.release.tdnet.info/inbs/081220260814520606.zip
+[backfill][XBRL TRY] 375A https://www.release.tdnet.info/inbs/091220260814520606.zip
+[backfill][XBRL TRY] 375A https://www2.jpx.co.jp/disc/375A0/081220260814520606.zip
+[backfill][XBRL TRY] 375A https://www2.jpx.co.jp/disc/375A0/091220260814520606.zip
+[backfill][XBRL TRY] 4019 https://www.release.tdnet.info/inbs/081220260814520464.zip
+[backfill][XBRL TRY] 4019 https://www.release.tdnet.info/inbs/091220260814520464.zip
+[backfill][XBRL TRY] 4019 https://www2.jpx.co.jp/disc/40190/081220260814520464.zip
+[backfill][XBRL TRY] 4019 https://www2.jpx.co.jp/disc/40190/091220260814520464.zip
+[backfill][XBRL TRY] 430A https://www.release.tdnet.info/inbs/081220260814520591.zip
+[backfill][XBRL TRY] 430A https://www.release.tdnet.info/inbs/091220260814520591.zip
+[backfill][XBRL TRY] 430A https://www2.jpx.co.jp/disc/430A0/081220260814520591.zip
+[backfill][XBRL TRY] 430A https://www2.jpx.co.jp/disc/430A0/091220260814520591.zip
+[backfill][XBRL TRY] 481A https://www.release.tdnet.info/inbs/081220260814520573.zip
+[backfill][XBRL TRY] 481A https://www.release.tdnet.info/inbs/091220260814520573.zip
+[backfill][XBRL TRY] 481A https://www2.jpx.co.jp/disc/481A0/081220260814520573.zip
+[backfill][XBRL TRY] 481A https://www2.jpx.co.jp/disc/481A0/091220260814520573.zip
+[backfill][XBRL TRY] 506A https://www.release.tdnet.info/inbs/081220260814520892.zip
+[backfill][XBRL TRY] 506A https://www.release.tdnet.info/inbs/091220260814520892.zip
+[backfill][XBRL TRY] 506A https://www2.jpx.co.jp/disc/506A0/081220260814520892.zip
+[backfill][XBRL TRY] 506A https://www2.jpx.co.jp/disc/506A0/091220260814520892.zip
+[backfill][XBRL TRY] 5251 https://www.release.tdnet.info/inbs/081220260814520635.zip
+[backfill][XBRL TRY] 5251 https://www.release.tdnet.info/inbs/091220260814520635.zip
+[backfill][XBRL TRY] 5251 https://www2.jpx.co.jp/disc/52510/081220260814520635.zip
+[backfill][XBRL TRY] 5251 https://www2.jpx.co.jp/disc/52510/091220260814520635.zip
+[backfill][XBRL TRY] 5255 https://www.release.tdnet.info/inbs/081220260814520458.zip
+[backfill][XBRL TRY] 5255 https://www.release.tdnet.info/inbs/091220260814520458.zip
+[backfill][XBRL TRY] 5255 https://www2.jpx.co.jp/disc/52550/081220260814520458.zip
+[backfill][XBRL TRY] 5255 https://www2.jpx.co.jp/disc/52550/091220260814520458.zip
+[backfill][XBRL TRY] 526A https://www.release.tdnet.info/inbs/081220260814521157.zip
+[backfill][XBRL TRY] 526A https://www.release.tdnet.info/inbs/091220260814521157.zip
+[backfill][XBRL TRY] 526A https://www2.jpx.co.jp/disc/526A0/081220260814521157.zip
+[backfill][XBRL TRY] 526A https://www2.jpx.co.jp/disc/526A0/091220260814521157.zip
+[backfill][XBRL TRY] 583A https://www.release.tdnet.info/inbs/081220260813520042.zip
+[backfill][XBRL TRY] 583A https://www.release.tdnet.info/inbs/091220260813520042.zip
+[backfill][XBRL TRY] 583A https://www2.jpx.co.jp/disc/583A0/081220260813520042.zip
+[backfill][XBRL TRY] 583A https://www2.jpx.co.jp/disc/583A0/091220260813520042.zip
+[backfill][XBRL TRY] 601A https://www.release.tdnet.info/inbs/081220260806512479.zip
+[backfill][XBRL TRY] 601A https://www.release.tdnet.info/inbs/091220260806512479.zip
+[backfill][XBRL TRY] 601A https://www2.jpx.co.jp/disc/601A0/081220260806512479.zip
+[backfill][XBRL TRY] 601A https://www2.jpx.co.jp/disc/601A0/091220260806512479.zip
+[backfill][XBRL TRY] 6198 https://www.release.tdnet.info/inbs/081220260813519962.zip
+[backfill][XBRL TRY] 6198 https://www.release.tdnet.info/inbs/091220260813519962.zip
+[backfill][XBRL TRY] 6198 https://www2.jpx.co.jp/disc/61980/081220260813519962.zip
+[backfill][XBRL TRY] 6198 https://www2.jpx.co.jp/disc/61980/091220260813519962.zip
+[backfill][XBRL TRY] 252A https://www.release.tdnet.info/inbs/081220260814520363.zip
+[backfill][XBRL TRY] 252A https://www.release.tdnet.info/inbs/091220260814520363.zip
+[backfill][XBRL TRY] 252A https://www2.jpx.co.jp/disc/252A0/081220260814520363.zip
+[backfill][XBRL TRY] 252A https://www2.jpx.co.jp/disc/252A0/091220260814520363.zip
+[backfill][XBRL TRY] 308A https://www.release.tdnet.info/inbs/081220260814520254.zip
+[backfill][XBRL TRY] 308A https://www.release.tdnet.info/inbs/091220260814520254.zip
+[backfill][XBRL TRY] 308A https://www2.jpx.co.jp/disc/308A0/081220260814520254.zip
+[backfill][XBRL TRY] 308A https://www2.jpx.co.jp/disc/308A0/091220260814520254.zip
+[backfill][XBRL TRY] 310A https://www.release.tdnet.info/inbs/081220260814520497.zip
+[backfill][XBRL TRY] 310A https://www.release.tdnet.info/inbs/091220260814520497.zip
+[backfill][XBRL TRY] 310A https://www2.jpx.co.jp/disc/310A0/081220260814520497.zip
+[backfill][XBRL TRY] 310A https://www2.jpx.co.jp/disc/310A0/091220260814520497.zip
+[forecast_history] 対象=33 initial=8 revision=1 achievement=2 unresolved=12
+[OK] 決算:163件, 増資:10件, TOB:2件, 本文:228件, 予想初期:8件, 予想修正:1件, 達成履歴更新:2件 をDBに保存しました。
+=== fetch_all: 完全成功 ===
+===== 2026-08-17T08:03:01 END status=success rc=0 =====

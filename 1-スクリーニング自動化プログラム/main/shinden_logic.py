@@ -3535,13 +3535,13 @@ def validate_reaction_scores(
 def _resolve_default_db_path() -> str:
     """
     優先順位:
-      1) 環境変数 SHINDEN_DB_PATH
+      1) 環境変数 SHINDEN_DB_PATH / KABU_DB_PATH
       2) shinden_logic.py と同階層の db/kani2.db
       3) 既知の作業パス候補
     """
     candidates = []
 
-    env_path = os.environ.get("SHINDEN_DB_PATH", "").strip()
+    env_path = (os.environ.get("SHINDEN_DB_PATH", "") or os.environ.get("KABU_DB_PATH", "")).strip()
     if env_path:
         candidates.append(Path(env_path))
 
@@ -3565,7 +3565,7 @@ def _resolve_default_db_path() -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="シンデン型スコアを単独更新する日次バッチ"
+        description="シンデン型スコアを単独更新する外部判定エンジン"
     )
     parser.add_argument(
         "--db",
@@ -3580,7 +3580,7 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="同日でも全銘柄を強制再計算（通常は不要）"
+        help="同日でも全銘柄を強制再計算。LIVE_MATERIALSでは価格先回り反映のため使用"
     )
     parser.add_argument(
         "--validate-reactions",
@@ -3623,6 +3623,14 @@ def main(argv=None) -> int:
         print(f"[shinden] 日次バッチ開始: {db_path}")
         n = apply_shinden_pattern_metrics(conn, verbose=not args.quiet, force_full=args.full)
         print(f"[shinden] 日次バッチ完了: {n}銘柄")
+
+        # Task Scheduler / system_jobs から --full で呼ばれた場合、
+        # 0件更新は「正常な差分0件」ではなく、入力DB不足・対象消失などの
+        # silent failure の可能性が高い。外部オーケストレータへ非0で返す。
+        # 通常の増分実行では新規決算0件が正当なので従来どおり0終了。
+        if args.full and int(n or 0) <= 0:
+            print("[shinden][ERROR] --full 実行なのに更新0件。fresh snapshot として扱いません。")
+            return 3
         return 0
     except KeyboardInterrupt:
         print("\\n[shinden] 中断しました")

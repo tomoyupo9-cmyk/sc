@@ -1,0 +1,17 @@
+
+
+===== 2026-08-19T08:01:10 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.45s
+[shinden][timer] 最新決算束 0.83s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.08s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 66.09秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T08:02:17 END status=success rc=0 =====

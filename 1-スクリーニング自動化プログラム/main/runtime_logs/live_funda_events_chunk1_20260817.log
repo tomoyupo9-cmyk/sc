@@ -1,0 +1,351 @@
+
+
+===== 2026-08-17T09:10:21 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3445 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[OK] 3445 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T09:10:29 END status=success rc=0 =====
+
+
+===== 2026-08-17T09:20:11 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3445 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[OK] 3445 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T09:20:14 END status=success rc=0 =====
+
+
+===== 2026-08-17T09:50:11 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3445 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[OK] 3445 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T09:50:14 END status=success rc=0 =====
+
+
+===== 2026-08-17T10:00:13 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3445 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[OK] 3445 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T10:00:16 END status=success rc=0 =====
+
+
+===== 2026-08-17T10:20:12 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3445 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[OK] 3445 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T10:20:15 END status=success rc=0 =====
+
+
+===== 2026-08-17T10:40:13 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3445 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[OK] 3445 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T10:40:16 END status=success rc=0 =====
+
+
+===== 2026-08-17T11:00:15 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3445 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[OK] 3445 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T11:00:18 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:00:18 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 8798 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 2/2銘柄
+[QUARTERLY_HISTORY] 16行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=2 SKIP=0 ERROR=0
+===== 2026-08-17T12:00:21 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:10:12 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 8798 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 2/2銘柄
+[QUARTERLY_HISTORY] 16行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=2 SKIP=0 ERROR=0
+===== 2026-08-17T12:10:15 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:20:16 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,4574,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 8798 done. Score:6, Alpha:A+
+[OK] 4574 done. Score:-1, Alpha:D-
+[REACTION] past_earnings_dates 再構成: 3/3銘柄
+[QUARTERLY_HISTORY] 24行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=3 SKIP=0 ERROR=0
+===== 2026-08-17T12:20:19 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:40:15 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,4574,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 4574 done. Score:-1, Alpha:D-
+[OK] 8798 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 3/3銘柄
+[QUARTERLY_HISTORY] 24行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=3 SKIP=0 ERROR=0
+===== 2026-08-17T12:40:18 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:50:14 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,4574,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 8798 done. Score:6, Alpha:A+
+[OK] 4574 done. Score:-1, Alpha:D-
+[REACTION] past_earnings_dates 再構成: 3/3銘柄
+[QUARTERLY_HISTORY] 24行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=3 SKIP=0 ERROR=0
+===== 2026-08-17T12:50:17 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:00:16 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,4574,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 4574 done. Score:-1, Alpha:D-
+[OK] 8798 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 3/3銘柄
+[QUARTERLY_HISTORY] 24行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=3 SKIP=0 ERROR=0
+===== 2026-08-17T13:00:19 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:10:14 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,4574,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 8798 done. Score:6, Alpha:A+
+[OK] 4574 done. Score:-1, Alpha:D-
+[REACTION] past_earnings_dates 再構成: 3/3銘柄
+[QUARTERLY_HISTORY] 24行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=3 SKIP=0 ERROR=0
+===== 2026-08-17T13:10:17 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:30:15 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,4574,8798 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 4574 done. Score:-1, Alpha:D-
+[OK] 8798 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 3/3銘柄
+[QUARTERLY_HISTORY] 24行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=3 SKIP=0 ERROR=0
+===== 2026-08-17T13:30:18 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:40:15 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4018,4574 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4018
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[OK] 4018 done. Score:5, Alpha:A+
+[OK] 4574 done. Score:-1, Alpha:D-
+[REACTION] past_earnings_dates 再構成: 2/2銘柄
+[QUARTERLY_HISTORY] 16行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=2 SKIP=0 ERROR=0
+===== 2026-08-17T13:40:18 END status=success rc=0 =====
+
+
+===== 2026-08-17T14:00:17 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4574 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[OK] 4574 done. Score:-1, Alpha:D-
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T14:00:20 END status=success rc=0 =====
+
+
+===== 2026-08-17T14:50:19 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 6061 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[OK] 6061 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T14:50:22 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:00:16 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 6061 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[OK] 6061 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T15:00:19 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:10:17 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 6061 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[OK] 6061 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T15:10:20 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:20:15 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 6061 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[OK] 6061 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T15:20:18 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:30:16 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 6061 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[OK] 6061 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 1/1銘柄
+[QUARTERLY_HISTORY] 8行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=1 SKIP=0 ERROR=0
+===== 2026-08-17T15:30:26 END status=success rc=0 =====
+
+
+===== 2026-08-17T23:07:42 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\python.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4019,4484,4651,5242,5534,6036,6061,6195,7044,8951,8955,8964,9284,9439 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4651
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8964
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9439
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6036
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5242
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7044
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9284
+[OK] 9439 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5534
+[OK] 6036 done. Score:1, Alpha:C
+[OK] 8964 done. Score:-2, Alpha:D-
+[OK] 9284 done. Score:-4, Alpha:D-
+[OK] 5242 done. Score:5, Alpha:A+
+[OK] 4651 done. Score:5, Alpha:A+
+[OK] 7044 done. Score:4, Alpha:B
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4019
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8951
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8955
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4484
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6195
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[OK] 4019 done. Score:6, Alpha:A+
+[OK] 8951 done. Score:-4, Alpha:D-
+[OK] 8955 done. Score:-4, Alpha:D-
+[ERROR] 5534: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[OK] 4484 done. Score:6, Alpha:A+
+[PROG] 6195 label=26.04-06 key_q=2027.03 key_f=2027.03 cum_op=-93.0 full_op=432.0 status=予想データ欠損 progress=None%
+[OK] 6195 done. Score:5, Alpha:A+
+[OK] 6061 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 9/13銘柄
+[QUARTERLY_HISTORY] 72行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=13 SKIP=0 ERROR=1
+===== 2026-08-17T23:07:47 END status=partial rc=2 =====
+
+
+===== 2026-08-17T23:17:53 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\python.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4019,4484,4651,5242,5534,6036,6061,6195,7044,8951,8955,8964,9284,9439 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4484
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8951
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4651
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4019
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6036
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5534
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[ERROR] 5534: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8955
+[OK] 6061 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8964
+[OK] 4019 done. Score:6, Alpha:A+
+[OK] 8951 done. Score:-4, Alpha:D-
+[OK] 6036 done. Score:1, Alpha:C
+[OK] 4651 done. Score:5, Alpha:A+
+[OK] 4484 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7044
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9439
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9284
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5242
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6195
+[OK] 8955 done. Score:-4, Alpha:D-
+[OK] 8964 done. Score:-2, Alpha:D-
+[OK] 9439 done. Score:6, Alpha:A+
+[OK] 9284 done. Score:-4, Alpha:D-
+[OK] 5242 done. Score:5, Alpha:A+
+[OK] 7044 done. Score:4, Alpha:B
+[PROG] 6195 label=26.04-06 key_q=2027.03 key_f=2027.03 cum_op=-93.0 full_op=432.0 status=予想データ欠損 progress=None%
+[OK] 6195 done. Score:5, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 9/13銘柄
+[QUARTERLY_HISTORY] 72行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=13 SKIP=0 ERROR=1
+===== 2026-08-17T23:17:58 END status=partial rc=2 =====
+
+
+===== 2026-08-17T23:36:52 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\python.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 4019,4484,4651,5242,6036,6061,6195,7044,9439 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9439
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4019
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6036
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6195
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7044
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4651
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4484
+[OK] 4019 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[OK] 7044 done. Score:4, Alpha:B
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5242
+[OK] 6036 done. Score:1, Alpha:C
+[OK] 9439 done. Score:6, Alpha:A+
+[OK] 4651 done. Score:5, Alpha:A+
+[PROG] 6195 label=26.04-06 key_q=2027.03 key_f=2027.03 cum_op=-93.0 full_op=432.0 status=予想データ欠損 progress=None%
+[OK] 6195 done. Score:5, Alpha:A+
+[OK] 4484 done. Score:6, Alpha:A+
+[OK] 5242 done. Score:5, Alpha:A+
+[OK] 6061 done. Score:6, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 9/9銘柄
+[QUARTERLY_HISTORY] 72行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=9 SKIP=0 ERROR=0
+===== 2026-08-17T23:36:56 END status=success rc=0 =====

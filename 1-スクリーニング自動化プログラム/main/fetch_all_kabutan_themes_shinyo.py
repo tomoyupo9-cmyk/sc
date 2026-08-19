@@ -1,40 +1,61 @@
+# -*- coding: utf-8 -*-
+"""
+株探: テーマ / 信用残 / 決算発表予定日 producer
+
+役割:
+- stock_theme_kabutan : 現在確認できるテーマだけを保持
+- stock_theme_history : テーマの初回/最終確認日を保持
+- stock_credit_margin : (コード, 基準日) の時系列として保持
+- screener.決算発表予定日 : 株探の予定日を反映
+
+dailyは決算イベント銘柄だけ、weeklyは全株式を更新する。
+自動スクリーニング側はDBを読むだけにする。
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
 import sqlite3
-import requests
-from bs4 import BeautifulSoup
+import sys
 import time
 from datetime import date
-import sys
-import re  # ★追加：正規表現モジュール
-import json # ★追加：過去の決算日(JSON)を読み込むため
+from pathlib import Path
 
-# 既存のデータベースのパスに合わせて変更してください
-DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
+import requests
+from bs4 import BeautifulSoup
 
-def get_all_stock_codes(conn):
-    cur = conn.cursor()
-    try:
-        # 自動スクリーニングのメインテーブル(screener)から全銘柄コードを取得
-        cur.execute("SELECT DISTINCT コード FROM screener")
-        
-        # 取得したコードを4桁の文字列に整形してリスト化（Noneは弾く）
-        return [str(row[0]).zfill(4) for row in cur.fetchall() if row[0] is not None]
-        
-    except Exception as e:
-        print(f"コード一覧の取得に失敗しました: {e}")
+DEFAULT_DB_PATH = os.environ.get(
+    "KABU_DB_PATH",
+    r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db",
+)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)
+    ).fetchone() is not None
+
+
+def _pk_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    if not _table_exists(conn, table):
         return []
-        
-def scrape_kabutan_all_themes():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+    rows = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    return [r[1] for r in sorted((x for x in rows if int(x[5] or 0) > 0), key=lambda x: int(x[5]))]
 
-    # --- テーブル作成：テーマ用 ---
-    cur.execute("""
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=60000;")
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS theme_master (
             theme_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            theme_name TEXT UNIQUE
+            theme_name TEXT UNIQUE NOT NULL
         )
     """)
-    cur.execute("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS stock_theme_kabutan (
             コード TEXT NOT NULL,
             theme_id INTEGER NOT NULL,
@@ -42,172 +63,280 @@ def scrape_kabutan_all_themes():
             PRIMARY KEY (コード, theme_id)
         )
     """)
-    
-    # --- ★追加 テーブル作成：信用取引用 ---
-    cur.execute("""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS stock_theme_history (
+            コード TEXT NOT NULL,
+            theme_id INTEGER NOT NULL,
+            初回確認日 TEXT NOT NULL,
+            最終確認日 TEXT NOT NULL,
+            PRIMARY KEY (コード, theme_id)
+        )
+    """)
+
+    # 旧版は コード PRIMARY KEY で最新1行を上書きしていた。
+    # 自動スクリーニングは5期/20期変化を見るため、時系列PKへ安全に移行する。
+    wanted_pk = ["コード", "基準日"]
+    if _table_exists(conn, "stock_credit_margin") and _pk_columns(conn, "stock_credit_margin") != wanted_pk:
+        legacy = "stock_credit_margin_legacy_latest_only"
+        if _table_exists(conn, legacy):
+            conn.execute(f'DROP TABLE "{legacy}"')
+        conn.execute('ALTER TABLE stock_credit_margin RENAME TO "stock_credit_margin_legacy_latest_only"')
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS stock_credit_margin (
-            コード TEXT PRIMARY KEY,
-            基準日 TEXT,
+            コード TEXT NOT NULL,
+            基準日 TEXT NOT NULL,
             売り残 INTEGER,
             買い残 INTEGER,
             倍率 REAL,
-            取得日 TEXT
+            取得日 TEXT,
+            PRIMARY KEY (コード, 基準日)
         )
     """)
-    
-    # ★追加：screenerテーブルに「決算発表予定日」カラムを準備
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_credit_code_date ON stock_credit_margin(コード, 基準日 DESC)")
+
+    if _table_exists(conn, "stock_credit_margin_legacy_latest_only"):
+        cols = {r[1] for r in conn.execute('PRAGMA table_info("stock_credit_margin_legacy_latest_only")')}
+        needed = {"コード", "基準日", "売り残", "買い残", "倍率", "取得日"}
+        if needed.issubset(cols):
+            conn.execute("""
+                INSERT OR IGNORE INTO stock_credit_margin(コード,基準日,売り残,買い残,倍率,取得日)
+                SELECT CAST(コード AS TEXT), CAST(基準日 AS TEXT), 売り残, 買い残, 倍率, 取得日
+                FROM stock_credit_margin_legacy_latest_only
+                WHERE コード IS NOT NULL AND 基準日 IS NOT NULL AND TRIM(CAST(基準日 AS TEXT))<>''
+            """)
+
     try:
-        cur.execute("ALTER TABLE screener ADD COLUMN 決算発表予定日 TEXT")
-    except Exception:
-        pass # 既に存在する場合はスキップ
-        
+        conn.execute("ALTER TABLE screener ADD COLUMN 決算発表予定日 TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
 
-    codes = get_all_stock_codes(conn)
+
+STOCK_CODE_RE = re.compile(r"^(?:\d{4}|\d{3}[A-Z])$")
+
+
+def _normalize_stock_code(raw) -> str | None:
+    s = str(raw or "").strip().upper()
+    if s.endswith(".0"):
+        s = s[:-2]
+    if s.isdigit():
+        s = s.zfill(4)
+    return s if STOCK_CODE_RE.fullmatch(s) else None
+
+
+def get_all_stock_codes(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT コード FROM screener WHERE コード IS NOT NULL").fetchall()
+    out = []
+    for (raw,) in rows:
+        s = _normalize_stock_code(raw)
+        if s is not None:
+            out.append(s)
+    return list(dict.fromkeys(out))
+
+
+def safe_float(s):
+    if s is None:
+        return None
+    t = str(s).replace(",", "").strip()
+    if t in {"", "-", "--", "―", "－", "N/A"}:
+        return None
+    try:
+        return float(t)
+    except (TypeError, ValueError):
+        return None
+
+
+def _theme_ids(conn: sqlite3.Connection, names: set[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for name in sorted(names):
+        conn.execute("INSERT OR IGNORE INTO theme_master(theme_name) VALUES (?)", (name,))
+        row = conn.execute("SELECT theme_id FROM theme_master WHERE theme_name=?", (name,)).fetchone()
+        if row:
+            out[name] = int(row[0])
+    return out
+
+
+def _sync_current_themes(conn: sqlite3.Connection, code: str, names: set[str], today: str) -> int:
+    ids = _theme_ids(conn, names)
+    wanted = set(ids.values())
+
+    # 株探の「テーマ」欄を正常に読めた時だけ authoritative snapshot として同期する。
+    if wanted:
+        q = ",".join("?" for _ in wanted)
+        conn.execute(
+            f"DELETE FROM stock_theme_kabutan WHERE コード=? AND theme_id NOT IN ({q})",
+            [code, *sorted(wanted)],
+        )
+    else:
+        conn.execute("DELETE FROM stock_theme_kabutan WHERE コード=?", (code,))
+
+    for theme_id in sorted(wanted):
+        conn.execute("""
+            INSERT INTO stock_theme_kabutan(コード,theme_id,取得日)
+            VALUES(?,?,?)
+            ON CONFLICT(コード,theme_id) DO UPDATE SET 取得日=excluded.取得日
+        """, (code, theme_id, today))
+        conn.execute("""
+            INSERT INTO stock_theme_history(コード,theme_id,初回確認日,最終確認日)
+            VALUES(?,?,?,?)
+            ON CONFLICT(コード,theme_id) DO UPDATE SET 最終確認日=excluded.最終確認日
+        """, (code, theme_id, today, today))
+    return len(wanted)
+
+
+def _save_credit_history(conn: sqlite3.Connection, code: str, soup: BeautifulSoup, today: str) -> int:
+    credit_h2 = soup.find("h2", string=re.compile(r"信用取引"))
+    if not credit_h2:
+        return 0
+    credit_table = credit_h2.find_next_sibling("table")
+    if not credit_table:
+        return 0
+    tbody = credit_table.find("tbody")
+    if not tbody:
+        return 0
+
+    saved = 0
+    for tr in tbody.find_all("tr"):
+        time_tag = tr.find("time")
+        margin_date = (time_tag.get("datetime") if time_tag else None) or ""
+        margin_date = str(margin_date).strip().replace("/", "-")[:10]
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", margin_date):
+            continue
+        tds = tr.find_all("td")
+        if len(tds) < 3:
+            continue
+        sell_f = safe_float(tds[0].get_text(" ", strip=True))
+        buy_f = safe_float(tds[1].get_text(" ", strip=True))
+        ratio = safe_float(tds[2].get_text(" ", strip=True))
+        sell_bal = int(round(sell_f * 1000)) if sell_f is not None else None
+        buy_bal = int(round(buy_f * 1000)) if buy_f is not None else None
+        conn.execute("""
+            INSERT INTO stock_credit_margin(コード,基準日,売り残,買い残,倍率,取得日)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(コード,基準日) DO UPDATE SET
+              売り残=excluded.売り残,
+              買い残=excluded.買い残,
+              倍率=excluded.倍率,
+              取得日=excluded.取得日
+        """, (code, margin_date, sell_bal, buy_bal, ratio, today))
+        saved += 1
+    return saved
+
+
+def _update_earnings_schedule(conn: sqlite3.Connection, code: str, soup: BeautifulSoup) -> str | None:
+    kessan_date = None
+    kessan_div = soup.find("div", id="kessan_happyoubi")
+    if kessan_div:
+        time_tag = kessan_div.find("time")
+        if time_tag:
+            kessan_date = time_tag.get_text(" ", strip=True)
+
+    if kessan_date:
+        conn.execute("UPDATE screener SET 決算発表予定日=? WHERE コード=?", (kessan_date, code))
+        return kessan_date
+
+    # 予定日が取得できない時に「過去決算日」を予定日列へ入れない。
+    # 過去実績は finance_notes / earnings履歴側の責務で、ここへ混ぜると
+    # 決算前20日などの判定が過去日を次回予定と誤認する。
+    conn.execute("UPDATE screener SET 決算発表予定日=NULL WHERE コード=?", (code,))
+    return None
+
+
+def scrape_kabutan_all_themes(
+    db_path: str,
+    *,
+    sleep_sec: float = 1.5,
+    timeout: float = 10.0,
+    target_codes: list[str] | None = None,
+) -> int:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=60.0)
+    ensure_schema(conn)
+    if target_codes is None:
+        codes = get_all_stock_codes(conn)
+    else:
+        codes = list(dict.fromkeys(
+            code for raw in target_codes
+            if (code := _normalize_stock_code(raw)) is not None
+        ))
     if not codes:
-        print("処理対象の銘柄コードがありません。")
-        sys.exit()
+        print("[themes-shinyo][ERROR] 処理対象の銘柄コードがありません。")
+        conn.close()
+        return 2
 
     today = date.today().isoformat()
-    print(f"全 {len(codes)} 銘柄のデータ(テーマ ＆ 信用残)収集を開始します...")
-
+    scope = "全件" if target_codes is None else "差分"
+    print(f"[themes-shinyo] {scope} {len(codes)} 銘柄を開始")
     session = requests.Session()
-    
-    # User-Agentを追加してブラウザからのアクセスに見せかける
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
     })
 
-    for i, code in enumerate(codes):
-        url = f"https://kabutan.jp/stock/?code={code}"
-        
-        try:
-            res = session.get(url, timeout=10)
-            res.raise_for_status()
-            # 文字化け対策（株探は utf-8）
-            res.encoding = 'utf-8'
-            soup = BeautifulSoup(res.text, "html.parser")
+    ok = fail = theme_total = credit_rows = 0
+    try:
+        for i, code in enumerate(codes, 1):
+            try:
+                res = session.get(f"https://kabutan.jp/stock/?code={code}", timeout=timeout)
+                res.raise_for_status()
+                res.encoding = "utf-8"
+                soup = BeautifulSoup(res.text, "html.parser")
 
-            # ==========================================
-            # 1. テーマの取得・保存ロジック
-            # ==========================================
-            extracted_themes = set()
-            theme_th = soup.find("th", string="テーマ")
-            
-            if theme_th:
-                theme_td = theme_th.find_next_sibling("td")
+                theme_th = soup.find("th", string="テーマ")
+                themes: set[str] = set()
+                theme_td = theme_th.find_next_sibling("td") if theme_th else None
+                # 見出しだけ取れて値セルが欠落したHTMLはparse failure扱い。
+                # 正常な値セルまで確認できた時だけ、0件を含めauthoritative snapshotとする。
+                theme_snapshot_valid = theme_td is not None
                 if theme_td:
-                    theme_links = theme_td.find_all("a", href=lambda h: h and h.startswith("/themes/?theme="))
-                    
-                    for a_tag in theme_links:
-                        theme_name = a_tag.text.strip()
-                        if theme_name:
-                            extracted_themes.add(theme_name)
+                    for a in theme_td.find_all("a", href=lambda h: h and h.startswith("/themes/?theme=")):
+                        name = a.get_text(" ", strip=True)
+                        if name:
+                            themes.add(name)
 
-            for tname in extracted_themes:
-                cur.execute("INSERT OR IGNORE INTO theme_master (theme_name) VALUES (?)", (tname,))
-                cur.execute("SELECT theme_id FROM theme_master WHERE theme_name = ?", (tname,))
-                row = cur.fetchone()
-                if row:
-                    theme_id = row[0]
-                    cur.execute("""
-                        INSERT OR IGNORE INTO stock_theme_kabutan(コード, theme_id, 取得日) 
-                        VALUES (?, ?, ?)
-                    """, (code, theme_id, today))
+                conn.execute("SAVEPOINT one_code")
+                try:
+                    tcount = _sync_current_themes(conn, code, themes, today) if theme_snapshot_valid else 0
+                    ccount = _save_credit_history(conn, code, soup, today)
+                    sched = _update_earnings_schedule(conn, code, soup)
+                    conn.execute("RELEASE SAVEPOINT one_code")
+                    conn.commit()
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT one_code")
+                    conn.execute("RELEASE SAVEPOINT one_code")
+                    raise
 
-            # ==========================================
-            # 2. ★追加：信用取引の取得・保存ロジック
-            # ==========================================
-            credit_h2 = soup.find("h2", string=re.compile(r"信用取引"))
-            if credit_h2:
-                credit_table = credit_h2.find_next_sibling("table")
-                if credit_table:
-                    tbody = credit_table.find("tbody")
-                    if tbody:
-                        # 最初の行(最新の日付)を取得
-                        first_row = tbody.find("tr")
-                        if first_row:
-                            time_tag = first_row.find("time")
-                            margin_date = time_tag["datetime"] if time_tag else None
+                ok += 1
+                theme_total += tcount
+                credit_rows += ccount
+                print(f"[{i}/{len(codes)}] {code}: theme={tcount} credit_rows={ccount} earnings={sched or '-'}")
+            except Exception as e:
+                fail += 1
+                print(f"[{i}/{len(codes)}] {code}: ERROR {type(e).__name__}: {e}")
+            if sleep_sec > 0:
+                time.sleep(sleep_sec)
+    finally:
+        session.close()
+        conn.close()
 
-                            tds = first_row.find_all("td")
-                            if len(tds) >= 3:
-                                # カンマを除去
-                                sell_str = tds[0].text.replace(",", "").strip()
-                                buy_str = tds[1].text.replace(",", "").strip()
-                                ratio_str = tds[2].text.replace(",", "").strip()
+    print(f"[themes-shinyo] 完了 ok={ok} fail={fail} themes={theme_total} credit_rows={credit_rows}")
+    return 0 if fail == 0 else 2
 
-                                # --- ★変更：安全に数値変換する関数を定義 ---
-                                def safe_float(s):
-                                    try:
-                                        return float(s)
-                                    except ValueError:
-                                        return None  # 全角ハイフン等で変換失敗したらNoneを返す
 
-                                sell_f = safe_float(sell_str)
-                                buy_f = safe_float(buy_str)
-                                ratio = safe_float(ratio_str)
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="株探テーマ・信用残・決算予定日収集")
+    ap.add_argument("--db", default=DEFAULT_DB_PATH)
+    ap.add_argument("--sleep", type=float, default=1.5)
+    ap.add_argument("--timeout", type=float, default=10.0)
+    ap.add_argument("--codes", nargs="*", default=None, help="差分対象コード。省略時は全株式")
+    args = ap.parse_args(argv)
+    return scrape_kabutan_all_themes(
+        args.db,
+        sleep_sec=max(0.0, args.sleep),
+        timeout=max(1.0, args.timeout),
+        target_codes=args.codes,
+    )
 
-                                # 値があれば1000倍して整数化、なければNone
-                                sell_bal = int(sell_f * 1000) if sell_f is not None else None
-                                buy_bal = int(buy_f * 1000) if buy_f is not None else None
-
-                                # DBへ保存 (INSERT OR REPLACEで常に最新の1行で上書き)
-                                cur.execute("""
-                                    INSERT OR REPLACE INTO stock_credit_margin
-                                    (コード, 基準日, 売り残, 買い残, 倍率, 取得日) 
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                """, (code, margin_date, sell_bal, buy_bal, ratio, today))
-
-            # ==========================================
-            # 3. ★追加：決算発表予定日の取得・保存ロジック
-            # ==========================================
-            kessan_date = None
-            kessan_div = soup.find("div", id="kessan_happyoubi")
-            if kessan_div:
-                time_tag = kessan_div.find("time")
-                if time_tag:
-                    kessan_date = time_tag.text.strip() # 例: "2026/08/14"
-
-            if kessan_date:
-                # ① 株探から予定日が取得できた場合
-                cur.execute("""
-                    UPDATE screener SET 決算発表予定日 = ? WHERE コード = ?
-                """, (kessan_date, code))
-            else:
-                # ② 取得できなかった場合は finance_notes の past_earnings_dates を参照
-                cur.execute("SELECT past_earnings_dates FROM finance_notes WHERE コード = ?", (code,))
-                fn_row = cur.fetchone()
-                
-                fallback_date = None
-                if fn_row and fn_row[0]:
-                    try:
-                        past_dates = json.loads(fn_row[0])
-                        if isinstance(past_dates, list) and len(past_dates) > 0:
-                            # リストの最後が直近の過去決算日 ("YYYY-MM-DD" を "YYYY/MM/DD" に整形)
-                            last_date = past_dates[-1].replace("-", "/")
-                            # ダッシュボードで見た時に予定日ではないことが分かるよう目印をつける
-                            fallback_date = f"{last_date} (過去実績)"
-                    except Exception:
-                        pass
-                
-                # フォールバック日があればそれを入れ、なければ古いデータを消すためにNULLでリセット
-                cur.execute("""
-                    UPDATE screener SET 決算発表予定日 = ? WHERE コード = ?
-                """, (fallback_date, code))
-
-            # 変更を確定
-            conn.commit()
-            print(f"[{i+1}/{len(codes)}] {code} : テーマ({len(extracted_themes)}件) ＆ 信用残 ＆ 決算日 更新完了")
-
-        except Exception as e:
-            print(f"[{i+1}/{len(codes)}] {code} : エラー発生 -> {e}")
-
-        # サーバー負荷軽減（IPBAN回避）のための待機
-        time.sleep(1.5)
-
-    conn.close()
-    print("すべての収集が完了しました！")
 
 if __name__ == "__main__":
-    scrape_kabutan_all_themes()
+    raise SystemExit(main())

@@ -1,0 +1,885 @@
+
+
+===== 2026-08-19T15:31:24 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=2.8s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[                       0%                       ][**********************50%                       ]  2 of 4 completed[**********************75%***********            ]  3 of 4 completed[*********************100%***********************]  4 of 4 completed
+[refresh_full_history_for_insufficient] 実行開始...
+[full-refresh] 12mo 取り直し対象: 4 件
+[full-refresh] 4/4 (+31 rows)
+[full-refresh] 追記 31 行 / 再取得 4 銘柄
+[TIMER] refresh_full_history_for_insufficient: 10分48秒
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=648.4s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=2.6s
+[eod][START] compute_right_up_persistent_eod
+[compute_right_up_persistent_eod] 実行開始...
+[右肩上がり] 持続トレンド版 3528 銘柄を更新 / 閾値=70
+[TIMER] compute_right_up_persistent_eod: 40.78秒
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=40.8s
+[eod][START] compute_right_up_early_triggers_eod
+[compute_right_up_early_triggers_eod] 実行開始...
+[右肩早期] データを一括計算中...
+[右肩早期] 候補 346 件 / 総3566件  as_of=2026-08-19  閾値70  dt=2026-08-19 15:43:10
+[TIMER] compute_right_up_early_triggers_eod: 24.16秒
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=24.2s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=5.5s
+[eod][START] update_market_cap_all
+[update_market_cap_all] 実行開始...
+[mcap/all] 100/3581 応答 100 件
+[mcap/all] 200/3581 応答 100 件
+[mcap/all] 300/3581 応答 100 件
+[mcap/all] 400/3581 応答 100 件
+[mcap/all] 500/3581 応答 100 件
+[mcap/all] 600/3581 応答 100 件
+[mcap/all] 700/3581 応答 100 件
+[mcap/all] 800/3581 応答 100 件
+[mcap/all] 900/3581 応答 100 件
+[mcap/all] 1000/3581 応答 100 件
+[mcap/all] 1100/3581 応答 100 件
+[mcap/all] 1200/3581 応答 100 件
+[mcap/all] 1300/3581 応答 100 件
+[mcap/all] 1400/3581 応答 100 件
+[mcap/all] 1500/3581 応答 100 件
+[mcap/all] 1600/3581 応答 100 件
+[mcap/all] 1700/3581 応答 100 件
+[mcap/all] 1800/3581 応答 100 件
+[mcap/all] 1900/3581 応答 100 件
+[mcap/all] 2000/3581 応答 100 件
+[mcap/all] 2100/3581 応答 100 件
+[mcap/all] 2200/3581 応答 100 件
+[mcap/all] 2300/3581 応答 100 件
+[mcap/all] 2400/3581 応答 100 件
+[mcap/all] 2500/3581 応答 100 件
+[mcap/all] 2600/3581 応答 100 件
+[mcap/all] 2700/3581 応答 100 件
+[mcap/all] 2800/3581 応答 100 件
+[mcap/all] 2900/3581 応答 100 件
+[mcap/all] 3000/3581 応答 100 件
+[mcap/all] 3100/3581 応答 100 件
+[mcap/all] 3200/3581 応答 100 件
+[mcap/all] 3300/3581 応答 0 件
+[mcap/all] 3400/3581 応答 0 件
+[mcap/all] 3500/3581 応答 0 件
+[mcap/all] 3581/3581 応答 0 件
+[TIMER] update_market_cap_all: 10分6秒
+[eod][ERROR] update_market_cap_all: elapsed=606.9s RuntimeError: market-cap Yahoo partial response: missing=['9828.T', '9830.T', '9831.T', '9832.T', '9835.T', '9837.T', '9842.T', '9843.T', '9845.T', '9846.T', '9850.T', '9853.T', '9854.T', '9856.T', '9857.T', '9861.T', '9867.T', '9869.T', '9872.T', '9876.T'] count=381
+[eod][PENDING/ERROR] RuntimeError: market-cap Yahoo partial response: missing=['9828.T', '9830.T', '9831.T', '9832.T', '9835.T', '9837.T', '9842.T', '9843.T', '9845.T', '9846.T', '9850.T', '9853.T', '9854.T', '9856.T', '9857.T', '9861.T', '9867.T', '9869.T', '9872.T', '9876.T'] count=381
+===== 2026-08-19T15:53:45 END status=partial rc=2 =====
+
+
+===== 2026-08-19T16:01:55 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=2.9s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=2.9s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=5.2s
+[eod][START] update_market_cap_all
+[update_market_cap_all] 実行開始...
+[mcap/all] 100/3581 応答 100 件
+[mcap/all] 200/3581 応答 100 件
+[mcap/all] 300/3581 応答 100 件
+[mcap/all] 400/3581 応答 100 件
+[mcap/all] 500/3581 応答 100 件
+[mcap/all] 600/3581 応答 100 件
+[mcap/all] 700/3581 応答 100 件
+[mcap/all] 800/3581 応答 100 件
+[mcap/all] 900/3581 応答 100 件
+[mcap/all] 1000/3581 応答 100 件
+[mcap/all] 1100/3581 応答 100 件
+[mcap/all] 1200/3581 応答 100 件
+[mcap/all] 1300/3581 応答 100 件
+[mcap/all] 1400/3581 応答 100 件
+[mcap/all] 1500/3581 応答 100 件
+[mcap/all] 1600/3581 応答 100 件
+[mcap/all] 1700/3581 応答 100 件
+[mcap/all] 1800/3581 応答 100 件
+[mcap/all] 1900/3581 応答 100 件
+[mcap/all] 2000/3581 応答 100 件
+[mcap/all] 2100/3581 応答 100 件
+[mcap/all] 2200/3581 応答 100 件
+[mcap/all] 2300/3581 応答 100 件
+[mcap/all] 2400/3581 応答 100 件
+[mcap/all] 2500/3581 応答 100 件
+[mcap/all] 2600/3581 応答 100 件
+[mcap/all] 2700/3581 応答 100 件
+[mcap/all] 2800/3581 応答 100 件
+[mcap/all] 2900/3581 応答 100 件
+[mcap/all] 3000/3581 応答 100 件
+[mcap/all] 3100/3581 応答 100 件
+[mcap/all] 3200/3581 応答 0 件
+[mcap/all] 3300/3581 応答 0 件
+[mcap/all] 3400/3581 応答 0 件
+[mcap/all] 3500/3581 応答 0 件
+[mcap/all] 3581/3581 応答 0 件
+[TIMER] update_market_cap_all: 10分10秒
+[eod][ERROR] update_market_cap_all: elapsed=610.3s RuntimeError: market-cap Yahoo partial response: missing=['9533.T', '9534.T', '9535.T', '9536.T', '9539.T', '9543.T', '9551.T', '9552.T', '9553.T', '9554.T', '9556.T', '9557.T', '9558.T', '9560.T', '9561.T', '9562.T', '9563.T', '9564.T', '9565.T', '9601.T'] count=481
+[eod][PENDING/ERROR] RuntimeError: market-cap Yahoo partial response: missing=['9533.T', '9534.T', '9535.T', '9536.T', '9539.T', '9543.T', '9551.T', '9552.T', '9553.T', '9554.T', '9556.T', '9557.T', '9558.T', '9560.T', '9561.T', '9562.T', '9563.T', '9564.T', '9565.T', '9601.T'] count=481
+===== 2026-08-19T16:12:26 END status=partial rc=2 =====
+
+
+===== 2026-08-19T16:21:49 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=2.9s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=2.7s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=5.4s
+[eod][START] update_market_cap_all
+[update_market_cap_all] 実行開始...
+[mcap/all] 100/3581 応答 100 件
+[mcap/all] 200/3581 応答 100 件
+[mcap/all] 300/3581 応答 100 件
+[mcap/all] 400/3581 応答 100 件
+[mcap/all] 500/3581 応答 100 件
+[mcap/all] 600/3581 応答 100 件
+[mcap/all] 700/3581 応答 100 件
+[mcap/all] 800/3581 応答 100 件
+[mcap/all] 900/3581 応答 100 件
+[mcap/all] 1000/3581 応答 100 件
+[mcap/all] 1100/3581 応答 100 件
+[mcap/all] 1200/3581 応答 100 件
+[mcap/all] 1300/3581 応答 100 件
+[mcap/all] 1400/3581 応答 100 件
+[mcap/all] 1500/3581 応答 100 件
+[mcap/all] 1600/3581 応答 100 件
+[mcap/all] 1700/3581 応答 100 件
+[mcap/all] 1800/3581 応答 100 件
+[mcap/all] 1900/3581 応答 100 件
+[mcap/all] 2000/3581 応答 100 件
+[mcap/all] 2100/3581 応答 100 件
+[mcap/all] 2200/3581 応答 100 件
+[mcap/all] 2300/3581 応答 100 件
+[mcap/all] 2400/3581 応答 100 件
+[mcap/all] 2500/3581 応答 100 件
+[mcap/all] 2600/3581 応答 100 件
+[mcap/all] 2700/3581 応答 100 件
+[mcap/all] 2800/3581 応答 100 件
+[mcap/all] 2900/3581 応答 100 件
+[mcap/all] 3000/3581 応答 100 件
+[mcap/all] 3100/3581 応答 100 件
+[mcap/all] 3200/3581 応答 100 件
+[mcap/all] 3300/3581 応答 100 件
+[mcap/all] 3400/3581 応答 100 件
+[mcap/all] 3500/3581 応答 100 件
+[mcap/all] 3581/3581 応答 81 件
+[mcap] 合計更新 3581 件（全銘柄）
+[TIMER] update_market_cap_all: 10分24秒
+[eod][DONE]  update_market_cap_all: elapsed=624.3s
+[eod][START] update_seasonal_progress_v3
+[update_seasonal_progress_v3] 実行開始...
+[seasonality] v13 更新=2287銘柄 Q内訳={1: 1592, 2: 453, 3: 241, 4: 1} 過去同Q件数中央値=1.0 履歴内訳={'1年参考': 2022, '2年以上': 265} actual_source={'tdnet_xbrl': 5380, 'quarter_sum': 2295}
+[TIMER] update_seasonal_progress_v3: 2.65秒
+[eod][DONE]  update_seasonal_progress_v3: elapsed=2.6s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=21.2s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=13.8s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=27.5s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] snapshotted 1 symbols
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.7s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=3.8s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 2.73秒
+[eod][ERROR] validate_prev_business_day: elapsed=2.7s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3228
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.4s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.8s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T16:34:03 END status=success rc=0 =====
+
+
+===== 2026-08-19T16:41:41 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=7.8s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=2.7s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=5.8s
+[eod][START] update_market_cap_all
+[SKIP daily] update_market_cap_all (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_market_cap_all: elapsed=0.0s
+[eod][START] update_seasonal_progress_v3
+[SKIP daily] update_seasonal_progress_v3 (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_seasonal_progress_v3: elapsed=0.0s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=19.0s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=16.8s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=27.5s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.4s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=3.6s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 1.65秒
+[eod][ERROR] validate_prev_business_day: elapsed=1.6s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3228
+[eod][DONE]  update_operating_income_and_ratio: elapsed=4.3s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.7s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T16:43:34 END status=success rc=0 =====
+
+
+===== 2026-08-19T16:51:49 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=4.2s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=4.0s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=7.3s
+[eod][START] update_market_cap_all
+[SKIP daily] update_market_cap_all (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_market_cap_all: elapsed=0.0s
+[eod][START] update_seasonal_progress_v3
+[SKIP daily] update_seasonal_progress_v3 (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_seasonal_progress_v3: elapsed=0.0s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=26.0s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=13.2s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=26.8s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.4s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=2.0s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 1.16秒
+[eod][ERROR] validate_prev_business_day: elapsed=1.2s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3228
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.4s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.1s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T16:53:42 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:01:50 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=4.2s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=4.1s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=7.2s
+[eod][START] update_market_cap_all
+[SKIP daily] update_market_cap_all (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_market_cap_all: elapsed=0.0s
+[eod][START] update_seasonal_progress_v3
+[SKIP daily] update_seasonal_progress_v3 (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_seasonal_progress_v3: elapsed=0.0s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=24.1s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=12.3s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=26.2s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.3s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=1.9s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 1.01秒
+[eod][ERROR] validate_prev_business_day: elapsed=1.0s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3228
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.3s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.0s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T17:03:39 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:11:46 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=4.0s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=4.0s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=7.1s
+[eod][START] update_market_cap_all
+[SKIP daily] update_market_cap_all (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_market_cap_all: elapsed=0.0s
+[eod][START] update_seasonal_progress_v3
+[SKIP daily] update_seasonal_progress_v3 (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_seasonal_progress_v3: elapsed=0.0s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=25.5s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=12.3s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=26.1s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.2s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=1.8s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 0.95秒
+[eod][ERROR] validate_prev_business_day: elapsed=0.9s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3228
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.6s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=11.8s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T17:13:35 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:21:46 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=3.9s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=4.0s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=7.3s
+[eod][START] update_market_cap_all
+[SKIP daily] update_market_cap_all (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_market_cap_all: elapsed=0.0s
+[eod][START] update_seasonal_progress_v3
+[SKIP daily] update_seasonal_progress_v3 (already ok for 2026-08-19, build=b16b634410f3f6d2)
+[eod][DONE]  update_seasonal_progress_v3: elapsed=0.0s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=25.3s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=12.2s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=30.0s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.3s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=2.4s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 1.08秒
+[eod][ERROR] validate_prev_business_day: elapsed=1.1s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3227
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.7s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.3s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T17:23:40 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:31:49 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=3.9s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[                       0%                       ][**********************50%                       ]  2 of 4 completed[**********************75%***********            ]  3 of 4 completed[*********************100%***********************]  4 of 4 completed
+[refresh_full_history_for_insufficient] 実行開始...
+[full-refresh] 12mo 取り直し対象: 4 件
+[full-refresh] 4/4 (+31 rows)
+[full-refresh] 追記 31 行 / 再取得 4 銘柄
+[TIMER] refresh_full_history_for_insufficient: 10分16秒
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=616.6s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=2.5s
+[eod][START] compute_right_up_persistent_eod
+[compute_right_up_persistent_eod] 実行開始...
+[右肩上がり] 持続トレンド版 3528 銘柄を更新 / 閾値=70
+[TIMER] compute_right_up_persistent_eod: 39.05秒
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=39.1s
+[eod][START] compute_right_up_early_triggers_eod
+[compute_right_up_early_triggers_eod] 実行開始...
+[右肩早期] データを一括計算中...
+[右肩早期] 候補 346 件 / 総3566件  as_of=2026-08-19  閾値70  dt=2026-08-19 17:43:04
+[TIMER] compute_right_up_early_triggers_eod: 22.96秒
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=23.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=5.1s
+[eod][START] update_market_cap_all
+[update_market_cap_all] 実行開始...
+[mcap/all] 100/3581 応答 100 件
+[mcap/all] 200/3581 応答 100 件
+[mcap/all] 300/3581 応答 100 件
+[mcap/all] 400/3581 応答 100 件
+[mcap/all] 500/3581 応答 100 件
+[mcap/all] 600/3581 応答 100 件
+[mcap/all] 700/3581 応答 100 件
+[mcap/all] 800/3581 応答 100 件
+[mcap/all] 900/3581 応答 100 件
+[mcap/all] 1000/3581 応答 100 件
+[mcap/all] 1100/3581 応答 100 件
+[mcap/all] 1200/3581 応答 100 件
+[mcap/all] 1300/3581 応答 100 件
+[mcap/all] 1400/3581 応答 100 件
+[mcap/all] 1500/3581 応答 100 件
+[mcap/all] 1600/3581 応答 100 件
+[mcap/all] 1700/3581 応答 100 件
+[mcap/all] 1800/3581 応答 100 件
+[mcap/all] 1900/3581 応答 100 件
+[mcap/all] 2000/3581 応答 100 件
+[mcap/all] 2100/3581 応答 100 件
+[mcap/all] 2200/3581 応答 100 件
+[mcap/all] 2300/3581 応答 100 件
+[mcap/all] 2400/3581 応答 100 件
+[mcap/all] 2500/3581 応答 100 件
+[mcap/all] 2600/3581 応答 100 件
+[mcap/all] 2700/3581 応答 100 件
+[mcap/all] 2800/3581 応答 100 件
+[mcap/all] 2900/3581 応答 100 件
+[mcap/all] 3000/3581 応答 100 件
+[mcap/all] 3100/3581 応答 100 件
+[mcap/all] 3200/3581 応答 100 件
+[mcap/all] 3300/3581 応答 100 件
+[mcap/all] 3400/3581 応答 100 件
+[mcap/all] 3500/3581 応答 100 件
+[mcap/all] 3581/3581 応答 81 件
+[mcap] 合計更新 3581 件（全銘柄）
+[TIMER] update_market_cap_all: 10分3秒
+[eod][DONE]  update_market_cap_all: elapsed=603.6s
+[eod][START] update_seasonal_progress_v3
+[update_seasonal_progress_v3] 実行開始...
+[seasonality] v13 更新=2287銘柄 Q内訳={1: 1592, 2: 453, 3: 241, 4: 1} 過去同Q件数中央値=1.0 履歴内訳={'1年参考': 2022, '2年以上': 265} actual_source={'tdnet_xbrl': 5380, 'quarter_sum': 2295}
+[TIMER] update_seasonal_progress_v3: 1.92秒
+[eod][DONE]  update_seasonal_progress_v3: elapsed=1.9s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=19.7s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=12.2s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=29.0s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.3s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=2.2s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 1.06秒
+[eod][ERROR] validate_prev_business_day: elapsed=1.1s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3227
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.3s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.3s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T17:54:57 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:59:50 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\python.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=2.5s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[                       0%                       ][**********************50%                       ]  2 of 4 completed[**********************75%***********            ]  3 of 4 completed[*********************100%***********************]  4 of 4 completed
+[refresh_full_history_for_insufficient] 実行開始...
+[full-refresh] 12mo 取り直し対象: 4 件
+[full-refresh] 4/4 (+31 rows)
+[full-refresh] 追記 31 行 / 再取得 4 銘柄
+[TIMER] refresh_full_history_for_insufficient: 9分42秒
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=582.3s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=2.6s
+[eod][START] compute_right_up_persistent_eod
+[compute_right_up_persistent_eod] 実行開始...
+[右肩上がり] 持続トレンド版 3528 銘柄を更新 / 閾値=70
+[TIMER] compute_right_up_persistent_eod: 41.38秒
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=41.4s
+[eod][START] compute_right_up_early_triggers_eod
+[compute_right_up_early_triggers_eod] 実行開始...
+[右肩早期] データを一括計算中...
+[右肩早期] 候補 346 件 / 総3566件  as_of=2026-08-19  閾値70  dt=2026-08-19 18:10:29
+[TIMER] compute_right_up_early_triggers_eod: 22.12秒
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=22.1s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=5.1s
+[eod][START] update_market_cap_all
+[update_market_cap_all] 実行開始...
+[mcap/all] 100/3581 応答 100 件
+[mcap/all] 200/3581 応答 100 件
+[mcap/all] 300/3581 応答 100 件
+[mcap/all] 400/3581 応答 100 件
+[mcap/all] 500/3581 応答 100 件
+[mcap/all] 600/3581 応答 100 件
+[mcap/all] 700/3581 応答 100 件
+[mcap/all] 800/3581 応答 100 件
+[mcap/all] 900/3581 応答 100 件
+[mcap/all] 1000/3581 応答 100 件
+[mcap/all] 1100/3581 応答 100 件
+[mcap/all] 1200/3581 応答 100 件
+[mcap/all] 1300/3581 応答 100 件
+[mcap/all] 1400/3581 応答 100 件
+[mcap/all] 1500/3581 応答 100 件
+[mcap/all] 1600/3581 応答 100 件
+[mcap/all] 1700/3581 応答 100 件
+[mcap/all] 1800/3581 応答 100 件
+[mcap/all] 1900/3581 応答 100 件
+[mcap/all] 2000/3581 応答 100 件
+[mcap/all] 2100/3581 応答 100 件
+[mcap/all] 2200/3581 応答 100 件
+[mcap/all] 2300/3581 応答 100 件
+[mcap/all] 2400/3581 応答 100 件
+[mcap/all] 2500/3581 応答 100 件
+[mcap/all] 2600/3581 応答 100 件
+[mcap/all] 2700/3581 応答 100 件
+[mcap/all] 2800/3581 応答 100 件
+[mcap/all] 2900/3581 応答 100 件
+[mcap/all] 3000/3581 応答 100 件
+[mcap/all] 3100/3581 応答 100 件
+[mcap/all] 3200/3581 応答 100 件
+[mcap/all] 3300/3581 応答 100 件
+[mcap/all] 3400/3581 応答 100 件
+[mcap/all] 3500/3581 応答 100 件
+[mcap/all] 3581/3581 応答 81 件
+[mcap] 合計更新 3581 件（全銘柄）
+[TIMER] update_market_cap_all: 10分4秒
+[eod][DONE]  update_market_cap_all: elapsed=604.6s
+[eod][START] update_seasonal_progress_v3
+[update_seasonal_progress_v3] 実行開始...
+[seasonality] v13 更新=2287銘柄 Q内訳={1: 1592, 2: 453, 3: 241, 4: 1} 過去同Q件数中央値=1.0 履歴内訳={'1年参考': 2022, '2年以上': 265} actual_source={'tdnet_xbrl': 5380, 'quarter_sum': 2295}
+[TIMER] update_seasonal_progress_v3: 1.99秒
+[eod][DONE]  update_seasonal_progress_v3: elapsed=2.0s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=20.4s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=12.4s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=26.8s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.3s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=1.9s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 0.93秒
+[eod][ERROR] validate_prev_business_day: elapsed=0.9s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3227
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.2s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.4s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T18:22:21 END status=success rc=0 =====
+
+
+===== 2026-08-19T18:43:14 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot_precheck
+[eod][DONE]  require_current_price_history_snapshot_precheck: elapsed=2.7s
+[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid
+[eod][START] refresh_full_history_for_insufficient
+[SKIP daily] refresh_full_history_for_insufficient (already ok for 2026-08-19, build=4ca323f0799c2d09)
+[eod][DONE]  refresh_full_history_for_insufficient: elapsed=0.0s
+[eod][START] require_current_price_history_snapshot
+[eod][DONE]  require_current_price_history_snapshot: elapsed=2.7s
+[eod][START] compute_right_up_persistent_eod
+[SKIP daily] compute_right_up_persistent_eod (already ok for 2026-08-19, build=4ca323f0799c2d09)
+[eod][DONE]  compute_right_up_persistent_eod: elapsed=0.0s
+[eod][START] compute_right_up_early_triggers_eod
+[SKIP daily] compute_right_up_early_triggers_eod (already ok for 2026-08-19, build=4ca323f0799c2d09)
+[eod][DONE]  compute_right_up_early_triggers_eod: elapsed=0.0s
+[eod][START] update_margin_metrics
+[margin] 信用需給多角指標（浮動株比率・時系列増減・負荷スコア）を更新しました: 3591 銘柄
+[eod][DONE]  update_margin_metrics: elapsed=4.9s
+[eod][START] update_market_cap_all
+[SKIP daily] update_market_cap_all (already ok for 2026-08-19, build=4ca323f0799c2d09)
+[eod][DONE]  update_market_cap_all: elapsed=0.0s
+[eod][START] update_seasonal_progress_v3
+[SKIP daily] update_seasonal_progress_v3 (already ok for 2026-08-19, build=4ca323f0799c2d09)
+[eod][DONE]  update_seasonal_progress_v3: elapsed=0.0s
+[eod][START] derive_update
+[eod][DONE]  derive_update: elapsed=18.1s
+[eod][START] update_market_metrics
+[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します...
+[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用
+[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用
+[MarketMetrics] RS等のDB保存が完了しました: 3591 銘柄
+[eod][DONE]  update_market_metrics: elapsed=12.9s
+[eod][START] signal_detection
+[シグナル] データを一括計算中...
+[eod][DONE]  signal_detection: elapsed=26.6s
+[eod][START] snapshot_shodou_baseline
+[shodou-baseline] no new baseline
+[eod][DONE]  snapshot_shodou_baseline: elapsed=0.0s
+[eod][START] update_shodou_multipliers
+[shodou-mults] updated 1898 symbols
+[eod][DONE]  update_shodou_multipliers: elapsed=0.1s
+[eod][START] apply_shodou_score
+[shodou_score] テーマ強度を加味した初動スコア（95点設計）を更新しました。
+[eod][DONE]  apply_shodou_score: elapsed=1.4s
+[eod][START] update_since_dates
+[eod][DONE]  update_since_dates: elapsed=1.8s
+[eod][START] validate_prev_business_day
+[validate_prev_business_day] 実行開始...
+[validate-prev] pending=8627 → 同日再試行のためdaily marker未確定
+[TIMER] validate_prev_business_day: 0.96秒
+[eod][ERROR] validate_prev_business_day: elapsed=1.0s RuntimeError: daily phase returned False: validate_prev_business_day
+[eod][validate-prev] pending: daily phase returned False: validate_prev_business_day
+[eod][START] update_operating_income_and_ratio
+[oper] TTM算出 rows=0 (groupby.apply不使用)
+[oper] 予想優先で営業利益・営利対時価を更新しました rows=3227
+[eod][DONE]  update_operating_income_and_ratio: elapsed=3.4s
+[eod][START] sync_latest_prices
+[sync-latest] latest_prices synced logical=4451
+[eod][DONE]  sync_latest_prices: elapsed=12.2s
+[eod] finalized 3591 securities for 2026-08-19
+===== 2026-08-19T18:44:51 END status=success rc=0 =====

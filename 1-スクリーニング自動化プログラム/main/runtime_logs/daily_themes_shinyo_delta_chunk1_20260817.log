@@ -1,0 +1,24 @@
+
+
+===== 2026-08-17T20:16:54 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 4018 4019 4484 4574 4651 5242 5534 6036 6061 6195 7044 8798 8951 8955 8964 9284 9439 =====
+[themes-shinyo] 差分 18 銘柄を開始
+[1/18] 3445: theme=7 credit_rows=4 earnings=2026/08/13
+[2/18] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[3/18] 4019: theme=12 credit_rows=4 earnings=2026/08/14
+[4/18] 4484: theme=20 credit_rows=4 earnings=2026/08/14
+[5/18] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[6/18] 4651: theme=16 credit_rows=4 earnings=2026/08/17
+[7/18] 5242: theme=16 credit_rows=4 earnings=2026/08/14
+[8/18] 5534: ERROR HTTPError: 404 Client Error: Not Found for url: https://kabutan.jp/stock/?code=5534
+[9/18] 6036: theme=5 credit_rows=4 earnings=2026/08/14
+[10/18] 6061: theme=13 credit_rows=4 earnings=2026/08/14
+[11/18] 6195: theme=10 credit_rows=4 earnings=2026/08/12
+[12/18] 7044: theme=24 credit_rows=4 earnings=2026/08/14
+[13/18] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[14/18] 8951: theme=0 credit_rows=4 earnings=2026/08/17
+[15/18] 8955: theme=0 credit_rows=4 earnings=2026/08/17
+[16/18] 8964: theme=0 credit_rows=4 earnings=2026/08/17
+[17/18] 9284: theme=0 credit_rows=4 earnings=2026/08/17
+[18/18] 9439: theme=13 credit_rows=4 earnings=2026/08/17
+[themes-shinyo] 完了 ok=17 fail=1 themes=165 credit_rows=68
+===== 2026-08-17T20:17:24 END status=partial rc=2 =====

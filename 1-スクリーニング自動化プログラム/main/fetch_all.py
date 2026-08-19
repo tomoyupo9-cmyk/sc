@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- 環境設定・DBパス ---
 JST = timezone(timedelta(hours=9))
-DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
+DB_PATH = os.environ.get('KABU_DB_PATH', r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db")
 
 # v4: バックフィル中に一度失敗したURLを再試行しない
 _FAILED_DISCLOSURE_URLS: set[str] = set()
@@ -5083,120 +5083,184 @@ def _tdnet_item_pub_dt(it: dict) -> Optional[datetime]:
 def _earn_row_dt(row: dict) -> Optional[datetime]:
     return _parse_ts_str(row.get("time") or "")
 
-def main():
+def _active_forecast_backfill_claims(conn: sqlite3.Connection, ttl_minutes: int = 360) -> list[tuple[str, str]]:
+    """生きているforecast backfill CLAIMを返す。通常LIVEとのwriter/意味競合を避ける。"""
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_backfill_status'").fetchone():
+            return []
+        rows = conn.execute("""
+            SELECT コード, claim_started_at, updated_at
+            FROM forecast_backfill_status
+            WHERE status='running'
+        """).fetchall()
+    except Exception:
+        return []
+    now_dt = datetime.now()
+    out = []
+    for r in rows:
+        code = str(r[0] or "")
+        started = _parse_backfill_status_dt(r[1]) or _parse_backfill_status_dt(r[2])
+        if started is None:
+            out.append((code, "age=?"))
+            continue
+        age = max(0.0, (now_dt - started).total_seconds() / 60.0)
+        if age < max(1, int(ttl_minutes)):
+            out.append((code, f"age={age:.1f}m"))
+    return out
+
+
+def main() -> int:
     print("=== fetch_all: TDnetデータ収集開始 ===")
-    
+
+    core_errors: list[str] = []
+    enrichment_errors: list[str] = []
+
     # DB接続・スキーマ保証
-    conn = get_db_conn()
-    ensure_earnings_schema(conn)
-    ensure_offerings_schema(conn)
-    ensure_tob_schema(conn)
-    ensure_tdnet_documents_schema(conn)
-    ensure_forecast_history_schema(conn)
-    ensure_forecast_achievement_schema(conn)
-    ensure_tdnet_xbrl_metrics_schema(conn)
-
-    # 増分取得のチェックポイント
-    since_dt = _latest_teishutsu_ts(conn)
-    now_jst = datetime.now(JST).replace(microsecond=0)
-
-    def span_days(max_cap: int) -> int:
-        if not since_dt: return max_cap
-        delta = now_jst - since_dt
-        return min(max(1, int(delta.total_seconds() // 86400) + 2), max_cap)
-
-    # 1. 決算情報（TDnet）の取得と解析
-    tdnet_items = []
     try:
-        earn_days = span_days(4) if since_dt else 1
-        tdnet_items = fetch_earnings_tdnet_only(days=earn_days, per_day_limit=300)
-        if since_dt:
-            tdnet_items = [it for it in tdnet_items if (_tdnet_item_pub_dt(it) or now_jst) > since_dt]
-        
-        earnings_rows = tdnet_items_to_earnings_rows(tdnet_items)
-        if since_dt:
-            earnings_rows = [r for r in earnings_rows if (_earn_row_dt(r) or now_jst) > since_dt]
-
+        conn = get_db_conn()
+        ensure_earnings_schema(conn)
+        ensure_offerings_schema(conn)
+        ensure_tob_schema(conn)
+        ensure_tdnet_documents_schema(conn)
+        ensure_forecast_history_schema(conn)
+        ensure_forecast_achievement_schema(conn)
+        ensure_tdnet_xbrl_metrics_schema(conn)
     except Exception as e:
-        print("[earnings] 取得/整形で例外:", e)
+        print(f"[FATAL] DB/schema initialization failed: {e}")
+        return 1
+
+    # 手動の5年forecast backfillが生きている間は通常LIVEを重ねない。
+    # stale claimはbackfill側TTL回収に任せる。
+    active_backfills = _active_forecast_backfill_claims(conn, _BACKFILL_DEFAULT_CLAIM_TTL_MINUTES)
+    if active_backfills:
+        sample = ", ".join(f"{c}({age})" for c, age in active_backfills[:5])
+        print(f"[BUSY] forecast backfill running: {len(active_backfills)} codes / {sample}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return 2
+
+    try:
+        # 増分取得のチェックポイント
+        since_dt = _latest_teishutsu_ts(conn)
+        now_jst = datetime.now(JST).replace(microsecond=0)
+
+        def span_days(max_cap: int) -> int:
+            if not since_dt:
+                return max_cap
+            delta = now_jst - since_dt
+            return min(max(1, int(delta.total_seconds() // 86400) + 2), max_cap)
+
+        # 1. 決算情報（TDnet）の取得と解析
+        tdnet_items = []
         earnings_rows = []
-        
-    # 2. 増資レーンの取得
-    offer_items = []
-    try:
-        offer_days = span_days(4) if since_dt else 1
-        offer_items = fetch_tdnet_by_keywords(days=offer_days, keywords=OFFERING_KW, per_day_limit=300)
-        if since_dt:
-            offer_items = [it for it in offer_items if (_tdnet_item_pub_dt(it) or now_jst) > since_dt]
-    except Exception as e:
-        print("[offerings] fetch error:", e)
+        try:
+            # 最低2日を重複取得し、DB側UPSERTで重複排除する。
+            earn_days = max(2, span_days(4)) if since_dt else 2
+            tdnet_items = fetch_earnings_tdnet_only(days=earn_days, per_day_limit=300)
+            earnings_rows = tdnet_items_to_earnings_rows(tdnet_items)
+        except Exception as e:
+            core_errors.append(f"earnings fetch/parse: {e}")
+            print("[earnings] 取得/整形で例外:", e)
 
-    # 3. TOBレーンの取得
-    tob_rows = []
-    try:
-        tob_days = span_days(4) if since_dt else 1
-        tob_src = fetch_tdnet_tob(days=tob_days, per_day_limit=300)
-        if since_dt:
-            def _row_dt(r): return _parse_ts_str(r.get("提出時刻") or r.get("発表日時") or "")
-            tob_src = [r for r in tob_src if (_row_dt(r) or now_jst) > since_dt]
-        tob_rows = tob_src
-    except Exception as e:
-        print("[TOB] fetch error:", e)
+        # 2. 増資レーン
+        offer_items = []
+        try:
+            offer_days = max(2, span_days(4)) if since_dt else 2
+            offer_items = fetch_tdnet_by_keywords(days=offer_days, keywords=OFFERING_KW, per_day_limit=300)
+        except Exception as e:
+            core_errors.append(f"offerings fetch: {e}")
+            print("[offerings] fetch error:", e)
 
-    # 4. データベースへの保存 (UPSERT)
-    try:
-        upsert_offerings_events(conn, offer_items)
-    except Exception as e:
-        print("[offerings] upsert error:", e)
+        # 3. TOBレーン
+        tob_rows = []
+        try:
+            tob_days = max(2, span_days(4)) if since_dt else 2
+            tob_rows = fetch_tdnet_tob(days=tob_days, per_day_limit=300)
+        except Exception as e:
+            core_errors.append(f"TOB fetch: {e}")
+            print("[TOB] fetch error:", e)
 
-    try:
-        upsert_tob_events(conn, tob_rows)
-    except Exception as e:
-        print("[TOB] upsert error:", e)
+        # 4. DB保存。取得に成功したレーンだけでも保存するが、保存失敗はcore failure。
+        try:
+            upsert_offerings_events(conn, offer_items)
+        except Exception as e:
+            core_errors.append(f"offerings upsert: {e}")
+            print("[offerings] upsert error:", e)
 
-    try:
-        conn.execute("BEGIN IMMEDIATE;")
-        upsert_earnings_rows(conn, earnings_rows)
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        print("[earnings] upsert error:", e)
+        try:
+            upsert_tob_events(conn, tob_rows)
+        except Exception as e:
+            core_errors.append(f"TOB upsert: {e}")
+            print("[TOB] upsert error:", e)
 
-    # シンデン型: 通常取得時も決算PDF本文を保存
-    saved_docs = 0
-    try:
-        saved_docs = upsert_tdnet_document_texts(conn, tdnet_items, max_workers=4)
-    except Exception as e:
-        print("[tdnet_documents] save error:", e)
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+            upsert_earnings_rows(conn, earnings_rows)
+            conn.commit()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            core_errors.append(f"earnings upsert: {e}")
+            print("[earnings] upsert error:", e)
 
-    # v20: 通常の1日1回実行で会社予想履歴を自動育成。
-    forecast_stats = {
-        "targets":0,
-        "initial_saved":0,
-        "revision_saved":0,
-        "achievement_updated":0,
-        "unresolved":0,
-    }
-    try:
-        forecast_stats = update_daily_forecast_history(
-            conn,
-            tdnet_items,
-            finalize=True,
-            debug=False,
-            source="tdnet_daily_v20",
+        # シンデン用enrichment。ここだけ失敗してもTDnetイベント本体は利用可能。
+        saved_docs = 0
+        try:
+            saved_docs = upsert_tdnet_document_texts(conn, tdnet_items, max_workers=4)
+        except Exception as e:
+            enrichment_errors.append(f"tdnet_documents: {e}")
+            print("[tdnet_documents] save error:", e)
+
+        forecast_stats = {
+            "targets": 0,
+            "initial_saved": 0,
+            "revision_saved": 0,
+            "achievement_updated": 0,
+            "unresolved": 0,
+        }
+        try:
+            forecast_stats = update_daily_forecast_history(
+                conn,
+                tdnet_items,
+                finalize=True,
+                debug=False,
+                source="tdnet_daily_v20",
+            )
+        except Exception as e:
+            enrichment_errors.append(f"forecast_history: {e}")
+            print("[forecast_history] daily update error:", e)
+
+        print(
+            f"[OK] 決算:{len(earnings_rows)}件, 増資:{len(offer_items)}件, "
+            f"TOB:{len(tob_rows)}件, 本文:{saved_docs}件, "
+            f"予想初期:{forecast_stats.get('initial_saved',0)}件, "
+            f"予想修正:{forecast_stats.get('revision_saved',0)}件, "
+            f"達成履歴更新:{forecast_stats.get('achievement_updated',0)}件 "
+            "をDBに保存しました。"
         )
-    except Exception as e:
-        print("[forecast_history] daily update error:", e)
 
-    print(
-        f"[OK] 決算:{len(earnings_rows)}件, 増資:{len(offer_items)}件, "
-        f"TOB:{len(tob_rows)}件, 本文:{saved_docs}件, "
-        f"予想初期:{forecast_stats.get('initial_saved',0)}件, "
-        f"予想修正:{forecast_stats.get('revision_saved',0)}件, "
-        f"達成履歴更新:{forecast_stats.get('achievement_updated',0)}件 "
-        "をDBに保存しました。"
-    )
-    print("=== fetch_all: 完了 ===")
+        if core_errors:
+            print(f"[FAILED] TDnet core errors={len(core_errors)}")
+            for x in core_errors:
+                print("  -", x)
+            return 1
+        if enrichment_errors:
+            print(f"[PARTIAL] TDnet coreは成功 / enrichment errors={len(enrichment_errors)}")
+            for x in enrichment_errors:
+                print("  -", x)
+            return 2
+
+        print("=== fetch_all: 完全成功 ===")
+        return 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # ============================================================================
 # v29: 決算後株価反応ラベル・バックフィル
@@ -5800,7 +5864,7 @@ if __name__ == "__main__":
     parser.add_argument("--include-intraday-reactions", action="store_true", help="株価反応バックフィルで場中・寄り前発表も含める（既定は引け後のみ）")
     parser.add_argument("--reaction-fetch-docs", action="store_true", help="反応ラベル作成時にも決算PDF本文を取得する（遅い。既定OFF）")
     parser.add_argument("--no-reaction-resume", action="store_true", help="既保存の反応イベントも再計算する")
-    parser.add_argument("--hydrate-reaction-docs", action="store_true", help="+5%/-5%極端反応の決算短信本文だけ教師用に補完")
+    parser.add_argument("--hydrate-reaction-docs", action="store_true", help="+5%%/-5%%極端反応の決算短信本文だけ教師用に補完")
     parser.add_argument("--reaction-docs-per-class", type=int, default=800, help="本文補完する正例/負例の最大件数（各クラス）")
     parser.add_argument("--reaction-doc-workers", type=int, default=6, help="本文ダウンロード並列数")
     parser.add_argument("--years", type=int, default=5, help="バックフィル年度数")
@@ -5850,7 +5914,4 @@ if __name__ == "__main__":
         _special_ran = True
 
     if not _special_ran:
-        try:
-            main()
-        finally:
-            pass
+        raise SystemExit(main())

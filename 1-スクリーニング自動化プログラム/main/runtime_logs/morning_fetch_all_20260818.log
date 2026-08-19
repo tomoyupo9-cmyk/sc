@@ -1,0 +1,77 @@
+
+
+===== 2026-08-18T08:00:01 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all.py =====
+=== fetch_all: TDnetデータ収集開始 ===
+[backfill][DOC CACHE HIT] 482A 2026-08-17 1,051文字 「2026年8月期業績予想の修正に関するお知らせ」の再掲載について
+[backfill][DOC CACHE HIT] 4019 2026-08-17 26,197文字 2026年12月期 第2四半期決算説明会書き起こし
+[backfill][SOURCE 1/3] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ
+[backfill][TRY 1/3] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ https://webapi.yanoshin.jp/rd.php?https://www.release.tdnet.info/inbs/140120260817521628.pdf
+[backfill][UNUSABLE] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ ctype=application/pdf bytes=100,551
+[backfill][TRY 2/3] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ http://webapi.yanoshin.jp/rd.php?https://www.release.tdnet.info/inbs/140120260817521628.pdf
+[backfill][UNUSABLE] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ ctype=application/pdf bytes=100,551
+[backfill][TRY 3/3] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ https://www.release.tdnet.info/inbs/140120260817521628.pdf
+[backfill][UNUSABLE] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ ctype=application/pdf bytes=100,551
+[backfill][JPX FAST 2/3] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ https://www2.jpx.co.jp/disc/482A0/140120260817521628.pdf
+[backfill][TRY 1/1] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ https://www2.jpx.co.jp/disc/482A0/140120260817521628.pdf
+[backfill][HTTP 404] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ
+[backfill][SOURCE 3/3] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ
+[backfill][SKIP FAILCACHE] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ https://www.release.tdnet.info/inbs/140120260817521628.pdf
+[backfill][TRY 2/2] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ http://www.release.tdnet.info/inbs/140120260817521628.pdf
+[backfill][TIMEOUT 5s] 2026-08-17 2026年8月期業績予想の修正に関するお知らせ
+[backfill][DOC EMPTY] 482A 2026-08-17 17:00:00 2026年8月期業績予想の修正に関するお知らせ raw=https://webapi.yanoshin.jp/rd.php?https://www.release.tdnet.info/inbs/140120260817521
+[backfill][DOC CACHE HIT] 5534 2026-08-17 1,123文字 通期連結業績予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 6036 2026-08-17 28,949文字 （訂正）「2026年6月期第2四半期 決算説明会資料」の一部訂正について
+[backfill][DOC CACHE HIT] 7044 2026-08-17 696文字 （訂正）「2026年12月期第２四半期（中間期）決算補足資料」の一部訂正について
+[backfill][DOC CACHE HIT] 9439 2026-08-17 1,576文字 通期連結業績予想値と実績値との差異に関するお知らせ
+[backfill][DOC CACHE HIT] 9439 2026-08-17 25,306文字 2026年6月期　決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 9439 2026-08-17 1,166文字 剰余金の配当（無配）に関するお知らせ
+[backfill][DOC CACHE HIT] 5251 2026-08-17 2,468文字 （再登録）「中間決算説明資料の開示に関するお知らせ」の再登録について
+[backfill][DOC CACHE HIT] 6195 2026-08-17 31,592文字 （訂正・数値データ訂正）「2026年３月期　決算短信〔日本基準〕（連結）」の一部
+[backfill][DOC CACHE HIT] 7042 2026-08-17 4,066文字 2027年３月期第１四半期決算説明資料
+[backfill][DOC CACHE HIT] 8964 2026-08-17 37,819文字 2026年6月期　決算短信（ＲＥＩＴ）
+[backfill][DOC CACHE HIT] 7177 2026-08-17 3,192文字 2026年７月の月次業績（速報）に関するお知らせ
+[backfill][DOC CACHE HIT] 3168 2026-08-17 1,149文字 特別配当および期末配当予想の修正に関するお知らせ
+[backfill][DOC CACHE HIT] 367A 2026-08-17 500文字 連結子会社からの剰余金の配当受領に関するお知らせ
+[backfill][DOC CACHE HIT] 4484 2026-08-17 6,345文字 2027年３月期 第１四半期決算説明会レポート（書き起こし）
+[backfill][DOC CACHE HIT] 4651 2026-08-17 9,960文字 2027年３月期　第１四半期決算短信〔日本基準〕（連結）
+[backfill][DOC CACHE HIT] 4651 2026-08-17 21,202文字 2027年３月期　第１四半期決算説明資料
+[backfill][DOC CACHE HIT] 5242 2026-08-17 1,063文字 2026年12月期第２四半期決算説明会 質疑応答（要旨）
+[backfill][DOC CACHE HIT] 7069 2026-08-17 675文字 （訂正）「2026年9月期 第3四半期決算説明資料」の一部訂正について
+[backfill][DOC CACHE HIT] 8951 2026-08-17 39,641文字 2026年６月期　決算短信（ＲＥＩＴ）
+[backfill][DOC CACHE HIT] 8951 2026-08-17 9,069文字 2026年６月期_決算概要
+[backfill][DOC CACHE HIT] 8955 2026-08-17 42,496文字 2026年6月期　決算短信（ＲＥＩＴ）
+[backfill][DOC CACHE HIT] 8955 2026-08-17 48,751文字 2026年6月期（第49期）決算説明資料
+[backfill][DOC CACHE HIT] 9284 2026-08-17 50,474文字 2026年６月期 決算短信（インフラファンド）
+[backfill][DOC CACHE HIT] 2461 2026-08-17 3,208文字 2026年12月期7月度 月次業績速報のお知らせ
+[backfill][DOC CACHE HIT] 264A 2026-08-17 891文字 （訂正）「2026年９月期第３四半期決算説明資料」の一部訂正について
+[backfill][DOC CACHE HIT] 5632 2026-08-17 559文字 連結子会社からの配当金受領に関するお知らせ
+[backfill][DOC CACHE HIT] 2927 2026-08-17 733文字 2026年8月期 期末配当予想の増配に関するお知らせ
+[backfill][DOC CACHE HIT] 6061 2026-08-17 1,101文字 （訂正・数値データ訂正）「令和８年６月期　決算短信〔日本基準〕(連結)」の一部訂
+[backfill][DOC CACHE HIT] 2991 2026-08-17 1,105文字 2026年７月度　月次業績速報
+[backfill][DOC CACHE HIT] 4574 2026-08-17 11,096文字 2026年12月期(FY2026)第２四半期(中間期)連結決算報告
+[backfill][DOC CACHE HIT] 4018 2026-08-17 510文字 （訂正）「2026年6月期　決算短信〔日本基準〕（非連結）」の一部訂正に関するお
+[backfill][DOC CACHE HIT] 8705 2026-08-17 2,394文字 2026年７月の月次業績等（速報）に関するお知らせ
+[backfill][DOC CACHE HIT] 8798 2026-08-17 18,713文字 （訂正・数値データ訂正）「2025年9月期 第1四半期決算短信〔日本基準〕（連結
+[backfill][DOC CACHE HIT] 9162 2026-08-17 606文字 （訂正）「2026年６月期 通期連結決算説明資料」の一部訂正について
+[backfill][DOC CACHE HIT] 3445 2026-08-17 15,223文字 2026年12月期第２四半期 決算説明会 書き起こし公開のお知らせ
+[backfill][DOC CACHE HIT] 319A 2026-08-17 4,923文字 Q&A 2026年12月期第2四半期決算説明
+[backfill][XBRL TRY] 9284 https://www.release.tdnet.info/inbs/081220260817521739.zip
+[backfill][XBRL TRY] 9284 https://www.release.tdnet.info/inbs/091220260817521739.zip
+[backfill][XBRL TRY] 9284 https://www2.jpx.co.jp/disc/92840/081220260817521739.zip
+[backfill][XBRL TRY] 9284 https://www2.jpx.co.jp/disc/92840/091220260817521739.zip
+[backfill][XBRL TRY] 482A https://www.release.tdnet.info/inbs/081220260817521628.zip
+[backfill][XBRL TRY] 482A https://www.release.tdnet.info/inbs/091220260817521628.zip
+[backfill][XBRL TRY] 482A https://www2.jpx.co.jp/disc/482A0/081220260817521628.zip
+[backfill][XBRL TRY] 482A https://www2.jpx.co.jp/disc/482A0/091220260817521628.zip
+[backfill][XBRL TRY] 5534 https://www.release.tdnet.info/inbs/081220260817521941.zip
+[backfill][XBRL TRY] 5534 https://www.release.tdnet.info/inbs/091220260817521941.zip
+[backfill][XBRL TRY] 5534 https://www2.jpx.co.jp/disc/55340/081220260817521941.zip
+[backfill][XBRL TRY] 5534 https://www2.jpx.co.jp/disc/55340/091220260817521941.zip
+[backfill][XBRL TRY] 482A https://www.release.tdnet.info/inbs/081220260817522088.zip
+[backfill][XBRL TRY] 482A https://www.release.tdnet.info/inbs/091220260817522088.zip
+[backfill][XBRL TRY] 482A https://www2.jpx.co.jp/disc/482A0/081220260817522088.zip
+[backfill][XBRL TRY] 482A https://www2.jpx.co.jp/disc/482A0/091220260817522088.zip
+[forecast_history] 対象=8 initial=4 revision=0 achievement=0 unresolved=6
+[OK] 決算:21件, 増資:8件, TOB:1件, 本文:38件, 予想初期:4件, 予想修正:0件, 達成履歴更新:0件 をDBに保存しました。
+=== fetch_all: 完全成功 ===
+===== 2026-08-18T08:00:56 END status=success rc=0 =====

@@ -1,0 +1,160 @@
+
+
+===== 2026-08-18T20:16:23 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\浮動.py --refresh-days 7 =====
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^GRT250.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^GRT250.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^GRT250.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^GSPC.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^GSPC.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^GSPC.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^IXIC.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^IXIC.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^IXIC.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^JPXNK400.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^JPXNK400.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^JPXNK400.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^MOTHERS.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^MOTHERS.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^MOTHERS.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^N225.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^N225.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^N225.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^TRJ.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^TRJ.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^TRJ.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^VIX.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^VIX.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^VIX.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^TOPX.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^TOPX.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^TOPX.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^DJI.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^DJI.T"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^DJI.T"}}}
+[float-shares] 対象=124 refresh_days=7
+[1/124] 1833.T: float=None shares=35905223
+[2/124] 1909.T: float=None shares=26814704
+[3/124] 1975.T: float=None shares=25875683
+[4/124] 2331.T: float=None shares=486062206
+[5/124] 2413.T: float=None shares=667430061
+[6/124] 2440.T: float=None shares=56374138
+[7/124] 2461.T: float=None shares=65655829
+[8/124] 2588.T: float=None shares=21485902
+[9/124] 2796.T: float=None shares=11502525
+[10/124] 2907.T: float=None shares=7485447
+[11/124] 3010.T: float=None shares=233912926
+[12/124] 3023.T: float=None shares=10540067
+[13/124] 3040.T: float=None shares=18541390
+[14/124] 3137.T: float=None shares=12675000
+[15/124] 3183.T: float=None shares=27498836
+[16/124] 3224.T: float=None shares=5339346
+[17/124] 3387.T: float=None shares=451001006
+[18/124] 3484.T: float=None shares=16810540
+[19/124] 3708.T: float=None shares=34848131
+[20/124] 3741.T: float=None shares=10209612
+[21/124] 4043.T: float=None shares=71945163
+[22/124] 4044.T: float=None shares=24792784
+[23/124] 4055.T: float=None shares=7478660
+[24/124] 4071.T: float=None shares=42402150
+[25/124] 4072.T: float=None shares=10715400
+[26/124] 4205.T: float=None shares=191345507
+[27/124] 4272.T: float=None shares=147293885
+[28/124] 4432.T: float=None shares=34690738
+[29/124] 4526.T: float=None shares=29209999
+[30/124] 4619.T: float=None shares=21291847
+[31/124] 4680.T: float=None shares=262872673
+[32/124] 4732.T: float=None shares=454040498
+[33/124] 4887.T: float=None shares=115485634
+[34/124] 5201.T: float=None shares=212393793
+[35/124] 5302.T: float=None shares=10670633
+[36/124] 5393.T: float=None shares=187949704
+[37/124] 5702.T: float=None shares=39572274
+[38/124] 5703.T: float=None shares=61591150
+[39/124] 6189.T: float=None shares=9529867
+[40/124] 6269.T: float=None shares=68344260
+[41/124] 6393.T: float=None shares=3556516
+[42/124] 6485.T: float=None shares=20357929
+[43/124] 6525.T: float=None shares=233383846
+[44/124] 6568.T: float=None shares=7741320
+[45/124] 6613.T: float=None shares=41840046
+[46/124] 6616.T: float=None shares=10592037
+[47/124] 6622.T: float=None shares=23606814
+[48/124] 6638.T: float=None shares=28962385
+[49/124] 6674.T: float=None shares=100319344
+[50/124] 6718.T: float=None shares=16366833
+[51/124] 6841.T: float=None shares=250242336
+[52/124] 6941.T: float=None shares=18456920
+[53/124] 6962.T: float=None shares=31803930
+[54/124] 7198.T: float=None shares=44452310
+[55/124] 7238.T: float=None shares=271430003
+[56/124] 7245.T: float=None shares=46368123
+[57/124] 7276.T: float=None shares=257489627
+[58/124] 7438.T: float=None shares=25634960
+[59/124] 7447.T: float=None shares=29562374
+[60/124] 7532.T: float=None shares=2989478375
+[61/124] 7554.T: float=None shares=19111819
+[62/124] 7607.T: float=None shares=13414559
+[63/124] 7616.T: float=None shares=106305791
+[64/124] 7640.T: float=None shares=15610920
+[65/124] 7734.T: float=None shares=45455784
+[66/124] 7779.T: float=None shares=133431005
+[67/124] 7795.T: float=None shares=41997950
+[68/124] 7818.T: float=None shares=56543188
+[69/124] 7974.T: float=None shares=1152873205
+[70/124] 8051.T: float=None shares=87392976
+[71/124] 8081.T: float=None shares=22295661
+[72/124] 8101.T: float=None shares=12136035
+[73/124] 8117.T: float=None shares=55264839
+[74/124] 8153.T: float=None shares=30861091
+[75/124] 8163.T: float=None shares=41354626
+[76/124] 8219.T: float=None shares=141947727
+[77/124] 8439.T: float=None shares=488761866
+[78/124] 8697.T: float=None shares=1018441199
+[79/124] 8766.T: float=None shares=1899768809
+[80/124] 8830.T: float=None shares=923616325
+[81/124] 8881.T: float=None shares=46704621
+[82/124] 9005.T: float=None shares=563412805
+[83/124] 9045.T: float=None shares=100900435
+[84/124] 9324.T: float=None shares=28710650
+[85/124] 9330.T: float=None shares=1433455
+[86/124] 9336.T: float=None shares=99876224
+[87/124] 9364.T: float=None shares=98148483
+[88/124] 9691.T: float=None shares=3498444
+[89/124] 9739.T: float=None shares=14899377
+[90/124] 9769.T: float=None shares=10868197
+[91/124] 9850.T: float=None shares=22874025
+[92/124] 9880.T: float=None shares=12034647
+[93/124] 9900.T: float=None shares=30124548
+[94/124] 9990.T: float=None shares=29268436
+[95/124] 5870.T: float=None shares=5332100
+[96/124] 1333.T: float=None shares=151183299
+[97/124] 137A.T: float=None shares=2952340
+[98/124] 368A.T: float=None shares=40000000
+[99/124] 436A.T: float=None shares=15825450
+[100/124] 446A.T: float=None shares=69000000
+[101/124] 8729.T: float=None shares=6708445898
+[102/124] ^GRT250.T: ERROR floatShares/sharesOutstanding both missing
+[103/124] ^GSPC.T: ERROR floatShares/sharesOutstanding both missing
+[104/124] ^IXIC.T: ERROR floatShares/sharesOutstanding both missing
+[105/124] ^JPXNK400.T: ERROR floatShares/sharesOutstanding both missing
+[106/124] ^MOTHERS.T: ERROR floatShares/sharesOutstanding both missing
+[107/124] ^N225.T: ERROR floatShares/sharesOutstanding both missing
+[108/124] ^TRJ.T: ERROR floatShares/sharesOutstanding both missing
+[109/124] ^VIX.T: ERROR floatShares/sharesOutstanding both missing
+[110/124] ^TOPX.T: ERROR floatShares/sharesOutstanding both missing
+[111/124] ^DJI.T: ERROR floatShares/sharesOutstanding both missing
+[112/124] 472A.T: float=None shares=16929750
+[113/124] 477A.T: float=None shares=4131000
+[114/124] 559A.T: float=None shares=6023920
+[115/124] 550A.T: float=None shares=876000
+[116/124] 505A.T: float=None shares=11231000
+[117/124] 542A.T: float=None shares=5600000
+[118/124] 554A.T: float=None shares=4622300
+[119/124] 543A.T: float=None shares=2581069854
+[120/124] 556A.T: float=None shares=2739500
+[121/124] 598A.T: float=None shares=4650000
+[122/124] 584A.T: float=None shares=6787400
+[123/124] 589A.T: float=None shares=4392300
+[124/124] 593A.T: float=12515962 shares=None
+[float-shares] 完了 ok=114 fail=10
+===== 2026-08-18T20:19:21 END status=partial rc=2 =====

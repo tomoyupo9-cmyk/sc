@@ -1,89 +1,129 @@
+# -*- coding: utf-8 -*-
+"""yfinanceから浮動株数/発行済株式数を補完する低頻度producer。"""
+from __future__ import annotations
+
+import argparse
+import os
 import sqlite3
 import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
 import yfinance as yf
 
-# データベースのパスを設定
-DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
+DEFAULT_DB_PATH = os.environ.get(
+    "KABU_DB_PATH",
+    r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db",
+)
 
-def main():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    
-    # 浮動株数・発行済株式数のカラムが存在しない場合は追加
-    for col in ["浮動株数", "発行済株式数"]:
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=60000;")
+    for col, typ in [
+        ("浮動株数", "REAL"),
+        ("発行済株式数", "REAL"),
+        ("浮動株更新日時", "TEXT"),
+        ("発行済株式数更新日時", "TEXT"),
+    ]:
         try:
-            cur.execute(f'ALTER TABLE screener ADD COLUMN "{col}" REAL')
+            conn.execute(f'ALTER TABLE screener ADD COLUMN "{col}" {typ}')
         except sqlite3.OperationalError:
             pass
-            
-    # ★ 改良1: すでに取得済みの銘柄はスキップし、欠損している銘柄だけを対象にする（途中再開）
-    cur.execute("SELECT コード FROM screener WHERE 浮動株数 IS NULL OR 発行済株式数 IS NULL")
-    rows = cur.fetchall()
-    
+    conn.commit()
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="浮動株/発行済株式数の低頻度更新")
+    ap.add_argument("--db", default=DEFAULT_DB_PATH)
+    ap.add_argument("--refresh-days", type=int, default=7, help="取得済み値を再確認する間隔。0なら全件")
+    ap.add_argument("--sleep", type=float, default=0.5)
+    ap.add_argument("--max-retries", type=int, default=3)
+    args = ap.parse_args(argv)
+
+    Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(args.db, timeout=60.0)
+    _ensure_schema(conn)
+
+    cutoff = (datetime.now() - timedelta(days=max(0, args.refresh_days))).isoformat(timespec="seconds")
+    if args.refresh_days <= 0:
+        rows = conn.execute("SELECT コード FROM screener WHERE コード IS NOT NULL").fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT コード FROM screener
+            WHERE コード IS NOT NULL AND (
+                浮動株数 IS NULL OR 発行済株式数 IS NULL
+                OR 浮動株更新日時 IS NULL OR 発行済株式数更新日時 IS NULL
+                OR 浮動株更新日時 < ? OR 発行済株式数更新日時 < ?
+            )
+        """, (cutoff, cutoff)).fetchall()
+
     total = len(rows)
     if total == 0:
-        print("すべての銘柄の浮動株数が取得済みです！")
-        return
+        print("[float-shares] 更新対象なし")
+        conn.close()
+        return 0
 
-    print(f"未取得の {total} 銘柄の浮動株数取得を開始します...")
-    
-    start_time = time.time()
-    updates = []
-    
-    for i, (code,) in enumerate(rows, 1):
-        code_str = str(code).strip().zfill(4)
-        ticker_symbol = f"{code_str}.T"
-        
-        float_shares = None
-        shares_out = None
-        
-        # ★ 改良2: レート制限に引っかかった場合のリトライ処理
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                info = yf.Ticker(ticker_symbol).info
-                float_shares = info.get("floatShares")
-                shares_out = info.get("sharesOutstanding")
-                break # 成功したらループを抜ける
-            except Exception as e:
-                error_msg = str(e)
-                if "Too Many Requests" in error_msg or "Rate limited" in error_msg:
-                    wait_time = 15 * (attempt + 1) # 15秒, 30秒, 45秒と徐々に待機時間を増やす
-                    print(f"\n[{i:04d}/{total}] {ticker_symbol} レート制限です。{wait_time}秒待機してリトライします({attempt+1}/{max_retries})...")
-                    time.sleep(wait_time)
-                else:
-                    print(f"\n[{i:04d}/{total}] {ticker_symbol} 取得エラー: {e}")
-                    break # レート制限以外のエラーはリトライしない
-        
-        updates.append((float_shares, shares_out, code))
-        
-        if i % 10 == 0 or i == total:
-            elapsed = time.time() - start_time
-            print(f"[{i:04d}/{total}] 処理中... 経過時間: {elapsed:.1f}秒")
-            
-        # ★ 改良3: APIへの負荷を軽減するため、リクエスト間に必ず0.5秒の待機を入れる
-        time.sleep(0.5)
-        
-        # ★ 改良4: 100件ごとにこまめにDBへ保存する（途中で強制終了しても進捗を失わないため）
-        if len(updates) >= 100 or i == total:
-            cur.executemany("""
-                UPDATE screener 
-                SET 浮動株数 = ?, 発行済株式数 = ?
-                WHERE コード = ?
-            """, updates)
-            conn.commit()
-            updates = [] # リセット
-            
-    end_time = time.time()
-    total_time = end_time - start_time
-    
-    print("\nデータベースの更新が完了しました。")
-    print("-" * 30)
-    print(f"総所要時間: {total_time:.1f}秒 ({total_time/60:.2f}分)")
-    print("-" * 30)
-    
-    cur.close()
-    conn.close()
+    ok = fail = 0
+    print(f"[float-shares] 対象={total} refresh_days={args.refresh_days}")
+    try:
+        for i, (code,) in enumerate(rows, 1):
+            code_s = str(code).strip()
+            if code_s.endswith(".0"):
+                code_s = code_s[:-2]
+            code_s = code_s.zfill(4) if code_s.isdigit() else code_s
+            symbol = f"{code_s}.T"
+            float_shares = shares_out = None
+            last_error = None
+            for attempt in range(max(1, args.max_retries)):
+                try:
+                    info = yf.Ticker(symbol).info or {}
+                    float_shares = info.get("floatShares")
+                    shares_out = info.get("sharesOutstanding")
+                    if float_shares is not None or shares_out is not None:
+                        break
+                    last_error = RuntimeError("floatShares/sharesOutstanding both missing")
+                except Exception as e:
+                    last_error = e
+                    msg = str(e)
+                    if "Too Many Requests" in msg or "Rate limited" in msg:
+                        time.sleep(15 * (attempt + 1))
+                    else:
+                        break
+
+            now = datetime.now().isoformat(timespec="seconds")
+            if float_shares is None and shares_out is None:
+                fail += 1
+                print(f"[{i}/{total}] {symbol}: ERROR {last_error or 'empty'}")
+            else:
+                # transient欠損で既存の良い値をNULL上書きしない。
+                conn.execute("""
+                    UPDATE screener SET
+                      浮動株数 = CASE WHEN ? IS NOT NULL THEN ? ELSE 浮動株数 END,
+                      発行済株式数 = CASE WHEN ? IS NOT NULL THEN ? ELSE 発行済株式数 END,
+                      浮動株更新日時 = CASE WHEN ? IS NOT NULL THEN ? ELSE 浮動株更新日時 END,
+                      発行済株式数更新日時 = CASE WHEN ? IS NOT NULL THEN ? ELSE 発行済株式数更新日時 END
+                    WHERE コード=?
+                """, (
+                    float_shares, float_shares,
+                    shares_out, shares_out,
+                    float_shares, now,
+                    shares_out, now,
+                    code,
+                ))
+                conn.commit()
+                ok += 1
+                print(f"[{i}/{total}] {symbol}: float={float_shares} shares={shares_out}")
+
+            if args.sleep > 0:
+                time.sleep(args.sleep)
+    finally:
+        conn.close()
+
+    print(f"[float-shares] 完了 ok={ok} fail={fail}")
+    return 0 if fail == 0 else 2
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

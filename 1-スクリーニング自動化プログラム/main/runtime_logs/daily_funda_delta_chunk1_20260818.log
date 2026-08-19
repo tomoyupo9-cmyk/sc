@@ -1,0 +1,149 @@
+
+
+===== 2026-08-18T18:01:18 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3174,3445,3660,4019,4320,4415,4484,4574,4651,4776,5242,6036,6046,6061,6094,6195,6327,7044,7383,7532,7707,7814,8084,8304,8798,9439,9887,5251,7691,5534 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5251
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4651
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9887
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6036
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8304
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4320
+[PROG] 8304 label=26.04-06 key_q=None key_f=None cum_op=None full_op=None status=予想データ欠損 progress=None%
+[OK] 8304 done. Score:1, Alpha:C
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[OK] 4651 done. Score:5, Alpha:A+
+[OK] 9887 done. Score:-1, Alpha:D-
+[OK] 3445 done. Score:1, Alpha:C
+[OK] 6036 done. Score:1, Alpha:C
+[ERROR] 5251: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[OK] 4320 done. Score:-1, Alpha:D-
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4776
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7532
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8084
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3660
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[OK] 8798 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7691
+[OK] 4776 done. Score:2, Alpha:B
+[OK] 6061 done. Score:6, Alpha:A+
+[OK] 7532 done. Score:-2, Alpha:D-
+[OK] 8084 done. Score:5, Alpha:A+
+[OK] 3660 done. Score:1, Alpha:C
+[OK] 4574 done. Score:-1, Alpha:D-
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5534
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7707
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4484
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6327
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6094
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6046
+[OK] 6327 done. Score:4, Alpha:B
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6195
+[ERROR] 5534: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[OK] 7707 done. Score:0, Alpha:C
+[OK] 4484 done. Score:6, Alpha:A+
+[OK] 6094 done. Score:6, Alpha:A+
+[ERROR] 7691: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[PROG] 6046 label=連 26.04-06 key_q=2026.09 key_f=2026.09 cum_op=-21.0 full_op=2.0 status=予想データ欠損 progress=None%
+[OK] 6046 done. Score:5, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4019
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7814
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9439
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4415
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3174
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7383
+[PROG] 3174 label=連 26.03-05 key_q=2026.08 key_f=2026.08 cum_op=-256.0 full_op=-268.0 status=予想データ欠損 progress=None%
+[OK] 3174 done. Score:4, Alpha:B
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5242
+[OK] 4019 done. Score:6, Alpha:A+
+[OK] 7814 done. Score:-3, Alpha:D-
+[OK] 9439 done. Score:6, Alpha:A+
+[PROG] 6195 label=26.04-06 key_q=2027.03 key_f=2027.03 cum_op=-93.0 full_op=432.0 status=予想データ欠損 progress=None%
+[OK] 6195 done. Score:5, Alpha:A+
+[PROG] 4415 label=連 26.04-06 key_q=None key_f=None cum_op=None full_op=None status=予想データ欠損 progress=None%
+[OK] 4415 done. Score:1, Alpha:C
+[OK] 7383 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7044
+[OK] 7044 done. Score:4, Alpha:B
+[OK] 5242 done. Score:5, Alpha:A+
+[REACTION] past_earnings_dates 再構成: 27/27銘柄
+[QUARTERLY_HISTORY] 216行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=27 SKIP=0 ERROR=3
+===== 2026-08-18T18:01:26 END status=partial rc=2 =====
+
+
+===== 2026-08-18T20:16:08 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\株探ファンダ.py 3174,3445,3660,3856,4019,4320,4415,4484,4574,4651,4776,5242,6036,6046,6061,6094,6195,6327,7044,7383,7532,7707,7814,8084,8304,8798,9439,9887,5251,5534,7691 --force-refresh =====
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5534
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8084
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3445
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6327
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5242
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4415
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7383
+[ERROR] 5534: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4320
+[OK] 3445 done. Score:1, Alpha:C
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4484
+[OK] 6327 done. Score:4, Alpha:B
+[OK] 5242 done. Score:5, Alpha:A+
+[OK] 7383 done. Score:6, Alpha:A+
+[PROG] 4415 label=連 26.04-06 key_q=None key_f=None cum_op=None full_op=None status=予想データ欠損 progress=None%
+[OK] 4415 done. Score:1, Alpha:C
+[OK] 4320 done. Score:-1, Alpha:D-
+[OK] 8084 done. Score:5, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8798
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4651
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6061
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4776
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7044
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7814
+[OK] 8798 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=5251
+[OK] 4651 done. Score:5, Alpha:A+
+[OK] 6061 done. Score:6, Alpha:A+
+[OK] 4776 done. Score:2, Alpha:B
+[OK] 7044 done. Score:4, Alpha:B
+[OK] 4484 done. Score:6, Alpha:A+
+[OK] 7814 done. Score:-3, Alpha:D-
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7532
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3856
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4574
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=8304
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6046
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7707
+[ERROR] 5251: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=7691
+[OK] 4574 done. Score:-1, Alpha:D-
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6094
+[OK] 7532 done. Score:-2, Alpha:D-
+[PROG] 3856 label=25.07-09 key_q=None key_f=None cum_op=None full_op=None status=予想データ欠損 progress=None%
+[OK] 3856 done. Score:0, Alpha:C
+[PROG] 8304 label=26.04-06 key_q=None key_f=None cum_op=None full_op=None status=予想データ欠損 progress=None%
+[OK] 8304 done. Score:1, Alpha:C
+[OK] 7707 done. Score:0, Alpha:C
+[PROG] 6046 label=連 26.04-06 key_q=2026.09 key_f=2026.09 cum_op=-21.0 full_op=2.0 status=予想データ欠損 progress=None%
+[OK] 6046 done. Score:5, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=4019
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9439
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6036
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=9887
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=6195
+[ERROR] 7691: 404, message='Not Found', url='https://kabutan.jp/stock/'
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3174
+[OK] 6094 done. Score:6, Alpha:A+
+[INFO] fetching finance data: https://kabutan.jp/stock/finance?code=3660
+[PROG] 3174 label=連 26.03-05 key_q=2026.08 key_f=2026.08 cum_op=-256.0 full_op=-268.0 status=予想データ欠損 progress=None%
+[OK] 3174 done. Score:4, Alpha:B
+[OK] 4019 done. Score:6, Alpha:A+
+[PROG] 6195 label=26.04-06 key_q=2027.03 key_f=2027.03 cum_op=-93.0 full_op=432.0 status=予想データ欠損 progress=None%
+[OK] 6195 done. Score:5, Alpha:A+
+[OK] 9439 done. Score:6, Alpha:A+
+[OK] 9887 done. Score:-1, Alpha:D-
+[OK] 6036 done. Score:1, Alpha:C
+[OK] 3660 done. Score:1, Alpha:C
+[REACTION] past_earnings_dates 再構成: 28/28銘柄
+[QUARTERLY_HISTORY] 224行 UPSERT
+[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。
+[producer] summary OK=28 SKIP=0 ERROR=3
+===== 2026-08-18T20:16:16 END status=partial rc=2 =====

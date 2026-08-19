@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-charts60_make_v3.py — ローソク足＋出来高＋MA/BB/一目雲(+26) + クロスヘア＆ツールチップ
+charts60_make_v4.py — ローソク足＋出来高＋MA/BB/一目雲(+26) + クロスヘア＆ツールチップ
 - 上げ足=赤/その他=緑（切替可）
 - 雲はピンク帯 or A>B緑/A<B赤を選択式
 - 三役好転は“完成日のみ”マーク（◆）
@@ -8,17 +8,28 @@ charts60_make_v3.py — ローソク足＋出来高＋MA/BB/一目雲(+26) + ク
 - 右下ブラシで範囲ズーム（枠内ドラッグ=移動／左右端ドラッグ=拡大縮小／最小本数制約）
 - マウスホバーでクロスヘア＆ツールチップ（open/close/low/high、MA5/25/75、BB0/±1/±2、SpanA/B）
 - 【追加】凡例バー（▲=GC、◆=三役好転）とツールチップへのマーク説明
+
+2026-08-17 P2-96 引継ぎ:
+- 10分スクリーニングからは ``--codes @file`` で監視候補だけを生成する。引け後の
+  EODは全銘柄を補修するため、codes未指定も従来どおり対応する。
+- 旧版は1銘柄ごとにprice_history全期間SELECTとlatest_prices SELECTを行い、4380銘柄で
+  約2分40秒がtimer外に隠れていた。対象raw codeを一時表へ入れ、履歴・当日価格を
+  一括取得する。既定の手動実行は全履歴を維持し、スクリーナーは ``--history-bars 160``
+  を渡す。160本は初期表示60本に対してMA75/一目SpanB(+26)のwarm-upを確保する。
+- 7203.0/285a/市場suffixなどのlegacy aliasはlogical codeへ統合し、同一市場日の重複を
+  rowidの新しい1行へ畳む。空のcodesファイルは「全件」ではなく0件として安全停止する。
 """
 
 from __future__ import annotations
-import sqlite3, math, json, argparse, sys, os
+import sqlite3, math, json, argparse, sys, os, re
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional, Iterable
+from typing import Dict, List, Optional, Iterable, Tuple
 
 # ===== 設定（既定値。CLIで上書き可） =====
-DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
-OUT_DIR = Path(r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\charts60")
+DB_PATH = os.environ.get("KABU_DB_PATH", r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db")
+OUT_DIR = Path(os.environ.get("KABU_CHARTS_DIR", os.path.join(os.environ.get("KABU_OUTPUT_DIR", r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data"), "charts60")))
 JST = timezone(timedelta(hours=9))
 
 # ===== スタイル集中管理 =====
@@ -66,6 +77,23 @@ def safe_float(x) -> Optional[float]:
         return f if math.isfinite(f) else None
     except Exception:
         return None
+
+def canonical_code(code) -> str:
+    """DB内のlegacy表記をチャートファイル名用logical codeへ統一する。"""
+    if code is None:
+        return ""
+    s=str(code).strip().upper()
+    if not s or s in {"NAN", "NONE"}:
+        return ""
+    if s in {"^TOPIX", "TOPIX", "998405.T", "^TOPX"}:
+        return "^TOPX"
+    for suffix in (".T", ".N", ".S", ".F", "-T", "-N", "-S", "-F", ".JP", "-JP"):
+        if s.endswith(suffix):
+            s=s[:-len(suffix)]
+            break
+    if re.fullmatch(r"[0-9]+\.0+", s):
+        s=s.split(".", 1)[0]
+    return s.zfill(4) if s.isdigit() else s
 
 def sma(arr: List[Optional[float]], n: int) -> List[Optional[float]]:
     out=[None]*len(arr); s=0.0; q=[]; fill=0
@@ -143,84 +171,163 @@ def ensure_flags_table(conn: sqlite3.Connection):
         """
     )
 
-def load_codes_and_names(cur: sqlite3.Cursor, only_codes: Optional[Iterable[str]]=None):
-    if only_codes:
-        codes = tuple({str(c).strip() for c in only_codes if str(c).strip()})
-        if len(codes)==1:
-            cur.execute(
-                """
-                SELECT p.コード, COALESCE(s.銘柄名, NULL)
-                FROM (SELECT DISTINCT コード FROM price_history WHERE コード=?) p
-                LEFT JOIN screener s ON s.コード = p.コード
-                """,
-                (codes[0],)
-            )
-        else:
-            placeholders=",".join(["?"]*len(codes))
-            cur.execute(
-                f"""
-                SELECT p.コード, COALESCE(s.銘柄名, NULL)
-                FROM (SELECT DISTINCT コード FROM price_history WHERE コード IN ({placeholders})) p
-                LEFT JOIN screener s ON s.コード = p.コード
-                ORDER BY p.コード
-                """,
-                codes
-            )
-    else:
-        cur.execute(
-            """
-          SELECT p.コード, COALESCE(s.銘柄名, NULL)
-          FROM (SELECT DISTINCT コード FROM price_history) p
-          LEFT JOIN screener s ON s.コード = p.コード
-          ORDER BY p.コード
-        """
-        )
-    return [(r[0], r[1]) for r in cur.fetchall()]
+def _load_code_catalog(cur: sqlite3.Cursor, only_codes: Optional[Iterable[str]]=None):
+    """対象logical code、raw alias、銘柄名を一度だけ解決する。"""
+    requested = None
+    if only_codes is not None:
+        requested = {canonical_code(c) for c in only_codes if canonical_code(c)}
+        if not requested:
+            return [], {}
 
-def fetch_series_with_today(cur: sqlite3.Cursor, code: str):
-    cur.execute(
-        """
-      SELECT 日付, 始値, 高値, 安値, 終値, 出来高
-      FROM price_history
-      WHERE コード = ?
-      ORDER BY 日付 ASC
-    """,
-        (code,)
+    raw_by_logical: Dict[str, List[str]] = defaultdict(list)
+    cur.execute("SELECT DISTINCT コード FROM price_history")
+    for (raw_code,) in cur.fetchall():
+        logical = canonical_code(raw_code)
+        if not logical or (requested is not None and logical not in requested):
+            continue
+        raw_by_logical[logical].append(str(raw_code))
+
+    names: Dict[str, str] = {}
+    try:
+        cur.execute("SELECT コード, 銘柄名 FROM screener")
+        for raw_code, name in cur.fetchall():
+            logical = canonical_code(raw_code)
+            if logical in raw_by_logical and logical not in names and str(name or "").strip():
+                names[logical] = str(name)
+    except sqlite3.Error:
+        pass
+
+    pairs = [(code, names.get(code)) for code in sorted(raw_by_logical)]
+    return pairs, dict(raw_by_logical)
+
+def _prepare_requested_raw_table(conn: sqlite3.Connection, raw_by_logical: Dict[str, List[str]]):
+    conn.execute("DROP TABLE IF EXISTS temp._charts60_requested_raw")
+    conn.execute(
+        "CREATE TEMP TABLE _charts60_requested_raw(raw_code TEXT PRIMARY KEY, logical_code TEXT NOT NULL)"
     )
-    rows=cur.fetchall()
-    dates=[r[0] for r in rows]
-    opens=[safe_float(r[1]) for r in rows]
-    highs=[safe_float(r[2]) for r in rows]
-    lows =[safe_float(r[3]) for r in rows]
-    closes=[safe_float(r[4]) for r in rows]
-    vols=[int(r[5]) if r[5] is not None else 0 for r in rows]
-    # 当日補完
-    today=jst_today_str()
-    need_append = (not dates) or dates[-1] < today
-    if need_append:
-        price=None
-        try:
-            cur.execute(
-                "SELECT 現値, 終値, 日付 FROM latest_prices WHERE コード=? ORDER BY 日付 DESC LIMIT 1",
-                (code,),
+    rows = [
+        (raw, logical)
+        for logical, raw_codes in raw_by_logical.items()
+        for raw in raw_codes
+    ]
+    if rows:
+        conn.executemany(
+            "INSERT OR IGNORE INTO temp._charts60_requested_raw(raw_code,logical_code) VALUES (?,?)",
+            rows,
+        )
+
+def _load_series_bulk(
+    conn: sqlite3.Connection,
+    raw_by_logical: Dict[str, List[str]],
+    history_bars: int = 0,
+) -> Dict[str, Tuple[List, List, List, List, List, List]]:
+    """対象履歴を単一SQLで読み、logical code×市場日へ統合して当日値も一括補完する。"""
+    if not raw_by_logical:
+        return {}
+    _prepare_requested_raw_table(conn, raw_by_logical)
+    bars = max(0, int(history_bars or 0))
+    if bars:
+        sql = """
+            SELECT p.rowid AS _rowid, q.logical_code, p.日付,
+                   p.始値, p.高値, p.安値, p.終値, p.出来高
+            FROM temp._charts60_requested_raw q
+            JOIN price_history p ON p.rowid IN (
+                SELECT ph.rowid
+                FROM price_history ph
+                WHERE ph.コード=q.raw_code
+                ORDER BY ph.日付 DESC, ph.rowid DESC
+                LIMIT ?
             )
-            r=cur.fetchone()
-            if r and r[2]==today:
-                price = safe_float(r[0]) or safe_float(r[1])
-        except sqlite3.Error:
-            pass
-        if price is None:
-            try:
-                cur.execute("SELECT 現在値 FROM screener WHERE コード=? LIMIT 1",(code,))
-                r=cur.fetchone()
-                if r: price=safe_float(r[0])
-            except sqlite3.Error:
-                pass
-        if price is not None:
-            dates.append(today)
-            opens.append(price); highs.append(price); lows.append(price); closes.append(price)
-            vols.append(0)
-    return dates, opens, highs, lows, closes, vols
+            ORDER BY q.logical_code, p.日付, p.rowid
+        """
+        rows = conn.execute(sql, (bars,)).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT p.rowid, q.logical_code, p.日付,
+                   p.始値, p.高値, p.安値, p.終値, p.出来高
+            FROM price_history p
+            JOIN temp._charts60_requested_raw q ON q.raw_code=p.コード
+            ORDER BY q.logical_code, p.日付, p.rowid
+            """
+        ).fetchall()
+
+    # aliasが分散している場合もlogical code×日付で1本にする。ORDER BY済みなので新rowidが後勝ち。
+    by_code_day: Dict[str, Dict[str, tuple]] = defaultdict(dict)
+    for rowid, logical, day, opn, high, low, close, vol in rows:
+        if day is None:
+            continue
+        day_text = str(day).strip()
+        market_day = day_text[:10] if re.match(r"^\d{4}-\d{2}-\d{2}", day_text) else day_text
+        by_code_day[str(logical)][market_day] = (int(rowid), opn, high, low, close, vol)
+
+    latest_today: Dict[str, float] = {}
+    today = jst_today_str()
+    try:
+        latest_rows = conn.execute(
+            """
+            WITH raw_latest AS (
+                SELECT q.logical_code, l.現値, l.終値, l.日付, l.rowid
+                FROM temp._charts60_requested_raw q
+                JOIN latest_prices l ON l.rowid=(
+                    SELECT l2.rowid FROM latest_prices l2
+                    WHERE l2.コード=q.raw_code
+                    ORDER BY l2.日付 DESC, l2.rowid DESC LIMIT 1
+                )
+            ), ranked AS (
+                SELECT logical_code, 現値, 終値, 日付, rowid,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY logical_code
+                           ORDER BY 日付 DESC, rowid DESC
+                       ) AS _rn
+                FROM raw_latest
+            )
+            SELECT logical_code, 現値, 終値, 日付 FROM ranked WHERE _rn=1
+            """
+        ).fetchall()
+        for logical, current, close, day in latest_rows:
+            price = safe_float(current) or safe_float(close)
+            if str(day or "") == today and price is not None:
+                latest_today[str(logical)] = price
+    except sqlite3.Error:
+        pass
+
+    screener_price: Dict[str, float] = {}
+    try:
+        for raw_code, current in conn.execute("SELECT コード, 現在値 FROM screener"):
+            logical = canonical_code(raw_code)
+            if logical in raw_by_logical and logical not in screener_price:
+                price = safe_float(current)
+                if price is not None:
+                    screener_price[logical] = price
+    except sqlite3.Error:
+        pass
+
+    result = {}
+    for logical in raw_by_logical:
+        day_map = by_code_day.get(logical, {})
+        ordered = sorted(day_map.items(), key=lambda item: (item[0], item[1][0]))
+        if bars and len(ordered) > bars:
+            ordered = ordered[-bars:]
+        dates=[d for d, _ in ordered]
+        opens=[safe_float(v[1]) for _, v in ordered]
+        highs=[safe_float(v[2]) for _, v in ordered]
+        lows=[safe_float(v[3]) for _, v in ordered]
+        closes=[safe_float(v[4]) for _, v in ordered]
+        vols=[]
+        for _, v in ordered:
+            try: vols.append(int(v[5]) if v[5] is not None else 0)
+            except Exception: vols.append(0)
+
+        if (not dates) or dates[-1] < today:
+            price = latest_today.get(logical)
+            if price is None:
+                price = screener_price.get(logical)
+            if price is not None:
+                dates.append(today)
+                opens.append(price); highs.append(price); lows.append(price); closes.append(price); vols.append(0)
+        result[logical] = (dates, opens, highs, lows, closes, vols)
+    return result
 
 # ===== 指標・フラグ =====
 # ===== 指標・フラグ =====
@@ -883,6 +990,10 @@ def parse_args():
     ap.add_argument("--codes", default=None,
                     help="生成対象のコード（カンマ/空白区切り or @codes.txt）")
     ap.add_argument("--min-bars", type=int, default=80, help="最低必要本数（既定:80）")
+    ap.add_argument(
+        "--history-bars", type=int, default=0,
+        help="DBから読む最新本数。0は全履歴（既定）。10分スクリーナーは160を指定",
+    )
     return ap.parse_args()
 
 def main():
@@ -893,13 +1004,14 @@ def main():
         ensure_flags_table(conn)
         cur=conn.cursor()
         only_codes=parse_codes_arg(args.codes)
-        pairs=load_codes_and_names(cur, only_codes=only_codes)
-        if only_codes and not pairs:
+        pairs, raw_by_logical = _load_code_catalog(cur, only_codes=only_codes)
+        if only_codes is not None and not pairs:
             print("[WARN] 指定コードはいずれも price_history に見つかりませんでした:", only_codes)
+        series_by_code = _load_series_bulk(conn, raw_by_logical, history_bars=args.history_bars)
         up_cnt=0; make_cnt=0; skipped=0
         with conn:
             for code, name in pairs:
-                dates, opens, highs, lows, closes, vols = fetch_series_with_today(cur, code)
+                dates, opens, highs, lows, closes, vols = series_by_code.get(code, ([],[],[],[],[],[]))
                 if len(dates) < max(1, getattr(args, 'min_bars', args.min_bars)):
                     skipped+=1
                     continue

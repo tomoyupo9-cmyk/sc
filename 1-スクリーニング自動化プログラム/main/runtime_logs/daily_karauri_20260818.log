@@ -1,0 +1,11 @@
+
+
+===== 2026-08-18T20:16:21 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\空売り無しリスト出しスクリプト.py =====
+[karauri] 同日resume: 未完了=9
+[karauri][HTTP] targets=9 workers=16 retries=1
+[karauri][PROGRESS] 1/9 rate=5.32/s elapsed=0.0m eta=0.0m
+[karauri][PROGRESS] 9/9 rate=6.13/s elapsed=0.0m eta=0.0m
+[karauri][COMMIT] 9/9 ok=0 fail=9 no_short=0
+[karauri] 今回 ok=0 fail=9 no_short=0
+[karauri][PARTIAL] 未完了=9 sample=['556A', '558A', '559A', '581A', '584A', '589A', '590A', '593A', '598A']
+===== 2026-08-18T20:16:23 END status=partial rc=2 =====

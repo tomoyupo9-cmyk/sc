@@ -1,0 +1,184 @@
+
+
+===== 2026-08-17T09:10:29 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 3445: theme=7 credit_rows=5 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=7 credit_rows=5
+===== 2026-08-17T09:10:32 END status=success rc=0 =====
+
+
+===== 2026-08-17T09:20:14 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 3445: theme=7 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=7 credit_rows=4
+===== 2026-08-17T09:20:17 END status=success rc=0 =====
+
+
+===== 2026-08-17T09:50:14 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 3445: theme=7 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=7 credit_rows=4
+===== 2026-08-17T09:50:17 END status=success rc=0 =====
+
+
+===== 2026-08-17T10:00:16 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 3445: theme=7 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=7 credit_rows=4
+===== 2026-08-17T10:00:19 END status=success rc=0 =====
+
+
+===== 2026-08-17T10:20:15 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 3445: theme=7 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=7 credit_rows=4
+===== 2026-08-17T10:20:18 END status=success rc=0 =====
+
+
+===== 2026-08-17T10:40:16 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 3445: theme=7 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=7 credit_rows=4
+===== 2026-08-17T10:40:19 END status=success rc=0 =====
+
+
+===== 2026-08-17T11:00:18 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3445 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 3445: theme=7 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=7 credit_rows=4
+===== 2026-08-17T11:00:21 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:00:21 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 8798 =====
+[themes-shinyo] 差分 2 銘柄を開始
+[1/2] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/2] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=2 fail=0 themes=20 credit_rows=8
+===== 2026-08-17T12:00:25 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:10:15 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 8798 =====
+[themes-shinyo] 差分 2 銘柄を開始
+[1/2] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/2] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=2 fail=0 themes=20 credit_rows=8
+===== 2026-08-17T12:10:19 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:20:19 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 4574 8798 =====
+[themes-shinyo] 差分 3 銘柄を開始
+[1/3] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/3] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[3/3] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=3 fail=0 themes=29 credit_rows=12
+===== 2026-08-17T12:20:25 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:40:18 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 4574 8798 =====
+[themes-shinyo] 差分 3 銘柄を開始
+[1/3] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/3] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[3/3] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=3 fail=0 themes=29 credit_rows=12
+===== 2026-08-17T12:40:24 END status=success rc=0 =====
+
+
+===== 2026-08-17T12:50:17 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 4574 8798 =====
+[themes-shinyo] 差分 3 銘柄を開始
+[1/3] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/3] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[3/3] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=3 fail=0 themes=29 credit_rows=12
+===== 2026-08-17T12:50:23 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:00:19 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 4574 8798 =====
+[themes-shinyo] 差分 3 銘柄を開始
+[1/3] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/3] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[3/3] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=3 fail=0 themes=29 credit_rows=12
+===== 2026-08-17T13:00:25 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:10:17 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 4574 8798 =====
+[themes-shinyo] 差分 3 銘柄を開始
+[1/3] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/3] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[3/3] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=3 fail=0 themes=29 credit_rows=12
+===== 2026-08-17T13:10:23 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:30:18 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 4574 8798 =====
+[themes-shinyo] 差分 3 銘柄を開始
+[1/3] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/3] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[3/3] 8798: theme=8 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=3 fail=0 themes=29 credit_rows=12
+===== 2026-08-17T13:30:24 END status=success rc=0 =====
+
+
+===== 2026-08-17T13:40:18 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4018 4574 =====
+[themes-shinyo] 差分 2 銘柄を開始
+[1/2] 4018: theme=12 credit_rows=4 earnings=2026/08/14
+[2/2] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=2 fail=0 themes=21 credit_rows=8
+===== 2026-08-17T13:40:22 END status=success rc=0 =====
+
+
+===== 2026-08-17T14:00:20 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4574 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 4574: theme=9 credit_rows=4 earnings=2026/08/13
+[themes-shinyo] 完了 ok=1 fail=0 themes=9 credit_rows=4
+===== 2026-08-17T14:00:23 END status=success rc=0 =====
+
+
+===== 2026-08-17T14:50:23 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 6061 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 6061: theme=13 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=1 fail=0 themes=13 credit_rows=4
+===== 2026-08-17T14:50:26 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:00:19 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 6061 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 6061: theme=13 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=1 fail=0 themes=13 credit_rows=4
+===== 2026-08-17T15:00:22 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:10:20 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 6061 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 6061: theme=13 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=1 fail=0 themes=13 credit_rows=4
+===== 2026-08-17T15:10:24 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:20:18 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 6061 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 6061: theme=13 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=1 fail=0 themes=13 credit_rows=4
+===== 2026-08-17T15:20:21 END status=success rc=0 =====
+
+
+===== 2026-08-17T15:30:26 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 6061 =====
+[themes-shinyo] 差分 1 銘柄を開始
+[1/1] 6061: theme=13 credit_rows=4 earnings=2026/08/14
+[themes-shinyo] 完了 ok=1 fail=0 themes=13 credit_rows=4
+===== 2026-08-17T15:30:28 END status=success rc=0 =====
+
+
+===== 2026-08-17T23:36:56 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\python.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 4019 4484 4651 5242 6036 6061 6195 7044 9439 =====
+[themes-shinyo] 差分 9 銘柄を開始
+[1/9] 4019: theme=12 credit_rows=4 earnings=2026/08/14
+[2/9] 4484: theme=20 credit_rows=4 earnings=2026/08/14
+[3/9] 4651: theme=16 credit_rows=4 earnings=2026/08/17
+[4/9] 5242: theme=16 credit_rows=4 earnings=2026/08/14
+[5/9] 6036: theme=5 credit_rows=4 earnings=2026/08/14
+[6/9] 6061: theme=13 credit_rows=4 earnings=2026/08/14
+[7/9] 6195: theme=10 credit_rows=4 earnings=2026/08/12
+[8/9] 7044: theme=24 credit_rows=4 earnings=2026/08/14
+[9/9] 9439: theme=13 credit_rows=4 earnings=2026/08/17
+[themes-shinyo] 完了 ok=9 fail=0 themes=129 credit_rows=36
+===== 2026-08-17T23:37:12 END status=success rc=0 =====

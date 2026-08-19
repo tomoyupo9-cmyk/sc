@@ -1,6 +1,6 @@
-# === 2026-08-13 PTS対応 ===
-# - 株探 financeページ上部のPTS株価/時刻を同じHTTP取得から抽出
-# - screener.PTS株価 / screener.PTS時刻 に保存
+# === 2026-08-16 日次差分・週次補修対応 ===
+# - PTS取得/保存を廃止
+# - financeページは1銘柄1回だけ取得し、通期・四半期を同じHTMLから解析
 # - 同日再取得したい場合は --force-refresh を使用
 # === 2026-08-12 v14: 四半期実績履歴DB化（ソリトン型対応の土台） ===
 # - 株探 3ヵ月決算【実績】を quarterly_actual_history へ保存
@@ -120,9 +120,9 @@ HEADERS = {
                    "Chrome/126.0.0.0 Safari/537.36")
 }
 ASYNC_CONCURRENCY_LIMIT = 7
-MASTER_CODES_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt"
-DB_PATH = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db"
-OUTPUT_DIR = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data"
+MASTER_CODES_PATH = os.environ.get('KABU_CODES_PATH', r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt")
+DB_PATH = os.environ.get('KABU_DB_PATH', r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db")
+OUTPUT_DIR = os.environ.get('KABU_OUTPUT_DIR', r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data")
 
 # リトライ設定
 RETRY_HTTP_STATUSES = {429, 500, 502, 503, 504}
@@ -157,49 +157,6 @@ def safe_float(value: Any) -> Optional[float]:
     if s in ("-", "--", "N/A", "NA"): return None
     try: return float(s)
     except Exception: return None
-
-def _parse_kabutan_pts(soup: BeautifulSoup) -> dict:
-    """株探ページ上部の PTS 株価・表示時刻を取得する。
-
-    例:
-      <div class="si_i1_3">
-        <div class="kabuka1">PTS</div>
-        <div class="kabuka2">5,003円</div>
-        <div class="kabuka3">17:32　08/13</div>
-      </div>
-
-    PTS表示が無い場合は None を返す。
-    """
-    out = {"pts_price": None, "pts_time": None}
-    try:
-        # まず既知の株価ブロック単位で探し、別の kabuka2 を誤取得しないようにする。
-        for block in soup.select("div.si_i1_3"):
-            label = block.select_one("div.kabuka1")
-            if label and label.get_text(" ", strip=True).upper() == "PTS":
-                price_el = block.select_one("div.kabuka2")
-                time_el = block.select_one("div.kabuka3")
-                if price_el:
-                    out["pts_price"] = safe_float(price_el.get_text(" ", strip=True))
-                if time_el:
-                    out["pts_time"] = time_el.get_text(" ", strip=True) or None
-                return out
-
-        # HTML構造変更への保険。PTSラベルの親要素から価格/時刻を探す。
-        for label in soup.find_all("div", class_="kabuka1"):
-            if label.get_text(" ", strip=True).upper() != "PTS":
-                continue
-            block = label.parent
-            price_el = block.find("div", class_="kabuka2") if block else None
-            time_el = block.find("div", class_="kabuka3") if block else None
-            if price_el:
-                out["pts_price"] = safe_float(price_el.get_text(" ", strip=True))
-            if time_el:
-                out["pts_time"] = time_el.get_text(" ", strip=True) or None
-            return out
-    except Exception:
-        pass
-    return out
-
 
 def safe_div(a: Any, b: Any) -> Optional[float]:
     a, b = safe_float(a), safe_float(b)
@@ -313,7 +270,7 @@ def db_upsert_cached_announce(code: str, latest_announce_date: datetime | None, 
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cur = conn.cursor()
         iso_date = latest_announce_date.date().isoformat() if latest_announce_date else None
-        ts = datetime.now().isoformat(timespec="seconds")
+        ts = datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds")
         cur.execute("""
         INSERT INTO earnings_cache (コード, latest_announce_date, last_status, updated_at)
         VALUES (?, ?, ?, ?)
@@ -344,113 +301,25 @@ def _get_overall_verdict_label(score: int) -> str:
     else: return "要注意 (D-)"
 
 # ===== DB：finance_notes 書き込み =====
-def batch_record_to_sqlite(results: list[dict]):
-    if not results:
-        print("[DB] 記録すべき成功結果がありません。")
-        return
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=20)
-        cur = conn.cursor()
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS finance_notes (
-          コード TEXT PRIMARY KEY, 財務コメント TEXT, score INTEGER, progress_percent REAL, html_path TEXT, updated_at TEXT
-        );
-        """)
-        for col, coltype in [
-            ("overall_alpha", "TEXT"), ("forecast_op", "REAL"), ("forecast_eps", "REAL"), ("actual_eps", "REAL"),
-            ("prev_eps", "REAL"), ("forecast_revenue", "REAL"), ("actual_revenue", "REAL"), ("prev_revenue", "REAL"),
-            ("forecast_net_profit", "REAL"), ("actual_net_profit", "REAL"), ("prev_net_profit", "REAL"),
-            ("actual_operating_profit", "REAL"), ("prev_operating_profit", "REAL"), ("bps", "REAL"), ("equity", "REAL"),
-            ("past_earnings_dates", "TEXT")
-        ]:
-            try: cur.execute(f"SELECT {col} FROM finance_notes LIMIT 1;")
-            except sqlite3.OperationalError: cur.execute(f"ALTER TABLE finance_notes ADD COLUMN {col} {coltype};")
-        conn.commit()
-
-        # PTSはダッシュボードで直接使うため screener に保持する。
-        for col, coltype in [("PTS株価", "REAL"), ("PTS時刻", "TEXT")]:
-            try:
-                cur.execute(f"ALTER TABLE screener ADD COLUMN {col} {coltype};")
-            except sqlite3.OperationalError:
-                pass
-        conn.commit()
-
-        ts = datetime.now().isoformat(timespec="seconds")
-        data_to_insert = []
-        for res in results:
-            if res.get('status') == 'OK':
-                data_to_insert.append((
-                    res['code'], res.get('formatted_verdict') or "", res.get('score'), res.get('progress_percent'), res.get('out_html') or "", ts,
-                    res.get('overall_alpha'), res.get('forecast_op'), res.get('forecast_eps'), res.get('actual_eps'), res.get('prev_eps'),
-                    res.get('forecast_revenue'), res.get('actual_revenue'), res.get('prev_revenue'),
-                    res.get('forecast_net_profit'), res.get('actual_net_profit'), res.get('prev_net_profit'),
-                    res.get('actual_operating_profit'), res.get('prev_operating_profit'), res.get('bps'), res.get('equity'), res.get('past_earnings_dates')
-                ))
-
-        if data_to_insert:
-            cur.executemany("""
-            INSERT INTO finance_notes (
-                コード, 財務コメント, score, progress_percent, html_path, updated_at,
-                overall_alpha, forecast_op, forecast_eps, actual_eps, prev_eps,
-                forecast_revenue, actual_revenue, prev_revenue,
-                forecast_net_profit, actual_net_profit, prev_net_profit,
-                actual_operating_profit, prev_operating_profit, bps, equity, past_earnings_dates
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(コード) DO UPDATE SET
-                財務コメント = excluded.財務コメント, score = excluded.score, progress_percent = excluded.progress_percent,
-                html_path = excluded.html_path, updated_at = excluded.updated_at, overall_alpha = excluded.overall_alpha,
-                forecast_op = excluded.forecast_op, forecast_eps = excluded.forecast_eps, actual_eps = excluded.actual_eps,
-                prev_eps = excluded.prev_eps, forecast_revenue = excluded.forecast_revenue, actual_revenue = excluded.actual_revenue,
-                prev_revenue = excluded.prev_revenue, forecast_net_profit = excluded.forecast_net_profit, actual_net_profit = excluded.actual_net_profit,
-                prev_net_profit = excluded.prev_net_profit, actual_operating_profit = excluded.actual_operating_profit,
-                prev_operating_profit = excluded.prev_operating_profit, bps = excluded.bps, equity = excluded.equity,
-                past_earnings_dates = CASE
-                    WHEN excluded.past_earnings_dates IS NOT NULL
-                     AND TRIM(excluded.past_earnings_dates) NOT IN ('', '[]')
-                    THEN excluded.past_earnings_dates
-                    ELSE finance_notes.past_earnings_dates
-                END;
-            """, data_to_insert)
-            conn.commit()
-
-        pts_updates = [
-            (res.get("pts_price"), res.get("pts_time"), res.get("code"))
-            for res in results
-            if res.get("status") == "OK" and res.get("code")
-        ]
-        if pts_updates:
-            cur.executemany(
-                "UPDATE screener SET PTS株価=?, PTS時刻=? WHERE コード=?",
-                pts_updates,
-            )
-            conn.commit()
-            pts_count = sum(1 for p, _, _ in pts_updates if p is not None)
-            print(f"[PTS] screener 更新={len(pts_updates)}銘柄 / PTS表示あり={pts_count}銘柄")
-
-        q_saved = upsert_quarterly_actual_history(conn, results)
-        if q_saved:
-            print(f"[QUARTERLY_HISTORY] {q_saved}行 UPSERT")
-
-    except Exception as e:
-        print(f"[DB][CRITICAL ERROR] 予期せぬエラー: {e}")
-    finally:
-        try: conn.close()
-        except Exception: pass
-
 # ===== 取得関数 =====
-async def fetch_quarterly_financials(code: str, session: aiohttp.ClientSession) -> pd.DataFrame:
+async def fetch_quarterly_financials(
+    code: str,
+    session: aiohttp.ClientSession,
+    html_content: str | None = None,
+) -> pd.DataFrame:
     url = f"https://kabutan.jp/stock/finance?code={code}"
-    print(f"[INFO] fetching quarterly data: {url}")
     try:
-        html_content = await _fetch_text_with_retry(session, url, timeout_sec=15)
+        if html_content is None:
+            print(f"[INFO] fetching quarterly data: {url}")
+            html_content = await _fetch_text_with_retry(session, url, timeout_sec=15)
         soup = BeautifulSoup(html_content, "lxml")
         target = None
         target_heading = soup.find(string=lambda t: t and '3ヵ月決算【実績】' in t)
         if target_heading:
             target = target_heading.find_next('table')
-        if target is None: return pd.DataFrame()
-        
+        if target is None:
+            return pd.DataFrame()
+
         df = pd.read_html(StringIO(str(target)), flavor="lxml", header=0)[0]
         df = df.drop(columns=[c for c in df.columns if "損益率" in c], errors='ignore')
 
@@ -463,7 +332,8 @@ async def fetch_quarterly_financials(code: str, session: aiohttp.ClientSession) 
         df.reset_index(drop=True, inplace=True)
 
         for col in ["売上高", "営業益", "経常益", "最終益", "修正1株益", "修正1株配"]:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
         if "発表日" in df.columns:
             df["発表日"] = pd.to_datetime(
@@ -474,35 +344,37 @@ async def fetch_quarterly_financials(code: str, session: aiohttp.ClientSession) 
 
         return df.sort_values(by="発表日", ascending=True).reset_index(drop=True)
 
-    except Exception: return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
-async def fetch_full_year_financials(code: str, session: aiohttp.ClientSession) -> tuple[pd.DataFrame, dict]:
+
+async def fetch_full_year_financials(
+    code: str,
+    session: aiohttp.ClientSession,
+    html_content: str | None = None,
+) -> tuple[pd.DataFrame, dict]:
     url = f"https://kabutan.jp/stock/finance?code={code}"
-    print(f"[INFO] fetching full year actual data: {url}")
-    extra_data = {"bps": None, "equity": None, "pts_price": None, "pts_time": None}
+    extra_data = {"bps": None, "equity": None}
 
     try:
-        html_content = await _fetch_text_with_retry(session, url, timeout_sec=15)
+        if html_content is None:
+            print(f"[INFO] fetching full year actual data: {url}")
+            html_content = await _fetch_text_with_retry(session, url, timeout_sec=15)
         soup = BeautifulSoup(html_content, "lxml")
 
-        # 株探ページ上部のPTS表示も、このHTTP取得のついでに回収する。
-        pts_data = _parse_kabutan_pts(soup)
-        extra_data.update(pts_data)
-        if pts_data.get("pts_price") is not None:
-            print(f"[PTS] {code}: {pts_data.get('pts_price')}円 / {pts_data.get('pts_time') or '-'}")
-
         tables = soup.find_all('table')
-        
         target_annual, target_financial = None, None
-        
+
         for table in tables:
             header_row = table.find('tr')
             if header_row:
                 header_text = header_row.get_text()
                 if '決算期' in header_text or '通期' in header_text:
-                    if target_annual is None: target_annual = table
+                    if target_annual is None:
+                        target_annual = table
                 if '自己資本' in header_text or '純資産' in header_text or '1株純資産' in header_text:
-                    if target_financial is None: target_financial = table
+                    if target_financial is None:
+                        target_financial = table
 
         if target_financial is not None:
             try:
@@ -513,15 +385,19 @@ async def fetch_full_year_financials(code: str, session: aiohttp.ClientSession) 
                     for c in cols:
                         if ("1株" in c or "１株" in c) and "純資産" in c:
                             val = safe_float(row[c])
-                            if val is not None and extra_data["bps"] is None: extra_data["bps"] = val
+                            if val is not None and extra_data["bps"] is None:
+                                extra_data["bps"] = val
                         elif "BPS" in c.upper():
                             val = safe_float(row[c])
-                            if val is not None and extra_data["bps"] is None: extra_data["bps"] = val
+                            if val is not None and extra_data["bps"] is None:
+                                extra_data["bps"] = val
                         elif "自己資本" in c or "純資産" in c:
                             if "1株" not in c and "１株" not in c and "比率" not in c:
                                 val = safe_float(row[c])
-                                if val is not None and extra_data["equity"] is None: extra_data["equity"] = val
-            except Exception: pass
+                                if val is not None and extra_data["equity"] is None:
+                                    extra_data["equity"] = val
+            except Exception:
+                pass
 
         if target_annual is None:
             return pd.DataFrame(), extra_data
@@ -534,13 +410,16 @@ async def fetch_full_year_financials(code: str, session: aiohttp.ClientSession) 
         df = df[df["決算期"].notna()].copy()
         df["決算期"] = df["決算期"].astype(str).str.strip()
         df.reset_index(drop=True, inplace=True)
-        
+
         for col in ["売上高", "営業益", "経常益", "最終益", "修正1株益", "修正1株配"]:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.drop(columns=["発表日"], errors='ignore')
         return df.sort_values(by="決算期", ascending=True).reset_index(drop=True), extra_data
 
-    except Exception: return pd.DataFrame(), extra_data
+    except Exception:
+        return pd.DataFrame(), extra_data
+
 
 def _parse_latest_announce_from_any_table(html_content: str) -> datetime | None:
     try:
@@ -555,13 +434,6 @@ def _parse_latest_announce_from_any_table(html_content: str) -> datetime | None:
                     if not ser.empty: return pd.to_datetime(ser.iloc[-1])
                 except Exception: continue
         return None
-    except Exception: return None
-
-async def fetch_latest_announce_date_only(session: aiohttp.ClientSession, code: str) -> datetime | None:
-    url = f"https://kabutan.jp/stock/finance?code={code}"
-    try:
-        html_content = await _fetch_text_with_retry(session, url, timeout_sec=10)
-        return _parse_latest_announce_from_any_table(html_content)
     except Exception: return None
 
 def compute_progress_details(quarterly_df: pd.DataFrame, forecast_series: pd.Series):
@@ -784,7 +656,7 @@ def build_quarterly_actual_history_rows(
         return []
 
     rows = []
-    ts = datetime.now().isoformat(timespec="seconds")
+    ts = datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds")
     for _, row in quarterly_df.iterrows():
         label = str(row.get("決算期") or "").strip()
         fk_dot = _fiscal_key_from_quarter_label(label, fiscal_end_month)
@@ -977,203 +849,10 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
 
 # =============================================================================
 # ★ 適正株価計算エンジン（ローカルDB参照・保守的モデル）
-# =============================================================================
-
-class FairValueEngine:
-    def calculate(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        price = data.get("current_price")
-        # 予想EPSを優先、なければ実績EPS
-        raw_eps = data.get("forecast_eps")
-        if raw_eps is None:
-            raw_eps = data.get("actual_eps")
-        bps = data.get("bps")
-
-        # 成長率の取得（通期の営業益成長率）
-        f_op = data.get("forecast_op")
-        a_op = data.get("actual_operating_profit")
-        p_op = data.get("prev_operating_profit")
-        
-        op_growth = 0.0
-        if f_op is not None and a_op is not None and a_op > 0:
-            op_growth = (f_op / a_op) - 1.0
-        elif a_op is not None and p_op is not None and p_op > 0:
-            op_growth = (a_op / p_op) - 1.0
-
-        # 直近四半期の営業益YoY
-        recent_q_op_yoy = data.get("op_yoy")
-
-        # ① 基準PER
-        base_per = 12.0
-        
-        # ② 継続成長によるPER補正
-        growth_adj = 0.0
-        if op_growth > 0:
-            growth_adj = min(op_growth * 10.0, 4.0)  # 最大でもPER+4倍（16倍）まで
-        elif op_growth < 0:
-            growth_adj = max(op_growth * 10.0, -3.0) # 減益ならPERを下げる
-            
-        fair_per = base_per + growth_adj
-
-        # ③ 正常化EPSの作成
-        sustainability_coef = 1.0
-        if recent_q_op_yoy is not None and recent_q_op_yoy < 0:
-            sustainability_coef = 0.88 # 減益傾向が見られる場合は割り引く
-        elif op_growth > 0.5:
-            sustainability_coef = 0.90 # 異常な急回復時も少し割り引いて暴走を防ぐ
-
-        normalized_eps = raw_eps * sustainability_coef if raw_eps is not None else None
-
-        # ④ PERモデルとPBRモデルの算出
-        per_fair_value = None
-        if normalized_eps is not None and normalized_eps > 0:
-            per_fair_value = normalized_eps * fair_per
-
-        pbr_fair_value = None
-        if bps is not None and bps > 0:
-            fair_pbr = 1.2 # PBRの保守的な基準値
-            pbr_fair_value = bps * fair_pbr
-
-        # ⑤ ブレンド (PER 75% : PBR 25%)
-        final_fair_value = None
-        if per_fair_value is not None and pbr_fair_value is not None:
-            final_fair_value = (per_fair_value * 0.75) + (pbr_fair_value * 0.25)
-        elif per_fair_value is not None:
-            final_fair_value = per_fair_value
-        elif pbr_fair_value is not None:
-            final_fair_value = pbr_fair_value
-
-        # ⑥ 3つの価格帯の出力
-        conservative = final_fair_value * 0.85 if final_fair_value else None
-        standard = final_fair_value
-        aggressive = final_fair_value * 1.15 if final_fair_value else None
-
-        upside = (final_fair_value / price - 1.0) if (price and final_fair_value and price > 0) else None
-
-        if upside is None: valuation = "判定不能"
-        elif upside >= 0.30: valuation = "大幅割安"
-        elif upside >= 0.15: valuation = "割安"
-        elif upside >= -0.10: valuation = "適正"
-        elif upside >= -0.25: valuation = "やや割高"
-        else: valuation = "割高"
-
-        return {
-            "fair_per": fair_per,
-            "fair_value": standard,
-            "conservative_fair_value": conservative,
-            "aggressive_fair_value": aggressive,
-            "upside": upside,
-            "valuation": valuation
-        }
-
-class LocalDatabaseEvaluator:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-
-    def evaluate_all(self):
-        print("[Engine] 適正株価の一括計算を開始します...")
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS fair_value (
-            code TEXT PRIMARY KEY,
-            updated_at TEXT,
-            current_price REAL,
-            forecast_eps REAL,
-            bps REAL,
-            fair_value REAL,
-            conservative_fair_value REAL,
-            aggressive_fair_value REAL,
-            upside REAL,
-            valuation TEXT
-        );
-        """)
-        
-        # マイグレーション
-        for col, coltype in [("適正株価", "REAL"), ("割安度", "REAL"), ("期待株価", "REAL")]:
-            try: cur.execute(f"ALTER TABLE screener ADD COLUMN {col} {coltype};")
-            except sqlite3.OperationalError: pass
-            
-        for col, coltype in [("conservative_fair_value", "REAL"), ("aggressive_fair_value", "REAL")]:
-            try: cur.execute(f"ALTER TABLE fair_value ADD COLUMN {col} {coltype};")
-            except sqlite3.OperationalError: pass
-            
-        conn.commit()
-
-        # ★修正: f.* をやめて、必要なカラムだけを個別にSELECTし、同名カラムの重複を排除
-        query = """
-            SELECT 
-                s.コード, 
-                s.現在値 AS screener_price, 
-                s.直近営業益YoY AS op_yoy, 
-                f.forecast_eps,
-                f.actual_eps,
-                f.prev_eps,
-                f.forecast_op,
-                f.actual_operating_profit,
-                f.prev_operating_profit,
-                f.bps
-            FROM screener s
-            LEFT JOIN finance_notes f ON s.コード = f.コード
-        """
-        try:
-            df = pd.read_sql_query(query, conn)
-        except Exception as e:
-            print(f"[Engine] DBからのデータ読み込みに失敗しました: {e}")
-            conn.close()
-            return
-
-        engine = FairValueEngine()
-        updates_screener = []
-        updates_fair_value = []
-        ts = datetime.now().isoformat(timespec="seconds")
-
-        for _, row in df.iterrows():
-            code = str(row["コード"]).strip().zfill(4)
-            data = {}
-            data["current_price"] = safe_float(row["screener_price"])
-            data["forecast_eps"] = safe_float(row["forecast_eps"])
-            data["actual_eps"] = safe_float(row["actual_eps"])
-            data["prev_eps"] = safe_float(row["prev_eps"])
-            data["bps"] = safe_float(row["bps"])
-            data["forecast_op"] = safe_float(row["forecast_op"])
-            data["actual_operating_profit"] = safe_float(row["actual_operating_profit"])
-            data["prev_operating_profit"] = safe_float(row["prev_operating_profit"])
-            data["op_yoy"] = safe_float(row["op_yoy"])
-
-            res = engine.calculate(data)
-
-            std_val = res.get("fair_value")
-            cons_val = res.get("conservative_fair_value")
-            agg_val = res.get("aggressive_fair_value")
-            upside = res.get("upside")
-            val_text = res.get("valuation")
-            
-            discount_rate = (upside * 100.0) if upside is not None else None
-
-            # 期待株価列に強気価格(aggressive)を保存、適正株価列に標準価格を保存
-            updates_screener.append((std_val, discount_rate, agg_val, code))
-            updates_fair_value.append((
-                code, ts, data["current_price"], data.get("forecast_eps") or data.get("actual_eps"),
-                data["bps"], std_val, cons_val, agg_val, upside, val_text
-            ))
-
-        if updates_screener:
-            cur.executemany("UPDATE screener SET 適正株価 = ?, 割安度 = ?, 期待株価 = ? WHERE コード = ?", updates_screener)
-            cur.executemany("""
-            INSERT OR REPLACE INTO fair_value (
-                code, updated_at, current_price, forecast_eps, bps, 
-                fair_value, conservative_fair_value, aggressive_fair_value, upside, valuation
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, updates_fair_value)
-            conn.commit()
-
-        conn.close()
-        print("[Engine] 適正株価の計算・反映が完了しました。")
-
-# =============================================================================
+# ==============================================================================
+# SYSTEM-REWORK: Fair Value は自動スクリーニング側の単独責務。
+# 旧 FairValueEngine / LocalDatabaseEvaluator は二重writer防止のため削除。
+# ==============================================================================
 
 # ===== ワーカー =====
 async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> dict:
@@ -1200,12 +879,22 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
 
     async with semaphore:
         try:
-            (df_full_year, extra_data), df_quarterly = await asyncio.gather(
-                fetch_full_year_financials(code_full, session),
-                fetch_quarterly_financials(code_full, session)
+            # 同じ株探financeページは1銘柄につき1回だけ取得し、
+            # 通期・四半期・財務補足を同じHTMLから解析する。
+            finance_url = f"https://kabutan.jp/stock/finance?code={code_full}"
+            print(f"[INFO] fetching finance data: {finance_url}", flush=True)
+            html_content = await _fetch_text_with_retry(session, finance_url, timeout_sec=15)
+            df_full_year, extra_data = await fetch_full_year_financials(
+                code_full, session, html_content=html_content
+            )
+            df_quarterly = await fetch_quarterly_financials(
+                code_full, session, html_content=html_content
             )
 
-            latest_ad = get_latest_announce_date(df_quarterly) or await fetch_latest_announce_date_only(session, code_full)
+            latest_ad = (
+                get_latest_announce_date(df_quarterly)
+                or _parse_latest_announce_from_any_table(html_content)
+            )
             if latest_ad is not None:
                 db_upsert_cached_announce(code_full, latest_ad, "OK" if not df_quarterly.empty else "ANNOUNCE_ONLY")
             else:
@@ -1295,7 +984,6 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
                 'status': 'OK', 'code': code_full, 'score': score, 'overall_alpha': overall_alpha,
                 'progress_percent': progress_percent_db, 'formatted_verdict': formatted_v, 'out_html': out_html,
                 'bps': extra_data.get('bps'), 'equity': extra_data.get('equity'),
-                'pts_price': extra_data.get('pts_price'), 'pts_time': extra_data.get('pts_time'),
                 'forecast_op': forecast_op, 'forecast_eps': forecast_eps,
                 'forecast_revenue': forecast_revenue, 'forecast_net_profit': forecast_net_profit,
                 'past_earnings_dates': past_earnings_dates,
@@ -1308,21 +996,23 @@ async def process_single_code(code: str, out_dir: str, session: aiohttp.ClientSe
             }
         except Exception as e:
             print(f"[ERROR] {code_full}: {e}")
+            db_upsert_cached_announce(code_full, None, "UNKNOWN_ERROR")
             return {'status': 'ERROR', 'code': code_full}
 
 # ===== メイン =====
 async def main_async(target_code: str | None = None):
-    out_dir = r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data\graph"
+    out_dir = os.path.join(OUTPUT_DIR, "graph")
     os.makedirs(out_dir, exist_ok=True)
 
     if target_code:
-        codes = {target_code}
+        # SYSTEM-REWORK: "7203,6758" のような差分銘柄一括指定に対応。
+        codes = {c.strip() for c in str(target_code).split(",") if c.strip()}
     else:
         try:
             master = pd.read_csv(MASTER_CODES_PATH, encoding="utf8", sep=",", engine="python", dtype={'コード': str})
             codes = set(master["コード"].astype(str))
-        except FileNotFoundError:
-            return
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"マスターコードCSVが見つかりません: {MASTER_CODES_PATH}") from e
 
     concurrency = getattr(_ARGS, 'workers', ASYNC_CONCURRENCY_LIMIT) or ASYNC_CONCURRENCY_LIMIT
     semaphore = asyncio.Semaphore(concurrency)
@@ -1332,6 +1022,12 @@ async def main_async(target_code: str | None = None):
         all_results = await asyncio.gather(*tasks, return_exceptions=True)
 
     successful_results = [r for r in all_results if isinstance(r, dict) and r.get('status') == 'OK']
+    error_results = [
+        r for r in all_results
+        if isinstance(r, Exception)
+        or (isinstance(r, dict) and r.get('status') == 'ERROR')
+    ]
+    skipped_results = [r for r in all_results if isinstance(r, dict) and r.get('status') == 'SKIP']
 
     if successful_results:
         reaction_ready = sum(1 for r in successful_results if r.get("past_earnings_dates") not in (None, "", "[]"))
@@ -1357,15 +1053,7 @@ async def main_async(target_code: str | None = None):
                 except sqlite3.OperationalError: cur.execute(f"ALTER TABLE finance_notes ADD COLUMN {col} {coltype};")
             conn.commit()
 
-            # PTS株価/時刻は screener に永続保存。既存DBは自動マイグレーションする。
-            for col, coltype in [("PTS株価", "REAL"), ("PTS時刻", "TEXT")]:
-                try:
-                    cur.execute(f"ALTER TABLE screener ADD COLUMN {col} {coltype};")
-                except sqlite3.OperationalError:
-                    pass
-            conn.commit()
-
-            ts = datetime.now().isoformat(timespec="seconds")
+            ts = datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds")
             data_to_insert = [(
                 r['code'], r.get('formatted_verdict') or "", r.get('score'), r.get('progress_percent'), r.get('out_html') or "", ts,
                 r.get('overall_alpha'), r.get('forecast_op'), r.get('forecast_eps'), r.get('past_earnings_dates'),
@@ -1417,37 +1105,27 @@ async def main_async(target_code: str | None = None):
                     cur.executemany("UPDATE screener SET 直近売上YoY=?, 直近営業益YoY=?, 利益加速フラグ=? WHERE コード=?", screener_updates)
                     conn.commit()
 
-                # 成功取得した銘柄はPTSも更新。株探にPTS表示が無い場合はNULLにして
-                # 前回値を残さない（古いPTSを今日の値と誤認するのを防ぐ）。
-                pts_updates = [
-                    (r.get('pts_price'), r.get('pts_time'), r['code'])
-                    for r in successful_results
-                ]
-                if pts_updates:
-                    cur.executemany(
-                        "UPDATE screener SET PTS株価=?, PTS時刻=? WHERE コード=?",
-                        pts_updates
-                    )
-                    conn.commit()
-                    pts_count = sum(1 for p, _, _ in pts_updates if p is not None)
-                    print(f"[PTS] screener 更新={len(pts_updates)}銘柄 / PTS表示あり={pts_count}銘柄")
         finally:
             try: conn.close()
             except Exception: pass
 
-    # 適正株価の計算・反映
+    # SYSTEM-REWORK: 適正株価/Fair Value の所有者は自動スクリーニングに一本化。
+    # 株探ファンダは財務データ producer に限定し、適正株価/割安度/期待株価を上書きしない。
     if not getattr(_ARGS, 'no_db', False):
-        evaluator = LocalDatabaseEvaluator(DB_PATH)
-        evaluator.evaluate_all()
+        print('[producer] 財務データ更新完了。Fair Value再計算は自動スクリーニング側へ委譲します。')
 
-def main(target_code: str | None = None):
+    print(f"[producer] summary OK={len(successful_results)} SKIP={len(skipped_results)} ERROR={len(error_results)}")
+    return 0 if not error_results else 2
+
+def main(target_code: str | None = None) -> int:
     try:
         if sys.platform == "win32":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        asyncio.run(main_async(target_code=target_code))
+        rc = asyncio.run(main_async(target_code=target_code))
+        return int(rc or 0)
     except Exception as e:
         print(f"[CRITICAL ERROR] メイン処理中に予期せぬエラー: {e}", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='株探から財務データを取得し、グラフを生成します。（非同期・高速化対応）')
@@ -1464,7 +1142,4 @@ if __name__ == "__main__":
     _GLOBALS = globals()
     _GLOBALS['_ARGS'] = args
 
-    try:
-        main(target_code=args.code)
-    except Exception:
-        sys.exit(1)
+    raise SystemExit(main(target_code=args.code))

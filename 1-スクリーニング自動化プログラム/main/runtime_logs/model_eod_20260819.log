@@ -1,0 +1,5 @@
+
+
+===== 2026-08-19T18:30:00 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\モデル学習_catboost.py --require-eod-marker =====
+[model] 今日のYahoo EOD確定markerが未完成 -> 今回は学習skip（次回Taskで再試行）
+===== 2026-08-19T18:30:05 END status=success rc=0 =====

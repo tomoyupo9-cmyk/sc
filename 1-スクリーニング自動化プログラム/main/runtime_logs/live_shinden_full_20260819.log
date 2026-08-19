@@ -1,0 +1,850 @@
+
+
+===== 2026-08-19T08:10:30 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.44s
+[shinden][timer] 最新決算束 0.82s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.71s
+[shinden][timer] 教師語 0.21s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 67.79秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T08:11:39 END status=success rc=0 =====
+
+
+===== 2026-08-19T08:20:35 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.43s
+[shinden][timer] 最新決算束 0.82s
+[shinden][timer] 予想修正履歴 0.07s
+[shinden][timer] 株価先回り 2.03s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 66.37秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T08:21:42 END status=success rc=0 =====
+
+
+===== 2026-08-19T08:30:32 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.46s
+[shinden][timer] 最新決算束 0.84s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.06s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 66.54秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T08:31:40 END status=success rc=0 =====
+
+
+===== 2026-08-19T08:40:32 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.54s
+[shinden][timer] 最新決算束 0.84s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.12s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 68.47秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T08:41:41 END status=success rc=0 =====
+
+
+===== 2026-08-19T08:50:35 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.57s
+[shinden][timer] 最新決算束 0.90s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.16s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 88.17秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T08:52:08 END status=success rc=0 =====
+
+
+===== 2026-08-19T09:00:39 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.56s
+[shinden][timer] 最新決算束 0.86s
+[shinden][timer] 予想修正履歴 0.09s
+[shinden][timer] 株価先回り 2.18s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 72.34秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T09:01:52 END status=success rc=0 =====
+
+
+===== 2026-08-19T09:10:36 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.59s
+[shinden][timer] 最新決算束 0.89s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.25s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 61.91秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T09:11:39 END status=success rc=0 =====
+
+
+===== 2026-08-19T09:20:35 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.67s
+[shinden][timer] 最新決算束 0.90s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.23s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 73.46秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T09:21:49 END status=success rc=0 =====
+
+
+===== 2026-08-19T09:30:38 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.68s
+[shinden][timer] 最新決算束 0.86s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.24s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 62.72秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T09:31:41 END status=success rc=0 =====
+
+
+===== 2026-08-19T09:40:35 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.60s
+[shinden][timer] 最新決算束 0.88s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.20s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 62.34秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T09:41:38 END status=success rc=0 =====
+
+
+===== 2026-08-19T09:50:34 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.65s
+[shinden][timer] 最新決算束 0.91s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.22s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 64.08秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T09:51:39 END status=success rc=0 =====
+
+
+===== 2026-08-19T10:00:56 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 3.41s
+[shinden][timer] 最新決算束 1.22s
+[shinden][timer] 予想修正履歴 0.09s
+[shinden][timer] 株価先回り 2.55s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 64.00秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T10:02:01 END status=success rc=0 =====
+
+
+===== 2026-08-19T10:10:46 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.75s
+[shinden][timer] 最新決算束 0.92s
+[shinden][timer] 予想修正履歴 0.09s
+[shinden][timer] 株価先回り 2.26s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 65.49秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T10:11:52 END status=success rc=0 =====
+
+
+===== 2026-08-19T10:21:01 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 2.67s
+[shinden][timer] 最新決算束 0.87s
+[shinden][timer] 予想修正履歴 0.12s
+[shinden][timer] 株価先回り 2.22s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 64.37秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T10:22:06 END status=success rc=0 =====
+
+
+===== 2026-08-19T10:30:53 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 2.97s
+[shinden][timer] 最新決算束 1.23s
+[shinden][timer] 予想修正履歴 0.12s
+[shinden][timer] 株価先回り 3.13s
+[shinden][timer] 教師語 0.26s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 66.60秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T10:32:00 END status=success rc=0 =====
+
+
+===== 2026-08-19T10:41:06 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.97s
+[shinden][timer] 最新決算束 0.94s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.32s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 66.42秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T10:42:13 END status=success rc=0 =====
+
+
+===== 2026-08-19T10:50:53 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.79s
+[shinden][timer] 最新決算束 1.19s
+[shinden][timer] 予想修正履歴 0.13s
+[shinden][timer] 株価先回り 3.18s
+[shinden][timer] 教師語 0.26s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 66.52秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T10:52:00 END status=success rc=0 =====
+
+
+===== 2026-08-19T11:00:56 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 3.07s
+[shinden][timer] 最新決算束 1.10s
+[shinden][timer] 予想修正履歴 0.09s
+[shinden][timer] 株価先回り 2.39s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 67.14秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T11:02:04 END status=success rc=0 =====
+
+
+===== 2026-08-19T11:10:55 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 3.32s
+[shinden][timer] 最新決算束 1.21s
+[shinden][timer] 予想修正履歴 0.13s
+[shinden][timer] 株価先回り 3.04s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 67.88秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T11:12:04 END status=success rc=0 =====
+
+
+===== 2026-08-19T11:20:54 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.96s
+[shinden][timer] 最新決算束 1.24s
+[shinden][timer] 予想修正履歴 0.12s
+[shinden][timer] 株価先回り 3.07s
+[shinden][timer] 教師語 0.24s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 67.16秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T11:22:02 END status=success rc=0 =====
+
+
+===== 2026-08-19T11:31:20 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.43s
+[shinden][timer] 最新決算束 0.88s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.16s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 60.52秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T11:32:21 END status=success rc=0 =====
+
+
+===== 2026-08-19T11:41:09 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.48s
+[shinden][timer] 最新決算束 0.84s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.12s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 62.37秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T11:42:12 END status=success rc=0 =====
+
+
+===== 2026-08-19T11:51:03 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.35s
+[shinden][timer] 最新決算束 0.82s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.10s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1986 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 72.85秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T11:52:16 END status=success rc=0 =====
+
+
+===== 2026-08-19T12:01:10 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.48s
+[shinden][timer] 最新決算束 0.90s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.17s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 64.19秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T12:02:16 END status=success rc=0 =====
+
+
+===== 2026-08-19T12:11:06 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.27s
+[shinden][timer] TDnet根拠 11.66s
+[shinden][timer] 最新決算束 0.95s
+[shinden][timer] 予想修正履歴 0.54s
+[shinden][timer] 株価先回り 3.87s
+[shinden][timer] 教師語 0.55s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 86.23秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T12:12:33 END status=success rc=0 =====
+
+
+===== 2026-08-19T12:21:02 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.13s
+[shinden][timer] 最新決算束 0.86s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.13s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 72.24秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T12:22:15 END status=success rc=0 =====
+
+
+===== 2026-08-19T12:31:10 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.56s
+[shinden][timer] 最新決算束 1.02s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.52s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1967 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 75.26秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T12:32:26 END status=success rc=0 =====
+
+
+===== 2026-08-19T12:41:16 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.39s
+[shinden][timer] 最新決算束 0.91s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.14s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 74.52秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T12:42:32 END status=success rc=0 =====
+
+
+===== 2026-08-19T12:51:11 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.33s
+[shinden][timer] 最新決算束 0.87s
+[shinden][timer] 予想修正履歴 0.10s
+[shinden][timer] 株価先回り 2.28s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 73.22秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T12:52:26 END status=success rc=0 =====
+
+
+===== 2026-08-19T13:01:20 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.55s
+[shinden][timer] 最新決算束 1.11s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.82s
+[shinden][timer] 教師語 0.22s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 68.94秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T13:02:31 END status=success rc=0 =====
+
+
+===== 2026-08-19T13:21:10 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.41s
+[shinden][timer] 最新決算束 0.87s
+[shinden][timer] 予想修正履歴 0.11s
+[shinden][timer] 株価先回り 2.54s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1987 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 63.51秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T13:22:14 END status=success rc=0 =====
+
+
+===== 2026-08-19T13:32:00 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.43s
+[shinden][timer] 最新決算束 1.04s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.48s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 64.43秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T13:33:06 END status=success rc=0 =====
+
+
+===== 2026-08-19T13:41:30 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.30s
+[shinden][timer] 最新決算束 0.93s
+[shinden][timer] 予想修正履歴 0.12s
+[shinden][timer] 株価先回り 2.32s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 64.02秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T13:42:36 END status=success rc=0 =====
+
+
+===== 2026-08-19T14:01:30 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.42s
+[shinden][timer] 最新決算束 0.89s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.26s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 63.28秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T14:02:35 END status=success rc=0 =====
+
+
+===== 2026-08-19T14:11:27 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.25s
+[shinden][timer] 最新決算束 0.87s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.22s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 63.88秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T14:12:32 END status=success rc=0 =====
+
+
+===== 2026-08-19T14:21:28 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.29s
+[shinden][timer] 最新決算束 1.05s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.46s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 64.53秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T14:22:34 END status=success rc=0 =====
+
+
+===== 2026-08-19T14:41:31 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 2.40s
+[shinden][timer] 最新決算束 0.89s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.40s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 65.64秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T14:42:38 END status=success rc=0 =====
+
+
+===== 2026-08-19T14:51:28 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 2.77s
+[shinden][timer] 最新決算束 0.98s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.38s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 70.42秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T14:52:40 END status=success rc=0 =====
+
+
+===== 2026-08-19T15:01:32 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.44s
+[shinden][timer] 最新決算束 1.06s
+[shinden][timer] 予想修正履歴 0.12s
+[shinden][timer] 株価先回り 2.45s
+[shinden][timer] 教師語 0.22s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 68.69秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T15:02:42 END status=success rc=0 =====
+
+
+===== 2026-08-19T15:21:21 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 2.51s
+[shinden][timer] 最新決算束 0.96s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.37s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1988 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=5銘柄 / 68.17秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T15:22:30 END status=success rc=0 =====
+
+
+===== 2026-08-19T16:34:03 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 12.53s
+[shinden][timer] 最新決算束 0.94s
+[shinden][timer] 予想修正履歴 0.49s
+[shinden][timer] 株価先回り 2.95s
+[shinden][timer] 教師語 0.62s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 77.96秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T16:35:23 END status=success rc=0 =====
+
+
+===== 2026-08-19T16:43:34 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 13.76s
+[shinden][timer] 最新決算束 1.01s
+[shinden][timer] 予想修正履歴 0.10s
+[shinden][timer] 株価先回り 3.01s
+[shinden][timer] 教師語 0.49s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 87.11秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T16:45:03 END status=success rc=0 =====
+
+
+===== 2026-08-19T16:53:42 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.49s
+[shinden][timer] 最新決算束 0.89s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.15s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 71.50秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T16:54:55 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:03:39 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.40s
+[shinden][timer] 最新決算束 0.85s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.12s
+[shinden][timer] 教師語 0.25s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 69.98秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T17:04:51 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:13:35 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.65s
+[shinden][timer] 最新決算束 1.02s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.18s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 71.96秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T17:14:49 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:23:40 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.66s
+[shinden][timer] 最新決算束 0.89s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.44s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 76.39秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T17:24:58 END status=success rc=0 =====
+
+
+===== 2026-08-19T17:54:57 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.66s
+[shinden][timer] 最新決算束 0.87s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.11s
+[shinden][timer] 教師語 0.18s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 74.11秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T17:56:12 END status=success rc=0 =====
+
+
+===== 2026-08-19T18:22:21 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\python.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.75s
+[shinden][timer] 最新決算束 0.93s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.23s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 67.28秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T18:23:30 END status=success rc=0 =====
+
+
+===== 2026-08-19T18:44:51 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.03s
+[shinden][timer] TDnet根拠 2.69s
+[shinden][timer] 最新決算束 0.89s
+[shinden][timer] 予想修正履歴 0.08s
+[shinden][timer] 株価先回り 2.21s
+[shinden][timer] 教師語 0.17s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 74.04秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T18:46:06 END status=success rc=0 =====
+
+
+===== 2026-08-19T18:51:25 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\shinden_logic.py --full =====
+[shinden] 日次バッチ開始: H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db
+[shinden] v23 FAST 全銘柄更新 / 対象 3591銘柄
+[shinden][timer] 履歴 0.04s
+[shinden][timer] TDnet根拠 2.66s
+[shinden][timer] 最新決算束 0.89s
+[shinden][timer] 予想修正履歴 0.09s
+[shinden][timer] 株価先回り 2.66s
+[shinden][timer] 教師語 0.19s
+[shinden] load: 履歴878 / TDnet1990 / 最新決算1968 / 修正履歴940 / 価格3591 / 教師語51
+[shinden] 教師語+: 増配+1.1, 為替差益+1.0, 業績予想の修正+0.9, 上方修正+0.7, 為替差損+0.5
+[shinden] 教師語-: 特別損失-0.5, M&A-0.5, 子会社化-0.3, 売却益-0.3, 値上げ-0.3
+[shinden] v23 FAST 更新=3591銘柄 / fresh決算=4銘柄 / 76.84秒
+[shinden] 日次バッチ完了: 3591銘柄
+===== 2026-08-19T18:52:43 END status=success rc=0 =====

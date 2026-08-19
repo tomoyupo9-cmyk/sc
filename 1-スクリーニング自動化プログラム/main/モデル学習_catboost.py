@@ -4,6 +4,7 @@ import os
 import shutil
 import sqlite3
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,7 @@ DEFAULT_MODEL_DIR = os.environ.get(
     r"D:\kabu\main\1-スクリーニング自動化プログラム\main\model",
 )
 DEFAULT_MODEL_NAME = "stock_predictor_lv3.pkl"
+DEFAULT_OUTPUT_DIR = os.environ.get("KABU_OUTPUT_DIR", r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data")
 
 DEFAULT_TERM = 10
 DEFAULT_TARGET_PCT = 1.10
@@ -76,6 +78,23 @@ def _backup_existing(path: str):
     backup = p.with_name(f"{p.stem}.bak_{stamp}{p.suffix}")
     shutil.copy2(p, backup)
     return str(backup)
+
+
+def _temp_sibling(path: str, tag: str) -> str:
+    p = Path(path)
+    return str(p.with_name(f"{p.stem}.tmp_{os.getpid()}_{tag}{p.suffix}"))
+
+
+def _load_metadata(model_path: str) -> dict:
+    meta = Path(model_path).with_suffix(".metadata.json")
+    if not meta.exists():
+        return {}
+    try:
+        with meta.open("r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
 
 
 def calc_rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -489,6 +508,7 @@ def train(
     min_price: float = DEFAULT_MIN_PRICE,
     val_ratio: float = DEFAULT_VAL_RATIO,
     test_ratio: float = DEFAULT_TEST_RATIO,
+    force_retrain: bool = False,
 ):
     started = time.time()
 
@@ -528,7 +548,21 @@ def train(
     if raw.empty:
         raise RuntimeError("price_history が空です")
 
-    print(f"   DB取得件数: {len(raw):,} 行")
+    raw_dates = pd.to_datetime(raw["日付"], errors="coerce")
+    price_data_max_date = raw_dates.max()
+    if pd.isna(price_data_max_date):
+        raise RuntimeError("price_history の日付が全て不正です")
+    price_data_max_date_s = price_data_max_date.date().isoformat()
+
+    # SYSTEM-REWORK: EODタスクを複数回起動しても、新しい日足が増えていなければ再学習しない。
+    if not force_retrain and Path(model_path).exists():
+        old_meta = _load_metadata(model_path)
+        old_max = str(old_meta.get("price_data_max_date") or "")
+        if old_max and old_max >= price_data_max_date_s:
+            print(f"[model] 新しいprice_historyなし: DB={price_data_max_date_s} model={old_max} -> skip")
+            return {"trained": False, "price_data_max_date": price_data_max_date_s}
+
+    print(f"   DB取得件数: {len(raw):,} 行 / 最新日={price_data_max_date_s}")
 
     # --------------------------------------------------------
     # 2. 特徴量
@@ -647,7 +681,6 @@ def train(
     print(importances.head(10).to_string())
 
     importance_path = str(Path(model_path).with_suffix(".feature_importance.csv"))
-    importances.to_csv(importance_path, encoding="utf-8-sig", header=True)
 
     # --------------------------------------------------------
     # 8. 保存
@@ -658,14 +691,19 @@ def train(
     if backup:
         print(f"   既存モデルをバックアップ: {backup}")
 
-    joblib.dump(model, model_path)
-
-    # CatBoostネイティブ形式も保存（joblib版との互換性は維持）
+    # SYSTEM-REWORK: 本番ファイルへ直接書かず、一時ファイルへ完成後 os.replace する。
     cbm_path = str(Path(model_path).with_suffix(".cbm"))
-    model.save_model(cbm_path)
+
+    generation_id = uuid.uuid4().hex
+    try:
+        setattr(model, "_kabu_generation_id", generation_id)
+    except Exception:
+        pass
 
     metadata = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "generation_id": generation_id,
+        "price_data_max_date": price_data_max_date_s,
         "db_path": db_path,
         "model_path": model_path,
         "features": FEATURES,
@@ -689,8 +727,36 @@ def train(
     }
 
     meta_path = str(Path(model_path).with_suffix(".metadata.json"))
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+    tmp_model = _temp_sibling(model_path, "joblib")
+    tmp_cbm = _temp_sibling(cbm_path, "cbm")
+    tmp_meta = _temp_sibling(meta_path, "meta")
+    tmp_importance = _temp_sibling(importance_path, "importance")
+    publish_lock = str(Path(model_path).with_suffix(".publishing.lock"))
+    temps = [tmp_model, tmp_cbm, tmp_meta, tmp_importance]
+    try:
+        with open(publish_lock, "w", encoding="utf-8") as f:
+            f.write(generation_id)
+        joblib.dump(model, tmp_model)
+        model.save_model(tmp_cbm)
+        importances.to_csv(tmp_importance, encoding="utf-8-sig", header=True)
+        with open(tmp_meta, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        os.replace(tmp_model, model_path)
+        os.replace(tmp_cbm, cbm_path)
+        os.replace(tmp_importance, importance_path)
+        os.replace(tmp_meta, meta_path)
+    finally:
+        for tmp in temps:
+            try:
+                if os.path.exists(tmp): os.remove(tmp)
+            except Exception:
+                pass
+        try:
+            if os.path.exists(publish_lock): os.remove(publish_lock)
+        except Exception:
+            pass
 
     elapsed = time.time() - started
 
@@ -708,6 +774,23 @@ def train(
     print("  stop_hunt_reversal と dist_from_poc の定義を修正しているため、")
     print("  推論側でも同じ特徴量計算式に合わせてください。")
 
+
+
+def _eod_marker_ready(output_dir: str = DEFAULT_OUTPUT_DIR) -> bool:
+    """自動スクリーニングのYahoo EOD確定markerが今日分か確認する。"""
+    marker = Path(output_dir) / "last_yahoo_bulk_refresh.txt"
+    if not marker.exists():
+        return False
+    try:
+        payload = marker.read_text(encoding="utf-8").strip()
+        # markerは YYYY-MM-DD|build_token。旧date-onlyも同日なら互換で許容。
+        today = datetime.now().date().isoformat()
+        if not (payload == today or payload.startswith(today + "|")):
+            return False
+        mday = datetime.fromtimestamp(marker.stat().st_mtime).date().isoformat()
+        return mday == today
+    except Exception:
+        return False
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -730,11 +813,16 @@ def parse_args():
     parser.add_argument("--min-price", type=float, default=DEFAULT_MIN_PRICE)
     parser.add_argument("--val-ratio", type=float, default=DEFAULT_VAL_RATIO)
     parser.add_argument("--test-ratio", type=float, default=DEFAULT_TEST_RATIO)
+    parser.add_argument("--force", action="store_true", help="price_historyが同じ日でも強制再学習")
+    parser.add_argument("--require-eod-marker", action="store_true", help="今日のYahoo EOD確定markerがある時だけ学習")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.require_eod_marker and not _eod_marker_ready():
+        print("[model] 今日のYahoo EOD確定markerが未完成 -> 今回は学習skip（次回Taskで再試行）")
+        raise SystemExit(0)
     train(
         db_path=args.db,
         model_path=args.model,
@@ -745,4 +833,5 @@ if __name__ == "__main__":
         min_price=args.min_price,
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
+        force_retrain=args.force,
     )

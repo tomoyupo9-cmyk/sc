@@ -1,0 +1,101 @@
+{
+  "created_at": "2026-08-12T04:53:31",
+  "db_path": "H:\\desctop\\株攻略\\1-スクリーニング自動化プログラム\\main\\db\\kani2.db",
+  "model_path": "D:\\kabu\\main\\1-スクリーニング自動化プログラム\\main\\model\\stock_predictor_lv3.pkl",
+  "features": [
+    "return_1d",
+    "range",
+    "body",
+    "upper_shadow",
+    "kairi_5",
+    "kairi_25",
+    "kairi_75",
+    "rsi_14",
+    "bb_pos",
+    "vol_ratio",
+    "perfect_order",
+    "trend_strong",
+    "market_return",
+    "market_sentiment",
+    "relative_strength",
+    "stop_hunt_reversal",
+    "dist_from_poc",
+    "turnover_20d_avg",
+    "liquidity_class"
+  ],
+  "cat_features": [
+    "liquidity_class"
+  ],
+  "term": 10,
+  "target_pct": 1.1,
+  "stop_pct": 0.93,
+  "label_mode": "touch",
+  "min_price": 300.0,
+  "val_ratio": 0.1,
+  "test_ratio": 0.2,
+  "validation_start": "2024-09-30",
+  "test_start": "2025-05-20",
+  "train_rows": 2421819,
+  "validation_rows": 525910,
+  "test_rows": 1052043,
+  "best_iteration": 1021,
+  "decision_threshold": 0.17475503500813352,
+  "validation_metrics": {
+    "name": "VALIDATION",
+    "n": 525910,
+    "positive_rate": 0.12146755148219276,
+    "threshold": 0.17475503500813352,
+    "accuracy": 0.8024642999752809,
+    "precision": 0.2952346829093515,
+    "recall": 0.45146444169627903,
+    "f1": 0.357005805676937,
+    "brier": 0.09546815165519468,
+    "confusion_matrix": [
+      [
+        393184,
+        68845
+      ],
+      [
+        35041,
+        28840
+      ]
+    ],
+    "roc_auc": 0.7379880501893574,
+    "pr_auc": 0.32626180056638615,
+    "precision_top_1pct": 0.6938581479368702,
+    "lift_top_1pct": 5.712292208661095,
+    "precision_top_5pct": 0.459364898269633,
+    "lift_top_5pct": 3.7817910434868383,
+    "precision_top_10pct": 0.36770550094122567,
+    "lift_top_10pct": 3.0271911836070196
+  },
+  "test_metrics": {
+    "name": "TEST",
+    "n": 1052043,
+    "positive_rate": 0.13423880963040485,
+    "threshold": 0.17475503500813352,
+    "accuracy": 0.7852236077802903,
+    "precision": 0.30244769103787883,
+    "recall": 0.4592600460258453,
+    "f1": 0.36471243167862527,
+    "brier": 0.10564394165977112,
+    "confusion_matrix": [
+      [
+        761230,
+        149588
+      ],
+      [
+        76366,
+        64859
+      ]
+    ],
+    "roc_auc": 0.7335095459086374,
+    "pr_auc": 0.3146260608958932,
+    "precision_top_1pct": 0.5706273764258555,
+    "lift_top_1pct": 4.2508375781709065,
+    "precision_top_5pct": 0.43604805900916316,
+    "lift_top_5pct": 3.248300995887251,
+    "precision_top_10pct": 0.3715067868141896,
+    "lift_top_10pct": 2.7675065641377974
+  }
+}

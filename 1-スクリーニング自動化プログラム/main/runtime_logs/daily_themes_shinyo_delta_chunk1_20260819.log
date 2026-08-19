@@ -1,0 +1,16 @@
+
+
+===== 2026-08-19T18:41:32 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\fetch_all_kabutan_themes_shinyo.py --codes 3076 3856 4575 5038 5247 6501 7047 7063 7744 8343 =====
+[themes-shinyo] 差分 10 銘柄を開始
+[1/10] 3076: theme=28 credit_rows=5 earnings=2026/08/19
+[2/10] 3856: theme=16 credit_rows=5 earnings=2026/08/19
+[3/10] 4575: theme=10 credit_rows=5 earnings=2026/08/12
+[4/10] 5038: theme=13 credit_rows=5 earnings=2026/08/14
+[5/10] 5247: theme=12 credit_rows=5 earnings=2026/08/14
+[6/10] 6501: theme=149 credit_rows=5 earnings=-
+[7/10] 7047: theme=29 credit_rows=5 earnings=2026/08/12
+[8/10] 7063: theme=15 credit_rows=5 earnings=2026/08/14
+[9/10] 7744: theme=7 credit_rows=5 earnings=2026/08/14
+[10/10] 8343: theme=6 credit_rows=5 earnings=-
+[themes-shinyo] 完了 ok=10 fail=0 themes=285 credit_rows=50
+===== 2026-08-19T18:41:49 END status=success rc=0 =====

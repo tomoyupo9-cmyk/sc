@@ -1,0 +1,14 @@
+
+
+===== 2026-08-17T15:30:28 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\pythonw.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[sync][P1-608] newer earnings event -> stale finance mask: 1048 codes
+
+
+===== 2026-08-17T23:37:12 START C:\Users\sasit\AppData\Local\Programs\Python\Python310\python.exe D:\kabu\main\1-スクリーニング自動化プログラム\main\eod_finalize.py =====
+C:\Users\sasit\AppData\Local\Programs\Python\Python310\lib\site-packages\librosa\util\files.py:10: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_filename
+[eod][START] ensure_runlog_schema
+[eod][DONE]  ensure_runlog_schema: elapsed=0.0s
+[eod][START] yahoo_bulk_refresh
