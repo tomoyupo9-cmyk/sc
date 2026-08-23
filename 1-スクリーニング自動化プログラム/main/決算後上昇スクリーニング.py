@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # 2026-08-17 V6 運用障害・性能改善の引継ぎ記録（次回改修者は先に読むこと）
 # ============================================================================
 #
@@ -2139,6 +2139,21 @@ def canonical_code_for_db(code: str) -> str:
     if code is None:
         return ""
     s = str(code).strip()
+
+    # DB key safety guard:
+    # Reject accidental pandas Series/DataFrame string representations.
+    # A valid security code must never contain line breaks or pandas repr markers.
+    if (
+        "\n" in s
+        or "\r" in s
+        or "dtype:" in s
+        or "Name:" in s
+    ):
+        raise ValueError(
+            "series-like security code rejected: "
+            + repr(s[:160])
+        )
+
     if not s:
         return ""
     u = s.upper()
@@ -2991,7 +3006,6 @@ def _ensure_latest_prices_index_rows(conn):
 def setup_database_indexes(conn: sqlite3.Connection) -> None:
     """テーブル構築後、または初期化フェーズで明示的に呼び出すインデックス作成関数"""
     try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_code_date ON price_history(コード, 日付);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_code_date ON signals_log(コード, 日時);")
     except sqlite3.OperationalError as e:
         print(f"[DB Setup] インデックス作成をスキップしました: {e}")
@@ -18350,7 +18364,7 @@ def _external_live_materials_ready(max_age_minutes: int = 45) -> tuple[bool, str
 
     # P3-42: EODはlive_materialsがpartialでも通さない。Yahoo確定足のEOD専用job成功を要求。
     if _mode_now == "EOD":
-        eod = _external_job_state("live_eod_finalize")
+        eod = _external_job_state("eod_finalize")
         if str(eod.get("status") or "") != "success":
             return False, f"EOD finalize status={eod.get('status') or 'missing'}"
         ets = eod.get("last_finished_at") or eod.get("last_success_at")
@@ -19290,3 +19304,4 @@ if __name__ == "__main__":
             _release_shared_writer_lock(_shared_writer_token)
         except Exception as _e:
             print("[shared-writer-lock][WARN] release:", _e)
+

@@ -603,7 +603,6 @@ def _ensure_fast_indexes(conn: sqlite3.Connection) -> None:
     ダッシュボード列は増やさない。CREATE IF NOT EXISTSなので2回目以降はほぼ無コスト。
     """
     candidates = [
-        ("price_history", "idx_shinden_price_code_date", '"コード","日付" DESC'),
         ("tdnet_documents", "idx_shinden_tdnet_code_pub", '"コード","提出時刻" DESC'),
         ("forecast_achievement_history", "idx_shinden_ach_code_fiscal", '"コード","fiscal_key" DESC'),
         ("earnings_reaction_labels", "idx_shinden_reaction_code_pub", '"コード","発表日時" DESC'),

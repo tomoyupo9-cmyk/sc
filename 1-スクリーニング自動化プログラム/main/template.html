@@ -6,8 +6,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>スクリーニング ダッシュボード</title>
+<!-- P4-DASH4-VT-SINGLE: template.html is the virtual-scroll dashboard source -->
 <!-- shinden-ui-v4-priority: 2026-08-12 -->
 <!-- P3-47 2026-08-17: シンデン正式点と履歴不足の参考点を表示・並び順で分離 -->
+<!-- P4-DASH3 2026-08-21: Python producer semantics ↔ dashboard headers/sort keys unified -->
+<!-- P4-DASH5 2026-08-21: active column filters highlight headers + persistent removable chips -->
+<!-- FV-SAFE 2026-08-22: 基礎適正 / 参考上限 / EPS品質 / 評価方式を分離 -->
+<!-- REPRICING-DISCOVERY-V1 2026-08-23: 企業価値改善×株価未反応の複数ルート探索を追加 -->
+<!-- UI-2AXIS-V1 2026-08-23: 短期タイミング×ファンダをAND併用。旧ワンタッチ枠を統合 -->
+<!-- WATCH-TIMING-V1 2026-08-23: 第3枠「買い時を監視する」Phase1。WATCH/NEAR/START/READY/BROKEN -->
+<!-- POST-EARNINGS-MIGRATION-V1 2026-08-23: 決算後継続/反転/好決算売られすぎを本線へ統合 -->
+<!-- WATCH-RISK-V1 2026-08-23: 撤退ライン/リスク幅/100株損失/許容額判定 -->
+<!-- FUND-QUICK 2026-08-22: daily-simpleにファンダ系ワンタッチ枠を常設 -->
+<!-- FUND-SOURCE-TRUTH 2026-08-22: 株探quarterly_actual_history + TDnet forecast_historyを正本化 -->
+<!-- 営業利益状態は四半期実額、予想修正はTDnet同一年度の数値差から判定 -->
 <style>
   :root{
     --sticky-left-w: 0px;
@@ -233,6 +245,16 @@
   .yabb-btn:hover { opacity: 0.9; }
 
   /* === シンデン型・決算予想評価 === */
+  /* === P4-DASH2 売買目的別6列 === */
+  .strategy-main { font-weight:900; text-align:center; font-variant-numeric:tabular-nums; }
+  .strategy-hold { color:#7c3aed; }
+  .strategy-steady { color:#047857; }
+  .strategy-a { color:#0f766e; }
+  .strategy-c { color:#c2410c; }
+  .strategy-b { color:#7c3aed; }
+  .strategy-entry { color:#1d4ed8; }
+  th.strategy-head { background:#f5f3ff !important; }
+
   .shinden-score { font-weight:800; text-align:right; font-variant-numeric:tabular-nums; }
   .shinden-score.sh-s { color:#b91c1c; background:#fff1f2; }
   .shinden-score.sh-a { color:#9a3412; background:#fff7ed; }
@@ -312,8 +334,85 @@
   }
   .filter-icon:hover { color: var(--blue); }
   .filter-icon.active {
-    color: #ef4444;
-    font-weight: bold;
+    color: #fff !important;
+    background:#f97316;
+    border:1px solid #ea580c;
+    border-radius:999px;
+    min-width:16px;
+    height:16px;
+    line-height:14px;
+    text-align:center;
+    padding:0 2px;
+    font-weight:900;
+    box-shadow:0 1px 2px rgba(124,45,18,.18);
+  }
+
+  /* P4-DASH5: 絞込中の列をヘッダー全体で可視化する。 */
+  #tbl-candidate thead th.filter-column-active{
+    background:#ffedd5 !important;
+    color:#9a3412 !important;
+    box-shadow:
+      inset 0 -4px 0 #f97316,
+      inset 0 0 0 1px #fdba74,
+      0 1px 0 rgba(0,0,0,.06) !important;
+    font-weight:900 !important;
+  }
+  #tbl-candidate thead th.filter-column-active .qhelp{
+    background:#fff7ed;
+    border-color:#fdba74;
+    color:#9a3412;
+  }
+
+  /* 有効な列フィルターを表の直前に常時表示。0件時は非表示。 */
+  #active-column-filters{
+    display:none;
+    align-items:center;
+    gap:6px;
+    flex-wrap:wrap;
+    margin:5px 0 6px;
+    padding:6px 8px;
+    border:1px solid #fed7aa;
+    border-radius:9px;
+    background:#fff7ed;
+    color:#7c2d12;
+    font-size:10px;
+  }
+  #active-column-filters.visible{ display:flex; }
+  #active-column-filters .acf-title{ font-weight:900; margin-right:2px; }
+  #active-column-filters .acf-chip{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    max-width:360px;
+    padding:2px 7px;
+    border:1px solid #fdba74;
+    border-radius:999px;
+    background:#fff;
+    color:#9a3412;
+    font-weight:800;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  #active-column-filters .acf-chip button{
+    border:0;
+    background:transparent;
+    color:#c2410c;
+    cursor:pointer;
+    padding:0;
+    font-size:12px;
+    font-weight:900;
+    line-height:1;
+  }
+  #active-column-filters .acf-clear-all{
+    margin-left:auto;
+    border:1px solid #fdba74;
+    background:#fff;
+    color:#9a3412;
+    border-radius:7px;
+    padding:2px 7px;
+    cursor:pointer;
+    font-weight:800;
   }
   .excel-filter-popover {
     display: none;
@@ -345,6 +444,26 @@
   #quality-health .qh-warn{color:#b45309;font-weight:700}
   #quality-health .qh-ok{color:#166534;font-weight:700}
   #quality-health .qh-chip{background:white;border:1px solid #e2e8f0;border-radius:999px;padding:2px 7px}
+
+  /* P4-DASH6: 全個別株フォロースルーを背景にした個別買い環境。主役は各行の2列。 */
+  #entry-env-panel{
+    margin:5px 0 7px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:10px;
+    background:#f8fafc; font-size:10px; line-height:1.55; color:#334155;
+  }
+  #entry-env-panel .eep-flow{font-weight:800;color:#0f172a;margin-right:10px}
+  #entry-env-panel .eep-summary{display:inline-flex;gap:5px;align-items:center;flex-wrap:wrap}
+  #entry-env-panel .eep-chip{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;background:#fff;border:1px solid #dbe4ef;white-space:nowrap}
+  #entry-env-panel .eep-regime{font-weight:900}
+  #entry-env-panel .reg-a{background:#dcfce7;border-color:#86efac;color:#166534}
+  #entry-env-panel .reg-b{background:#dbeafe;border-color:#93c5fd;color:#1e40af}
+  #entry-env-panel .reg-c{background:#ffedd5;border-color:#fdba74;color:#9a3412}
+  #entry-env-panel .reg-d{background:#fee2e2;border-color:#fca5a5;color:#991b1b}
+  #entry-env-panel .reg-n{background:#f1f5f9;color:#64748b}
+  .strategy-resilience{font-weight:900;text-align:center;color:#0f766e}
+  .strategy-env-entry{font-weight:900;text-align:center}
+  .env-entry-buy{color:#166534;background:#f0fdf4}
+  .env-entry-watch{color:#9a3412;background:#fff7ed}
+  .env-entry-stop{color:#991b1b;background:#fff1f2}
 </style>
 
 <script id="freeze-cols">
@@ -610,7 +729,7 @@
   #purpose-clear:hover{background:#f1f5f9}
   .purpose-grid{
     display:grid;
-    grid-template-columns:repeat(5,minmax(145px,1fr));
+    grid-template-columns:repeat(6,minmax(135px,1fr));
     gap:8px;
   }
   .purpose-btn{
@@ -628,6 +747,7 @@
     position:absolute;right:8px;top:7px;min-width:22px;padding:2px 6px;border-radius:999px;
     background:rgba(255,255,255,.20);font-size:10px;font-weight:900;text-align:center;
   }
+  .purpose-todaybuy{background:linear-gradient(135deg,#dc2626,#991b1b)}
   .purpose-now{background:linear-gradient(135deg,#2563eb,#1d4ed8)}
   .purpose-pullback{background:linear-gradient(135deg,#16a34a,#15803d)}
   .purpose-rebound{background:linear-gradient(135deg,#0f766e,#0d9488)}
@@ -699,8 +819,37 @@
   }
 </style>
 
+
+<style id="virtual-scroll-v1">
+  /* P4-DASH4-VT: 全件はJS配列に保持し、DOMは画面周辺だけ描画する。 */
+  body.virtual-scroll-vt #tbl-candidate tbody tr:not(.virtual-spacer){
+    height:34px !important; min-height:34px !important; max-height:34px !important;
+  }
+  body.virtual-scroll-vt #tbl-candidate tbody tr:not(.virtual-spacer) > td{
+    height:34px !important; min-height:34px !important; max-height:34px !important;
+    overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important;
+    vertical-align:middle !important;
+  }
+  body.virtual-scroll-vt #tbl-candidate tbody tr:not(.virtual-spacer) > td.reason-col{
+    white-space:nowrap !important; overflow:hidden !important; text-overflow:ellipsis !important;
+  }
+  body.virtual-scroll-vt #tbl-candidate tbody tr.virtual-spacer,
+  body.virtual-scroll-vt #tbl-candidate tbody tr.virtual-spacer > td{
+    padding:0 !important; border:0 !important; margin:0 !important; background:transparent !important;
+    min-height:0 !important; max-height:none !important; line-height:0 !important; font-size:0 !important;
+  }
+  #virtual-mode-badge{
+    display:inline-flex; align-items:center; gap:6px; margin-right:8px; padding:3px 9px;
+    border-radius:999px; background:#ecfdf5; color:#047857; border:1px solid #a7f3d0;
+    font-size:10px; font-weight:900; white-space:nowrap;
+  }
+  body.virtual-scroll-vt .pager label,
+  body.virtual-scroll-vt #prev,
+  body.virtual-scroll-vt #next{ display:none !important; }
+</style>
+
 </head>
-<body>
+<body class="virtual-scroll-vt">
 <script id="__DATA__" type="application/json">{}</script>
 <script id="inline-data">
   (function(){
@@ -714,6 +863,10 @@
     <span id="nav-summary-anchor"></span>
   </nav>
   <div id="quality-health"><span class="muted">データ品質: 読み込み中…</span></div>
+  <div id="entry-env-panel">
+    <span class="eep-flow">見る順番：① 今買える？＝銘柄単体 → ② 相場耐性＝崩れにくさ → ③ 地合込ENTRY＝最近の実績込み。迷ったら最初に「🎯 今日買う株」を押す</span>
+    <span id="entry-env-summary" class="eep-summary"><span class="muted">全個別株の買い環境: 読み込み中…</span></span>
+  </div>
 
   <div id="toolbar" class="toolbar">
     <div class="res-filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 4px">
@@ -744,6 +897,11 @@
         <label><input type="checkbox" id="f_shodou"> 初動</label>
         <label><input type="checkbox" id="f_tei"> 底打ち</label>
         <label><input type="checkbox" id="f_rightup"> 右肩上がり</label>
+        <label><input type="checkbox" id="f_steady"> 持続上昇</label>
+        <label><input type="checkbox" id="f_a_reversal"> 底反転(A)</label>
+        <label><input type="checkbox" id="f_c_impulse"> 急伸(C)</label>
+        <label><input type="checkbox" id="f_b_watch"> 材料先行(B監視)</label>
+        <label><input type="checkbox" id="f_hold_good"> 持越し適性★★★★以上</label>
         <label><input type="checkbox" id="f_early"> 短期シグナル</label>
         <label><input type="checkbox" id="f_news_bluepos"> 株探ニュース(青●)</label>
 
@@ -830,9 +988,7 @@
     <button class="btn" id="download-csv">CSVダウンロード</button>
     
     <!-- ワンクリック抽出ボタン（新規追加） -->
-    <button class="btn" id="btn-quick-undervalued" style="background-color: #0ea5e9;">✨ 割安銘柄</button>
     <button class="btn" id="btn-quick-nextday" style="background-color: #ef4444; color: white; font-weight: bold;">🔥 翌日+5%狙い (総当たり)</button>
-    <button class="btn" id="btn-quick-postearnings" style="background-color: #059669;">✅ 決算通過 ＆ 割安</button>
     <button class="btn" id="btn-quick-earnings-bridge"
             style="background-color:#7c3aed;color:#fff;font-weight:800;"
             title="今日が決算発表日 ＋ シンデン主モード=決算前 ＋ S/A判定だけを抽出し、シンデン総合スコア降順で表示します。既存フィルターとの併用です。">
@@ -849,42 +1005,53 @@
               "【△閾値近辺】decision_threshold 未満だが、その直下の表示用境界帯にいる状態です。正式な陽性判定ではありません。\n" +
               "【◯閾値未満】境界帯より下です。\n\n" +
               "※固定65%などの閾値を勝手に作らず、学習時に保存された判定閾値を優先します。",
-    "AI目標値": "AI回帰の目標株価ではありません。学習時の分類ラベル target_pct（例:+10%）に対応する到達基準価格です。AIスコアは、その到達条件に対するモデル確率として解釈します。\n\n" +
-                "例: target_pct=1.10、現在値2,000円なら、到達基準は2,200円です。\n" +
-                "※AI判定の種類によってこの基準価格自体が変わるわけではありません。",
+    "AI目標値": "AI回帰の目標株価ではありません。学習時の分類ラベル target_pct（例:+10%）に対応する到達基準価格です。AIスコアは、その到達条件に対するCatBoostのpredict_probaです。\n\n" +
+                "例: target_pct=1.10、現在値2,000円なら表示上の到達基準は2,200円です。\n" +
+                "【並べ替え】基準価格そのものではなく、producerが渡すAI到達確率（AIスコア）で並べます。価格順と誤解しないでください。",
     "抵抗帯中心":"過去データからタッチ回数が最も多い価格帯の中心（抵抗）。",
     "抵抗最終日":"直近で抵抗帯に触れた日。",
-    "最寄り抵抗":"現在値以上で最も近い抵抗。",
+    "最寄り抵抗":"現在値より上の支持抵抗候補で最も近い価格。価格帯/20日高値/60日高値/90日高値を使い、回帰抵抗線はR²>=0.30の時だけ候補に採用します。",
     "支持帯中心":"過去データからタッチ回数が最も多い価格帯の中心（支持）。",
     "支持最終日":"直近で支持帯に触れた日。",
-    "最寄り支持":"現在値以下で最も近い支持。",
+    "最寄り支持":"現在値より下の支持抵抗候補で最も近い価格。価格帯/20日安値/60日安値/90日安値を使い、回帰支持線はR²>=0.30の時だけ候補に採用します。",
     "規定":"既定セット（前日終値比率 降順 × RVOL>2 × 売買代金(億)の下限）を一括適用。",
     "コード":"東証の銘柄コード（4桁、ETF等は例外あり）。",
-    "銘柄":"銘柄名。","現在値":"最新の株価（終値/スナップショット）。","PTS株価":"株探ページに表示されるPTS株価。下段の小さい文字は株探上のPTS表示時刻。通常市場の現在値より上なら赤、下なら青で表示します。","前日終値":"その銘柄の前日の終値。基準価格となる。",
+    "銘柄":"銘柄名。","現在値":"最新の株価（終値/スナップショット）。","前日終値":"その銘柄の前日の終値。基準価格となる。",
     "高値":"当日の高値。","安値":"当日の安値。","5日":"単純移動平均（5日）。","25日":"単純移動平均（25日）。","75日":"単純移動平均（75日）。",
     "抵抗HH":"過去N日(設定値)の最高値。","抵抗ゾーン":"タッチ回数最大の水平帯の中心値。","タッチ":"抵抗ゾーンへの到達回数。","最終":"抵抗ゾーンの最終タッチ日。",
     "キリ番":"最高値に最も近い丸め値。","刻":"キリ番の刻み。","近":"最高値がキリ番に十分近いか。","斜め":"ピボット高値回帰の本日外軸値。","R²":"決定係数。",
     "最近接抵抗":"現在値より上で最も近い抵抗。",
     "前日比(円)":"当日の株価が前日終値から何円動いたか。",
-    "前日終値比率（％）":"【勢い】値動きの強さ。+10%以上は短期資金集中の証拠。",
+    "前日終値比率（％）":"前日終値から現在値までの騰落率（%）。値が大きいほど当日上昇が強いですが、それだけで資金の主体や継続性は断定しません。",
     "出来高":"売買された株数。","売買代金(億)":"【流動性】最重要。デイトレ狙いなら最低 5–10 億以上。",
     "信用倍率": "信用買い残 ÷ 信用売り残。1を割ると売り長（将来の買い戻し圧力）、高いと買い長（将来の売り圧力）。",
-    "需給安全": "信用倍率1.0～3.0 かつ 出来高OH(買い残÷20日平均出来高)3.0以下の、機関の標的になりにくい銘柄。",
+    "需給安全": "信用倍率1.0～3.0 かつ 需給OH（信用買い残÷20日平均出来高）3.0以下なら1。どちらか欠損なら判定不能(NULL)、条件外なら0です。機関の行動を推定する指標ではありません。",
     "需給OH": "出来高オーバーハング（Days to Cover）。買い残が直近20日平均出来高の何日分(何回転)あるか。0.5日分未満は軽く、4日分超はかなり重い。",
     "買い残/浮動株": "信用買い残 ÷ 浮動株数(%)。1%未満は問題なし、5%以上は買い過多、10%以上は過度な買い長で危険。",
     "買い残増減20日": "20日前（または決算前20日）からの信用買い残の増減率(%)。決算期待等で急増(+30%超)している場合は捕まり玉のリスク大。",
     "需給負荷": "浮動株比率・出来高回転日数(需給OH)・買い残増加率から算出した総合的な上値の重さ（0〜100点）。高得点ほど売り圧力大。",
     "売り残": "信用売り残高（株数）。将来の買い戻し要因。",
     "買い残": "信用買い残高（株数）。将来の売り要因。",
-    "RVOL代金":"直近平均に対する当日の代金倍率。2倍以上で資金集中の兆候。",
-    "初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
-    "初動S":"テーマ強度＋個別の勢いを評価した初動期待スコア。テーマは最大50点。技術側(RVOL20＋前日騰落15＋RS_5過熱抑制10)は3要素中2つ以上が取れた場合だけ45点へ再正規化し、1要素以下は情報不足。理論最大95点。",
-    "財務スコア":"財務・業績指標を集約した評価スコア。0〜100点で、値が高いほど財務状況が良好な銘柄です。",
+    "RVOL代金":"当日売買代金 ÷ 直近20日平均売買代金の倍率。出来高倍率ではありません。2.0なら平常の約2倍の売買代金です。",
+    "持越し適性":"持ち越し本命度の5段階表示。確率ではありません。既存STEADY_UPを主軸に、研究A（底反転）を補助し、低位株・当日過熱・場中の深い押しを減点したランキング補助です。",
+    "持続上昇":"既存STEADY_UPの0〜100点。MA5>MA25、MA25>MA75、MA25/75の傾き、MA25上滞在、安値切り上げ、5日上昇、高値更新と、場中10/20/30/60分の継続性・押しの浅さを採点します。◎は正式STEADY_UP gate通過。",
+    "底反転":"研究A。新20日安値を一度つけても旧20日安値を終値/現在値で奪回するA2を基礎に、直近10日で同支持帯を2回吸収した形を上位表示。『◎』は2回目が前回吸収安値を0.5〜3%下抜いて奪回した研究上の有望形。",
+    "急伸":"研究C。前日出来高比2.8倍以上かつ前日比+2.9%以上のベンチマーク条件。10営業日以内の大値幅候補を拾う目的で、持ち越し安全性とは別物です。",
+    "材料先行":"研究Bの監視フラグ。安値圏・出来高枯れ後の売買代金急増・高値引けを観測し、近い予定決算は除外します。好材料の発生やインサイダー取引を意味しません。現段階では順位付けより監視用です。",
+    "今買える":"銘柄単体の一次ENTRY目安。持続上昇・底反転・急伸・過熱・場中の崩れなど、スクリーナーで観測できる範囲から『今この価格で買いを検討できる形か』を判定します。",
+    "相場耐性":"現在の個別株が悪地合いでも崩れにくい構造かを0〜100で評価します。RS5/RS20、持続上昇、支持線までの距離、場中の高安位置、売買代金、RVOL代金、Safety、短期需給の取得済み項目だけを再正規化します。市場全体の点数ではなく、その銘柄自身の耐性です。",
+    "地合い込み一次判定":"見る順番の3段目。既存『今買える？』を最初のgateとして、相場耐性と最近の買いフォロースルー環境を加えます。導入後に実際の場中runで『今買える？=○』が初めて成立した価格を保存し、10/30/60分後・引け・翌営業日・3営業日後・60分MFE/MAEを追跡します。実signal統計が十分たまるまでは全個別株の1/3/5/10日・MFE/MAE等をfallbackに使います。環境だけで『今買える？』非該当銘柄を買いへ昇格させません。",
+    "右肩S":"持続右肩上がり判定の0〜100点。既存の右肩上がりロジックのスコアで、STEADY_UPとは別物です。",
+    "初動":"【初動2x+2%】INITIAL_MOMENTUM。直前20営業日平均に対して当日出来高2倍以上、かつ前日比+2%以上を核条件にした独立初動です。旧テク初動フラグとは別物です。",
+    "底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。","早期S":"RVOL/代金/値動きの合成S。",
+    "初動S":"INITIAL_MOMENTUM_SCORE（0〜100の説明スコア）。2x+2%のgateそのものとは分離され、出来高倍率・前日比・代金倍率・終値位置などで強弱を補助表示します。",
+    "財務スコア":"finance_notes.score を screener.スコアへ同期した財務producerの評価値です。0〜100点尺度ではありません。値が大きいほどproducer上の評価が高い、という比較用の離散スコアとして扱います。",
+    "財務評価":"finance_notes.overall_alpha の財務評価ランクです。クオンツのα（超過収益）ではありません。コメント中の【総合評価】を優先し、欠損時だけscoreから暫定補完します。",
     "進捗率":"今回の決算における通期に対する進捗率（%）。",
     "過去平均進捗率":"過去数年における、同四半期の平均的な進捗率（%）。企業の季節性を測る基準になります。",
-    "季節調整済進捗差分":"今回の進捗率から過去平均を引いた値（%）。プラスなら例年より好調、マイナスなら例年より遅れ気味（出尽くし警戒）と判断できます。",
-    "増資リスク":"将来の増資・MSワラント等による希薄化リスクのラベル（高/中/低など）。",
-    "増資スコア":"増資リスクを0〜100で数値化した指標。値が高いほど希薄化リスクが高い。",
+    "季節調整済進捗差分":"今回進捗率 − 過去の同四半期平均進捗率（%）。プラスなら過去季節平均より進捗が上、マイナスなら下です。この値だけで出尽くし・上方修正等は断定しません。",
+    "増資リスク":"現行自動スクリーニングにはcurrent writerが無いため、このlegacy列は今回snapshotでは無効化(NULL)します。希薄化イベントの現行正本は offerings_events 由来の「増資経歴」バッジです。",
+    "増資スコア":"現行writerなしのlegacy列です。今回snapshotでは無効化するため、順位付けには使用しません。",
     "PBR": "株価純資産倍率。1倍割れは解散価値を下回る割安水準。",
     "EPS": "1株当たり純利益。PER（株価収益率）計算の分母。",
     "BPS": "1株当たり純資産。PBR計算の分母。",
@@ -892,9 +1059,9 @@
     "判定":"最終判定。","判定理由":"候補にした根拠の要約。","推奨":"推奨ラベル。","推奨比率%":"推奨の強さ（%）。","更新":"シグナル最終更新日。",
     "ブレイク":"高値更新＋出来高伴う上抜け。","ポケット":"押し目買い有利域。","20MAリバ":"20MA再突入。","200MAリクレイム":"200MAを回復し維持。",
     "まとめ（優先度順）":"・売買代金 × RVOL\n・前日比％ と 合成S\n・フラグ（右肩/早期/初動/底打ち）\n・ATR14%\n※合成Sは3要素中2つ以上の実測が必要。欠損成分は0点扱いせず、取得済み重みを再正規化。\n👉 実務は「代金 ≥10億、RVOL ≥2、合成S ≥80」かつ「右肩 or 早期」。",
-    "RS_5":"【相対強度5日】個別株の5日リターン − 対応指数（TOPX/GRT250）の5日リターン。正なら指数より強い。",
-    "RS_20":"【相対強度20日】個別株の20日リターン − 対応指数の20日リターン。中期の強さを示す。",
-    "Growth_Bias":"【グロース地合い】GRT250（グロース） − TOPX（大型）。正ならグロース資金優位の相場。",
+    "RS_5":"【相対強度5日】個別株の5日リターン − 対応指数（TOPX/GRT250）の5日リターン。内部値は小数リターン差で、0.05なら指数比+5%相当です。正なら指数より強い。",
+    "RS_20":"【相対強度20日】個別株の20日リターン − 対応指数の20日リターン。内部値は小数リターン差で、0.05なら指数比+5%相当です。",
+    "Growth_Bias":"【グロース地合い】Growth250リターン − TOPIXリターン。内部値は小数リターン差で、0.05なら+5%相当です。正ならグロース優位。",
     "地合いフラグ":"+1=追い風（TOPXと日経平均が両方強い）、0=中立、-1=逆風（両方弱い）。市場環境全体の評価。",
     "逆行強フラグ":"地合いが弱いのに個別株が強い状態。資金流入の強さを示す。",
     "逆行弱フラグ":"地合いが強いのに個別株が弱い状態。逆風の可能性を示す。",
@@ -908,55 +1075,11 @@
       "・レジ抜け：抵抗線を突破した強いゾーン（青天井）\n" +
       "・サポ割れ：支持線を割り込んだ弱いゾーン（下落警戒）\n" +
       "・レンジ内：上にも下にも動ける中間ゾーン",
-    "三角スコア":"Growth(▲) / Safety(◆) / Vol(■) の 3 つの 0〜100 スコアをまとめて表示した列です。\n\n" +
-    "・▲(上昇)…トレンドとテーマ性。直近の株価推移・RS・出来高トレンドなどから「伸びやすさ」を評価しています。\n" +
-    "・◆(安定)…下落耐性と決算・財務の安定度。決算のブレや増資リスクが大きいほどスコアは低くなります。\n" +
-    "・■(ボラ)…ボラティリティの高さ。値動きが荒いほどスコアが高くなります（＝ハイボラ）。\n\n" +
-    "ざっくりとした目安は以下です。\n" +
-    "・▲(上昇) 70以上：右肩〜ブレイク候補。押し目を優先的にチェック。\n" +
-    "・◆(安定) 60以上：ドローダウンが比較的浅く、崩れにくいゾーン。\n" +
-    "スコアは 0〜100。一般的には 70以上で強めです。\n\n" +
-    "-----------------------------------------------\n" +
-    "【三角スコア × ザラ場時間帯：最も勝ちやすい活用法】\n" +
-    "-----------------------------------------------\n\n" +
-    "◆▲（上昇）高い銘柄（70〜100）\n" +
-    "-----------------------------------------------\n" +
-    "● 最適時間帯：9:00〜9:30（寄り付き〜初動）\n" +
-    "・RS／出来高／買いアルゴなど「短期モメンタム」は寄り付きに最も現れる\n" +
-    "・寄り後10〜30秒で流れが決まることが多く、初動の判断に向く\n\n" +
-    "● エントリーの目安\n" +
-    "・寄り直後の強い連買い\n" +
-    "・VWAP 上維持\n" +
-    "・寄り付きギャップ +2〜4% の範囲\n\n" +
-    "-----------------------------------------------\n" +
-    "◆◆（安定）高い銘柄（70〜100）\n" +
-    "-----------------------------------------------\n" +
-    "● 最適時間帯：10:30〜11:30 / 13:00〜14:00\n" +
-    "・空売り機関／業績の安定性を反映しており「押し目で拾いやすい」\n" +
-    "・朝の騒乱を避け、落ち着いた時間帯に本領を発揮する\n\n" +
-    "● エントリーの目安\n" +
-    "・押し目 → 下ヒゲ → 高値切り上げの形\n" +
-    "・VWAP 回帰\n" +
-    "・中期右肩の継続確認\n\n" +
-    "-----------------------------------------------\n" +
-    "◆■（ボラ）高い銘柄（70〜100）\n" +
-    "-----------------------------------------------\n" +
-    "● 最適時間帯：9:00〜10:00 / 14:00〜14:30\n" +
-    "・値幅が出やすくデイトレ向き\n" +
-    "・“伸びる瞬間だけ” を取る戦略との相性が良い\n\n" +
-    "● エントリーの目安\n" +
-    "・1分足の出来高急増\n" +
-    "・板の食い上げ（連続成行）\n" +
-    "・伸び止まったら即撤退\n\n" +
-    "-----------------------------------------------\n" +
-    "【結論】\n" +
-    "● ▲（上昇）は“鮮度が命” → 寄り付き〜9:30\n" +
-    "● ◆（安定）は“押し目狙い” → 10:30〜14:00\n" +
-    "● ■（ボラ）は“瞬間勝負” → 9:00〜10:00 / 14:00〜14:30\n\n" +
-    "三角スコアは、時間帯と合わせて使うと最も威力を発揮します。\n" +
-    "・■(ボラ) 40〜70：デイトレ向きの「程よいボラ」。80以上はジェットコースター帯で、建玉サイズに注意。\n\n" +
-    "三角スコアだけで売買を決めるのではなく、「判定理由」「増資リスク」「ニュース」などとセットで、\n" +
-    "『伸びやすさ × 安定度 × ボラの程よさ』を一目で比較するための目安として使ってください。",
+    "三角スコア":"単一の総合点ではなく、▲Growth / ◆Safety / ■Vol の3軸を並べた表示です。各軸は0〜100、入力不足時は未判定です。\n\n" +
+    "・▲Growth: 合成スコアを主成分に、初動/右肩等のセットアップ、RVOL代金、RS_5/RS_20を加味し、当日急騰は過熱ペナルティを入れます。\n" +
+    "・◆Safety: 中立50から、機関空売り、営利対時価、営業益YoY、ATR、支持線距離、需給OH等の取得済み根拠で上下します。根拠0件なら未判定です。\n" +
+    "・■Vol: ATR14%を主軸にした値動きの大きさです。高いほど『良い』ではなく、高ボラです。RVOL代金は補助です。\n\n" +
+    "【並べ替え】単一総合点ではないため、▲Growthを第1キー、◆Safetyを第2キー、■Volを第3キーとして並べます。",
     "VIXレジーム":"米国の恐怖指数 VIX の水準から、相場のボラティリティ環境をざっくり区分したものです。\n\n" +
     "・低ボラ：VIX < 14。穏やかでリスクオン寄りの地合い。\n" +
     "・通常レンジ：14〜20。平常モード。\n" +
@@ -968,13 +1091,13 @@
     "ファクター": "割安度・営利対時価・ROEの3要素による参考スコアです。\n3要素すべてが揃った時だけ『超割安/割安/妥当/割高』を確定します。1〜2要素しか無い場合は、括弧内の点数を参考値として残しつつ『情報不足』と表示します。",
     "総合判定": "モメンタムCTA・ボラターゲット・ファクターの3系統を統合します。\n3系統すべて評価可能な時だけ『強い買い/買い/様子見/売り』を確定します。どれか1系統でも情報不足なら『⚪情報不足』とし、括弧内は取得できた系統だけの参考平均点です。",
     "決算発表予定日": "次回または直近の決算発表予定日です。決算またぎのリスク管理やスケジュールトレードに活用します。",
-    "短期需給判定": "出来高と値動きから「本物かフェイクか」を直感的に判定します。\n\n" +
-    "【上げの場合】\n" +
-    "・🚀本物/吸い上げ：出来高を伴う強い上げ、または大口の吸収。継続性が高い。\n" +
-    "・🎈値飛び：出来高を伴わない弱い上げ。板が薄く値段だけ上がったフェイクの可能性大。\n\n" +
-    "【下げの場合】\n" +
-    "・💥強い売り/吸収：出来高を伴う強い下げ、または大口の押し目買い(吸収)。\n" +
-    "・🍂需給薄：出来高を伴わない弱い下げ。買い手がいないだけで落ちているフェイク下げ。",
+    "短期需給判定": "前日比の方向とRVOL代金だけで作る簡易な出来高品質ラベルです。板・歩み値・大口主体の意図は見ていません。\n\n" +
+    "・🚀高RVOL上昇：前日比+0.5%以上 かつ RVOL代金>=1.5\n" +
+    "・↗低RVOL上昇：前日比+0.5%以上 かつ RVOL代金<1.0\n" +
+    "・💥強い売り・高RVOL：前日比-0.5%以下 かつ RVOL代金>=1.5\n" +
+    "・↘低RVOL下落：前日比-0.5%以下 かつ RVOL代金<1.0\n" +
+    "・様子見：±0.5%未満、またはRVOLが中間帯 / ⚪情報不足：入力欠損\n\n" +
+    "※0.5%は暫定設計値。観測事実だけを表示し、吸収・大口意図は断定しません。",
     "過熱需給判定": "短期的なイナゴ集中と売り浴びせリスク（過熱需給）を判定します。\n\n" +
                     "・⚠️極度過熱(イナゴ化)：急騰×商い急増×信用買い過多。利確や空売りの標的になりやすい危険水域。\n" +
                     "・🟠警戒(過熱気味)：短期的な資金集中が見られ、調整リスクが高まっている状態。\n" +
@@ -983,6 +1106,22 @@
     "信用需給判定": "【将来の投げ売り圧力】信用倍率ベースの重さ。決算前などで高いと危険。",
     "機関売り判定": "【大口の売り浴びせリスク】当日の取得に成功した銘柄だけを正式判定します。機関ごとの最新公開報告から残高を算出し、浮動株/発行株比と平常出来高日数で0〜10点、最新報告日の増減量を最大+15点（買い戻しは最大-5点）で評価。取得失敗/未取得は過去値で補完せず⚪不明です。",
     "機関空売り状態": "【P3-45】現在の公開残高あり/なし、過去の報告履歴あり/なし、当日クロールの成功/失敗/未取得を別々に表示します。履歴ありでも現在残高0株は正常な組合せです。",
+    "利益加速":"authoritativeな利益加速フラグを前提に、売上YoYと営業益YoYの整合も確認した状態表示です。🚀加速=フラグONかつ営業益YoY>=売上YoY、⚠️利益率鈍化=フラグONだが営業益YoY<売上YoY、⚪情報不足=フラグまたはYoY不足、-=非該当。単なる営業益YoY>0を『加速』とは扱いません。",
+    "過去D1期待値":"過去の決算翌営業日(D1)リアクションから、勝率×平均上昇幅＋敗率×平均下落幅で計算した実績統計です。将来決算の予測値や市場コンセンサスではありません。旧互換キー名は「決算期待値」です。",
+    "D1反応(勝率)":"過去最大8回の決算翌営業日(D1)反応をスパークライン表示します。並べ替え/数値フィルターは決算勝率を使用します。正式な決算リアクションスコアは3観測以上を要求します。",
+    "予想インパクト":"StockSurprisePredictorが、業績YoY・材料・時価総額/売買代金による価格弾性・需給燃料・地合いから推定する株価反応率です。範囲は概ね-15〜+30%。将来リターンの保証ではありません。",
+    "予測反応価格":"予想インパクトを現在値に反映したモデル上の反応価格です。Fair Valueの適正株価や投資目標株価ではありません。",
+    "基礎適正":"割安度とAlgo_Factorに実際に使う基礎価値です。一過性利益・極端EPSを検知した場合はPERを使わず、current BPSを基礎にしたPBR評価へ切り替えます。",
+    "参考上限":"一過性利益等でPERを止めた銘柄だけ表示するPBRレンジ上限です。買い目標・到達予想ではなく、強気側の参考境界です。割安度やAlgo_Factorには使いません。",
+    "EPS品質":"会社予想EPSをPER評価へ使えるかの品質判定です。⚠特益依存/⚠一過性疑い/⚠EPS異常値ではPER評価を禁止します。",
+    "評価方式":"基礎適正の算出方式です。通常は動的PER、一過性利益等ではPBR基礎へ切り替わります。悪化決算では売上減・営業減益・予想EPS減・利益率鈍化・季節進捗下振れを観測範囲でPER減点します。",
+    "過去同Q件数":"季節調整済進捗差分の比較に使えた過去同四半期の年度数です。ファンダの『進捗上振れ』は2期以上を要求します。",
+    "最新決算発表日":"quarterly_actual_historyから取得した最新の実決算発表日です。予定日ではありません。",
+    "決算後営業日数":"最新実決算の発表日を0として数えたJPX営業日数です。決算後本命は0〜10営業日のみです。",
+    "仕込み目安":"current ATR14と支持線を使う機械的な仕込み目安価格です。支持線が使えない場合は現在値×0.96。ATR欠損時は未計算(-)。",
+    "利確目安":"current ATR14と抵抗線を使う機械的な利確目安価格です。十分上の抵抗があれば抵抗×0.99、それ以外は現在値+5ATR。ATR欠損時は未計算(-)。",
+    "損切目安":"current ATR14と支持線を使う機械的な損切目安価格です。支持線が使えない場合は仕込み目安-2.5ATR。ATR欠損時は未計算(-)。",
+    "移動平均":"chart_flagsの『何日線上か』を1つに要約したラベルです。複数該当時のproducer優先度は 5日 > 25日 > 75日。並べ替えもこの優先度に合わせます。",
     "シンデン総合スコア": "【決算アルゴ統合スコア／P3-47】決算前は79点尺度へ正規化し、予想ギャップ・予想信頼性・根拠・可視性・未織り込みを評価します。決算直後は100点尺度で、今回実績・上方修正・決算種別・未織り込み等を評価します。\n\n履歴不足で判定が『参考：...』の行はセルにも『参考』を付け、正式評価より後に並べます。数値は比較材料として残しますが、正式ランキングや正式coverageには含めません。需給はこの点数には混ぜず、別途ダッシュボード列で確認します。",
     "シンデン判定": "決算前と決算直後で意味を分けたランク表示です。決算前は S=最重要、A=かなり近い、B=候補、C=監視。決算直後は上方修正の有無と1Q/2Q/3Q/FYの実反応校正を反映します。",
     "予想ギャップスコア": "前期実績から現在の会社予想への伸びを評価する30点満点のスコア。営業利益をEPSより重く評価します。",
@@ -1001,7 +1140,7 @@
   };
 
   window.DATACOL_TO_HELPKEY = {
-    "コード":"コード","銘柄名":"銘柄","現在値":"現在値","PTS株価":"PTS株価","前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
+    "コード":"コード","銘柄名":"銘柄","現在値":"現在値","前日終値":"前日終値","前日円差":"前日比(円)","前日終値比率":"前日終値比率（％）",
     "出来高":"出来高","売買代金(億)":"売買代金(億)",
     "信用倍率":"信用倍率",
     "需給安全フラグ":"需給安全",
@@ -1011,7 +1150,11 @@
     "信用需給負荷スコア":"需給負荷",
     "売り残":"売り残",
     "買い残":"買い残",
-    "初動フラグ":"初動","初動スコア":"初動S","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
+    "持越し適性ランク":"持越し適性","持続上昇スコア":"持続上昇","底反転スコア":"底反転","急伸スコア":"急伸","材料先行スコア":"材料先行","今買えるランク":"今買える",
+    "相場耐性":"相場耐性","地合い込み一次判定":"地合い込み一次判定",
+    "仕込み目安価格":"仕込み目安","利確目安価格":"利確目安","損切目安価格":"損切目安",
+    "利益加速ステータス":"利益加速","過去決算D1期待値":"過去D1期待値","決算期待値":"過去D1期待値","決算勝率":"D1反応(勝率)","予想インパクト_pct":"予想インパクト","予測ターゲット価格":"予測反応価格","overall_alpha":"財務評価","スコア":"財務スコア","移動平均":"移動平均",
+    "INITIAL_MOMENTUM":"初動","INITIAL_MOMENTUM_SCORE":"初動S","初動フラグ":"初動","初動スコア":"初動S","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩上がりスコア":"右肩S","右肩早期フラグ":"早期","右肩早期スコア":"早期S","右肩早期種別":"早期種別",
     "判定":"判定","判定理由":"判定理由","推奨アクション":"推奨","推奨比率":"推奨比率%","シグナル更新日":"更新",
     "高値":"高値","安値":"安値","5日":"5日","25日":"25日","75日":"75日",
     "抵抗帯中心":"抵抗帯中心","抵抗最終日":"抵抗最終日","最寄り抵抗":"最寄り抵抗","支持帯中心":"支持帯中心","支持最終日":"支持最終日","最寄り支持":"最寄り支持",
@@ -1072,6 +1215,18 @@
   }
   function fint(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? String(Math.round(n)) : ""; }
   function f2(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? n.toFixed(2) : ""; }
+  // 監査残件修正: RS_5/RS_20は内部0.05=+5%なので表示だけ%へ変換する。
+  function frs(v){ const n = _toNumRaw(v); return Number.isFinite(n) ? ((n>0?"+":"") + (n*100).toFixed(1) + "%") : "-"; }
+  function fdateAge(v){
+    const raw=String(v??"").trim(); if(!raw) return "N/A";
+    const d=new Date(raw.length<=10 ? raw+"T00:00:00+09:00" : raw); if(Number.isNaN(d.getTime())) return raw;
+    const now=new Date(); const jstNow=new Date(now.toLocaleString("en-US",{timeZone:"Asia/Tokyo"}));
+    const jstD=new Date(d.toLocaleString("en-US",{timeZone:"Asia/Tokyo"}));
+    const a=new Date(jstNow.getFullYear(),jstNow.getMonth(),jstNow.getDate());
+    const b=new Date(jstD.getFullYear(),jstD.getMonth(),jstD.getDate());
+    const days=Math.max(0,Math.floor((a-b)/86400000));
+    return raw + " (" + days + "日前)";
+  }
 
   // ---- data ----
   let RAW = {};
@@ -1247,7 +1402,7 @@
   function offeringBadge(code){
     const c = String(code ?? "").padStart(4,"0");
     return OFFER_SET.has(c)
-      ? `<span class="badge b-gray" title="直近に増資/行使/売出/CBなどの履歴あり">増資経歴</span>`
+      ? `<span class="badge b-gray" title="直近1年に増資/行使/売出/CBなどのTDnet履歴あり">増資経歴</span>`
       : "";
   }
 
@@ -1331,86 +1486,287 @@
   let sortCriteria = []; // グローバルでソート条件を管理
   let sortableColumns = []; // モーダル用の列情報をキャッシュ
 
-  // 実際のソート処理（データ配列を直接ソートして再描画する高速版）
+  // ============================================================
+  // SORT-AUDIT 2026-08-21
+  // - カンマ区切り数値を小数と誤認する不具合を修正
+  // - number/num を統一
+  // - DOM の data-sort と配列ソートの意味ずれを sortKey で吸収
+  // - 欠損値は昇順/降順どちらでも末尾
+  // - 数値/日付/ラベルの比較値をソート前に1回だけ生成
+  // ============================================================
+  const _sortCollator = new Intl.Collator("ja", { numeric:true, sensitivity:"base" });
+
+  function normalizeSortType(t){
+      const x = String(t || "text").toLowerCase();
+      if (x === "num" || x === "number" || x === "numeric" ||
+          x === "float" || x === "int" || x === "integer") return "num";
+      if (x === "date" || x === "datetime") return "date";
+      return "text";
+  }
+
+  function _sortNum(v){
+      if (v === null || v === undefined) return NaN;
+      let t = String(v).trim();
+      if (!t || t === "-" || t === "--" || /^n\/?a$/i.test(t) ||
+          /^null$/i.test(t) || /^none$/i.test(t) || /^nan$/i.test(t)) return NaN;
+      try { t = t.normalize("NFKC"); } catch(_){}
+      t = t.replace(/[−–—]/g, "-")
+           .replace(/,/g, "")
+           .replace(/[\s円株％%倍]/g, "");
+      // 数値列では「先頭だけparseFloat」せず、値全体が数値の時だけ採用する。
+      // これにより "1.2,-3.4,..." のような履歴文字列を 1.2 と誤認しない。
+      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(t)) return NaN;
+      const n = Number(t);
+      return Number.isFinite(n) ? n : NaN;
+  }
+
+  function _sortDate(v){
+      if (v === null || v === undefined) return NaN;
+      let s = String(v).trim();
+      if (!s || s === "-" || /^n\/?a$/i.test(s)) return NaN;
+      try { s = s.normalize("NFKC"); } catch(_){}
+
+      // YYYY/MM/DD, YYYY-MM-DD, YYYY.MM.DD, YYYY年M月D日、日時付きに対応
+      const m = s.match(/(20\d{2})[\/.\-年]\s*(\d{1,2})[\/.\-月]\s*(\d{1,2})/);
+      if (m){
+          const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+          if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return Date.UTC(y, mo-1, d);
+      }
+      const ts = Date.parse(s);
+      return Number.isFinite(ts) ? ts : NaN;
+  }
+
+  function _sortText(v){
+      if (v === null || v === undefined) return "";
+      return String(v)
+          .replace(/<[^>]*>/g, " ")
+          .replace(/&nbsp;|&#160;/gi, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+  }
+
+  function _scoreFromLabel(v){
+      const s = String(v ?? "");
+      const m = s.match(/\(([+-]?\d+(?:\.\d+)?)点\)/);
+      return m ? Number(m[1]) : NaN;
+  }
+
+  function _rankShinden(v){
+      const s = String(v ?? "").trim();
+      if (!s) return NaN;
+      if (s.startsWith("S")) return 5;
+      if (s.startsWith("A")) return 4;
+      if (s.startsWith("B")) return 3;
+      if (s.startsWith("C")) return 2;
+      if (s.startsWith("D")) return 1;
+      if (s.startsWith("参考")) return 0;
+      return NaN;
+  }
+
+  function _rankHistoryConfidence(v){
+      const s = String(v ?? "").trim().toUpperCase();
+      if (s === "HIGH") return 4;
+      if (s === "MEDIUM") return 3;
+      if (s === "LOW") return 2;
+      if (s === "DATA不足") return 1;
+      return NaN;
+  }
+
+  function _rankAiJudge(v){
+      const s = String(v ?? "").trim();
+      if (!s || s === "-") return NaN;
+      if (s.includes("超強気")) return 4;
+      if (s.includes("到達有望")) return 3;
+      if (s.includes("閾値近辺")) return 2;
+      if (s.includes("閾値未満")) return 1;
+      return 0;
+  }
+
+  function _rankRecommendation(v){
+      const s = String(v ?? "").trim();
+      if (!s) return NaN;
+      if (s === "エントリー有力") return 4;
+      if (s === "中強度") return 3;
+      if (s === "小口提案") return 2;
+      if (s === "微小口") return 1;
+      return 0;
+  }
+
+  function _rankAlphaGrade(v){
+      // Python _dashboard_attach_ui_sort_contract() と同一規約。
+      // overall_alpha は財務評価ランクであり、超過収益alphaではない。
+      const s = String(v ?? "").trim().toUpperCase().replace(/＋/g,"+").replace(/－/g,"-");
+      if (!s) return NaN;
+      const m = s.match(/^([SABCD])(\+\+|--|\+|-)?$/);
+      if (!m) return NaN;
+      const base = {S:500, A:400, B:300, C:200, D:100}[m[1]];
+      const adj = {"++":20, "+":10, "":0, "-":-10, "--":-20}[m[2] || ""];
+      return base + adj;
+  }
+
+  function _rankProfitAccel(row){
+      // Python _profit_acceleration_quality() と同一意味順。
+      // 情報不足は0点扱いせず欠損、非該当(-)は明示状態として1。
+      const s = String(row?.["利益加速ステータス"] ?? "").trim();
+      if (!s || s.includes("情報不足")) return NaN;
+      if (s.includes("加速") && !s.includes("鈍化")) return 3;
+      if (s.includes("利益率鈍化")) return 2;
+      if (s === "-") return 1;
+      return NaN;
+  }
+
+  function _sortRawValue(row, crit){
+      const colKey = crit.colKey || "";
+      const sortKey = crit.sortKey || colKey;
+
+      // P4-DASH3: 新しい成果物ではPythonがUI専用ソート値を明示している。
+      // 表示文字列から意味を推測せず、producer値を最優先する。
+      const direct = row?.[sortKey];
+      if (direct !== null && direct !== undefined && String(direct).trim() !== "") {
+          return direct;
+      }
+
+      // 旧dashboard_data/indexとの互換fallback。新成果物では通常ここへ来ない。
+      switch (sortKey) {
+          case "_UI_SORT_TRIANGLE": {
+              const g = _sortNum(row?.["tri_growth"]);
+              const s = _sortNum(row?.["tri_safety"]);
+              const v = _sortNum(row?.["tri_vol"]);
+              if (![g,s,v].every(Number.isFinite)) return null;
+              return g * 10000 + s * 100 + v;
+          }
+          case "_UI_SORT_AI_JUDGE": return _rankAiJudge(row?.["AI判定"]);
+          case "_UI_SORT_AI_TARGET": return _sortNum(row?.["AIスコア"]);
+          case "_UI_SORT_RECOMMEND": return _rankRecommendation(row?.["推奨アクション"]);
+          case "_UI_SORT_PROFIT_ACCEL": return _rankProfitAccel(row);
+          case "_UI_SORT_PAST_REACTION": return _sortNum(row?.["決算勝率"]);
+          case "_UI_SORT_ALPHA": return _rankAlphaGrade(row?.["overall_alpha"]);
+          case "_UI_SORT_SHINDEN_JUDGE": return _rankShinden(row?.["シンデン判定"]);
+          case "_UI_SORT_HISTORY_CONF": return _rankHistoryConfidence(row?.["予想達成履歴信頼度"]);
+          case "_UI_SORT_MA": {
+              const lab=String(row?.["移動平均"] ?? "").trim();
+              return ({"5":3,"25":2,"75":1})[lab] ?? NaN;
+          }
+          case "TOB件数": return Array.isArray(row?.tob_titles) ? row.tob_titles.length : 0;
+          case "仕込み目安価格": return _sortNum(row?.["shikomi_txt"]);
+          case "利確目安価格": return _sortNum(row?.["rikaku_txt"]);
+          case "損切目安価格": return _sortNum(row?.["songiri_txt"]);
+      }
+
+      // Algo/需給ラベルは表示文字列でなくproducerの点数を比較する。
+      if (colKey === "Algo_Momentum" || colKey === "Algo_VolTarget" ||
+          colKey === "Algo_Factor" || colKey === "Algo_総合判定") {
+          return _scoreFromLabel(row?.[colKey]);
+      }
+      if (colKey === "信用需給判定") {
+          const n = _sortNum(row?.["信用需給スコア"]);
+          return Number.isFinite(n) ? n : _scoreFromLabel(row?.[colKey]);
+      }
+      if (colKey === "イナゴ過熱判定") {
+          const n = _sortNum(row?.["イナゴ過熱スコア"]);
+          return Number.isFinite(n) ? n : _scoreFromLabel(row?.[colKey]);
+      }
+      if (colKey === "機関売り判定") {
+          const n = _sortNum(row?.["機関売りスコア"]);
+          return Number.isFinite(n) ? n : _scoreFromLabel(row?.[colKey]);
+      }
+      return row?.[sortKey];
+  }
+
+  function _effectiveSortType(crit){
+      const k = crit.sortKey || crit.colKey || "";
+      if (k.startsWith("_UI_SORT_") ||
+          k === "信用需給スコア" || k === "イナゴ過熱スコア" ||
+          k === "機関売りスコア" || k === "決算勝率" || k === "TOB件数" ||
+          k === "仕込み目安価格" || k === "利確目安価格" || k === "損切目安価格" ||
+          k === "スコア") return "num";
+
+      if (crit.colKey === "Algo_Momentum" || crit.colKey === "Algo_VolTarget" ||
+          crit.colKey === "Algo_Factor" || crit.colKey === "Algo_総合判定" ||
+          crit.colKey === "信用需給判定" || crit.colKey === "イナゴ過熱判定" ||
+          crit.colKey === "機関売り判定") return "num";
+
+      return normalizeSortType(crit.typ);
+  }
+
+  function _prepareSortValue(row, crit){
+      const typ = _effectiveSortType(crit);
+      const raw = _sortRawValue(row, crit);
+
+      if (typ === "num") {
+          const n = (typeof raw === "number" && Number.isFinite(raw)) ? raw : _sortNum(raw);
+          return { missing: !Number.isFinite(n), typ, value:n };
+      }
+      if (typ === "date") {
+          const d = _sortDate(raw);
+          return { missing: !Number.isFinite(d), typ, value:d };
+      }
+
+      const s = _sortText(raw);
+      return { missing: s === "", typ:"text", value:s };
+  }
+
+  // 実際のソート処理（配列ソート + 比較値キャッシュ）
   function performTableSort() {
       if (sortCriteria.length === 0) return;
 
-      const toNum = (s) => {
-          let t = String(s ?? '').trim().replace(/\s|[円％%]/g,'');
-          if (t.indexOf('.') === -1 && /^-?\d+,\d+$/.test(t)) t = t.replace(',', '.'); else t = t.replace(/,/g,'');
-          const n = parseFloat(t);
-          return Number.isFinite(n) ? n : NaN;
-      };
+      // 比較のたびに文字列変換/parseを繰り返さない。
+      // 3591件×複合ソートでも各値は最初に1回だけ正規化する。
+      const decorated = window.state.data.map((row, originalIndex) => ({
+          row,
+          originalIndex,
+          keys: sortCriteria.map(crit => _prepareSortValue(row, crit))
+      }));
 
-      // ★ 画面表示用の大元のデータ配列を直接ソートする
-      window.state.data.sort((r1, r2) => {
-          for (let crit of sortCriteria) {
-              const colKey = crit.colKey;
-              if (!colKey) continue;
+      decorated.sort((A, B) => {
+          for (let i=0; i<sortCriteria.length; i++) {
+              const crit = sortCriteria[i];
+              const a = A.keys[i], b = B.keys[i];
 
-              let aRaw = r1[colKey];
-              let bRaw = r2[colKey];
-              
-              // AI目標値などの特殊な独自ソート値の処理
-              if (colKey === "AI目標値") {
-                  aRaw = r1["AI目標値_raw"] ?? -999999;
-                  bRaw = r2["AI目標値_raw"] ?? -999999;
-              } else if (colKey === "機関空売り合計株数" || colKey === "本日の増減合計株数") {
-                  aRaw = r1[colKey] !== "" ? r1[colKey] : -999999;
-                  bRaw = r2[colKey] !== "" ? r2[colKey] : -999999;
+              // 欠損は昇順/降順に関係なく常に末尾
+              if (a.missing || b.missing) {
+                  if (a.missing && b.missing) continue;
+                  return a.missing ? 1 : -1;
               }
-              
-              aRaw = aRaw != null ? String(aRaw) : "";
-              bRaw = bRaw != null ? String(bRaw) : "";
 
               let cmp = 0;
-              
-              if (colKey === "Algo_Momentum" || colKey === "Algo_VolTarget" || colKey === "Algo_Factor" || colKey === "Algo_総合判定" || colKey === "イナゴ過熱判定" || colKey === "信用需給判定" || colKey === "機関売り判定") {
-                  const getScore = (str) => {
-                      const m = String(str).match(/\((\d+)点\)/);
-                      return m ? parseInt(m[1], 10) : -1;
-                  };
-                  cmp = getScore(aRaw) - getScore(bRaw);
-              } else if (crit.typ === 'num'){
-                  const aKey = toNum(aRaw), bKey = toNum(bRaw);
-                  const aIsNum = !Number.isNaN(aKey), bIsNum = !Number.isNaN(bKey);
-                  if (aIsNum && bIsNum) cmp = aKey - bKey;
-                  else if (aIsNum) cmp = crit.dir === 'asc' ? -1 : 1; 
-                  else if (bIsNum) cmp = crit.dir === 'asc' ? 1 : -1;
-              } else if (crit.typ === 'date'){
-                  const aKey = Date.parse(aRaw), bKey = Date.parse(bRaw);
-                  const aIsDate = !Number.isNaN(aKey), bIsDate = !Number.isNaN(bKey);
-                  if (aIsDate && bIsDate) cmp = aKey - bKey;
-                  else if (aIsDate) cmp = crit.dir === 'asc' ? -1 : 1; 
-                  else if (bIsDate) cmp = crit.dir === 'asc' ? 1 : -1;
+              if (a.typ === "text") {
+                  cmp = _sortCollator.compare(a.value, b.value);
               } else {
-                  cmp = String(aRaw).toLowerCase().localeCompare(String(bRaw).toLowerCase(), 'ja');
+                  cmp = a.value < b.value ? -1 : (a.value > b.value ? 1 : 0);
               }
-              
-              if (cmp !== 0) {
-                  return crit.dir === 'asc' ? cmp : -cmp;
-              }
+
+              if (cmp !== 0) return crit.dir === "asc" ? cmp : -cmp;
           }
-          return 0;
+          // 完全同値なら元順を維持（ブラウザ差を避ける）
+          return A.originalIndex - B.originalIndex;
       });
 
-      // ★ ソートが終わったらページを1に戻して一気に再描画（DOM書き換えはここで1回だけ走る）
+      // state.data の参照自体は維持し、中身だけ並べ替える
+      for (let i=0; i<decorated.length; i++) {
+          window.state.data[i] = decorated[i].row;
+      }
+
       state.page = 1;
       render();
 
       // UI(矢印と優先順位)の更新
       const table = document.querySelector("#tbl-candidate");
       if (table) {
-          const ths = Array.from(table.querySelectorAll('thead th.sortable'));
-          ths.forEach(h => { h.dataset.dir=''; const a=h.querySelector('.arrow'); if(a) a.textContent=''; });
+          const ths = Array.from(table.querySelectorAll("thead th.sortable"));
+          ths.forEach(h => {
+              h.dataset.dir = "";
+              const a = h.querySelector(".arrow");
+              if (a) a.textContent = "";
+          });
           sortCriteria.forEach((crit, i) => {
               const h = ths.find(hx => hx.cellIndex === crit.colIndex);
               if (h) {
                   h.dataset.dir = crit.dir;
-                  const arr = h.querySelector('.arrow');
+                  const arr = h.querySelector(".arrow");
                   if (arr) {
-                      const orderBadge = sortCriteria.length > 1 ? `(${i+1})` : '';
-                      arr.textContent = (crit.dir === 'asc' ? '▲' : '▼') + orderBadge;
+                      const orderBadge = sortCriteria.length > 1 ? `(${i+1})` : "";
+                      arr.textContent = (crit.dir === "asc" ? "▲" : "▼") + orderBadge;
                   }
               }
           });
@@ -1420,44 +1776,61 @@
   // 既存の wireDomSort をオーバーライド
   function wireDomSort(tableSelector){
       const table = document.querySelector(tableSelector); if(!table) return;
-      const ths = Array.from(table.querySelectorAll('thead th.sortable'));
-      
+      const ths = Array.from(table.querySelectorAll("thead th.sortable"));
+
+      const cleanHeaderName = (th) => {
+          const clone = th.cloneNode(true);
+          clone.querySelectorAll(".arrow,.qhelp,.filter-icon").forEach(x => x.remove());
+          return (clone.textContent || "").replace(/\s+/g, " ").trim();
+      };
+
       // モーダル用に列情報をキャッシュ
-      sortableColumns = ths.map(th => ({
-          index: th.cellIndex,
-          name: th.textContent.replace('▲', '').replace('▼', '').replace(/\(\d+\)/, '').trim(),
-          type: th.dataset.type || 'text',
-          colKey: th.getAttribute('data-col') // ★追加：データオブジェクトのキーを取得
-      }));
-      
+      sortableColumns = ths.map(th => {
+          const colKey = th.getAttribute("data-col") || "";
+          return {
+              index: th.cellIndex,
+              name: cleanHeaderName(th),
+              type: normalizeSortType(th.dataset.type || "text"),
+              colKey,
+              sortKey: th.getAttribute("data-sort-key") || colKey
+          };
+      });
+
       ths.forEach((th)=>{
           if (th.__wiredSort) return;
           th.__wiredSort = true;
-          th.style.cursor = 'pointer';
-          th.title = "クリックでソート（高度なソートはツールバーのボタンから）";
-          
-          // シングルクリックソート（Shiftの挙動も一応残しておく）
-          th.addEventListener('click', (e)=>{
+          th.style.cursor = "pointer";
+          th.title = "クリックでソート（Shift+クリックで第2条件以降を追加）";
+
+          th.addEventListener("click", (e)=>{
               const colIndex = th.cellIndex;
-              const typ = th.dataset.type || 'text';
+              const typ = normalizeSortType(th.dataset.type || "text");
+              const colKey = th.getAttribute("data-col") || "";
+              const sortKey = th.getAttribute("data-sort-key") || colKey;
               const existingIdx = sortCriteria.findIndex(c => c.colIndex === colIndex);
-              let dir = 'desc';
-              
-              if (existingIdx !== -1) {
-                  dir = sortCriteria[existingIdx].dir === 'asc' ? 'desc' : 'asc';
-                  sortCriteria.splice(existingIdx, 1);
-              }
+
               if (!e.shiftKey) {
-                  sortCriteria = [];
+                  // 通常クリック：この列だけ。連続クリックで昇降順を反転。
+                  const dir = existingIdx !== -1 && sortCriteria.length === 1 &&
+                              sortCriteria[0].dir === "desc" ? "asc" : "desc";
+                  sortCriteria = [{ colIndex, dir, typ, colKey, sortKey }];
+              } else {
+                  // Shift+クリック：既存の第1条件を維持し、第2条件以降へ追加。
+                  if (existingIdx !== -1) {
+                      const old = sortCriteria[existingIdx];
+                      old.dir = old.dir === "asc" ? "desc" : "asc";
+                      old.typ = typ;
+                      old.colKey = colKey;
+                      old.sortKey = sortKey;
+                  } else {
+                      sortCriteria.push({ colIndex, dir:"desc", typ, colKey, sortKey });
+                  }
               }
-              // ★追加：thからdata-colを取得して保存する
-              const colKey = th.getAttribute('data-col'); 
-              sortCriteria.unshift({ colIndex, dir, typ, colKey });
-              performTableSort(); // 共通関数を呼び出し
+
+              performTableSort();
           });
       });
-      
-      // モーダルUIの初期化処理を呼び出す
+
       initSortModal();
   }
 
@@ -1503,8 +1876,9 @@
                   return {
                       colIndex: parseInt(colSelect.value, 10),
                       dir: dirSelect.value,
-                      typ: selectedOption.dataset.type,
-                      colKey: cachedCol ? cachedCol.colKey : "" // ★追加
+                      typ: normalizeSortType(selectedOption.dataset.type || (cachedCol ? cachedCol.type : "text")),
+                      colKey: cachedCol ? cachedCol.colKey : "",
+                      sortKey: cachedCol ? cachedCol.sortKey : ""
                   };
               });
               performTableSort(); // ソート実行
@@ -1990,6 +2364,11 @@ function applyFilter(rows){
     const sig_shodou  = document.getElementById("f_shodou")?.checked;
     const sig_tei     = document.getElementById("f_tei")?.checked;
     const sig_rightup = document.getElementById("f_rightup")?.checked;
+    const sig_steady  = document.getElementById("f_steady")?.checked;
+    const sig_a       = document.getElementById("f_a_reversal")?.checked;
+    const sig_c       = document.getElementById("f_c_impulse")?.checked;
+    const sig_b       = document.getElementById("f_b_watch")?.checked;
+    const sig_hold    = document.getElementById("f_hold_good")?.checked;
     const sig_early   = document.getElementById("f_early")?.checked;
     const sig_news    = document.getElementById("f_news_bluepos")?.checked;
     const sig_mode    = document.querySelector('input[name="sig_mode"]:checked')?.value || "OR";
@@ -2014,6 +2393,31 @@ function applyFilter(rows){
     // -------------------------------------------
     return rows.filter(r=>{
       if (!evaluateExcelFilters(r)) return false;
+
+      // P4-DASH4-VT: DOMを隠すのではなくデータ層でクイック抽出する。
+      const __qmode = String(window.__VT_QUICK_FILTER_MODE || "");
+      if (__qmode) {
+        const factorText = String(r["Algo_Factor"] || "");
+        const discountVal = num(r["割安度"]);
+        const isDiscount20 = Number.isFinite(discountVal) && discountVal >= 20;
+        // 旧「割安銘柄」は互換維持: Factorの割安判定 + 割安度20%以上。
+        const isUndervalued = (factorText.includes("超割安") || factorText.includes("割安")) && isDiscount20;
+
+        const actualAge = num(r["決算後営業日数"]);
+        const isRecentActualPost = Number.isFinite(actualAge) && actualAge >= 0 && actualAge <= 10;
+
+        if (__qmode === "undervalued" && !isUndervalued) return false;
+        // 旧「決算通過＆割安」も予定日ではなく実決算0〜10営業日へ修正。
+        if (__qmode === "post_earnings" && !(isUndervalued && isRecentActualPost)) return false;
+        const __fundModes = ["discount20","finance_quality","profit_accel","op_improving","progress_ahead","fundamental_main","post_earnings_main","post_earnings_continuation","post_earnings_recovery","good_earnings_oversold","repricing_all","fundamental_early","cyclical_value","earnings_accel_reprice","conservative_forecast","quality_underreaction"];
+        if (__fundModes.includes(__qmode)) {
+          if (typeof window.__fundamentalQuickPass !== "function" || !window.__fundamentalQuickPass(r,__qmode)) return false;
+        }
+      }
+      // WATCH-TIMING-V1: 第3枠は探索2軸とは独立。状態一致だけをデータ層で絞る。
+      const __wmode = String(window.__WATCH_FILTER_MODE || "");
+      if (__wmode && String(r["WATCH_STATE"] || "") !== __wmode) return false;
+      if (window.__VT_NEXTDAY_ACTIVE && Number(r["_VT_NEXTDAY_SCORE"]) < 0) return false;
       // v9: ワンタッチ目的別プリセット。既存フィルターに追加で掛けるだけ。
       if (typeof window.__purposePresetPass === "function" && !window.__purposePresetPass(r)) return false;
 
@@ -2033,9 +2437,14 @@ function applyFilter(rows){
           if (!matchColor) return false; // いずれの色にも合致しなければ非表示（OR条件）
       }
 
-      const sh  = hasKouho(r["初動フラグ"]);
+      const sh  = Number(r["INITIAL_MOMENTUM"] || 0) === 1;
       const te  = hasKouho(r["底打ちフラグ"]);
       const ru  = hasKouho(r["右肩上がりフラグ"]);
+      const st  = hasKouho(r["持続上昇フラグ"]);
+      const aa  = Number(r["底反転スコア"] || 0) > 0;
+      const cc  = Number(r["急伸スコア"] || 0) > 0;
+      const bb  = Number(r["材料先行スコア"] || 0) > 0;
+      const hh  = Number(r["持越し適性ランク"] || 0) >= 4;
       const ea  = hasKouho(r["右肩早期フラグ"]);
       const ns  = String(r["空売り機関なし_flag"]||"0")==="1";
       const isSafeDemand  = String(r["需給安全フラグ"]||"0")==="1";
@@ -2066,6 +2475,11 @@ function applyFilter(rows){
       if (sig_shodou)  { active_sigs++; if (sh) matched_sigs++; }
       if (sig_tei)     { active_sigs++; if (te) matched_sigs++; }
       if (sig_rightup) { active_sigs++; if (ru) matched_sigs++; }
+      if (sig_steady)  { active_sigs++; if (st) matched_sigs++; }
+      if (sig_a)       { active_sigs++; if (aa) matched_sigs++; }
+      if (sig_c)       { active_sigs++; if (cc) matched_sigs++; }
+      if (sig_b)       { active_sigs++; if (bb) matched_sigs++; }
+      if (sig_hold)    { active_sigs++; if (hh) matched_sigs++; }
       if (sig_early)   { active_sigs++; if (ea) matched_sigs++; }
       if (sig_news)    { active_sigs++; if (has_blue_news) matched_sigs++; }
 
@@ -2140,6 +2554,8 @@ function applyFilter(rows){
       if (q) {
         const keys = ["コード","銘柄名","関連テーマ","最新テーマ","セクター","判定理由","右肩早期種別",
               "初動フラグ","底打ちフラグ","右肩上がりフラグ",
+              "持越し適性","持続上昇","底反転","急伸","材料先行","今買える",
+              "相場耐性","相場耐性理由","地合い込み一次判定","地合い込み理由","個別買い環境タイプ",
               "右肩早期フラグ","推奨アクション","株探ニュース","株探ニュース(3)",
               "シンデン判定","シンデン判定理由","シンデン需給注釈","予想達成履歴信頼度"];
         const fields = (k)=> {
@@ -2164,24 +2580,125 @@ function applyFilter(rows){
     return raw;
   }
 
-  function renderCand(){
+  // === P4-DASH4-VT: 仮想スクロール ===
+  // 1行34px固定。画面外は上下40行ずつ先読みし、高速スクロール時の白抜けを抑える。
+  const VIRTUAL_ROW_H = 34;
+  const VIRTUAL_OVERSCAN = 40;
+  let __vtRowsCache = null;
+  let __vtScrollRAF = 0;
+  let __vtLastScrollTop = -1;
+
+  function __vtScroller(){
+    const table = document.getElementById("tbl-candidate");
+    return table ? (table.closest(".tbl-wrap") || table.parentElement) : null;
+  }
+
+  function __vtWireScroller(){
+    const sc = __vtScroller();
+    if (!sc || sc.__vtScrollWired) return;
+    sc.__vtScrollWired = true;
+    sc.addEventListener("scroll", () => {
+      const top = sc.scrollTop || 0;
+      if (top === __vtLastScrollTop) return; // 横スクロールだけでは再描画しない
+      __vtLastScrollTop = top;
+      if (__vtScrollRAF) return;
+      __vtScrollRAF = requestAnimationFrame(() => {
+        __vtScrollRAF = 0;
+        renderCand(true);
+      });
+    }, {passive:true});
+  }
+
+  function __vtMountModeBadge(){
+    document.body.classList.add("virtual-scroll-vt");
+    const nav = document.querySelector("nav");
+    if (nav && !document.getElementById("virtual-mode-badge")) {
+      const b = document.createElement("span");
+      b.id = "virtual-mode-badge";
+      b.textContent = "⚡ VT仮想スクロール / 全件保持 / overscan 40";
+      nav.insertBefore(b, nav.firstChild);
+    }
+    const cp = document.getElementById("copy-page");
+    if (cp) cp.textContent = "絞込後の全銘柄をコピー";
+    const dl = document.getElementById("download-page-csv");
+    if (dl) dl.textContent = "絞込後の全銘柄をCSV";
+  }
+
+  function __vtReapplyFreeze(){
+    const sel = document.getElementById("tbl-candidate-freeze-select");
+    if (sel && sel.value !== "") {
+      try { sel.dispatchEvent(new Event("change")); } catch(_) {}
+    }
+  }
+
+  function renderCand(useVirtualCache=false){
     const body = document.querySelector("#tbl-candidate tbody");
     if(!body) return;
-    let rows = applyFilter(state.data);
-    if (window.__earningsBridgeOnly) {
-      rows = rows.slice().sort((a,b) => {
-        const av = Number(a["シンデン正式スコア"]);
-        const bv = Number(b["シンデン正式スコア"]);
-        const aa = Number.isFinite(av) ? av : -Infinity;
-        const bb = Number.isFinite(bv) ? bv : -Infinity;
-        return bb - aa;
-      });
-    }
-    const total = rows.length, per = state.per, maxPage = Math.max(1, Math.ceil(total/per));
-    state.page = Math.min(state.page, maxPage);
-    const s = (state.page-1)*per, e = Math.min(s+per, total);
+    __vtMountModeBadge();
+    __vtWireScroller();
 
-    let html = "";
+    let rows;
+    if (useVirtualCache && Array.isArray(__vtRowsCache)) {
+      rows = __vtRowsCache;
+    } else {
+      rows = applyFilter(state.data);
+      if (window.__purposePreset === "todaybuy" && typeof window.__todayBuyScore === "function") {
+        rows = rows.slice().sort((a,b) => Number(window.__todayBuyScore(b)) - Number(window.__todayBuyScore(a)));
+      }
+      const __fundMode = String(window.__VT_QUICK_FILTER_MODE || "");
+      if (["discount20","finance_quality","profit_accel","op_improving","progress_ahead","fundamental_main","post_earnings_main","post_earnings_continuation","post_earnings_recovery","good_earnings_oversold","repricing_all","fundamental_early","cyclical_value","earnings_accel_reprice","conservative_forecast","quality_underreaction"].includes(__fundMode)) {
+        const _score = (r) => typeof window.__fundamentalQuickScore === "function" ? Number(window.__fundamentalQuickScore(r,__fundMode)) : 0;
+        rows = rows.slice().sort((a,b) => _score(b)-_score(a));
+      }
+      const __watchMode = String(window.__WATCH_FILTER_MODE || "");
+      if (__watchMode) {
+        const _w = (r,k) => { const x=Number(r[k]); return Number.isFinite(x)?x:-Infinity; };
+        rows = rows.slice().sort((a,b) => {
+          if(__watchMode==="READY"){const sb=_w(b,"WATCH_QUALITY")+_w(b,"PRICE_OPPORTUNITY")+_w(b,"TRIGGER_SCORE"),sa=_w(a,"WATCH_QUALITY")+_w(a,"PRICE_OPPORTUNITY")+_w(a,"TRIGGER_SCORE");if(Math.abs(sb-sa)>5)return sb-sa;const rb=_w(b,"EXIT_RISK_PCT"),ra=_w(a,"EXIT_RISK_PCT");return (Number.isFinite(ra)?ra:99)-(Number.isFinite(rb)?rb:99);}
+          if(__watchMode==="NEAR") return (_w(b,"PRICE_OPPORTUNITY")*2+_w(b,"WATCH_QUALITY"))-(_w(a,"PRICE_OPPORTUNITY")*2+_w(a,"WATCH_QUALITY"));
+          if(__watchMode==="START") return (_w(b,"TRIGGER_SCORE")*2+_w(b,"WATCH_QUALITY"))-(_w(a,"TRIGGER_SCORE")*2+_w(a,"WATCH_QUALITY"));
+          return _w(b,"WATCH_QUALITY")-_w(a,"WATCH_QUALITY");
+        });
+      }
+      if (window.__earningsBridgeOnly) {
+        rows = rows.slice().sort((a,b) => {
+          const av = Number(a["シンデン正式スコア"]);
+          const bv = Number(b["シンデン正式スコア"]);
+          const aa = Number.isFinite(av) ? av : -Infinity;
+          const bb = Number.isFinite(bv) ? bv : -Infinity;
+          return bb - aa;
+        });
+      }
+      if (window.__VT_NEXTDAY_ACTIVE) {
+        // 元版は現在表示中のDOM行だけを並べ替えていた。VTでは同じ意味を
+        // 「現在の全フィルター通過行」に拡張し、state.data自体の順序は壊さない。
+        rows = rows.slice().sort((a,b) =>
+          Number(b["_VT_NEXTDAY_SCORE"] ?? -1) - Number(a["_VT_NEXTDAY_SCORE"] ?? -1)
+        );
+      }
+      __vtRowsCache = rows;
+      window.__VT_FILTERED_ROWS = rows;
+      const sc0 = __vtScroller();
+      if (sc0) { sc0.scrollTop = 0; __vtLastScrollTop = 0; }
+    }
+
+    const total = rows.length;
+    const scroller = __vtScroller();
+    const table = document.getElementById("tbl-candidate");
+    const headH = table?.tHead?.offsetHeight || 0;
+    const viewportH = Math.max(200, scroller?.clientHeight || Math.round(window.innerHeight * 0.70));
+    const dataScrollTop = Math.max(0, (scroller?.scrollTop || 0) - headH);
+    const firstVisible = Math.max(0, Math.floor(dataScrollTop / VIRTUAL_ROW_H));
+    const visibleCount = Math.ceil(viewportH / VIRTUAL_ROW_H);
+    const s = Math.max(0, firstVisible - VIRTUAL_OVERSCAN);
+    const e = Math.min(total, firstVisible + visibleCount + VIRTUAL_OVERSCAN);
+    const topPad = s * VIRTUAL_ROW_H;
+    const bottomPad = Math.max(0, (total - e) * VIRTUAL_ROW_H);
+    const colCount = Math.max(1, document.querySelectorAll("#tbl-candidate thead th").length);
+
+    let html = topPad > 0
+      ? `<tr class="virtual-spacer"><td colspan="${colCount}" style="height:${topPad}px !important"></td></tr>`
+      : "";
     for (let i = s; i < e; i++) {
       const r = rows[i] || {};
       const et = (r["右肩早期種別"] || "").trim();
@@ -2241,26 +2758,27 @@ function applyFilter(rows){
 
       const jq = r["短期需給判定"] || "様子見";
       let jqBadge = jq;
-      if (jq.includes("本物")) jqBadge = `<span class="badge b-green" style="font-weight:bold;">${escapeHtml(jq)}</span>`;
-      else if (jq.includes("値飛び")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
+      if (jq.includes("高RVOL上昇")) jqBadge = `<span class="badge b-green" style="font-weight:bold;">${escapeHtml(jq)}</span>`;
+      else if (jq.includes("低RVOL上昇")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
       else if (jq.includes("強い売り")) jqBadge = `<span class="badge b-orange" style="font-weight:bold;">${escapeHtml(jq)}</span>`;
-      else if (jq.includes("需給薄")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
+      else if (jq.includes("低RVOL下落")) jqBadge = `<span class="badge b-gray">${escapeHtml(jq)}</span>`;
       
       
       // =========================================================
       // ★ ここに以下のコードをごっそり追加します！ ★
       // =========================================================
       
-      // 決算期待値のフォーマット
+      // 過去決算D1期待値のフォーマット（旧「決算期待値」は互換fallback）
       // null / "" は Number(null)=0 になるため、先に欠損判定する
-      const hasEarningsExp = r["決算期待値"] !== null
-          && r["決算期待値"] !== undefined
-          && String(r["決算期待値"]).trim() !== ""
-          && Number.isFinite(Number(r["決算期待値"]));
-      let expVal = hasEarningsExp ? Number(r["決算期待値"]).toFixed(1) : "-";
-      let expStyle = hasEarningsExp && Number(r["決算期待値"]) > 0
+      const earningsD1Raw = r["過去決算D1期待値"] ?? r["決算期待値"];
+      const hasEarningsExp = earningsD1Raw !== null
+          && earningsD1Raw !== undefined
+          && String(earningsD1Raw).trim() !== ""
+          && Number.isFinite(Number(earningsD1Raw));
+      let expVal = hasEarningsExp ? Number(earningsD1Raw).toFixed(1) : "-";
+      let expStyle = hasEarningsExp && Number(earningsD1Raw) > 0
           ? "color:#e11d48;font-weight:bold;"
-          : (hasEarningsExp && Number(r["決算期待値"]) < 0 ? "color:#2563eb;" : "");
+          : (hasEarningsExp && Number(earningsD1Raw) < 0 ? "color:#2563eb;" : "");
       let expHtml = expVal !== "-" ? `<span style="${expStyle}">${Number(expVal) > 0 ? '+'+expVal : expVal}%</span>` : "-";
 
       // 決算リアクション（過去8回分）のミニグラフ（スパークライン）
@@ -2345,41 +2863,51 @@ function applyFilter(rows){
       // ★ 色分け判定（共通関数を利用）
       const rowHighlightClass = getRowColorClass(r);
       const classAttrStr = rowHighlightClass ? ` class="${rowHighlightClass}"` : "";
+      let nextDayStyleAttr = "";
+      let nextDayTitleAttr = "";
+      if (window.__VT_NEXTDAY_ACTIVE) {
+        const nds = Number(r["_VT_NEXTDAY_SCORE"] ?? -1);
+        if (nds >= 80) nextDayStyleAttr = ' style="background-color:rgba(239,68,68,0.15);"';
+        else if (nds >= 70) nextDayStyleAttr = ' style="background-color:rgba(234,179,8,0.15);"';
+        else if (nds >= 60) nextDayStyleAttr = ' style="background-color:rgba(59,130,246,0.10);"';
+        const ndLabel = nds >= 80 ? "🔥 翌日+5%候補" : nds >= 70 ? "👀 監視" : nds >= 60 ? "🤔 保留" : "📉 点数不足";
+        nextDayTitleAttr = ` title="${ndLabel} : ${nds}点"`;
+      }
 
-      html += `<tr${classAttrStr} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
+      html += `<tr${classAttrStr}${nextDayStyleAttr}${nextDayTitleAttr} data-code="${String(r["コード"]||"").padStart(4,"0")}" data-name="${escapeHtml(r["銘柄名"]||"")}">
         <!-- 短期トレード用 -->
         <td>${codeLink(r["コード"])} ${offeringBadge(r["コード"])}</td>
         <td>${escapeHtml(r["銘柄名"] ?? "")}</td>
         <td>${escapeHtml(r["市場"] || "-")}</td>
         <td class="theme-col" data-col="最新テーマ" title="${escapeHtml(String(r["最新テーマ"] || ""))}">${escapeHtml(r["最新テーマ"] || "")}</td>
         <td class="theme-col" data-col="関連テーマ" title="${escapeHtml(r["関連テーマ"]?.replace(/<[^>]*>/g, "") || "")}">${r["関連テーマ"] || ""}</td>
-        <td class="num">${r["現在値"] ?? ""}</td>
-        <td class="num" data-col="PTS株価" data-sort="${Number.isFinite(Number(r["PTS株価"])) ? Number(r["PTS株価"]) : -999999}" title="${escapeHtml(r["PTS時刻"] ? `PTS ${r["PTS時刻"]}` : "PTS表示なし")}">
-          ${(() => {
-              const pts = Number(r["PTS株価"]);
-              if (!Number.isFinite(pts)) return "-";
-              const cur = Number(String(r["現在値"] ?? "").replace(/,/g, ""));
-              const color = Number.isFinite(cur) ? (pts > cur ? "#e11d48" : pts < cur ? "#2563eb" : "inherit") : "inherit";
-              const tm = escapeHtml(r["PTS時刻"] || "");
-              return `<span style="font-weight:800;color:${color}">${pts.toLocaleString()}</span>${tm ? `<br><span style="font-size:9px;color:var(--muted);white-space:nowrap">${tm}</span>` : ""}`;
-          })()}
-        </td>
+        <td class="num" data-col="現在値">${r["現在値"] ?? ""}</td>
         <td class="num">${r["前日円差"] ?? ""}</td>
         <td class="num">${r["前日終値比率"] ?? ""}</td>
         <td class="num">${r["売買代金(億)"] ?? ""}</td>
         <td class="num">${r["出来高"] ?? ""}</td>
         <td style="${shStyle}">${escapeHtml(shVal)}</td>
 
-        <!-- 【第2グループ：一撃総合判定と目標株価】 -->
+        <!-- 売買目的6列 -->
+        <td class="strategy-main strategy-hold col-divider" data-sort="${Number(r["持越し適性ランク"] || 0)}">${escapeHtml(r["持越し適性"] || "-")}</td>
+        <td class="strategy-main strategy-steady num" data-sort="${Number(r["持続上昇スコア"] ?? -1)}" title="${escapeHtml(r["持続上昇理由"] || "")}">${escapeHtml(r["持続上昇"] || "-")}</td>
+        <td class="strategy-main strategy-a" data-sort="${Number(r["底反転スコア"] || 0)}" title="吸収回数=${escapeHtml(r["底反転吸収回数"] ?? "-")} / 下抜け=${Number.isFinite(Number(r["底反転下抜け_pct"])) ? Number(r["底反転下抜け_pct"]).toFixed(2)+"%" : "-"}">${escapeHtml(r["底反転"] || "-")}</td>
+        <td class="strategy-main strategy-c" data-sort="${Number(r["急伸スコア"] || 0)}">${escapeHtml(r["急伸"] || "-")}</td>
+        <td class="strategy-main strategy-b" data-sort="${Number(r["材料先行スコア"] || 0)}">${escapeHtml(r["材料先行"] || "-")}</td>
+        <td class="strategy-main strategy-entry" data-sort="${Number(r["今買えるランク"] || 0)}">${escapeHtml(r["今買える"] || "-")}</td>
+        <td class="strategy-resilience" data-col="相場耐性" data-sort="${Number.isFinite(Number(r["相場耐性スコア"])) ? Number(r["相場耐性スコア"]) : -999999}" title="${escapeHtml(r["相場耐性理由"] || "")}">${escapeHtml(r["相場耐性"] || "⚪ DATA不足")}</td>
+        <td class="strategy-env-entry ${(() => { const x=String(r["地合い込み一次判定"]||""); return (x.startsWith("◎")||x.startsWith("○")) ? "env-entry-buy" : (x.startsWith("×") ? "env-entry-stop" : "env-entry-watch"); })()}" data-col="地合い込み一次判定" data-sort="${Number.isFinite(Number(r["地合い込み一次判定スコア"])) ? Number(r["地合い込み一次判定スコア"]) : -999999}" title="${escapeHtml(r["地合い込み理由"] || "")}">${escapeHtml(r["地合い込み一次判定"] || "⚪ 環境統計不足")}</td>
+
+        <!-- 【第2グループ：モデル判定・反応価格・売買目安】 -->
         <td class="col-divider" style="font-weight:bold; font-size:1.05em; background-color:#f8fafc;">${escapeHtml(r["Algo_総合判定"] || "-")}</td>
-        <td class="num triangle-cell" data-col="三角スコア" data-growth="${g}" data-safety="${s2}" data-vol="${v2}" data-sort="${triSort}">
+        <td class="num triangle-cell" data-col="三角スコア" data-growth="${g}" data-safety="${s2}" data-vol="${v2}" data-sort="${r["_UI_SORT_TRIANGLE"] ?? triSort}">
             <span class="tri tri-g ${classG}">${"▲(上昇)" + g}</span>
             <span class="tri tri-s ${classS}">${"◆(安定)" + s2}</span>
             <span class="tri tri-v ${classV}">${"■(ボラ)" + v2}</span>
         </td>
-        <td style="font-weight:bold; ${(String(r["AI判定"] || "").startsWith("★"))?'color:#e11d48':''}">${r["AI判定"] || "-"}</td>
+        <td style="font-weight:bold; ${(String(r["AI判定"] || "").startsWith("★"))?'color:#e11d48':''}" data-sort="${r["_UI_SORT_AI_JUDGE"] ?? ""}">${r["AI判定"] || "-"}</td>
         <td class="num">${r["AIスコア"] || "-"}</td>
-        <td class="num" data-sort="${r['AI目標値_raw'] ?? -999999}">${r["AI目標値"] || "-"}</td>
+        <td class="num" data-sort="${r["_UI_SORT_AI_TARGET"] ?? r['AI目標値_raw'] ?? -999999}">${r["AI目標値"] || "-"}</td>
         <td class="num" data-sort="${Number.isFinite(Number(r["予測ターゲット価格"])) ? Number(r["予測ターゲット価格"]) : -999999}">
             ${Number.isFinite(Number(r["予測ターゲット価格"])) ? Number(r["予測ターゲット価格"]).toLocaleString() + '円' : '-'}
         </td>
@@ -2395,13 +2923,14 @@ function applyFilter(rows){
         <td>${escapeHtml(r["Algo_Momentum"] || "-")}</td>
         <td>${escapeHtml(r["Algo_VolTarget"] || "-")}</td>
         <td style="font-weight:bold;" data-sort="${r['イナゴ過熱スコア'] ?? 0}">${escapeHtml(r["イナゴ過熱判定"] || "🟢静 (0点)")}</td>
-        <td>${r["初動フラグ"] || ""}</td>
-        <td class="num" style="font-weight:bold;">${r["初動スコア"] ?? ""}</td>
+        <td data-col="INITIAL_MOMENTUM" title="${escapeHtml(r["INITIAL_MOMENTUM_REASON"] || "")}">${Number(r["INITIAL_MOMENTUM"]||0)===1 ? "候補" : "-"}</td>
+        <td class="num" data-col="INITIAL_MOMENTUM_SCORE" style="font-weight:bold;">${Number.isFinite(Number(r["INITIAL_MOMENTUM_SCORE"])) ? Number(r["INITIAL_MOMENTUM_SCORE"]).toFixed(1) : "-"}</td>
         <td>${r["底打ちフラグ"] || ""}</td>
         <td>${r["右肩早期フラグ"] || ""}</td>
         <td>${etBadge}${r["右肩早期種別_mini"] || ""}</td>
         <td>${r["右肩上がりフラグ"] || ""}</td>
-        <td class="num">${f2(r["RS_5"])}</td>
+        <td class="num">${Number.isFinite(Number(r["右肩上がりスコア"])) ? Number(r["右肩上がりスコア"]).toFixed(1) : "-"}</td>
+        <td class="num">${frs(r["RS_5"])}</td>
         <td class="num">${r["地合いフラグ"] ?? ""}</td>
         <td class="num">${r["逆行強フラグ"] ?? ""}</td>
         <td class="num">${r["逆行弱フラグ"] ?? ""}</td>
@@ -2422,23 +2951,30 @@ function applyFilter(rows){
         <td class="num" data-sort="${Number.isFinite(instTotalVal) ? instTotalVal : -999999}">${instTotal}</td>
         <td class="num" style="${instChgStyle}" data-sort="${Number.isFinite(instChgNum) ? instChgNum : -999999}">${instChgText}</td>
         <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${instMoveText}" data-sort="${instMoveText}">${instMoveText}</td>
-        <td style="text-align:center; font-weight:bold; color:var(--blue);" data-sort="${r["空売り更新日"] || "1970-01-01"}">${escapeHtml(r["空売り更新日"] || "N/A")}</td>
+        <td style="text-align:center; font-weight:bold; color:var(--blue);" data-sort="${r["空売り更新日"] || "1970-01-01"}">${escapeHtml(fdateAge(r["空売り更新日"]))}</td>
         <td>${escapeHtml(r["増資リスク"] ?? "")}</td>
         <td class="num">${r["増資スコア"] ?? ""}</td>
         <td class="reason-col">${escapeHtml(r["増資理由"] || "")}</td>
 
         <!-- 【第5グループ：業績・決算・割安度】 -->
         <td class="col-divider">${escapeHtml(r["Algo_Factor"] || "-")}</td>
-        <td class="num">${Number.isFinite(Number(r["適正株価"])) ? Number(r["適正株価"]).toFixed(0) : "-"}</td>
+        <td class="num" title="${escapeHtml(r["適正株価注記"] || '')}">${Number.isFinite(Number(r["適正株価"])) ? Number(r["適正株価"]).toFixed(0) : "-"}</td>
         <td class="num" style="${r["割安度"] > 0 ? 'color:#e11d48;font-weight:bold;' : ''}">${Number.isFinite(Number(r["割安度"])) ? Number(r["割安度"]).toFixed(1) : "-"}</td>
-        <td class="num" style="text-align:center;">${
-            r["利益加速ステータス"] === "⚠️出尽くし警戒" 
-                ? '<span class="badge" style="background:#fff4e6; color:#b45309; border:1px solid #ffe2c2; font-weight:bold;" title="売上YoYに対して営業益YoYが劣後しています（利益率悪化の懸念）">⚠️出尽くし警戒</span>' 
-                : (r["利益加速ステータス"] === "🚀加速" ? '<span class="badge b-green">🚀加速</span>' : '-')
+        <td class="num muted" title="買い目標ではありません。基礎適正とは別の強気側参考上限です。">${Number.isFinite(Number(r["参考上限株価"])) ? Number(r["参考上限株価"]).toFixed(0) : "-"}</td>
+        <td style="text-align:center;" title="${escapeHtml(r["適正株価注記"] || '')}">${(() => { const q=String(r["EPS品質"] || ''); if(q.startsWith('⚠')) return `<span class="badge b-orange">${escapeHtml(q)}</span>`; if(q==='通常') return '<span class="badge b-green">通常</span>'; return `<span class="badge b-gray">${escapeHtml(q || '-')}</span>`; })()}</td>
+        <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;" title="${escapeHtml((r["評価方式"] || '') + (r["PBR参照元"] ? ' / ' + r["PBR参照元"] : ''))}">${escapeHtml(r["評価方式"] || "-")}</td>
+        <td class="num" style="text-align:center;" data-sort="${r["_UI_SORT_PROFIT_ACCEL"] ?? ""}">${
+            r["利益加速ステータス"] === "⚠️利益率鈍化"
+                ? '<span class="badge" style="background:#fff4e6; color:#b45309; border:1px solid #ffe2c2; font-weight:bold;" title="利益加速フラグはONだが、営業益YoYが売上YoYに劣後">⚠️利益率鈍化</span>'
+                : (r["利益加速ステータス"] === "🚀加速"
+                    ? '<span class="badge b-green">🚀加速</span>'
+                    : (r["利益加速ステータス"] === "⚪情報不足"
+                        ? '<span class="badge b-gray">⚪情報不足</span>'
+                        : '-'))
         }</td>
         <td class="num">${Number.isFinite(Number(r["直近売上YoY"])) ? Number(r["直近売上YoY"]).toFixed(2) : "-"}</td>
         <td class="num">${Number.isFinite(Number(r["直近営業益YoY"])) ? Number(r["直近営業益YoY"]).toFixed(2) : "-"}</td>
-        <td class="num">${r["進捗率"] ?? ""}</td>
+        <td class="num" title="${escapeHtml(r["進捗状態"] || "")}">${Number.isFinite(Number(r["進捗率"])) ? Number(r["進捗率"]).toFixed(1) + "%" : "-"}</td>
         <td class="num">${
             r["過去平均進捗率"] !== null
             && r["過去平均進捗率"] !== undefined
@@ -2463,12 +2999,15 @@ function applyFilter(rows){
                   : '-'
             }
         </td>
+        <td class="num">${Number.isFinite(Number(r["過去同Q件数"])) ? Number(r["過去同Q件数"]).toFixed(0) : "-"}</td>
         <td class="num">${expHtml}</td>
         <td style="text-align:center; vertical-align:middle;" data-sort="${Number.isFinite(Number(r["決算勝率"])) ? Number(r["決算勝率"]) : -999}">${sparkHtml}</td>
         <td class="num" style="font-weight:bold; color:${Number(r["予想インパクト_pct"]) > 0 ? '#e11d48' : 'inherit'};" data-sort="${Number.isFinite(Number(r["予想インパクト_pct"])) ? Number(r["予想インパクト_pct"]) : -999999}">
             ${Number.isFinite(Number(r["予想インパクト_pct"])) ? '+' + Number(r["予想インパクト_pct"]).toFixed(1) + '%' : '-'}
         </td>
         <td style="text-align:center; font-size:12px; font-weight:bold; color:var(--blue);">${escapeHtml(r["決算発表予定日"] || "-")}</td>
+        <td style="text-align:center; font-size:12px;">${escapeHtml(r["最新決算発表日"] || "-")}</td>
+        <td class="num">${Number.isFinite(Number(r["決算後営業日数"])) ? Number(r["決算後営業日数"]).toFixed(0) : "-"}</td>
         <td>${escapeHtml(r["overall_alpha"] ?? "")}</td>
         <td class="num">${r["スコア"] ?? ""}</td>
         <td>${financeLink(r["コード"])}${financeNote(r)}</td>
@@ -2523,15 +3062,22 @@ function applyFilter(rows){
         <td><a href="${r["x_url"] ?? "#"}" target="_blank" rel="noopener">X</a></td>
       </tr>`;
     }
+    if (bottomPad > 0) {
+      html += `<tr class="virtual-spacer"><td colspan="${colCount}" style="height:${bottomPad}px !important"></td></tr>`;
+    }
     body.innerHTML = html;
     document.querySelector("#count").textContent = String(total);
-    document.querySelector("#pageinfo").textContent = `${state.page} / ${Math.max(1, Math.ceil(total/state.per))}`;
+    const domCount = Math.max(0, e - s);
+    document.querySelector("#pageinfo").textContent = total > 0
+      ? `全${total}件 / DOM ${domCount}行 / ${s+1}-${e}`
+      : "全0件";
     wireDomSort("#tbl-candidate");
     attachQHelpsToHead('#tbl-candidate');
-    
+
     if(window.setupExcelFilterIcons) window.setupExcelFilterIcons();
-    
+
     if (typeof installCandidateFolds === 'function') { try{ installCandidateFolds(); }catch(_){ } }
+    __vtReapplyFreeze();
   }
 
   function render() {
@@ -2817,21 +3363,16 @@ function applyFilter(rows){
         Object.assign(excelFilters, JSON.parse(JSON.stringify(st.excelFilters)));
       }
       
-      document.querySelectorAll('.filter-icon').forEach(icon => {
-        const th = icon.closest('th');
-        const colName = th ? th.getAttribute('data-col') : null;
-        if (colName && excelFilters[colName]) {
-          icon.classList.add('active');
-        } else {
-          icon.classList.remove('active');
-        }
-      });
+      updateExcelFilterVisualState();
     }
 
     applyAndRender();
   }
 
   function clearFiltersToDefault() {
+    // P4-DASH4-VT: 通常フィルター解除時はVT専用の一時抽出も解除する。
+    window.__VT_QUICK_FILTER_MODE = "";
+    window.__VT_NEXTDAY_ACTIVE = false;
     if (qEl) {
       qEl.value = "";
       state.q = "";
@@ -2855,9 +3396,7 @@ function applyFilter(rows){
       for (const key in excelFilters) {
         delete excelFilters[key];
       }
-      document.querySelectorAll('.filter-icon').forEach(icon => {
-        icon.classList.remove('active');
-      });
+      updateExcelFilterVisualState();
     }
 
     applyAndRender();
@@ -2964,63 +3503,47 @@ function applyFilter(rows){
   $("#copy-page")?.addEventListener("click", async (e)=>{
     e.preventDefault();
     const tbl = document.getElementById("tbl-candidate");
-    if (!tbl || !tbl.tHead || !tbl.tBodies.length) return;
+    if (!tbl || !tbl.tHead) return;
     const csvEscape = (v)=>{
       let s = String(v ?? "");
       if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
       return s;
     };
-    const getCellValue = (td)=>{
-      if (!td) return "";
-      const raw = td.getAttribute("data-raw");
-      if (raw != null) return raw;
-      return (td.textContent || "").replace(/\s+/g, " ").trim();
-    };
     const headerCells = Array.from(tbl.tHead.rows[0].cells);
+    const headerKeys = headerCells.map(th => th.getAttribute("data-col") || "");
     const headerLine = headerCells
-      .map(th => csvEscape(th.getAttribute("data-col") || (th.textContent || "").trim()))
+      .map(th => csvEscape(th.getAttribute("data-col") || (th.textContent || "").replace(/[?▼▲]/g, "").trim()))
       .join(",");
-    // ▼ 非表示にされている行を除外するフィルターを追加
-    const bodyRows = Array.from(tbl.tBodies[0].rows).filter(tr => tr.style.display !== "none");
-    const dataLines = bodyRows.map(tr => {
-      const tds = Array.from(tr.cells);
-      return tds.map(td => csvEscape(getCellValue(td))).join(",");
-    });
+    const allRows = Array.isArray(window.__VT_FILTERED_ROWS) ? window.__VT_FILTERED_ROWS : [];
+    const dataLines = allRows.map(r => headerKeys.map(k => csvEscape(k ? (r?.[k] ?? "") : "")).join(","));
     const text = [headerLine, ...dataLines].join("\n");
     try{
       if (navigator.clipboard && window.isSecureContext !== false) {
         await navigator.clipboard.writeText(text);
       } else {
         const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
+        ta.value = text; ta.style.position = "fixed"; ta.style.left = "-9999px";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
       }
       const btn = document.getElementById("copy-page");
       btn?.classList.add("ok");
       const old = btn?.textContent || "";
       if (btn) btn.textContent = "コピーしました";
-      setTimeout(()=>{ if(btn){ btn.classList.remove("ok"); btn.textContent = old || "今のページの銘柄をコピー"; } }, 1500);
-    }catch(_){
-      alert("コピーに失敗しました");
-    }
+      setTimeout(()=>{ if(btn){ btn.classList.remove("ok"); btn.textContent = old || "絞込後の全銘柄をコピー"; } }, 1500);
+    }catch(_){ alert("コピーに失敗しました"); }
   });
 
 
   // =========================================================
 
-  $("#download-page-csv")?.addEventListener("click", (e)=>{
-    e.preventDefault();
-    const tblId = "tbl-candidate";
-    const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
-    const lines = rows.map(tr => {
-      const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
-      const nameRaw = tr.getAttribute("data-name") ?? "";
-      if (!code || !nameRaw) return "";
+  function __vtDownloadCodesCsv(filenamePrefix){
+    const rows = Array.isArray(window.__VT_FILTERED_ROWS) ? window.__VT_FILTERED_ROWS : [];
+    const lines = rows.map(r => {
+      const codeRaw = String(r?.["コード"] ?? "");
+      if (!codeRaw) return "";
+      const code = codeRaw.padStart(4, "0");
+      const nameRaw = String(r?.["銘柄名"] ?? "");
+      if (!nameRaw) return "";
       const name = nameRaw.replace(/"/g, '""');
       return `"${code}","${name}",TKY,,,,,,`;
     }).filter(Boolean);
@@ -3029,37 +3552,16 @@ function applyFilter(rows){
     const blob = new Blob([bom, csv], { type: "text/csv" });
     const pad = n => String(n).padStart(2, "0");
     const dt  = new Date();
-    const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
-    const filename = `screen_current_page_only_${y}${m}${d}_${H}${M}${S}.csv`;
+    const y=dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
+    const filename = `${filenamePrefix}_${y}${m}${d}_${H}${M}${S}.csv`;
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
-  });
+  }
 
-  $("#download-csv")?.addEventListener("click", (e)=>{
-    e.preventDefault();
-    const tblId = "tbl-candidate";
-    const rows = Array.from(document.querySelectorAll(`#${tblId} tbody tr`));
-    const lines = rows.map(tr => {
-      const code = String(tr.getAttribute("data-code") ?? "").padStart(4, "0");
-      const nameRaw = tr.getAttribute("data-name") ?? "";
-      if (!code || !nameRaw) return "";
-      const name = nameRaw.replace(/"/g, '""');
-      return `"${code}","${name}",TKY,,,,,,`;
-    }).filter(Boolean);
-    const csv = lines.join("\n");
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    const blob = new Blob([bom, csv], { type: "text/csv" });
-    const pad = n => String(n).padStart(2, "0");
-    const dt  = new Date();
-    const y   = dt.getFullYear(), m=pad(dt.getMonth()+1), d=pad(dt.getDate()), H=pad(dt.getHours()), M=pad(dt.getMinutes()), S=pad(dt.getSeconds());
-    const filename = `screen_current_${y}${m}${d}_${H}${M}${S}.csv`;
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob); a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
-  });
+  $("#download-page-csv")?.addEventListener("click", (e)=>{ e.preventDefault(); __vtDownloadCodesCsv("screen_filtered_all"); });
+  $("#download-csv")?.addEventListener("click", (e)=>{ e.preventDefault(); __vtDownloadCodesCsv("screen_current"); });
 
   $("#f_defaultset")?.addEventListener("change",(e)=>applyDefaults(e.target.checked));
 
@@ -3069,6 +3571,80 @@ function applyFilter(rows){
 // ★ Excel風ポップオーバー フィルター機能
 // ==========================================
 let excelFilters = {};
+
+// P4-DASH5: 有効なExcel風列フィルターを、ヘッダー色とチップで常時可視化する。
+function _excelFilterIsActive(cond) {
+  return !!(cond && (
+    String(cond.v1 ?? '').trim() !== '' ||
+    (cond.t2 !== 'none' && String(cond.v2 ?? '').trim() !== '')
+  ));
+}
+
+function _excelFilterOpLabel(t) {
+  return ({gte:'≥', lte:'≤', eq:'=', includes:'含む', not_includes:'含まない'})[t] || t || '';
+}
+
+function _excelFilterSummary(cond) {
+  if (!_excelFilterIsActive(cond)) return '';
+  const parts = [];
+  const v1 = String(cond.v1 ?? '').trim();
+  const v2 = String(cond.v2 ?? '').trim();
+  if (v1 !== '') parts.push(`${_excelFilterOpLabel(cond.t1)} ${v1}`);
+  if (cond.t2 !== 'none' && v2 !== '') {
+    const logic = String(cond.logic || 'AND').toUpperCase() === 'OR' ? 'OR' : 'AND';
+    parts.push(`${logic} ${_excelFilterOpLabel(cond.t2)} ${v2}`);
+  }
+  return parts.join(' ');
+}
+
+function _ensureActiveColumnFilterBar() {
+  let bar = document.getElementById('active-column-filters');
+  if (bar) return bar;
+  bar = document.createElement('div');
+  bar.id = 'active-column-filters';
+  bar.setAttribute('aria-live', 'polite');
+  const table = document.getElementById('tbl-candidate');
+  const wrap = table ? (table.closest('.tbl-wrap') || table.parentElement) : null;
+  if (wrap && wrap.parentElement) wrap.parentElement.insertBefore(bar, wrap);
+  else if (table && table.parentElement) table.parentElement.insertBefore(bar, table);
+  return bar;
+}
+
+function updateExcelFilterVisualState() {
+  const activeEntries = Object.entries(excelFilters).filter(([, cond]) => _excelFilterIsActive(cond));
+
+  document.querySelectorAll('#tbl-candidate thead th[data-col]').forEach(th => {
+    const col = th.getAttribute('data-col') || '';
+    const cond = excelFilters[col];
+    const active = _excelFilterIsActive(cond);
+    th.classList.toggle('filter-column-active', active);
+    const icon = th.querySelector('.filter-icon');
+    if (icon) {
+      icon.classList.toggle('active', active);
+      icon.title = active ? `絞り込み中: ${_excelFilterSummary(cond)}` : 'フィルター';
+    }
+    if (active) th.setAttribute('data-filter-active', '1');
+    else th.removeAttribute('data-filter-active');
+  });
+
+  const bar = _ensureActiveColumnFilterBar();
+  if (!bar) return;
+  if (!activeEntries.length) {
+    bar.classList.remove('visible');
+    bar.innerHTML = '';
+    return;
+  }
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  bar.innerHTML = `<span class="acf-title">🔎 絞込列 ${activeEntries.length}</span>` +
+    activeEntries.map(([col, cond]) =>
+      `<span class="acf-chip" title="${esc(col)}: ${esc(_excelFilterSummary(cond))}">` +
+      `<span>${esc(col)} ${esc(_excelFilterSummary(cond))}</span>` +
+      `<button type="button" data-clear-excel-filter="${esc(col)}" title="この列の絞り込みを解除">×</button></span>`
+    ).join('') +
+    `<button type="button" class="acf-clear-all" title="列フィルターをすべて解除">列フィルター全解除</button>`;
+}
+window.updateExcelFilterVisualState = updateExcelFilterVisualState;
 
 function initExcelFilters() {
   const popover = document.createElement('div');
@@ -3143,6 +3719,7 @@ function initExcelFilters() {
         popover.classList.add('active');
       });
     });
+    updateExcelFilterVisualState();
   };
 
   // 適用ボタン
@@ -3162,6 +3739,7 @@ function initExcelFilters() {
       };
     }
     popover.classList.remove('active');
+    updateExcelFilterVisualState();
     applyAndRender();
   });
 
@@ -3169,15 +3747,36 @@ function initExcelFilters() {
   document.getElementById('ef-clear').addEventListener('click', () => {
     delete excelFilters[currentTargetCol];
     popover.classList.remove('active');
+    updateExcelFilterVisualState();
     applyAndRender();
   });
 
   // 画面外クリックで閉じる
   document.addEventListener('click', (e) => {
+    const clearOne = e.target.closest && e.target.closest('[data-clear-excel-filter]');
+    if (clearOne) {
+      e.preventDefault();
+      e.stopPropagation();
+      const col = clearOne.getAttribute('data-clear-excel-filter');
+      if (col) delete excelFilters[col];
+      updateExcelFilterVisualState();
+      applyAndRender();
+      return;
+    }
+    const clearAll = e.target.closest && e.target.closest('.acf-clear-all');
+    if (clearAll) {
+      e.preventDefault();
+      e.stopPropagation();
+      Object.keys(excelFilters).forEach(k => delete excelFilters[k]);
+      updateExcelFilterVisualState();
+      applyAndRender();
+      return;
+    }
     if (!popover.contains(e.target) && !e.target.classList.contains('filter-icon')) {
       popover.classList.remove('active');
     }
   });
+  updateExcelFilterVisualState();
 }
 
 // フィルター条件を判定するロジック
@@ -3260,15 +3859,56 @@ function evaluateExcelFilters(r) {
   if (typeof window.installCandidateFolds !== 'function') window.installCandidateFolds = function(){};
   if (typeof window.installFoldsFor !== 'function') window.installFoldsFor = function(){};
 
+  function renderEntryEnvironment(){
+    const host=document.getElementById('entry-env-summary'); if(!host) return;
+    const e=(RAW && RAW.meta && RAW.meta.entry_environment) ? RAW.meta.entry_environment : null;
+    if(!e){ host.innerHTML='<span class="muted">個別買い環境: 情報なし</span>'; return; }
+    const cls={'A':'reg-a','B':'reg-b','C':'reg-c','D':'reg-d','N':'reg-n'}[String(e.regime_code||'N')] || 'reg-n';
+    const f=(v,suf='')=> (v===null||v===undefined||v===''||!Number.isFinite(Number(v))) ? '-' : `${Number(v).toFixed(1)}${suf}`;
+    const chip=(txt,extra='')=>`<span class="eep-chip ${extra}">${txt}</span>`;
+    const sig=e.signal_environment||{};
+    const sm=sig.metrics||{};
+    const src=String(e.score_source||'');
+    let html='';
+    html += chip(`全個別株 ${Number(e.universe_count||0).toLocaleString()}銘柄`);
+    html += chip(`環境 ${escapeHtml(String(e.regime_code||'N'))} ${escapeHtml(String(e.regime||'DATA不足'))} ${f(e.score)}`,`eep-regime ${cls}`);
+    if(sig.qualified){
+      const sp=(key,label,suf='%')=>{ const x=sm[key]||{}; return chip(`${label} ${f(x.recent,suf)} / 基準${f(x.baseline,suf)}`); };
+      html += chip(`買える判定実績 n=${Number(sig.event_count||0).toLocaleString()} / score ${f(sig.score)}`,'eep-regime reg-a');
+      html += sp('plus_10m','10分+');
+      html += sp('plus_30m','30分+');
+      html += sp('plus_60m','60分+');
+      html += sp('plus_close','引け+');
+      html += sp('plus_1d','翌日+');
+      html += sp('plus_3d','3日+');
+      html += sp('mfe_60m','MFE60');
+      html += sp('mae_60m','MAE60');
+    }else{
+      const n=Number(sig.event_count||0);
+      html += chip(`買える判定実績: 蓄積中 n=${n.toLocaleString()} / 必要目安${Number(sig.min_obs||30)}件`,'eep-regime reg-n');
+      const m=e.metrics||{};
+      const pair=(key,label,suf='%')=>{ const x=m[key]||{}; return chip(`${label} ${f(x.recent,suf)} / 基準${f(x.baseline,suf)}`); };
+      html += pair('plus_1d','全銘柄1D+');
+      html += pair('plus_3d','3D+');
+      html += pair('hit_plus2_5d','5日+2%到達');
+      html += pair('mfe_5d','MFE5');
+      html += pair('mae_5d','MAE5');
+    }
+    if(src) html += chip(`判定元 ${escapeHtml(src==='BUY_SIGNAL_PRIMARY'?'実買えるsignal中心':'全銘柄日次fallback')}`);
+    host.innerHTML=html;
+  }
+
   function renderQualityHealth(){
     const box=document.getElementById('quality-health'); if(!box) return;
     const q=(RAW && RAW.meta && RAW.meta.quality) ? RAW.meta.quality : null;
     if(!q){ box.innerHTML='<span class="muted">データ品質: 情報なし</span>'; return; }
-    const cov=q.coverage||{}; const warns=Array.isArray(q.warnings)?q.warnings:[];
+    const cov=q.coverage||{}; const fcov=q.fund_source_coverage||{}; const warns=Array.isArray(q.warnings)?q.warnings:[];
     const chips=[];
     const order=['現在値','出来高','RVOL代金','ATR14%','初動スコア','AIスコア','適正株価','信用倍率','決算リアクションスコア'];
     for(const k of order){ if(cov[k]!=null) chips.push(`<span class="qh-chip">${k} ${Number(cov[k]).toFixed(1)}%</span>`); }
-    const head=warns.length ? `<span class="qh-warn">⚠ 品質警告 ${warns.length}件</span>` : '<span class="qh-ok">✓ 基礎データ品質OK</span>';
+    const forder=['最新実決算','利益状態','TDnet最新予想','TDnet比較可能','希薄化監視'];
+    for(const k of forder){ if(fcov[k]!=null) chips.push(`<span class="qh-chip">F:${k} ${Number(fcov[k]).toFixed(1)}%</span>`); }
+    const head=warns.length ? `<span class="qh-warn">⚠ 品質警告 ${warns.length}件</span>` : '<span class="qh-ok">✓ 基礎価格・出来高データOK</span>';
     const mode=q.run_mode ? `<span class="qh-chip">mode ${q.run_mode}</span>` : '';
     box.innerHTML=head+mode+chips.join('')+(warns.length?`<span class="muted">${warns.join(' / ')}</span>`:'');
   }
@@ -3288,6 +3928,7 @@ function evaluateExcelFilters(r) {
       DATA_CAND    = Array.isArray(RAW.cand)     ? RAW.cand     : [];
       state.data = DATA_CAND.slice();
       renderQualityHealth();
+      renderEntryEnvironment();
 
       render();
       if (typeof installFoldsFor === 'function') { try{ installFoldsFor('tbl-candidate'); }catch(_){ } }
@@ -3332,8 +3973,6 @@ function generatePromptJson(code) {
     ai_target: safeStr(r["AI目標値"]),
     news: splitArray(safeStr(r["株探ニュース(3)"]).replace(/<[^>]*>/g, "")),
     price_now: safeStr(r["現在値"]),
-    pts_price: safeStr(r["PTS株価"]),
-    pts_time: safeStr(r["PTS時刻"]),
     price_prev: safeStr(r["前日終値"]),
     price_diff: safeStr(r["前日円差"]),
     price_diff_rate: safeStr(r["前日終値比率"]),
@@ -3725,10 +4364,12 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
       if (c) dataMap.set(c, item);
     });
 
-    const bodyRows = Array.from(tbl.tBodies[0].rows);
-    
-    // 足切りフィルターを適用
-    const codes = bodyRows.map(tr => tr.getAttribute("data-code")).filter(code => {
+    const filteredRows = Array.isArray(window.__VT_FILTERED_ROWS)
+        ? window.__VT_FILTERED_ROWS
+        : (typeof applyFilter === "function" ? applyFilter(allData) : allData);
+
+    // 足切りフィルターを適用（仮想DOMではなく絞込後の全データが対象）
+    const codes = filteredRows.map(r0 => String(r0?.["コード"] || "").padStart(4, "0")).filter(code => {
         if (!code) return false;
         const r = dataMap.get(code);
         if (!r) return false;
@@ -3756,11 +4397,11 @@ document.getElementById("copy-earnings-data")?.addEventListener("click", async (
       { label: "市場", key: "市場" },
       { label: "最新テーマ", key: "最新テーマ" },
       { label: "予想インパクト_pct", key: "予想インパクト_pct" },
-      { label: "利益加速フラグ", key: "利益加速フラグ" },
+      { label: "利益加速ステータス", key: "利益加速ステータス" },
       { label: "直近営業益YoY", key: "直近営業益YoY" },
       { label: "直近売上YoY", key: "直近売上YoY" },
       { label: "実質サプライズギャップ", key: "実質サプライズギャップ" },
-      { label: "決算期待値", key: "決算期待値" },
+      { label: "過去D1期待値", key: "過去決算D1期待値" },
       { label: "進捗率", key: "進捗率" },
       { label: "EPS", key: "EPS" },
       { label: "ROE", key: "ROE" },
@@ -3885,13 +4526,16 @@ ${codes.length}/${codes.length}
 企業の質ではありません。
 
 重み付け
-① 決算サプライズ期待 40点
-・決算期待値 ・利益加速フラグ ・市場期待との差 ・コンセンサス超過余地
-※「🚀加速」は本物の好業績として加点対象。「⚠️出尽くし警戒」は見かけの改善（利益率悪化・通期据え置きリスク）として大幅減点または除外。
+① 決算・業績の質 40点
+・過去D1期待値（過去決算翌営業日の実績統計）
+・利益加速ステータス
+・進捗率 / 季節調整済進捗差分
+・シンデン系の会社予想ギャップ/信頼性（CSVに存在する場合）
+※「🚀加速」は利益加速フラグONかつ営業益YoY>=売上YoY。「⚠️利益率鈍化」はフラグONだが営業益YoY<売上YoY。「⚪情報不足」は弱い0点と同一視しない。
+※過去D1期待値は将来決算予測やコンセンサスではありません。
 
-② PTSアルゴ買い期待 25点
-・流動性を重視。「売買代金(億)」が1億未満は危険、1〜10億は小型向き、10〜100億が最高、100億以上は大型。
-・「RVOL代金」「Algo判定」の勢いを評価。
+② 流動性・モメンタム 25点
+・「売買代金(億)」「RVOL代金（当日売買代金÷20日平均売買代金）」「Algo判定」を評価。
 
 ③ 需給 20点
 ・「踏み上げ期待スコア」「売り残」「機関空売り増減」から、決算ギャップアップ後の伸び（ショートカバー）を評価。
@@ -3967,7 +4611,7 @@ ${csvText}
     "コード", "銘柄名", "市場", "最新テーマ", 
     "前日終値比率", "売買代金(億)", "RVOL代金", "RS_5", 
     "需給OH", "信用倍率", "信用買い残_浮動株比率", "信用買い残増減率_20d", "信用需給負荷スコア",
-    "利益加速フラグ", "決算期待値", "進捗率", "季節調整済進捗差分",
+    "利益加速ステータス", "過去決算D1期待値", "進捗率", "季節調整済進捗差分",
     "シンデン総合スコア", "シンデン評価区分", "シンデン正式スコア", "シンデン参考スコア", "シンデン判定", "予想ギャップスコア", "予想信頼性スコア",
     "予想根拠スコア", "予想可視性スコア", "未織り込みスコア",
     "予想達成履歴信頼度", "予想達成履歴期数",
@@ -3987,7 +4631,7 @@ ${csvText}
       if (c === "売買代金(億)" && val == null) val = r["売買代金億"];
       
       if (c === "利益加速フラグ") {
-          // 「利益加速ステータス」が存在すればその文字列（🚀加速 or ⚠️出尽くし警戒）を使用
+          // 旧CSV互換用分岐。現行colsは利益加速ステータスを直接出力する。
           if (r["利益加速ステータス"]) {
               val = r["利益加速ステータス"];
           } else {
@@ -4011,8 +4655,8 @@ ${macroContext}
 
 【分析の視点・前提】
 提供されたデータには、短期の爆発力を秘めた銘柄から、中長期でじわじわトレンドを形成する銘柄、需給が締まった銘柄などが混在しています。
-今回は特に「利益加速フラグ」「決算期待値」に加え、「シンデン正式スコア」「シンデン評価区分」「予想信頼性スコア」「予想達成履歴期数」などの会社予想の質・未織り込み度と、需給・テクニカルのバランスを重視して、それぞれの銘柄が「どのような買い方（短期急騰狙い、中期トレンドフォロー、押し目買い等）」に向いているか分析してください。シンデン評価区分が「参考」の数値は履歴不足の比較材料であり、正式順位として扱わないでください。
-※「利益加速フラグ」列には「🚀加速（本物の好業績）」と「⚠️出尽くし警戒（見かけの好業績で下落リスクあり）」の2種類が存在します。
+今回は特に「利益加速ステータス」と「過去決算D1期待値」に加え、「シンデン正式スコア」「シンデン評価区分」「予想信頼性スコア」「予想達成履歴期数」など、CSVに実際に含まれる会社予想の質・未織り込み度と、需給・テクニカルのバランスを重視して、それぞれの銘柄が「どのような買い方（短期急騰狙い、中期トレンドフォロー、押し目買い等）」に向いているか分析してください。シンデン評価区分が「参考」の数値は履歴不足の比較材料であり、正式順位として扱わないでください。
+※「利益加速ステータス」は「🚀加速」「⚠️利益率鈍化」「⚪情報不足」「-（非該当）」を区別します。過去D1期待値は将来決算予測や市場コンセンサスではありません。
 
 【分析依頼】
 1. 本日の相場概況と資金流入セクター：
@@ -4020,12 +4664,12 @@ ${macroContext}
 
 2. スタイル別【厳選・注目すべき3銘柄】：
    以下の3つの異なるスタイルに最も適した銘柄をそれぞれ1つずつ（計3銘柄）選出し、その理由と最適なエントリー戦略を述べてください。
-   - ①【短期急騰・大化け枠】：「利益加速フラグ」が「🚀加速」となっている、または「初動シグナル」が出ており、数日以内の値幅やサプライズ急騰を狙える銘柄
+   - ①【短期急騰・大化け枠】：「利益加速ステータス」が「🚀加速」となっている、または「初動シグナル」が出ており、数日以内の値幅やサプライズ急騰を狙える銘柄
    - ②【中期じわじわ・トレンドフォロー枠】：相対強度（RS_5）やチャートの安定感があり、押し目を丁寧に拾ってじわじわ伸ばせる銘柄
    - ③【需給・バリュー・逆行高枠】：需給（需給OH、信用倍率等）が軽く、地合いに左右されにくい強さや割安妙味がある銘柄
 
 3. 警戒すべきセクターおよびリスク要因：
-   マクロ視点で資金が流出しているセクターや、上値が重そうなパターンを指摘してください。また、「利益加速フラグ」が「⚠️出尽くし警戒」となっている銘柄があれば、罠銘柄として注意喚起してください。
+   マクロ視点で資金が流出しているセクターや、上値が重そうなパターンを指摘してください。また、「利益加速ステータス」が「⚠️利益率鈍化」となっている銘柄があれば、利益成長が売上成長に劣後している事実として注意してください。「出尽くし」まではデータだけから断定しないでください。
 
 【スクリーニングデータ (CSV)】
 ` + csvRows.join("\n");
@@ -4078,7 +4722,6 @@ ${macroContext}
             <th class="sortable" data-col="最新テーマ" data-type="text">最新テーマ<span class="arrow"></span></th>
             <th class="sortable" data-col="関連テーマ" data-type="text">関連テーマ<span class="arrow"></span></th>
             <th class="num sortable" data-col="現在値" data-type="num">現在値<span class="arrow"></span></th>
-            <th class="num sortable" data-col="PTS株価" data-type="num" title="株探PTS株価（小さい文字はPTS表示時刻）">PTS<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日円差" data-type="num">前日比(円)<span class="arrow"></span></th>
             <th class="num sortable" data-col="前日終値比率" data-type="num">前日終値比率（％）<span class="arrow"></span></th>
             <th class="num sortable" data-col="売買代金(億)" data-type="num">売買代金(億)<span class="arrow"></span></th>
@@ -4086,35 +4729,48 @@ ${macroContext}
             <th class="sortable" data-col="S高" data-type="text">S高<span class="arrow"></span></th>
 
             <!-- ============================================== -->
-            <!-- 【第2グループ：一撃総合判定と目標株価】 -->
+            <!-- 【売買目的：持越し・持続・反転・急伸・材料・一次ENTRY・相場耐性・地合い込み一次判定】 -->
+            <!-- ============================================== -->
+            <th class="sortable strategy-head col-divider" data-col="持越し適性ランク" data-type="num">持越し<span class="arrow"></span></th>
+            <th class="num sortable strategy-head" data-col="持続上昇スコア" data-type="num">持続<span class="arrow"></span></th>
+            <th class="sortable strategy-head" data-col="底反転スコア" data-type="num">底反転<span class="arrow"></span></th>
+            <th class="sortable strategy-head" data-col="急伸スコア" data-type="num">急伸<span class="arrow"></span></th>
+            <th class="sortable strategy-head" data-col="材料先行スコア" data-type="num">材料先行<span class="arrow"></span></th>
+            <th class="sortable strategy-head" data-col="今買えるランク" data-type="num">今買える？<span class="arrow"></span></th>
+            <th class="num sortable strategy-head" data-col="相場耐性" data-sort-key="相場耐性スコア" data-type="num" title="悪地合いでもこの個別株自身が崩れにくいか">相場耐性<span class="arrow"></span></th>
+            <th class="num sortable strategy-head" data-col="地合い込み一次判定" data-sort-key="地合い込み一次判定スコア" data-type="num" title="今買える？→相場耐性→全個別株の直近フォロースルーを順に反映">地合込ENTRY<span class="arrow"></span></th>
+
+            <!-- ============================================== -->
+            <!-- 【第2グループ：モデル判定・反応価格・売買目安】 -->
             <!-- ============================================== -->
             <th class="sortable col-divider" data-col="Algo_総合判定" data-type="text" style="color:var(--blue);">総合判定<span class="arrow"></span></th>
-            <th class="num sortable" data-col="三角スコア" data-type="num">△Score<span class="arrow"></span></th>
-            <th class="sortable" data-col="AI判定" data-type="text">AI判定<span class="arrow"></span></th>
+            <th class="num sortable" data-col="三角スコア" data-sort-key="_UI_SORT_TRIANGLE" data-type="num" title="単一総合点ではありません。並べ替えは▲Growth→◆Safety→■Volの優先順">三角(▲◆■)<span class="arrow"></span></th>
+            <th class="sortable" data-col="AI判定" data-sort-key="_UI_SORT_AI_JUDGE" data-type="num">AI判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="AIスコア" data-type="num">AIスコア<span class="arrow"></span></th>
-            <th class="num sortable" data-col="AI目標値" data-type="num">AI到達基準<span class="arrow"></span></th>
-            <th class="num sortable" data-col="予測ターゲット価格" data-type="num" title="予想インパクトを現在値に反映させた目標価格">予測ターゲット<span class="arrow"></span></th>
-            <th class="num sortable" data-col="仕込み" data-type="num">仕込み目安<span class="arrow"></span></th>
-            <th class="num sortable" data-col="利確" data-type="num">利確目安<span class="arrow"></span></th>
-            <th class="num sortable" data-col="損切り" data-type="num">損切目安<span class="arrow"></span></th>
-            <th class="sortable" data-col="推奨アクション" data-type="text">推奨<span class="arrow"></span></th>
+            <th class="num sortable" data-col="AI目標値" data-sort-key="_UI_SORT_AI_TARGET" data-type="num" title="表示=target_pct到達基準価格 / ソート=AI到達確率(AIスコア)">AI到達基準<span class="arrow"></span></th>
+            <th class="num sortable" data-col="予測ターゲット価格" data-type="num" title="予想インパクトを現在値に反映したモデル反応価格。適正株価/投資目標ではありません">予測反応価格<span class="arrow"></span></th>
+            <th class="num sortable" data-col="仕込み目安価格" data-type="num">仕込み目安<span class="arrow"></span></th>
+            <th class="num sortable" data-col="利確目安価格" data-type="num">利確目安<span class="arrow"></span></th>
+            <th class="num sortable" data-col="損切目安価格" data-type="num">損切目安<span class="arrow"></span></th>
+            <th class="sortable" data-col="推奨アクション" data-sort-key="_UI_SORT_RECOMMEND" data-type="num">推奨<span class="arrow"></span></th>
             <th class="num sortable" data-col="推奨比率" data-type="num">推奨比率%<span class="arrow"></span></th>
 
             <!-- ============================================== -->
             <!-- 【第3グループ：今の勢いとシグナル】 -->
             <!-- ============================================== -->
-            <th class="num sortable col-divider" data-col="RVOL代金" data-type="num">RVOL(相対出来高)<br><span style="font-size:9px; color:#64748b; font-weight:normal;">(高い方が吉: 2.0以上◎)</span><span class="arrow"></span></th>
+            <th class="num sortable col-divider" data-col="RVOL代金" data-type="num">RVOL代金<br><span style="font-size:9px; color:#64748b; font-weight:normal;">当日代金÷20日平均</span><span class="arrow"></span></th>
             <th class="sortable" data-col="短期需給判定" data-type="text" style="color:#f97316;">短期需給<span class="arrow"></span></th>
             <th class="sortable" data-col="Algo_Momentum" data-type="text">モメンタムCTA<span class="arrow"></span></th>
             <th class="sortable" data-col="Algo_VolTarget" data-type="text">ボラターゲット<span class="arrow"></span></th>
-            <th class="sortable" data-col="イナゴ過熱判定" data-type="text" style="color:#e11d48;">イナゴ過熱<span class="arrow"></span></th>
-            <th class="sortable" data-col="初動フラグ" data-type="text">初動<span class="arrow"></span></th>
-            <th class="num sortable" data-col="初動スコア" data-type="num" style="color:var(--orange);">初動S<span class="arrow"></span></th>
+            <th class="sortable" data-col="イナゴ過熱判定" data-sort-key="イナゴ過熱スコア" data-type="num" style="color:#e11d48;">イナゴ過熱<span class="arrow"></span></th>
+            <th class="sortable" data-col="INITIAL_MOMENTUM" data-type="num">初動2x+2%<span class="arrow"></span></th>
+            <th class="num sortable" data-col="INITIAL_MOMENTUM_SCORE" data-type="num" style="color:var(--orange);">初動2x+2 S<span class="arrow"></span></th>
             <th class="sortable" data-col="底打ちフラグ" data-type="text">底打ち<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期フラグ" data-type="text">短期<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩早期種別" data-type="text">短期種別<span class="arrow"></span></th>
             <th class="sortable" data-col="右肩上がりフラグ" data-type="text">右肩<span class="arrow"></span></th>
-            <th class="num sortable" data-col="RS_5" data-type="num">RS_5(相対強弱)<br><span style="font-size:9px; color:#64748b; font-weight:normal;">(高い方が吉: 0以上◎)</span><span class="arrow"></span></th>
+            <th class="num sortable" data-col="右肩上がりスコア" data-type="num" style="color:#0f766e;">右肩S<span class="arrow"></span></th>
+            <th class="num sortable" data-col="RS_5" data-type="num">RS_5<br><span style="font-size:9px; color:#64748b; font-weight:normal;">0.05=指数比+5%</span><span class="arrow"></span></th>
             <th class="num sortable" data-col="地合いフラグ" data-type="num">地合い<span class="arrow"></span></th>
             <th class="num sortable" data-col="逆行強フラグ" data-type="num">逆行強<span class="arrow"></span></th>
             <th class="num sortable" data-col="逆行弱フラグ" data-type="num">逆行弱<span class="arrow"></span></th>
@@ -4122,8 +4778,8 @@ ${macroContext}
             <!-- ============================================== -->
             <!-- 【第4グループ：需給とリスク】 -->
             <!-- ============================================== -->
-            <th class="sortable col-divider" data-col="信用需給判定" data-type="text" style="color:#b45309;">信用需給<span class="arrow"></span></th>
-            <th class="sortable" data-col="需給安全フラグ" data-type="text">需給安全<span class="arrow"></span></th>
+            <th class="sortable col-divider" data-col="信用需給判定" data-sort-key="信用需給スコア" data-type="num" style="color:#b45309;">信用需給<span class="arrow"></span></th>
+            <th class="sortable" data-col="需給安全フラグ" data-type="num">需給安全<span class="arrow"></span></th>
             <th class="num sortable" data-col="信用倍率" data-type="num">信用倍率<br><span style="font-size:9px; color:#64748b; font-weight:normal;">(低い方が吉: 1倍割れ◎)</span><span class="arrow"></span></th>
             <th class="num sortable" data-col="需給OH" data-type="num">需給OH<br><span style="font-size:9px; color:#64748b; font-weight:normal;">(低い方が吉: 0.5未満◎)</span><span class="arrow"></span></th>
             <th class="num sortable" data-col="信用買い残_浮動株比率" data-type="num">買い残/浮動株%<br><span style="font-size:9px; color:#64748b; font-weight:normal;">(低い方が吉: 1%未満◎)</span><span class="arrow"></span></th>
@@ -4132,34 +4788,40 @@ ${macroContext}
             <th class="num sortable" data-col="踏み上げ期待スコア" data-type="num">踏み上げ<span class="arrow"></span></th>
             <th class="num sortable" data-col="売り残" data-type="num">売り残<span class="arrow"></span></th>
             <th class="num sortable" data-col="買い残" data-type="num">買い残<span class="arrow"></span></th>
-            <th class="sortable" data-col="機関売り判定" data-type="text" style="color:#2563eb;">機関売り<span class="arrow"></span></th>
+            <th class="sortable" data-col="機関売り判定" data-sort-key="機関売りスコア" data-type="num" style="color:#2563eb;">機関売り<span class="arrow"></span></th>
             <th class="sortable" data-col="機関空売り状態" data-type="text" title="現在残高 / 過去履歴 / 当日取得状態">空売り状態<span class="arrow"></span></th>
             <th class="num sortable" data-col="機関空売り合計株数" data-type="num">機関空売り合計<span class="arrow"></span></th>
-            <th class="num sortable" data-col="本日の増減合計株数" data-type="num">機関増減(最新報告日)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="本日の増減合計株数" data-type="num">機関増減(最終報告日)<span class="arrow"></span></th>
             <th class="sortable" data-col="主要機関の動き" data-type="text">主要機関の動き<span class="arrow"></span></th>
             <th class="sortable" data-col="空売り更新日" data-type="date" style="color:var(--blue);">機関更新日<span class="arrow"></span></th>
-            <th data-col="増資リスク">増資リスク</th>
-            <th class="num sortable" data-col="増資スコア" data-type="num">増資スコア<span class="arrow"></span></th>
-            <th class="reason-col" data-col="増資理由">理由</th>
+            <th data-col="増資リスク" title="現行writerなし。希薄化イベントの正本は増資経歴バッジ">増資リスク(停止)</th>
+            <th class="num" data-col="増資スコア" title="現行writerなし。今回snapshotでは無効化">増資S(停止)</th>
+            <th class="reason-col" data-col="増資理由" title="現行writerなし">増資理由(停止)</th>
 
             <!-- ============================================== -->
             <!-- 【第5グループ：業績・決算・割安度】 -->
             <!-- ============================================== -->
             <th class="sortable col-divider" data-col="Algo_Factor" data-type="text">ファクター<span class="arrow"></span></th>
-            <th class="num sortable" data-col="適正株価" data-type="num">適正株価<span class="arrow"></span></th>
-            <th class="num sortable" data-col="割安度" data-type="num">割安度(%)<span class="arrow"></span></th>
-            <th class="sortable" data-col="利益加速フラグ" data-type="number">🚀加速<span class="arrow"></span></th>
-            <th class="sortable" data-col="直近売上YoY" data-type="number">売上YoY(%)<span class="arrow"></span></th>
-            <th class="sortable" data-col="直近営業益YoY" data-type="number">営益YoY(%)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="適正株価" data-type="num" title="買い判断用の基礎価値。一過性利益ではPERを禁止しPBR基礎へ切替">基礎適正<span class="arrow"></span></th>
+            <th class="num sortable" data-col="割安度" data-type="num" title="基礎適正に対する現在値の割安/割高度。参考上限は使わない">割安度(%)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="参考上限株価" data-type="num" title="強気側の参考境界。買い目標ではなく、割安度/Factorにも不使用">参考上限<span class="arrow"></span></th>
+            <th class="sortable" data-col="EPS品質" data-type="text" title="PERへ使えるEPSかを判定。警告時はPER禁止">EPS品質<span class="arrow"></span></th>
+            <th class="sortable" data-col="評価方式" data-type="text" title="基礎適正の算出方式">評価方式<span class="arrow"></span></th>
+            <th class="sortable" data-col="利益加速ステータス" data-sort-key="_UI_SORT_PROFIT_ACCEL" data-type="num">利益加速<span class="arrow"></span></th>
+            <th class="sortable" data-col="直近売上YoY" data-type="num">売上YoY(%)<span class="arrow"></span></th>
+            <th class="sortable" data-col="直近営業益YoY" data-type="num">営益YoY(%)<span class="arrow"></span></th>
             <th class="num sortable" data-col="進捗率" data-type="num">進捗率<span class="arrow"></span></th>
             <th class="num sortable" data-col="過去平均進捗率" data-type="num" title="過去数年の同四半期における平均進捗率">過去平均<span class="arrow"></span></th>
             <th class="num sortable" data-col="季節調整済進捗差分" data-type="num" title="今回の進捗率 − 過去平均進捗率">進捗差分<span class="arrow"></span></th>
-            <th class="num sortable" data-col="決算期待値" data-type="num" title="勝率 × 平均上昇幅 ＋ 敗率 × 平均下落幅">決算期待値<span class="arrow"></span></th>
-            <th class="sortable" data-col="決算リアクション履歴" data-type="num" title="勝率でソート。過去8回の決算翌日リアクション">過去反応<span class="arrow"></span></th>
-            <th class="num sortable" data-col="予想インパクト_pct" data-type="num" title="決算サプライズ・空売り燃料・時価総額の軽さから試算した上昇率（％）">予想インパクト<span class="arrow"></span></th>
-            <th class="sortable" data-col="決算発表予定日" data-type="date">決算発表日<span class="arrow"></span></th>
-            <th class="sortable" data-col="overall_alpha" data-type="text">α<span class="arrow"></span></th>
-            <th class="num sortable" data-col="財務スコア" data-type="num">財務スコア<span class="arrow"></span></th>
+            <th class="num sortable" data-col="過去同Q件数" data-type="num" title="季節進捗比較に使えた過去同Qの年度数。2期以上を正式判定に使用">同Q件数<span class="arrow"></span></th>
+            <th class="num sortable" data-col="過去決算D1期待値" data-type="num" title="過去決算D1の実績統計。将来予測ではありません">過去D1期待値<span class="arrow"></span></th>
+            <th class="sortable" data-col="決算勝率" data-sort-key="_UI_SORT_PAST_REACTION" data-type="num" title="表示=過去最大8回のD1反応 / ソート・数値フィルター=決算勝率">D1反応(勝率)<span class="arrow"></span></th>
+            <th class="num sortable" data-col="予想インパクト_pct" data-type="num" title="StockSurprisePredictorの予測反応率。負値もあり、概ね-15〜+30%">予想反応%<span class="arrow"></span></th>
+            <th class="sortable" data-col="決算発表予定日" data-type="date">次回決算予定<span class="arrow"></span></th>
+            <th class="sortable" data-col="最新決算発表日" data-type="date" title="quarterly_actual_historyの最新実決算発表日">最新実決算<span class="arrow"></span></th>
+            <th class="num sortable" data-col="決算後営業日数" data-type="num" title="最新実決算発表日からのJPX営業日数。発表日=0">決算後日数<span class="arrow"></span></th>
+            <th class="sortable" data-col="overall_alpha" data-sort-key="_UI_SORT_ALPHA" data-type="num" title="財務producerのoverall_alpha。超過収益alphaではありません">財務評価<span class="arrow"></span></th>
+            <th class="num sortable" data-col="スコア" data-type="num" title="finance_notes.score。0〜100尺度ではありません">財務スコア<span class="arrow"></span></th>
             <th>財務</th>
             <th class="num sortable" data-col="PBR" data-type="num">PBR<span class="arrow"></span></th>
             <th class="num sortable" data-col="EPS" data-type="num">EPS<span class="arrow"></span></th>
@@ -4168,19 +4830,19 @@ ${macroContext}
             <th class="num sortable" data-col="現金同等物" data-type="num">現金(億)<span class="arrow"></span></th>
             <th class="num sortable" data-col="有利子負債" data-type="num">負債(億)<span class="arrow"></span></th>
             <th data-col="大株主">大株主</th>
-            <th class="sortable" data-col="TOB">TOB情報</th>
+            <th class="sortable" data-col="TOB件数" data-type="num" title="直近180日のTOB関連タイトル件数">TOB情報<span class="arrow"></span></th>
 
             <!-- ============================================== -->
             <!-- 【第6グループ：シンデン型・決算予想評価】 -->
             <!-- ============================================== -->
             <th class="num sortable col-divider" data-col="シンデンソート値" data-type="num" style="color:#7c3aed;" title="正式評価を先、履歴不足の参考評価を後にして点数順で並べます">シンデン総合<span class="arrow"></span></th>
-            <th class="sortable" data-col="シンデン判定" data-type="text" style="color:#7c3aed;">シンデン判定<span class="arrow"></span></th>
+            <th class="sortable" data-col="シンデン判定" data-sort-key="_UI_SORT_SHINDEN_JUDGE" data-type="num" style="color:#7c3aed;">シンデン判定<span class="arrow"></span></th>
             <th class="num sortable" data-col="予想ギャップスコア" data-type="num">予想Gap S<span class="arrow"></span></th>
             <th class="num sortable" data-col="予想信頼性スコア" data-type="num">信頼性 S<span class="arrow"></span></th>
             <th class="num sortable" data-col="予想根拠スコア" data-type="num">根拠 S<span class="arrow"></span></th>
             <th class="num sortable" data-col="予想可視性スコア" data-type="num">可視性 S<span class="arrow"></span></th>
             <th class="num sortable" data-col="未織り込みスコア" data-type="num">未織込 S<span class="arrow"></span></th>
-            <th class="sortable" data-col="予想達成履歴信頼度" data-type="text">履歴信頼度<span class="arrow"></span></th>
+            <th class="sortable" data-col="予想達成履歴信頼度" data-sort-key="_UI_SORT_HISTORY_CONF" data-type="num">履歴信頼度<span class="arrow"></span></th>
             <th class="num sortable" data-col="予想達成履歴期数" data-type="num">履歴期数<span class="arrow"></span></th>
             <th class="num sortable" data-col="営業益予想ギャップ_pct" data-type="num">営益Gap%<span class="arrow"></span></th>
             <th class="num sortable" data-col="EPS予想ギャップ_pct" data-type="num">EPS Gap%<span class="arrow"></span></th>
@@ -4198,8 +4860,8 @@ ${macroContext}
             <th class="num sortable" data-col="5日" data-type="num">5日<span class="arrow"></span></th>
             <th class="num sortable" data-col="25日" data-type="num">25日<span class="arrow"></span></th>
             <th class="num sortable" data-col="75日" data-type="num">75日<span class="arrow"></span></th>
-            <th class="sortable" data-col="移動平均">移動平均<span class="arrow"></span></th>
-            <th class="sortable" data-col="ボリバン">ボリバン<span class="arrow"></span></th>
+            <th class="sortable" data-col="移動平均" data-sort-key="_UI_SORT_MA" data-type="num" title="producer優先度 5日>25日>75日でソート">移動平均<span class="arrow"></span></th>
+            <th class="sortable" data-col="ボリバン" data-type="num">ボリバン<span class="arrow"></span></th>
             <th class="sortable" data-col="GC">GC<span class="arrow"></span></th>
             <th class="sortable" data-col="三役">三役<span class="arrow"></span></th>
             <th class="num sortable" data-col="RS_20" data-type="num">RS_20(相対強弱)<span class="arrow"></span></th>
@@ -4208,8 +4870,8 @@ ${macroContext}
             <th class="num sortable" data-col="最寄り支持" data-type="num">最寄り支持<span class="arrow"></span></th>
             <th class="num sortable" data-col="抵抗帯中心" data-type="num">抵抗帯中心<span class="arrow"></span></th>
             <th class="num sortable" data-col="支持帯中心" data-type="num">支持帯中心<span class="arrow"></span></th>
-            <th class="sortable" data-col="chart">chart<span class="arrow"></span></th>
-            <th class="sortable" data-col="株探ニュース(3)">株探ニュース(3)<span class="arrow"></span></th>
+            <th data-col="chart" title="表示リンク列のためソート対象外">chart</th>
+            <th data-col="株探ニュース(3)" title="記事表示列のため文字列ソート対象外">株探ニュース(3)</th>
             <th>プロンプト</th>
             <th>ヤフ板工作分析</th>
             <th>Yahoo</th>
@@ -4653,182 +5315,57 @@ window.applyQuickSearch = function(keyword) {
 // ★ ワンクリックフィルタリング機能（割安 / 決算通過＋割安）
 // =========================================================
 function quickFilter(mode) {
-    const tbl = document.getElementById("tbl-candidate") || document.querySelector("table");
-    if (!tbl || !tbl.tBodies.length) return;
-
-    // ヘッダーから列のインデックスを取得
-    const ths = Array.from(tbl.querySelectorAll("thead th"));
-    const idxFactor = ths.findIndex(th => th.dataset.col === "Algo_Factor");
-    const idxDiscount = ths.findIndex(th => th.dataset.col === "割安度");
-    const idxEarningsDate = ths.findIndex(th => th.dataset.col === "決算発表予定日");
-
-    // 今日の日付文字列（YYYY/MM/DD）を取得
-    const today = new Date();
-    const todayStr = today.getFullYear() + "/" + 
-                     String(today.getMonth() + 1).padStart(2, '0') + "/" + 
-                     String(today.getDate()).padStart(2, '0');
-
-    let hitCount = 0;
-    const rows = Array.from(tbl.tBodies[0].rows);
-
-    rows.forEach(tr => {
-        // セルの値を取得
-        const factorText = idxFactor !== -1 ? tr.cells[idxFactor].textContent : "";
-        const discountText = idxDiscount !== -1 ? tr.cells[idxDiscount].textContent.replace(/[^0-9.-]/g, "") : "0";
-        const discountVal = parseFloat(discountText) || 0;
-        
-        // 日付フォーマットの統一（ハイフンをスラッシュに置換）
-        let dateText = idxEarningsDate !== -1 ? tr.cells[idxEarningsDate].textContent.trim() : "";
-        dateText = dateText.replace(/-/g, "/"); 
-
-        // ① 割安の条件（ファクターが「超割安」か「割安」、かつ割安度が20以上）
-        const isUndervalued = (factorText.includes("超割安") || factorText.includes("割安")) && (discountVal >= 20);
-
-        // ② 決算通過の条件（日付が今日より前、またはすでに発表済みで空欄）
-        const isPostEarnings = dateText === "" || dateText < todayStr;
-
-        // モード別の表示判定
-        let show = false;
-        if (mode === "undervalued") {
-            show = isUndervalued;
-        } else if (mode === "post_earnings") {
-            show = isUndervalued && isPostEarnings;
-        }
-
-        // 行の表示・非表示を切り替え
-        if (show) {
-            tr.style.display = "";
-            hitCount++;
-        } else {
-            tr.style.display = "none";
-        }
-    });
-
-    // 件数表示の更新
-    const countElem = document.getElementById("count");
-    if (countElem) {
-        countElem.textContent = hitCount;
-    }
+    // P4-DASH4-VT: DOM行のshow/hideはしない。全データへの追加フィルターとして保持する。
+    window.__VT_QUICK_FILTER_MODE = mode;
+    window.__VT_NEXTDAY_ACTIVE = false;
+    if (window.state) window.state.page = 1;
+    try { window.__purposePreset = ""; } catch(_) {}
+    document.querySelectorAll?.(".ds-mode").forEach?.(b=>b.classList.remove("active"));
+    render();
 }
 
 // ボタンにイベントを紐付け
-document.getElementById("btn-quick-undervalued")?.addEventListener("click", () => quickFilter("undervalued"));
-document.getElementById("btn-quick-postearnings")?.addEventListener("click", () => quickFilter("post_earnings"));
 
 // =========================================================
 // ★ 翌日+5%期待（スコアリング方式・並び替え付き・検証モード）
 // =========================================================
+function __vtNextDayScore(r){
+    const algoMom  = String(r["Algo_Momentum"] || r["モメンタムCTA"] || "");
+    const algoSogo = String(r["Algo_総合判定"] || r["総合判定"] || "");
+    const tanki    = String(r["短期需給判定"] || r["短期需給"] || "");
+    const kikan    = String(r["機関売り判定"] || r["機関空売り状態"] || "");
+    const shinyo   = String(r["信用需給判定"] || r["信用需給"] || "");
+    const rvol = num(r["RVOL代金"]);
+    const rs5  = num(r["RS_5"]);
+    const rs20 = num(r["RS_20"]);
+    const upScore = Number.isFinite(Number(r["tri_growth"])) ? Number(r["tri_growth"]) : 0;
+    let score = 0;
+    if (algoMom.includes("強気")) score += 20;
+    if (algoSogo.includes("買い")) score += 15;
+    if (tanki.includes("高RVOL上昇")) score += 20;
+    if (upScore >= 70) score += 15;
+    if (Number.isFinite(rvol) && rvol >= 1.5) score += 10;
+    if (Number.isFinite(rs5) && rs5 > 0) score += 5;
+    if (Number.isFinite(rs20) && rs20 > 0) score += 5;
+    if (!kikan.includes("売増") && kikan !== "") score += 5;
+    if (!shinyo.includes("需給悪") && shinyo !== "") score += 5;
+    const isMine = algoMom.includes("弱気") || tanki.includes("強い売り") || tanki.includes("低RVOL下落");
+    return isMine ? -1 : score;
+}
+
 document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
-    const tbl = document.getElementById("tbl-candidate") || document.querySelector("table");
-    if (!tbl || !tbl.tBodies.length) return;
-
-    const tbody = tbl.tBodies[0];
-    const rows = Array.from(tbody.rows);
-
-    // ★修正箇所：ここで全データからコードをキーにしたMapを作成する
-    const allData = window.state?.data || window.DATA_CAND || [];
-    const localDataMap = new Map();
-    allData.forEach(item => {
-        const c = String(item["コード"] || "").padStart(4, "0");
-        if (c) localDataMap.set(c, item);
-    });
-
-    rows.forEach(tr => {
-        const code = tr.getAttribute("data-code");
-        // ★修正箇所：localDataMap から銘柄データを取得する
-        const r = localDataMap.get(code);
-        if (!r) {
-            tr.dataset.score = -1;
-            return;
-        }
-
-        // 💡 列名のズレを吸収！どちらの名前でも拾えるように OR (||) で繋ぐ
-        const algoMom  = String(r["Algo_Momentum"] || r["モメンタムCTA"] || "");
-        const algoSogo = String(r["Algo_総合判定"] || r["総合判定"] || "");
-        const tanki    = String(r["短期需給判定"] || r["短期需給"] || "");
-        const kikan    = String(r["機関売り判定"] || r["機関空売り状態"] || "");
-        const shinyo   = String(r["信用需給判定"] || r["信用需給"] || "");
-        
-        const rvol = parseFloat(String(r["RVOL代金"] || "0").replace(/[^0-9.-]/g, ""));
-        const rs5  = parseFloat(String(r["RS_5"] || "0").replace(/[^0-9.-]/g, ""));
-        const rs20 = parseFloat(String(r["RS_20"] || "0").replace(/[^0-9.-]/g, ""));
-
-        // 三角スコア（△Score）から上昇スコアを抽出
-        const sankaku = String(r["三角スコア"] || r["△Score"] || "");
-        const upMatch = sankaku.match(/▲.*?(\d+)/);
-        const upScore = upMatch ? parseInt(upMatch[1], 10) : 0;
-
-        // --------------------------------------------------
-        // 📊 100点満点の加点ロジック
-        // --------------------------------------------------
-        let score = 0;
-        if (algoMom.includes("強気")) score += 20;
-        if (algoSogo.includes("買い")) score += 15;
-        if (tanki.includes("本物") || tanki.includes("吸い上げ")) score += 20;
-        if (upScore >= 70) score += 15;
-        if (rvol >= 1.5) score += 10;
-        if (rs5 > 0) score += 5;
-        if (rs20 > 0) score += 5;
-        if (!kikan.includes("売増") && kikan !== "") score += 5;
-        if (!shinyo.includes("需給悪") && shinyo !== "") score += 5;
-
-        // 🚨 致命的な地雷フィルター（スコアが良くても即除外）
-        const isMine = algoMom.includes("弱気") || 
-                       tanki.includes("強い売り") || tanki.includes("吸収") ||
-                       tanki.includes("需給薄");
-
-        // 行のデータ属性にスコアを保存（地雷は強制-1点）
-        tr.dataset.score = isMine ? -1 : score;
-    });
-
-    // --------------------------------------------------
-    // 🎯 スコアが高い順（降順）にテーブルの行を並び替え
-    // --------------------------------------------------
-    rows.sort((a, b) => Number(b.dataset.score) - Number(a.dataset.score));
-    rows.forEach(tr => tbody.appendChild(tr));
-
-    // --------------------------------------------------
-    // 🎨 点数に応じた表示分け（今回は検証のため0点以上を全表示）
-    // --------------------------------------------------
-    let count80 = 0, count70 = 0, count60 = 0, countOther = 0;
-    
-    rows.forEach(tr => {
-        const score = Number(tr.dataset.score);
-        
-        if (score >= 0) { // ★地雷（-1点）以外はすべて表示する
-            tr.style.display = "";
-            
-            if (score >= 80) {
-                count80++;
-                tr.style.backgroundColor = "rgba(239, 68, 68, 0.15)"; // 薄い赤
-                tr.setAttribute("title", `🔥 翌日+5%候補 : ${score}点`);
-            } else if (score >= 70) {
-                count70++;
-                tr.style.backgroundColor = "rgba(234, 179, 8, 0.15)"; // 薄い黄色
-                tr.setAttribute("title", `👀 監視 : ${score}点`);
-            } else if (score >= 60) {
-                count60++;
-                tr.style.backgroundColor = "rgba(59, 130, 246, 0.1)"; // 薄い青
-                tr.setAttribute("title", `🤔 保留 : ${score}点`);
-            } else {
-                countOther++;
-                tr.style.backgroundColor = ""; // 通常
-                tr.setAttribute("title", `📉 点数不足 : ${score}点`);
-            }
-        } else {
-            tr.style.display = "none";
-        }
-    });
-
-    // 件数表示の更新
-    const totalVisible = count80 + count70 + count60 + countOther;
-    const countElem = document.getElementById("count");
-    if (countElem) {
-        countElem.innerHTML = `<span style="color: #ef4444; font-weight:bold;">${totalVisible} 件表示</span> (🔥80点以上:${count80} 👀70点台:${count70} 🤔60点台:${count60})`;
-    }
-
-    // ユーザーへの通知
-    alert(`📊 スコアリング完了！\n\n🔥 80点以上 (候補): ${count80}件\n👀 70〜79点 (監視): ${count70}件\n🤔 60〜69点 (保留): ${count60}件\n📉 59点以下: ${countOther}件\n\n地雷銘柄以外をすべて表示し、スコアが高い順に並び替えました。\n行にマウスを合わせると獲得スコアが確認できます！`);
+    window.__VT_QUICK_FILTER_MODE = "";
+    window.__VT_NEXTDAY_ACTIVE = !window.__VT_NEXTDAY_ACTIVE;
+    if (!window.__VT_NEXTDAY_ACTIVE) { render(); return; }
+    const all = window.state?.data || [];
+    all.forEach(r => { r["_VT_NEXTDAY_SCORE"] = __vtNextDayScore(r); });
+    // ACTIVE中のapplyFilterは地雷(-1)を除き、通常フィルター/市場/Excel条件も維持する。
+    const scoredRows = (typeof applyFilter === "function" ? applyFilter(all) : all.filter(r => Number(r["_VT_NEXTDAY_SCORE"] ?? -1) >= 0));
+    const scores = scoredRows.map(r => Number(r["_VT_NEXTDAY_SCORE"] ?? -1));
+    const count80=scores.filter(x=>x>=80).length, count70=scores.filter(x=>x>=70&&x<80).length,
+          count60=scores.filter(x=>x>=60&&x<70).length, countOther=scores.filter(x=>x>=0&&x<60).length;
+    render();
+    alert(`📊 スコアリング完了！\n\n🔥 80点以上:${count80}件\n👀 70〜79点:${count70}件\n🤔 60〜69点:${count60}件\n📉 59点以下:${countOther}件\n\n現在の絞り込み対象すべてから地雷(-1)を除外し、スコア順に並べました。`);
 });
 
 </script>
@@ -4838,6 +5375,11 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
   "use strict";
 
   const PRESETS = {
+    todaybuy: {
+      label:"🎯 今日買う株",
+      desc:"◎地合込 × 代金5億 × 耐性70 × 上値余地 × 支持近い",
+      className:"purpose-todaybuy"
+    },
     now: {
       label:"🚀 今から上を狙う",
       desc:"上向き・高値追随・過熱しすぎない",
@@ -4886,6 +5428,48 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
     return Number.isFinite(px)&&Number.isFinite(base)&&base!==0 ? (px/base-1)*100 : NaN;
   }
 
+  function todayBuyParts(r){
+    const px=n(r["現在値"]);
+    const turn=n(r["売買代金(億)"]);
+    const resilience=n(r["相場耐性スコア"]);
+    const envScore=n(r["地合い込み一次判定スコア"]);
+    const envLabel=String(r["地合い込み一次判定"]||"");
+    const sup=n(r["最寄り支持"] ?? r["支持帯中心"]);
+    const res=n(r["最寄り抵抗"] ?? r["抵抗帯中心"]);
+    const supportGap=gapPct(px,sup);
+    const resistanceRoom=gapPct(res,px);
+    const tanki=String(r["短期需給判定"]||"");
+    const heat=String(r["イナゴ過熱判定"]||"");
+    const rate=n(r["前日終値比率"]);
+    const hardSell=hasAny(tanki,["強い売り"]);
+    const hot=hasAny(heat,["極度過熱","過熱","危険","高熱"]) || (Number.isFinite(rate)&&rate>8);
+    const roomOK=Number.isFinite(resistanceRoom) ? resistanceRoom>=2.0 : !!px;
+    const supportOK=Number.isFinite(supportGap) && supportGap>=-1.0 && supportGap<=8.0;
+    const pass=envLabel.startsWith("◎")
+      && Number.isFinite(turn) && turn>=5
+      && Number.isFinite(resilience) && resilience>=70
+      && roomOK && supportOK && !hardSell && !hot;
+    return {pass,px,turn,resilience,envScore,supportGap,resistanceRoom,hardSell,hot};
+  }
+
+  window.__todayBuyScore = function(r){
+    const x=todayBuyParts(r);
+    if(!x.pass) return -Infinity;
+    const env=Number.isFinite(x.envScore)?x.envScore:75;
+    const room=Number.isFinite(x.resistanceRoom)?Math.min(10,Math.max(2,x.resistanceRoom)):8;
+    const support=Number.isFinite(x.supportGap)?Math.max(0,100-Math.abs(x.supportGap-2)*12):50;
+    const liq=Math.min(100,50+Math.log10(Math.max(5,x.turn)/5+1)*55);
+    return env*0.38 + x.resilience*0.27 + (room/10*100)*0.15 + support*0.10 + liq*0.10;
+  };
+
+  window.__todayBuyReason = function(r){
+    const x=todayBuyParts(r);
+    if(!x.pass) return "";
+    const room=Number.isFinite(x.resistanceRoom)?`${x.resistanceRoom.toFixed(1)}%`:"上値抵抗なし/不明";
+    const sup=Number.isFinite(x.supportGap)?`${x.supportGap.toFixed(1)}%`:"-";
+    return `地合込=${String(r["地合い込み一次判定"]||"")} / 耐性=${x.resilience.toFixed(0)} / 代金=${x.turn.toFixed(1)}億 / 抵抗余地=${room} / 支持距離=${sup}`;
+  };
+
   window.__purposePresetPass = function(r){
     const key=window.__purposePreset;
     if(!key) return true;
@@ -4910,7 +5494,7 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
     const supportGap=gapPct(px,sup);       // 支持より何%上か
     const resistanceRoom=gapPct(res,px);   // 現値から抵抗まで何%あるか
 
-    const initial=hasFlag(r["初動フラグ"]);
+    const initial=Number(r["INITIAL_MOMENTUM"]||0)===1;
     const bottom=hasFlag(r["底打ちフラグ"]);
     const right=hasFlag(r["右肩上がりフラグ"]);
     const early=hasFlag(r["右肩早期フラグ"]);
@@ -4919,14 +5503,18 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
     const mom=String(r["Algo_Momentum"] ?? r["モメンタムCTA"] ?? "");
     const tanki=String(r["短期需給判定"] ?? r["短期需給"] ?? "");
     const heat=String(r["イナゴ過熱判定"] ?? "");
-    const weak=hasAny(mom,["弱気"]) || hasAny(tanki,["強い売り","需給薄"]);
+    const weak=hasAny(mom,["弱気"]) || hasAny(tanki,["強い売り","低RVOL下落"]);
     const hot=hasAny(heat,["過熱","危険","高熱"]) || (Number.isFinite(rate)&&rate>10);
     const momUp=hasAny(mom,["強気","初動"]);
     const trendSignal=right||early||initial||momUp;
 
+    if(key==="todaybuy"){
+      return todayBuyParts(r).pass;
+    }
+
     if(key==="now"){
       // Algo_Momentum の「弱気」は母集団の大半に付くためハード除外に使わない。
-      // 本当に危険な短期需給「強い売り」だけを除外し、右肩/初動/早期/強気シグナルを主役にする。
+      // 高RVOLを伴う明確な下落「強い売り」だけを除外し、右肩/初動/早期/強気シグナルを主役にする。
       const hardSell=hasAny(tanki,["強い売り"]);
       return !hardSell && !hot && trendSignal
         && (!Number.isFinite(rs5) || rs5>0)
@@ -4956,7 +5544,7 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
 
     if(key==="range"){
       // 値幅狙いでも Algo_Momentum「弱気」をハード除外すると候補が消える。
-      // 強い売りだけ除外し、RVOL・RS5・ボラ・トレンドシグナルで値幅候補を選ぶ。
+      // 高RVOLを伴う強い売りだけ除外し、RVOL・RS5・ボラ・トレンドシグナルで値幅候補を選ぶ。
       const hardSell=hasAny(tanki,["強い売り"]);
       return !hardSell && !hot && trendSignal
         && (!Number.isFinite(rvol) || rvol>=1.2)
@@ -5034,9 +5622,11 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
     }
     window.__earningsBridgeOnly=false;
   }
+  // FUND-QUALITY-V2: 常設ファンダボタンも「ワンタッチ」なので同じ完全リセットを共有。
+  window.__resetCommonManualFilters = resetCommonManualFilters;
 
   function applyPurpose(key){
-    window.__purposePreset=(window.__purposePreset===key)?"":key;
+    window.__purposePreset=key;
     if(window.__purposePreset){
       // 一発抽出として使いやすいよう、手動条件を一度リセット。市場チェックは維持。
       resetCommonManualFilters();
@@ -5064,7 +5654,7 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
       <div class="purpose-head">
         <div>
           <span class="purpose-title">⚡ ワンタッチ抽出</span>
-          <span class="purpose-sub">まずここから。必要なら下の手動条件を追加</span>
+          <span class="purpose-sub">その日買える株を探すなら、まず「🎯 今日買う株」</span>
         </div>
         <div class="purpose-status">
           <span id="purpose-active-label">選択中: なし</span>
@@ -5081,9 +5671,9 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
           </button>`).join("")}
       </div>
       <div class="purpose-foot">
-        <span><b>プリセットはJSだけ</b>で既存データを絞り込みます。</span>
-        <span>押すと手動条件を一度クリアし、<b>市場チェックは維持</b>します。</span>
-        <span>その後、下の手動フィルターで追加調整できます。</span>
+        <span><b>今日買う株</b>＝地合込ENTRY◎ × 売買代金5億以上 × 相場耐性70以上 × 抵抗まで2%以上 × 支持から8%以内。</span>
+        <span>強い売り・極端な過熱は除外。押すと手動条件を一度クリアし、<b>市場チェックは維持</b>します。</span>
+        <span>0件なら無理に買わず、「今から上」「強い押し目」へ広げます。</span>
       </div>`;
     tb.parentNode.insertBefore(panel,tb);
 
@@ -5165,5 +5755,498 @@ document.getElementById("btn-quick-nextday")?.addEventListener("click", () => {
 })();
 </script>
 
+
+<style id="daily-simple-ui-v2">
+  /* 統合UI: 旧「ワンタッチ抽出」枠は互換用DOMだけ残して常時非表示。入口はdaily-simple-shellへ一本化。 */
+  body.daily-simple #purpose-preset-panel { display:none !important; }
+  body.daily-simple #toolbar { display:none !important; }
+  body.daily-simple.advanced-open #toolbar { display:flex !important; }
+  body.daily-simple.advanced-open #daily-simple-shell { opacity:.86; }
+
+  #daily-simple-shell{margin:8px 0;padding:12px 14px;border:1px solid #cbd5e1;border-radius:14px;background:#fff;box-shadow:0 4px 16px rgba(15,23,42,.06)}
+  #daily-simple-shell .ds-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  #daily-simple-shell .ds-title{font-size:17px;font-weight:950;color:#0f172a}
+  #daily-simple-shell .ds-sub{font-size:11px;color:#64748b;margin-top:2px}
+  #daily-simple-shell .ds-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  #daily-simple-shell .ds-section{margin-top:11px;padding-top:10px;border-top:1px solid #e2e8f0}
+  #daily-simple-shell .ds-section:first-of-type{border-top:0;padding-top:0}
+  #daily-simple-shell .ds-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  #daily-simple-shell .ds-section-title{font-size:14px;font-weight:950;color:#0f172a}
+  #daily-simple-shell .ds-section-sub{font-size:10px;color:#64748b;margin-left:7px;font-weight:500}
+  #daily-simple-shell .ds-combined-status{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  #daily-simple-shell .ds-chip{display:inline-flex;align-items:center;padding:4px 8px;border:1px solid #cbd5e1;border-radius:999px;background:#fff;font-size:10px;font-weight:850;color:#334155}
+  #daily-simple-shell .ds-chip.timing{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
+  #daily-simple-shell .ds-chip.fund{background:#faf5ff;border-color:#ddd6fe;color:#6d28d9}
+  #daily-simple-shell .ds-btn-count{display:inline-flex;min-width:20px;justify-content:center;margin-left:6px;padding:1px 5px;border-radius:999px;background:rgba(255,255,255,.22);font-size:9px;font-weight:950}
+  #daily-simple-shell .ds-btn:not(.ds-buy):not(.ds-pull):not(.ds-now):not(.ds-rebound):not(.ds-range):not(.ds-safe):not(.ds-fund):not(.ds-fund-quality):not(.ds-fund-growth):not(.ds-fund-progress):not(.ds-fund-post) .ds-btn-count{background:#e2e8f0;color:#334155}
+  .ds-rebound{background:#0f766e;color:#fff;border-color:#115e59}.ds-rebound:hover{background:#115e59}
+  .ds-range{background:#c2410c;color:#fff;border-color:#9a3412}.ds-range:hover{background:#9a3412}
+  .ds-safe{background:#334155;color:#fff;border-color:#1e293b}.ds-safe:hover{background:#1e293b}
+  .ds-reset-all{background:#fff;color:#475569;border-color:#94a3b8}
+  .ds-reset-all:hover{background:#f1f5f9}
+  #daily-simple-shell details.ds-fund-details{margin-top:8px;border:1px solid #e2e8f0;border-radius:10px;background:#fafafa}
+  #daily-simple-shell details.ds-fund-details>summary{cursor:pointer;list-style:none;padding:7px 10px;font-size:11px;font-weight:850;color:#475569;user-select:none}
+  #daily-simple-shell details.ds-fund-details>summary::-webkit-details-marker{display:none}
+  #daily-simple-shell details.ds-fund-details>summary::before{content:"▶";font-size:8px;margin-right:7px}
+  #daily-simple-shell details.ds-fund-details[open]>summary::before{content:"▼"}
+  #daily-simple-shell .ds-fund-detail-body{padding:0 9px 9px}
+  #daily-simple-shell .ds-logic-note{font-size:10px;color:#64748b;line-height:1.55;margin-top:7px}
+  .ds-btn{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:10px;padding:8px 12px;cursor:pointer;font-weight:850;font-size:12px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+  .ds-btn:hover{background:#f8fafc}.ds-btn.active{box-shadow:0 0 0 3px rgba(37,99,235,.16)}
+  .ds-buy{background:#b91c1c;color:#fff;border-color:#991b1b}.ds-buy:hover{background:#991b1b}
+  .ds-pull{background:#15803d;color:#fff;border-color:#166534}.ds-pull:hover{background:#166534}
+  .ds-now{background:#1d4ed8;color:#fff;border-color:#1e40af}.ds-now:hover{background:#1e40af}
+  .ds-all{background:#475569;color:#fff;border-color:#334155}.ds-all:hover{background:#334155}
+  .ds-advanced{margin-left:auto;background:#fff7ed;color:#9a3412;border-color:#fdba74}
+  #ds-mode-note{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;background:#eff6ff;color:#1e40af;font-size:11px;font-weight:800}
+  #ds-counts{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:7px;margin-top:10px}
+  .ds-card{border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px;background:#f8fafc}.ds-card b{font-size:17px;color:#0f172a;margin-right:3px}.ds-card span{font-size:10px;color:#64748b}
+  .ds-guide{margin-top:9px;padding-top:8px;border-top:1px solid #e2e8f0;font-size:11px;color:#475569}.ds-guide b{color:#0f172a}
+
+  /* 2026-08-22: 普段から見えるファンダ系ワンタッチ枠 */
+  .ds-fund-block{margin-top:12px;padding-top:11px;border-top:2px solid #e2e8f0}
+  .ds-fund-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .ds-fund-title{font-size:15px;font-weight:950;color:#0f172a}.ds-fund-sub{font-size:11px;color:#64748b;margin-top:2px}
+  #ds-fund-note{display:inline-flex;align-items:center;padding:5px 9px;border-radius:999px;background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:850}
+  .ds-fund-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:9px}
+  .ds-fund{background:#7c3aed;color:#fff;border-color:#6d28d9}.ds-fund:hover{background:#6d28d9}
+  .ds-fund-quality{background:#0f766e;border-color:#115e59}.ds-fund-quality:hover{background:#115e59}
+  .ds-fund-growth{background:#047857;border-color:#065f46}.ds-fund-growth:hover{background:#065f46}
+  .ds-fund-progress{background:#0369a1;border-color:#075985}.ds-fund-progress:hover{background:#075985}
+  .ds-fund-post{background:#b45309;border-color:#92400e}.ds-fund-post:hover{background:#92400e}
+  .ds-fund-clear{background:#64748b;color:#fff;border-color:#475569}.ds-fund-clear:hover{background:#475569}
+  #ds-fund-counts{display:grid;grid-template-columns:repeat(6,minmax(115px,1fr));gap:7px;margin-top:9px}
+  .ds-fund-card{border:1px solid #ddd6fe;border-radius:10px;padding:7px 9px;background:#faf5ff}.ds-fund-card b{font-size:16px;color:#4c1d95;margin-right:3px}.ds-fund-card span{font-size:10px;color:#6b7280}
+  @media(max-width:800px) { #ds-counts,#ds-fund-counts{grid-template-columns:1fr 1fr}.ds-advanced{margin-left:0}}
+
+  body.daily-simple .table-wrap{margin-top:4px!important} body.daily-simple .tbl-wrap{max-height:72vh;border-radius:12px;background:#fff}
+  body.daily-simple #tbl-candidate{width:max-content;min-width:100%}
+  body.daily-simple #tbl-candidate th,body.daily-simple #tbl-candidate td{font-size:10px!important;padding:5px 7px!important}
+  body.daily-simple #tbl-candidate thead th{font-size:10px!important;background:#f8fafc!important}
+  body.daily-simple #tbl-candidate tbody tr:not(.virtual-spacer){cursor:pointer}
+  body.daily-simple #tbl-candidate tbody tr:not(.virtual-spacer):hover td{box-shadow:inset 0 0 0 9999px rgba(219,234,254,.36)}
+  /* 通常表示では列をJSがdata-colから選ぶ。nth-child固定にしないので列追加/削除に強い。 */
+  body.daily-simple:not(.advanced-open) #tbl-candidate th.ds-hide-col,
+  body.daily-simple:not(.advanced-open) #tbl-candidate td.ds-hide-col{display:none!important}
+  body.daily-simple:not(.advanced-open) #tbl-candidate th.ds-key-entry,
+  body.daily-simple:not(.advanced-open) #tbl-candidate td.ds-key-entry{font-weight:950!important;font-size:11px!important}
+  body.daily-simple:not(.advanced-open) #tbl-candidate th.ds-key-resilience,
+  body.daily-simple:not(.advanced-open) #tbl-candidate td.ds-key-resilience{font-weight:900!important;background:#f0fdfa}
+  body.daily-simple:not(.advanced-open) #tbl-candidate th.ds-key-now,
+  body.daily-simple:not(.advanced-open) #tbl-candidate td.ds-key-now{font-weight:900!important;background:#eff6ff}
+
+  #ds-drawer-back{display:none;position:fixed;inset:0;background:rgba(15,23,42,.28);z-index:12000}
+  #ds-drawer{display:none;position:fixed;right:0;top:0;bottom:0;width:min(560px,94vw);background:#fff;z-index:12001;box-shadow:-12px 0 36px rgba(15,23,42,.20);overflow:auto;padding:16px 17px 28px;box-sizing:border-box}
+  /* WATCH-TIMING-V1: 第3枠「買い時を監視する」 */
+  #watch-timing-shell{margin:8px 0;padding:12px 14px;border:1px solid #f59e0b;border-radius:14px;background:linear-gradient(180deg,#fffdf5 0%,#fff 100%);box-shadow:0 4px 16px rgba(120,53,15,.07)}
+  #watch-timing-shell .ds-watch-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  #watch-timing-shell .ds-watch-title{font-size:15px;font-weight:950;color:#7c2d12}
+  #watch-timing-shell .ds-watch-sub{font-size:10px;color:#78716c;margin-left:7px;font-weight:500}
+  #watch-timing-shell .ds-watch-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:9px}
+  #watch-timing-shell .ds-watch-btn{border:1px solid transparent;color:#fff}
+  #watch-timing-shell .ds-watch-btn.active{outline:3px solid rgba(15,23,42,.18);outline-offset:2px}
+  .ds-watch-watch{background:#64748b;border-color:#475569}.ds-watch-watch:hover{background:#475569}
+  .ds-watch-near{background:#ca8a04;border-color:#a16207}.ds-watch-near:hover{background:#a16207}
+  .ds-watch-start{background:#ea580c;border-color:#c2410c}.ds-watch-start:hover{background:#c2410c}
+  .ds-watch-ready{background:#dc2626;border-color:#991b1b}.ds-watch-ready:hover{background:#991b1b}
+  .ds-watch-broken{background:#7f1d1d;border-color:#450a0a}.ds-watch-broken:hover{background:#450a0a}
+  #ds-watch-note{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:10px;font-weight:850}
+  .ds-watch-legend{margin-top:7px;font-size:10px;color:#64748b;line-height:1.45}
+  #ds-drawer.open,#ds-drawer-back.open{display:block}.ds-drawer-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;position:sticky;top:-16px;background:#fff;padding:16px 0 10px;z-index:2;border-bottom:1px solid #e2e8f0}
+  .ds-stock-title{font-size:19px;font-weight:950;color:#0f172a}.ds-stock-sub{font-size:11px;color:#64748b;margin-top:2px}.ds-close{border:0;background:#f1f5f9;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:18px}
+  .ds-verdict{margin:12px 0;padding:12px;border-radius:12px;background:linear-gradient(135deg,#f8fafc,#fff);border:1px solid #cbd5e1}.ds-verdict-main{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.ds-big{font-size:17px;font-weight:950}.ds-score{font-size:12px;font-weight:800;color:#0f766e}.ds-reason{margin-top:7px;font-size:11px;line-height:1.55;color:#475569}
+  .ds-sec{margin:12px 0}.ds-sec h3{font-size:12px;margin:0 0 6px;color:#334155;border-bottom:1px solid #e2e8f0;padding-bottom:5px}.ds-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.ds-kv{border:1px solid #e2e8f0;border-radius:8px;padding:7px 8px;background:#fafafa}.ds-kv small{display:block;color:#94a3b8;font-size:9px}.ds-kv strong{display:block;margin-top:2px;color:#0f172a;font-size:12px;overflow-wrap:anywhere}.ds-full-btn{width:100%;margin-top:10px;padding:9px 10px;border:1px solid #94a3b8;border-radius:9px;background:#f8fafc;color:#334155;font-weight:850;cursor:pointer}
+</style>
+<div id="ds-drawer-back"></div><aside id="ds-drawer" aria-label="銘柄詳細"></aside>
+<script id="daily-simple-ui-js-v2">
+(function(){
+  "use strict";
+  const qs=(s,r=document)=>r.querySelector(s); const esc=(v)=>String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+  const n=(v)=>{const x=parseFloat(String(v??"").replace(/[,\s円％%]/g,""));return Number.isFinite(x)?x:NaN;};
+  const f=(v,d=1,suf="")=>{const x=n(v);return Number.isFinite(x)?x.toFixed(d)+suf:"-";}; const fi=(v)=>{const x=n(v);return Number.isFinite(x)?Math.round(x).toLocaleString("ja-JP"):"-";};
+  const frsLocal=(v)=>{const x=n(v);return Number.isFinite(x)?((x>0?"+":"")+(x*100).toFixed(1)+"%"):"-";};
+  const dateAgeLocal=(v)=>{const raw=String(v??"").trim();if(!raw)return "-";const d=new Date(raw.length<=10?raw+"T00:00:00+09:00":raw);if(Number.isNaN(d.getTime()))return raw;const now=new Date();const a=new Date(now.toLocaleString("en-US",{timeZone:"Asia/Tokyo"}));const b=new Date(d.toLocaleString("en-US",{timeZone:"Asia/Tokyo"}));const da=new Date(a.getFullYear(),a.getMonth(),a.getDate()),db=new Date(b.getFullYear(),b.getMonth(),b.getDate());return raw+" ("+Math.max(0,Math.floor((da-db)/86400000))+"日前)";};
+  const pctGap=(px,lv)=>Number.isFinite(px)&&Number.isFinite(lv)&&px!==0?(lv/px-1)*100:NaN;
+  const VISIBLE_COLS=new Set([
+    "コード","銘柄名","市場","現在値","前日円差","前日終値比率","売買代金(億)","出来高",
+    "持続上昇スコア","底反転スコア","今買えるランク","相場耐性","地合い込み一次判定",
+    "RVOL代金","短期需給判定","INITIAL_MOMENTUM","RS_5","利益加速ステータス","決算発表予定日","overall_alpha","最寄り抵抗","最寄り支持",
+    "信用倍率","売り残","買い残","機関売り判定","機関空売り状態","機関空売り合計株数","本日の増減合計株数","空売り更新日"
+  ]);
+  function waitReady(cb,tries=0){if(window.state&&Array.isArray(window.state.data)&&typeof window.__purposePresetPass==="function")return cb();if(tries>100)return;setTimeout(()=>waitReady(cb,tries+1),100);}
+  function passCount(key){
+    const rows=window.state?.data||[]; const old=window.__purposePreset; const fundMode=String(window.__VT_QUICK_FILTER_MODE||"");
+    window.__purposePreset=key; let c=0;
+    try{for(const r of rows){if(!window.__purposePresetPass(r))continue;if(fundMode&&typeof fundPass==="function"&&!fundPass(r,fundMode))continue;c++;}}catch(_){}
+    window.__purposePreset=old; return c;
+  }
+  function updateCounts(){
+    const keys=["todaybuy","now","pullback","rebound","range","safe"];
+    keys.forEach(k=>{const el=qs(`[data-ds-count="${k}"]`);if(el)el.textContent=String(passCount(k));});
+    updateFundCounts(); updateWatchUI(); updateCombinedStatus();
+  }
+
+  const FUND_MODES = {
+    discount20:{label:"💎 割安度20%以上"},
+    finance_quality:{label:"🏆 財務優良"},
+    profit_accel:{label:"🚀 業績加速"},
+    op_improving:{label:"📈 利益改善"},
+    progress_ahead:{label:"⏫ 進捗上振れ"},
+    fundamental_main:{label:"⭐ ファンダ本命"},
+    post_earnings_main:{label:"✅ 決算後本命"},
+    post_earnings_continuation:{label:"📈 決算後継続"},
+    post_earnings_recovery:{label:"🔁 決算後反転"},
+    good_earnings_oversold:{label:"🛟 好決算売られすぎ"},
+    repricing_all:{label:"🧭 再評価候補"},
+    fundamental_early:{label:"🌱 ファンダ初動"},
+    cyclical_value:{label:"🔄 回復割安"},
+    earnings_accel_reprice:{label:"⚡ 業績加速再評価"},
+    conservative_forecast:{label:"🧮 予想保守"},
+    quality_underreaction:{label:"💎 成長未反応"}
+  };
+  function fundAlphaRank(v){
+    const s=String(v??"").trim().toUpperCase().replace(/＋/g,"+").replace(/－/g,"-");
+    const m=s.match(/^([SABCD])(\+\+|--|\+|-)?$/); if(!m)return -Infinity;
+    const base={S:500,A:400,B:300,C:200,D:100}[m[1]];
+    const adj={"++":20,"+":10,"":0,"-":-10,"--":-20}[m[2]||""] ?? 0;
+    return base+adj;
+  }
+  function fundProfitAccelPass(r){
+    const status=String(r["利益加速ステータス"]||"");
+    const sales=n(r["直近売上YoY"]), op=n(r["直近営業益YoY"]);
+    const metric=String(r["利益状態指標"]||"営業利益").trim();
+    const st=fundOperatingState(r);
+    // 利益加速ロジックは営業益YoY由来。金融（経常利益正本）や状態情報不足を無理に通さない。
+    if(metric==="経常利益" || st==="情報不足") return false;
+    const blackImproving=["🟢 黒字拡大","🟢 黒字転換","🟢 黒字化"].includes(st);
+    return blackImproving&&status.includes("加速")&&!status.includes("鈍化")&&Number.isFinite(sales)&&sales>0&&Number.isFinite(op)&&op>0;
+  }
+  function fundOperatingState(r){ return String(r["利益状態"]||r["営業利益状態"]||"情報不足").trim(); }
+  function fundOperatingImprovingPass(r){
+    const st=fundOperatingState(r);
+    return ["🟢 黒字拡大","🟢 黒字転換","🟢 黒字化","🟠 赤字縮小","🟠 赤字解消目前"].includes(st);
+  }
+  function fundProgressPass(r){
+    const d=n(r["季節調整済進捗差分"]), hist=n(r["過去同Q件数"]);
+    return Number.isFinite(d)&&d>=5&&Number.isFinite(hist)&&hist>=2;
+  }
+  function fundHardDownRevision(r){
+    const op=n(r["TDnet営業益修正率"]), eps=n(r["TDnetEPS修正率"]);
+    // 本業の営業利益を最優先。営業益が取れない時だけEPSを代替。どちらもTDnet数値履歴。
+    if(Number.isFinite(op)) return op<=-3;
+    return Number.isFinite(eps)&&eps<=-3;
+  }
+  function fundMainPass(r){
+    const discount=n(r["割安度"]), op=n(r["直近営業益YoY"]), sales=n(r["直近売上YoY"]);
+    const alpha=Number.isFinite(n(r["_UI_SORT_ALPHA"]))?n(r["_UI_SORT_ALPHA"]):fundAlphaRank(r["overall_alpha"]);
+    const accel=String(r["利益加速ステータス"]||"");
+    const epsq=String(r["EPS品質"]||"").trim();
+    const st=fundOperatingState(r);
+    const diff=n(r["季節調整済進捗差分"]), hist=n(r["過去同Q件数"]);
+
+    // 正本の利益実額が無い「情報不足」は本命へ昇格させない。
+    const opHealthy=["🟢 黒字拡大","🟢 黒字転換","🟢 黒字化"].includes(st);
+    if(!opHealthy) return false;
+    if(fundHardDownRevision(r)) return false;
+    if(Number(r["希薄化重大フラグ"]||0)===1) return false;
+    if(Number.isFinite(sales)&&sales<=-10) return false;
+    if(Number.isFinite(hist)&&hist>=2&&Number.isFinite(diff)&&diff<=-10) return false;
+
+    return Number.isFinite(discount)&&discount>=15 && alpha>=400 &&
+           !accel.includes("利益率鈍化") && epsq==="通常";
+  }
+  function fundPass(r,mode){
+    const discount=n(r["割安度"]);
+    if(mode==="discount20") return Number.isFinite(discount)&&discount>=20;
+    if(mode==="finance_quality"){
+      const rank=Number.isFinite(n(r["_UI_SORT_ALPHA"]))?n(r["_UI_SORT_ALPHA"]):fundAlphaRank(r["overall_alpha"]);
+      return rank>=410;
+    }
+    if(mode==="profit_accel") return fundProfitAccelPass(r);
+    if(mode==="op_improving") return fundOperatingImprovingPass(r);
+    if(mode==="progress_ahead") return fundProgressPass(r);
+    if(mode==="fundamental_main") return fundMainPass(r);
+    if(mode==="post_earnings_main"){
+      const age=n(r["決算後営業日数"]), actual=String(r["最新決算発表日"]||"").trim();
+      return fundMainPass(r) && actual!=="" && Number.isFinite(age) && age>=0 && age<=10;
+    }
+    if(mode==="post_earnings_continuation") return Number(r["POST_EARNINGS_CONTINUATION"]||0)===1;
+    if(mode==="post_earnings_recovery") return Number(r["POST_EARNINGS_RECOVERY"]||0)===1;
+    if(mode==="good_earnings_oversold") return Number(r["GOOD_EARNINGS_OVERSOLD"]||0)===1;
+    if(mode==="repricing_all") return Number(r["再評価候補"]||0)===1;
+    if(mode==="fundamental_early") return Number(r["FUNDAMENTAL_EARLY"]||0)===1;
+    if(mode==="cyclical_value") return Number(r["CYCLICAL_VALUE"]||0)===1;
+    if(mode==="earnings_accel_reprice") return Number(r["EARNINGS_ACCELERATION"]||0)===1;
+    if(mode==="conservative_forecast") return Number(r["CONSERVATIVE_FORECAST"]||0)===1;
+    if(mode==="quality_underreaction") return Number(r["QUALITY_GROWTH_UNDERREACTION"]||0)===1;
+    return true;
+  }
+  function fundStateScore(r){
+    const st=fundOperatingState(r);
+    const rank={"🟢 黒字転換":700,"🟢 黒字化":680,"🟢 黒字拡大":650,"🟠 赤字解消目前":300,"🟠 赤字縮小":250,"⚪ 黒字横ばい":200,"🟡 黒字減益":50,"🔴 赤字転落":-500,"🔴 赤字拡大":-450,"🔴 赤字化":-450};
+    return rank[st]??0;
+  }
+  function fundScore(r,mode){
+    const discount=n(r["割安度"]), alpha=Number.isFinite(n(r["_UI_SORT_ALPHA"]))?n(r["_UI_SORT_ALPHA"]):fundAlphaRank(r["overall_alpha"]);
+    const op=n(r["直近営業益YoY"]), sales=n(r["直近売上YoY"]), diff=n(r["季節調整済進捗差分"]), hist=n(r["過去同Q件数"]), age=n(r["決算後営業日数"]);
+    const revOp=n(r["TDnet営業益修正率"]), revEps=n(r["TDnetEPS修正率"]);
+    if(mode==="discount20") return Number.isFinite(discount)?discount:-Infinity;
+    if(mode==="finance_quality") return alpha*10000+(Number.isFinite(discount)?discount:-9999);
+    if(mode==="profit_accel") return (Number.isFinite(op)?op:-999)*1000+(Number.isFinite(sales)?sales:-999);
+    if(mode==="op_improving") return fundStateScore(r)*1000+(Number.isFinite(op)?Math.min(op,500):0);
+    if(mode==="progress_ahead") return (Number.isFinite(diff)?diff:-999)*100+(Number.isFinite(hist)?hist:0);
+    if(mode==="post_earnings_continuation"||mode==="post_earnings_recovery"||mode==="good_earnings_oversold"){const s=n(r["POST_EARNINGS_SCORE"]),react=n(r["決算後現在騰落率_pct_探索"]);return (Number.isFinite(s)?s:0)*10000+(Number.isFinite(react)?react:0);}
+    if(mode==="fundamental_main"||mode==="post_earnings_main"){
+      let score=(Number.isFinite(alpha)?alpha:0)*100 + (Number.isFinite(discount)?discount:0)*10 + fundStateScore(r)*10;
+      if(fundProfitAccelPass(r))score+=4000;
+      if(fundProgressPass(r))score+=2500+Math.min(diff,50)*10;
+      const worst=[revOp,revEps].filter(Number.isFinite).reduce((a,v)=>Math.min(a,v),0);
+      if(worst<0)score+=worst*20;
+      if(mode==="post_earnings_main"&&Number.isFinite(age))score+=(10-Math.min(age,10))*50;
+      return score;
+    }
+    if(["repricing_all","fundamental_early","cyclical_value","earnings_accel_reprice","conservative_forecast","quality_underreaction"].includes(mode)){
+      const rk=n(r["再評価探索順位"]), wait=n(r["待てる条件数_探索"]), react=n(r["決算後現在騰落率_pct_探索"]);
+      const routeCount=["FUNDAMENTAL_EARLY","CYCLICAL_VALUE","EARNINGS_ACCELERATION","CONSERVATIVE_FORECAST","QUALITY_GROWTH_UNDERREACTION"].reduce((a,k)=>a+(Number(r[k]||0)===1?1:0),0);
+      return (Number.isFinite(rk)?rk:0)*100000 + routeCount*10000 + (Number.isFinite(wait)?wait:0)*1000 + (Number.isFinite(react)?Math.max(-50,20-react):0);
+    }
+    return 0;
+  }
+  window.__fundamentalQuickPass=fundPass;
+  window.__fundamentalQuickScore=fundScore;
+  function fundMarketPass(r){
+    const set=window.__mkSet;
+    if(!(set instanceof Set)) return true;
+    if(set.has("__NONE__")) return false;
+    return set.has(String(r["市場"]??"").trim());
+  }
+  function updateFundCounts(){
+    const rows=(window.state?.data||[]).filter(fundMarketPass);
+    Object.keys(FUND_MODES).forEach(mode=>{
+      const el=qs(`[data-fund-count="${mode}"]`); if(!el)return;
+      let c=0; for(const r of rows){if(window.__purposePreset&&typeof window.__purposePresetPass==="function"&&!window.__purposePresetPass(r))continue;if(fundPass(r,mode))c++;}
+      el.textContent=String(c);
+    });
+  }
+  function updateCombinedStatus(){
+    const timing=String(window.__purposePreset||""); const fund=String(window.__VT_QUICK_FILTER_MODE||"");
+    const timingLabel={todaybuy:"🎯 今日買う株",now:"🚀 今から上",pullback:"🟢 強い押し目",rebound:"↗️ 反転初動",range:"🔥 値幅狙い",safe:"🛡️ 低リスク"}[timing]||"短期条件なし";
+    const fundLabel=FUND_MODES[fund]?.label||"ファンダ条件なし";
+    const host=qs("#ds-combined-status"); if(host)host.innerHTML=`<span class="ds-chip timing">${esc(timingLabel)}</span><span>×</span><span class="ds-chip fund">${esc(fundLabel)}</span>`;
+    const note=qs("#ds-mode-note"); if(note)note.textContent=(timing||fund)?"2軸AND抽出中":"全銘柄";
+  }
+  function updateFundUI(){
+    const mode=String(window.__VT_QUICK_FILTER_MODE||"");
+    document.querySelectorAll(".ds-fund-mode").forEach(b=>b.classList.toggle("active",b.dataset.fundMode===mode));
+    const note=qs("#ds-fund-note"); if(note)note.textContent=FUND_MODES[mode]?`ファンダ：${FUND_MODES[mode].label}`:"ファンダ条件：なし";
+    updateCombinedStatus();
+  }
+  function clearFundMode(renderNow=false){
+    window.__VT_QUICK_FILTER_MODE=""; window.__VT_NEXTDAY_ACTIVE=false;
+    updateFundUI(); updateCounts(); if(renderNow&&typeof window.render==="function")window.render();
+  }
+  function setFundMode(mode){
+    window.__WATCH_FILTER_MODE=""; document.querySelectorAll(".ds-watch-mode").forEach(b=>b.classList.remove("active"));
+    // 統合UI: ファンダ条件は短期タイミング条件を消さず、ANDで重ねる。
+    if(typeof window.__resetCommonManualFilters==="function"){try{window.__resetCommonManualFilters();}catch(_){}}
+    window.__VT_NEXTDAY_ACTIVE=false; window.__VT_QUICK_FILTER_MODE=mode;
+    if(window.state)window.state.page=1; updateFundUI(); updateCounts();
+    if(typeof window.render==="function")window.render();
+  }
+  function setPurposeDirect(key){
+    if(key==="all"){
+      const clear=qs("#purpose-clear");
+      if(clear) clear.click();
+      else { window.__purposePreset=""; if(window.state)window.state.page=1; if(typeof window.render==="function")window.render(); }
+      return;
+    }
+    const btn=qs(`.purpose-btn[data-purpose="${key}"]`);
+    if(btn){ btn.click(); return; }
+    window.__purposePreset=key;
+    if(window.state)window.state.page=1;
+    if(typeof window.render==="function")window.render();
+  }
+  function setMode(key){
+    // 統合UI: applyPurpose内部の共通リセットは旧QUICK modeも消すため、ファンダ選択を退避→復元してANDを維持する。
+    const keepFund=String(window.__VT_QUICK_FILTER_MODE||"");
+    window.__WATCH_FILTER_MODE="";
+    document.querySelectorAll(".ds-watch-mode").forEach(b=>b.classList.remove("active"));
+    setPurposeDirect(key);
+    window.__VT_QUICK_FILTER_MODE=keepFund;
+    document.querySelectorAll(".ds-mode").forEach(b=>b.classList.toggle("active",b.dataset.mode===key));
+    updateFundUI(); updateCounts();
+    if(typeof window.render==="function")window.render();
+  }
+  function clearAllUnified(){
+    if(typeof window.__resetCommonManualFilters==="function"){try{window.__resetCommonManualFilters();}catch(_){}}
+    window.__purposePreset=""; window.__VT_QUICK_FILTER_MODE=""; window.__WATCH_FILTER_MODE=""; window.__VT_NEXTDAY_ACTIVE=false;
+    document.querySelectorAll(".ds-mode,.ds-fund-mode,.ds-watch-mode").forEach(b=>b.classList.remove("active"));
+    if(window.state)window.state.page=1; updateFundUI(); updateCounts(); if(typeof window.render==="function")window.render();
+  }
+  const WATCH_MODES={WATCH:{label:"💤 監視中"},NEAR:{label:"🔔 買い接近"},START:{label:"🔥 動き出し"},READY:{label:"🚨 買い条件到達"},BROKEN:{label:"⚠️ 前提悪化"}};
+  function watchCount(mode){return (window.state?.data||[]).reduce((a,r)=>a+(String(r["WATCH_STATE"]||"")===mode?1:0),0);}
+  function updateWatchUI(){
+    const mode=String(window.__WATCH_FILTER_MODE||"");
+    document.querySelectorAll(".ds-watch-mode").forEach(b=>b.classList.toggle("active",b.dataset.watchMode===mode));
+    Object.keys(WATCH_MODES).forEach(k=>{const el=qs(`[data-watch-count="${k}"]`);if(el)el.textContent=String(watchCount(k));});
+    const note=qs("#ds-watch-note"); if(note)note.textContent=mode?`選択中：${WATCH_MODES[mode]?.label||mode}`:"監視条件：なし";
+  }
+  function setWatchMode(mode){
+    if(typeof window.__resetCommonManualFilters==="function"){try{window.__resetCommonManualFilters();}catch(_){}}
+    window.__purposePreset=""; window.__VT_QUICK_FILTER_MODE=""; window.__VT_NEXTDAY_ACTIVE=false;
+    document.querySelectorAll(".ds-mode,.ds-fund-mode").forEach(b=>b.classList.remove("active"));
+    window.__WATCH_FILTER_MODE=(String(window.__WATCH_FILTER_MODE||"")===mode?"":mode);
+    if(window.state)window.state.page=1;
+    updateFundUI(); updateWatchUI(); updateCombinedStatus();
+    if(typeof window.render==="function")window.render();
+  }
+  function buildWatchShell(){
+    if(qs("#watch-timing-shell"))return;
+    const panel=document.createElement("section"); panel.id="watch-timing-shell";
+    panel.innerHTML=`
+      <div class="ds-watch-top"><div><span class="ds-watch-title">🔔 買い時を監視する</span><span class="ds-watch-sub">上の2軸とは別。良い銘柄の「待ち→接近→動き出し→買い条件到達」を継続追跡</span></div><span id="ds-watch-note">監視条件：なし</span></div>
+      <div class="ds-watch-actions">
+        <button class="ds-btn ds-watch-btn ds-watch-watch ds-watch-mode" data-watch-mode="WATCH">💤 監視中 <span class="ds-btn-count" data-watch-count="WATCH">-</span></button>
+        <button class="ds-btn ds-watch-btn ds-watch-near ds-watch-mode" data-watch-mode="NEAR">🔔 買い接近 <span class="ds-btn-count" data-watch-count="NEAR">-</span></button>
+        <button class="ds-btn ds-watch-btn ds-watch-start ds-watch-mode" data-watch-mode="START">🔥 動き出し <span class="ds-btn-count" data-watch-count="START">-</span></button>
+        <button class="ds-btn ds-watch-btn ds-watch-ready ds-watch-mode" data-watch-mode="READY">🚨 買い条件到達 <span class="ds-btn-count" data-watch-count="READY">-</span></button>
+        <button class="ds-btn ds-watch-btn ds-watch-broken ds-watch-mode" data-watch-mode="BROKEN">⚠️ 前提悪化 <span class="ds-btn-count" data-watch-count="BROKEN">-</span></button>
+      </div>
+      <div class="ds-watch-legend"><b>監視中</b>=会社は良いが待ち / <b>買い接近</b>=支持・割安価格へ接近 / <b>動き出し</b>=RS・出来高・既存短期シグナルが改善 / <b>買い条件到達</b>=価格と動きが揃い最優先確認 / <b>前提悪化</b>=業績・予想・希薄化など監視理由が崩れた。Phase1では通知はまだ飛ばさず、状態と件数を蓄積します。<br><b>撤退ライン</b>=今回のシナリオが崩れる価格。<b>100株リスク</b>=現在値から撤退ラインまで下落した場合の概算損失。</div>`;
+    const daily=qs("#daily-simple-shell");
+    if(daily&&daily.parentNode)daily.parentNode.insertBefore(panel,daily.nextSibling); else document.body.prepend(panel);
+    panel.querySelectorAll(".ds-watch-mode").forEach(b=>b.addEventListener("click",()=>setWatchMode(b.dataset.watchMode)));
+    updateWatchUI();
+  }
+  function buildShell(){if(qs("#daily-simple-shell"))return;const shell=document.createElement("section");shell.id="daily-simple-shell";shell.innerHTML=`
+    <div class="ds-top">
+      <div><div class="ds-title">銘柄を2軸で探す</div><div class="ds-sub">① 今の値動きで買えるか × ② 企業の中身が良いか。両方を選ぶとANDで絞り込みます。</div></div>
+      <div class="ds-combined-status" id="ds-combined-status"><span class="ds-chip timing">短期条件なし</span><span>×</span><span class="ds-chip fund">ファンダ条件なし</span></div>
+    </div>
+
+    <section class="ds-section">
+      <div class="ds-section-head"><div><span class="ds-section-title">⚡ 今買える銘柄を探す</span><span class="ds-section-sub">値動き・需給・支持抵抗・地合いからタイミングを選択</span></div><span id="ds-mode-note">全銘柄</span></div>
+      <div class="ds-actions">
+        <button class="ds-btn ds-buy ds-mode" data-mode="todaybuy">🎯 今日買う株 <span class="ds-btn-count" data-ds-count="todaybuy">-</span></button>
+        <button class="ds-btn ds-now ds-mode" data-mode="now">🚀 今から上 <span class="ds-btn-count" data-ds-count="now">-</span></button>
+        <button class="ds-btn ds-pull ds-mode" data-mode="pullback">🟢 強い押し目 <span class="ds-btn-count" data-ds-count="pullback">-</span></button>
+        <button class="ds-btn ds-rebound ds-mode" data-mode="rebound">↗️ 反転初動 <span class="ds-btn-count" data-ds-count="rebound">-</span></button>
+        <button class="ds-btn ds-range ds-mode" data-mode="range">🔥 値幅狙い <span class="ds-btn-count" data-ds-count="range">-</span></button>
+        <button class="ds-btn ds-safe ds-mode" data-mode="safe">🛡️ 低リスク <span class="ds-btn-count" data-ds-count="safe">-</span></button>
+      </div>
+      <div class="ds-logic-note"><b>今日買う株</b>は最優先の厳格条件。0件なら「今から上」「強い押し目」へ広げ、反転・値幅・低リスクは目的別に使い分けます。</div>
+    </section>
+
+    <section class="ds-section ds-fund-block">
+      <div class="ds-section-head"><div><span class="ds-section-title">📊 ファンダで銘柄を探す</span><span class="ds-section-sub">何を買うかを企業価値・業績・決算から選択</span></div><span id="ds-fund-note">ファンダ条件：なし</span></div>
+      <div class="ds-fund-actions">
+        <button class="ds-btn ds-fund ds-fund-quality ds-fund-mode" data-fund-mode="fundamental_main" title="割安15%以上＋財務A以上＋利益改善＋EPS品質通常を基本に重大悪化を除外。">⭐ ファンダ本命 <span class="ds-btn-count" data-fund-count="fundamental_main">-</span></button>
+        <button class="ds-btn ds-fund ds-fund-post ds-fund-mode" data-fund-mode="post_earnings_main" title="ファンダ本命＋実決算発表から0〜10JPX営業日。">✅ 決算後本命 <span class="ds-btn-count" data-fund-count="post_earnings_main">-</span></button>
+        <button class="ds-btn ds-fund ds-fund-mode" data-fund-mode="repricing_all" title="ファンダ初動・回復割安・業績加速再評価・予想保守・成長未反応のOR。">🧭 再評価候補 <span class="ds-btn-count" data-fund-count="repricing_all">-</span></button>
+        <button class="ds-btn ds-fund-clear" id="ds-fund-clear">↩ ファンダ解除</button>
+      </div>
+      <details class="ds-fund-details">
+        <summary>ファンダ詳細（割安・財務・業績・進捗・再評価ルート）</summary>
+        <div class="ds-fund-detail-body">
+          <div class="ds-fund-actions">
+            <button class="ds-btn ds-fund ds-fund-mode" data-fund-mode="discount20">💎 割安20%以上 <span class="ds-btn-count" data-fund-count="discount20">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-quality ds-fund-mode" data-fund-mode="finance_quality">🏆 財務優良 <span class="ds-btn-count" data-fund-count="finance_quality">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-growth ds-fund-mode" data-fund-mode="profit_accel">🚀 業績加速 <span class="ds-btn-count" data-fund-count="profit_accel">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-growth ds-fund-mode" data-fund-mode="op_improving">📈 利益改善 <span class="ds-btn-count" data-fund-count="op_improving">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-progress ds-fund-mode" data-fund-mode="progress_ahead">⏫ 進捗上振れ <span class="ds-btn-count" data-fund-count="progress_ahead">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-post ds-fund-mode" data-fund-mode="post_earnings_continuation" title="好決算後、決算前比+5%以上かつ決算後高値から-4%以内を維持">📈 決算後継続 <span class="ds-btn-count" data-fund-count="post_earnings_continuation">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-post ds-fund-mode" data-fund-mode="post_earnings_recovery" title="D1で売られた後、決算前比+5%以上へ回復し高値圏を維持">🔁 決算後反転 <span class="ds-btn-count" data-fund-count="post_earnings_recovery">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-post ds-fund-mode" data-fund-mode="good_earnings_oversold" title="好決算なのにD1/現在値が逆行。反転待ち監視">🛟 好決算売られすぎ <span class="ds-btn-count" data-fund-count="good_earnings_oversold">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-growth ds-fund-mode" data-fund-mode="fundamental_early">🌱 ファンダ初動 <span class="ds-btn-count" data-fund-count="fundamental_early">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-quality ds-fund-mode" data-fund-mode="cyclical_value">🔄 回復割安 <span class="ds-btn-count" data-fund-count="cyclical_value">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-growth ds-fund-mode" data-fund-mode="earnings_accel_reprice">⚡ 業績加速再評価 <span class="ds-btn-count" data-fund-count="earnings_accel_reprice">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-progress ds-fund-mode" data-fund-mode="conservative_forecast">🧮 予想保守 <span class="ds-btn-count" data-fund-count="conservative_forecast">-</span></button>
+            <button class="ds-btn ds-fund ds-fund-quality ds-fund-mode" data-fund-mode="quality_underreaction">💎 成長未反応 <span class="ds-btn-count" data-fund-count="quality_underreaction">-</span></button>
+          </div>
+          <div class="ds-logic-note"><b>決算後3種</b>は旧「決算後上昇スクリーニング」から統合した監視ルートです。好決算売られすぎは買い判定ではなく反転待ち。<br><b>再評価候補</b>は5つの再評価ルートをORでまとめた広い入口です。</div>
+        </div>
+      </details>
+    </section>
+
+    <section class="ds-section">
+      <div class="ds-actions">
+        <button class="ds-btn ds-reset-all" id="ds-reset-all">↩ 条件をすべて解除</button>
+        <button class="ds-btn ds-advanced" id="ds-advanced">⚙ 詳細検索・特殊抽出</button>
+      </div>
+      <div class="ds-logic-note">詳細検索には、シグナル一括・翌日+5%・決算跨ぎ・個別列フィルター・コピー/CSVなどをまとめています。</div>
+    </section>`;
+    const anchor=qs("#entry-env-panel")||qs("#toolbar")||document.body.firstChild;if(anchor&&anchor.parentNode)anchor.parentNode.insertBefore(shell,anchor.nextSibling);else document.body.prepend(shell);
+    shell.querySelectorAll(".ds-mode").forEach(b=>b.addEventListener("click",()=>setMode(b.dataset.mode)));
+    shell.querySelectorAll(".ds-fund-mode").forEach(b=>b.addEventListener("click",()=>setFundMode(b.dataset.fundMode)));
+    qs("#ds-fund-clear")?.addEventListener("click",()=>clearFundMode(true));
+    qs("#ds-reset-all")?.addEventListener("click",clearAllUnified);
+    qs("#ds-advanced")?.addEventListener("click",()=>{document.body.classList.toggle("advanced-open");const on=document.body.classList.contains("advanced-open");qs("#ds-advanced").textContent=on?"✓ 詳細検索を閉じる":"⚙ 詳細検索・特殊抽出";});
+    buildWatchShell(); updateWatchUI(); updateCombinedStatus();
+  }
+  function applyColumnVisibility(){
+    const table=qs("#tbl-candidate");
+    if(!table)return;
+    const ths=[...table.querySelectorAll("thead th")];
+    const hidden=[];
+    let entryNth=0, resilienceNth=0, nowNth=0;
+
+    // VTはtbodyをスクロールのたびに作り直すため、既存tdへclassを付ける方式では
+    // 後から生成されたセルが再表示される。列indexから永続CSSを生成して常時制御する。
+    ths.forEach((th,i)=>{
+      const key=th.getAttribute("data-col")||"";
+      const nth=i+1;
+      const show=VISIBLE_COLS.has(key);
+      th.classList.toggle("ds-hide-col",!show); // headerの即時反映/互換用
+      if(!show) hidden.push(nth);
+      if(key==="地合い込み一次判定") entryNth=nth;
+      if(key==="相場耐性") resilienceNth=nth;
+      if(key==="今買えるランク") nowNth=nth;
+    });
+
+    let style=qs("#daily-simple-column-rules");
+    if(!style){
+      style=document.createElement("style");
+      style.id="daily-simple-column-rules";
+      document.head.appendChild(style);
+    }
+    const sel=(nth,tag)=>`body.daily-simple:not(.advanced-open) #tbl-candidate ${tag}:nth-child(${nth})`;
+    const hideRules=[];
+    hidden.forEach(nth=>{
+      hideRules.push(sel(nth,"th"),sel(nth,"td"));
+      // colgroupにも効かせ、隠した列の幅が残らないようにする。
+      hideRules.push(`body.daily-simple:not(.advanced-open) #tbl-candidate col:nth-child(${nth})`);
+    });
+    let css="";
+    if(hideRules.length){
+      css += `${hideRules.join(",\n")}{display:none!important;visibility:collapse!important;width:0!important;min-width:0!important;max-width:0!important;}\n`;
+    }
+    if(entryNth){
+      css += `${sel(entryNth,"th")},${sel(entryNth,"td")}{font-weight:950!important;font-size:11px!important;}\n`;
+    }
+    if(resilienceNth){
+      css += `${sel(resilienceNth,"th")},${sel(resilienceNth,"td")}{font-weight:900!important;background:#f0fdfa!important;}\n`;
+    }
+    if(nowNth){
+      css += `${sel(nowNth,"th")},${sel(nowNth,"td")}{font-weight:900!important;background:#eff6ff!important;}\n`;
+    }
+    style.textContent=css;
+  }
+  function kv(label,val){return `<div class="ds-kv"><small>${esc(label)}</small><strong>${esc(val)}</strong></div>`;} function rowForCode(code){return(window.state?.data||[]).find(r=>String(r["コード"]??"").padStart(4,"0")===String(code).padStart(4,"0"));}
+  function setupType(r){const a=[];if(String(r["持続上昇"]||"").includes("◎"))a.push("持続上昇");if(Number(r["INITIAL_MOMENTUM"]||0)===1)a.push("初動2x+2%");if(n(r["底反転スコア"])>0)a.push("底反転");const tt=String(r["右肩早期種別"]||"").trim();if(tt)a.push(tt);return a.length?a.join(" / "):"通常";}
+  function openDrawer(r){if(!r)return;const px=n(r["現在値"]),sup=n(r["最寄り支持"]),res=n(r["最寄り抵抗"]);const supGap=Number.isFinite(px)&&Number.isFinite(sup)?(px/sup-1)*100:NaN;const resRoom=pctGap(px,res);const drawer=qs("#ds-drawer");const reason=String(r["地合い込み理由"]||r["相場耐性理由"]||"");const todayReason=typeof window.__todayBuyReason==="function"?window.__todayBuyReason(r):"";drawer.innerHTML=`
+    <div class="ds-drawer-head"><div><div class="ds-stock-title">${esc(String(r["コード"]||"").padStart(4,"0"))} ${esc(r["銘柄名"]||"")}</div><div class="ds-stock-sub">${esc(r["市場"]||"")} / ${esc(r["最新テーマ"]||"")}</div></div><button class="ds-close" id="ds-close">×</button></div>
+    <div class="ds-verdict"><div class="ds-verdict-main"><span class="ds-big">${esc(r["地合い込み一次判定"]||"-")}</span><span class="ds-score">相場耐性 ${f(r["相場耐性スコア"],0)}</span><span class="ds-score">今買える ${esc(r["今買える"]||"-")}</span></div><div class="ds-reason">${esc(todayReason||reason||"判定理由なし")}</div></div>
+    <div class="ds-sec"><h3>買い時監視</h3><div class="ds-grid">${kv("監視状態",WATCH_MODES[String(r["WATCH_STATE"]||"")]?.label||r["WATCH_STATE"]||"対象外")}${kv("QUALITY",f(r["WATCH_QUALITY"],0,"/100"))}${kv("PRICE",f(r["PRICE_OPPORTUNITY"],0,"/100"))}${kv("TRIGGER",f(r["TRIGGER_SCORE"],0,"/100"))}${kv("監視ルート",r["WATCH_ROUTE"]||"-")}${kv("撤退ライン",Number.isFinite(n(r["EXIT_INVALIDATION_PRICE"]))?fi(r["EXIT_INVALIDATION_PRICE"])+"円":"-")}${kv("リスク幅",Number.isFinite(n(r["EXIT_RISK_PCT"]))?f(r["EXIT_RISK_PCT"],2,"%")+" "+(r["EXIT_RISK_LEVEL"]||""):"-")}${kv("1株リスク",Number.isFinite(n(r["EXIT_RISK_PER_SHARE_YEN"]))?f(r["EXIT_RISK_PER_SHARE_YEN"],1,"円"):"-")}${kv("100株リスク",Number.isFinite(n(r["EXIT_RISK_100_SHARES_YEN"]))?fi(r["EXIT_RISK_100_SHARES_YEN"])+"円":"-")}${kv("許容判定",r["EXIT_RISK_JUDGEMENT"]||"-")}${kv("リスク上限株数",Number.isFinite(n(r["EXIT_MAX_SHARES_BY_RISK"]))?fi(r["EXIT_MAX_SHARES_BY_RISK"])+"株":"未設定")}${kv("撤退理由",r["EXIT_REASON"]||"-")}${kv("理由",r["WATCH_REASON"]||"-")}</div></div>
+    <div class="ds-sec"><h3>価格・流動性</h3><div class="ds-grid">${kv("現在値",fi(px)+"円")}${kv("前日比(円)",fi(r["前日円差"])+"円")}${kv("前日比率",f(r["前日終値比率"],2,"%"))}${kv("出来高",fi(r["出来高"])+"株")}${kv("売買代金",f(r["売買代金(億)"],1,"億"))}${kv("RVOL代金",f(r["RVOL代金"],2,"倍"))}${kv("支持まで",Number.isFinite(supGap)?supGap.toFixed(1)+"%上":"-")}${kv("抵抗まで",Number.isFinite(resRoom)?resRoom.toFixed(1)+"%":"-")}</div></div>
+    <div class="ds-sec"><h3>形・勢い</h3><div class="ds-grid">${kv("タイプ",setupType(r))}${kv("持続上昇",r["持続上昇"]||"-")}${kv("初動2x+2%",(Number(r["INITIAL_MOMENTUM"]||0)===1?"候補":"-")+" / S"+f(r["INITIAL_MOMENTUM_SCORE"],1))}${kv("RS5",frsLocal(r["RS_5"]))}${kv("RS20",frsLocal(r["RS_20"]))}${kv("短期需給",r["短期需給判定"]||"-")}</div></div>
+    <div class="ds-sec"><h3>需給・空売り</h3><div class="ds-grid">${kv("信用倍率",f(r["信用倍率"],2,"倍"))}${kv("買い残",fi(r["買い残"])+"株")}${kv("売り残",fi(r["売り残"])+"株")}${kv("機関売り",r["機関売り判定"]||"-")}${kv("空売り状態",r["機関空売り状態"]||"-")}${kv("機関空売り合計",fi(r["機関空売り合計株数"])+"株")}${kv("機関増減(最終報告日)",fi(r["本日の増減合計株数"])+"株")}${kv("機関更新日",dateAgeLocal(r["空売り更新日"]))}</div></div>
+    <div class="ds-sec"><h3>ファンダ・業績・決算</h3><div class="ds-grid">${kv("基礎適正",Number.isFinite(n(r["適正株価"]))?fi(r["適正株価"])+"円":"-")}${kv("割安度",f(r["割安度"],1,"%"))}${kv("EPS品質",r["EPS品質"]||"-")}${kv("評価方式",r["評価方式"]||"-")}${kv("財務評価",r["overall_alpha"]||"-")}${kv("利益状態",r["利益状態"]||"情報不足")}${kv("利益状態基準",r["利益状態指標"]||"-")}${kv("営業利益状態",r["営業利益状態"]||"情報不足")}${kv("経常利益状態",r["経常利益状態"]||"情報不足")}${kv("最新Q営業益",Number.isFinite(n(r["最新Q営業利益"]))?fi(r["最新Q営業利益"])+"百万円":"-")}${kv("前年同期Q営業益",Number.isFinite(n(r["前年同期Q営業利益"]))?fi(r["前年同期Q営業利益"])+"百万円":"-")}${kv("最新Q経常益",Number.isFinite(n(r["最新Q経常利益"]))?fi(r["最新Q経常利益"])+"百万円":"-")}${kv("前年同期Q経常益",Number.isFinite(n(r["前年同期Q経常利益"]))?fi(r["前年同期Q経常利益"])+"百万円":"-")}${kv("利益加速",r["利益加速ステータス"]||"-")}${kv("売上YoY",f(r["直近売上YoY"],1,"%"))}${kv("営業益YoY",f(r["直近営業益YoY"],1,"%"))}${kv("TDnet予想修正",r["TDnet予想修正状態"]||"履歴不足")}${kv("営業益修正率",f(r["TDnet営業益修正率"],1,"%"))}${kv("EPS修正率",f(r["TDnetEPS修正率"],1,"%"))}${kv("TDnet最新予想日",r["TDnet予想修正日"]||"-")}${kv("希薄化",r["希薄化状態"]||"情報不足")}${kv("希薄化種別",r["希薄化種別"]||"-")}${kv("希薄化日",r["希薄化最終日"]||"-")}${kv("進捗率",f(r["進捗率"],1,"%"))}${kv("進捗上振れ",f(r["季節調整済進捗差分"],1,"pt"))}${kv("過去同Q件数",Number.isFinite(n(r["過去同Q件数"]))?fi(r["過去同Q件数"])+"期":"-")}${kv("PBR",f(r["PBR"],2,"倍"))}${kv("次回決算予定",r["決算発表予定日"]||"-")}${kv("最新実決算",r["最新決算発表日"]||"-")}${kv("決算後営業日",Number.isFinite(n(r["決算後営業日数"]))?fi(r["決算後営業日数"])+"日":"-")}${kv("決算後型",r["POST_EARNINGS_TYPE"]||"-")}${kv("決算後S",f(r["POST_EARNINGS_SCORE"],0,"/100"))}${kv("決算D1",f(r["決算後D1騰落率_pct"],1,"%"))}${kv("決算前比",f(r["決算後現在騰落率_pct_探索"],1,"%"))}${kv("高値から",f(r["決算後高値から現在_pct_探索"],1,"%"))}${kv("決算後理由",r["POST_EARNINGS_REASON"]||"-")}</div></div>
+    <button class="ds-full-btn" id="ds-full">この銘柄を全項目で確認する</button>`;drawer.classList.add("open");qs("#ds-drawer-back")?.classList.add("open");qs("#ds-close")?.addEventListener("click",closeDrawer);qs("#ds-full")?.addEventListener("click",()=>{closeDrawer();document.body.classList.add("advanced-open");qs("#ds-advanced").textContent="✓ 詳細検索を閉じる";});}
+  function closeDrawer(){qs("#ds-drawer")?.classList.remove("open");qs("#ds-drawer-back")?.classList.remove("open");} qs("#ds-drawer-back")?.addEventListener("click",closeDrawer);document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDrawer();});
+  document.addEventListener("click",e=>{if(!document.body.classList.contains("daily-simple"))return;if(e.target.closest("a,button,input,select,.filter-icon,.qhelp"))return;const tr=e.target.closest("#tbl-candidate tbody tr[data-code]");if(!tr)return;openDrawer(rowForCode(tr.dataset.code));});
+  const originalRender=window.render; if(typeof originalRender==="function"){window.render=function(){const ret=originalRender.apply(this,arguments);requestAnimationFrame(applyColumnVisibility);return ret;};}
+  waitReady(()=>{document.body.classList.add("daily-simple");buildShell();updateCounts();qs("#market-filter")?.addEventListener("change",()=>setTimeout(updateCounts,0));setTimeout(()=>{setMode("todaybuy");applyColumnVisibility();updateCounts();},120);});
+})();
+</script>
 </body>
 </html>

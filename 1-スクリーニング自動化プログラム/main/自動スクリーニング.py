@@ -1,3 +1,49 @@
+﻿# === 2026-08-23 WATCH-RISK-V1 ===
+# 買い時監視に撤退ライン・リスク幅・100株損失額・許容額判定を追加。
+# === /2026-08-23 WATCH-RISK-V1 ===
+
+# === 2026-08-23 POST-EARNINGS-MIGRATION-V1 ===
+# 旧決算後上昇スクリーニングの決算後専用価値を本線へ統合。既存LIVEランキングは変更しない。
+# === /2026-08-23 POST-EARNINGS-MIGRATION-V1 ===
+
+# === 2026-08-23 REPRICING-DISCOVERY-V1 ===
+# V1.1: financial metric guard / full discovery stats / LLM discovery fields
+# - 研究V7〜V10Bの知見を本番スクリーナーへ移植。厳格ANDで削り切らず、複数の独立ルートをORで保持する。
+# - 狙いは「良い会社」ではなく、企業価値の改善に対して株価の再評価が遅れている候補。
+# - FUNDAMENTAL_EARLY / CYCLICAL_VALUE / EARNINGS_ACCELERATION / CONSERVATIVE_FORECAST /
+#   QUALITY_GROWTH_UNDERREACTION を独立フラグ化し、重大希薄化以外は極力ハード除外しない。
+# - 既存 INITIAL_MOMENTUM / STEADY_UP / BOTTOM_REVERSAL の候補gate・priority・top300・LIVE50配分は変更しない。
+# - 新ファンダ探索は live_candidate_feed.json の discovery_candidates とdashboardワンタッチへ追加し、
+#   既存LIVEランキングへ混ぜる前に実データ監査できるようにする。
+# === /2026-08-23 REPRICING-DISCOVERY-V1 ===
+
+# === 2026-08-23 FUND-SOURCE-TRUTH FINAL ===
+# - ファンダ判定の正本を「株探 quarterly_actual_history + TDnet forecast_history + offerings_events」に統一。
+# - 一般企業は営業利益、銀行/証券/保険/その他金融は経常利益の最新Q/前年同期Q実額から利益状態を判定。
+# - 下方修正はキーワードではなくTDnet同一年度の予想スナップショット数値差を正本とする。
+# - 初回予想のみ/比較元不足/比較可能値不足を据え置きと混同しない。情報不足はファンダ本命へ昇格させない。
+# - 重大希薄化はofferings_eventsの実イベントから判定し、直近の増資/CB・EB/継続行使はファンダ本命から除外。
+# - 実runごとに株探実績・TDnet予想履歴・希薄化監視のcoverageをmeta/logへ出す。
+# ============================================================================
+# 2026-08-22 FUND-QUALITY-V2: ファンダ抽出品質 + 業績悪化PER減点
+# - 財務優良はalpha順位で判定し、S-/A++等の派生ランクを文字列漏れさせない。
+# - 季節進捗に過去同Q件数を保存し、正式な進捗上振れは2期以上・+5pt以上で判定可能にする。
+# - dashboardへ最新実決算日/決算後JPX営業日数を付与し、予定日欠損を「決算通過」と誤認しない。
+# - Fair Valueは悪化決算をPER据え置きにせず、売上減・営業減益・EPS減益・利益率鈍化・
+#   季節進捗下振れを観測できた範囲だけ段階減点。減点理由は適正株価注記へ残す。
+# ============================================================================
+# ============================================================================
+# 2026-08-22 FV-SAFE: 適正株価の一過性利益暴走を防止
+# - 適正株価を「基礎価値」に固定し、特益/EPS異常時はPER禁止→PBR基礎へ切替。
+# - 参考上限を別列化し、割安度/Algo_Factorへは入れない。
+# - EPS品質/評価方式/注記/PBR根拠をscreenerへ保存しdashboardへ同期。
+# ============================================================================
+# 2026-08-22 FINAL-CONSISTENCY: 後段4件の整合修正
+# - MIDDAYの当日live終値を、地合いoutcomeの確定終値として使わない。事後成績は確定引けまででcutoff。
+# - BUYイベントのclose/翌日/3日後終値は、対象営業日の15:30以降のみ確定。過去の場中誤保存も確定値で上書き修復する。
+# - 実BUY統計は各時間軸ごとにrecent観測数>=ENTRY_SIGNAL_MIN_OBSの指標だけを採点する。少数標本を満額加点しない。
+# - 底反転Aは吸収回数==2限定を廃止し、2回以上をscore2/3対象にする。
+# ============================================================================
 # ============================================================================
 # 2026-08-17 V6 運用障害・性能改善の引継ぎ記録（次回改修者は先に読むこと）
 # ============================================================================
@@ -9,7 +55,6 @@
 #   「別DB」とみなしてコピー/統合しない。共有writer lock中は本体をskipし、lockを手で消さない。
 # - P3-41/P3-42以降、この本体は外部producerを起動しない。
 #   system_jobsのdailyは開示取得→変更銘柄だけ株探ファンダ差分実行、全銘柄補修はweekly。
-#   PTS取得は信頼性と所要時間のため廃止済み。template.htmlはV6速度修正では変更していない。
 #
 # ■ ここへ至った実障害（2026-08-16〜17）
 # - 旧dailyは株探ファンダ/Yahoo財務/テーマ・信用等を約3590銘柄へ毎日実行し数時間化。
@@ -95,6 +140,71 @@
 # - 実行時間は約11分を現行基準に比較する。10分周期に十分な余裕が出るまで本番Taskを有効化しない。
 # - 最適化時は各phaseの[TIMER]と上記valid件数を必ず比較し、速度だけで採用しない。
 #
+# === 2026-08-21 P4-DASH2: 売買目的別6列（持越し/持続/底反転/急伸/材料先行/今買える） ===
+# - ダッシュボード表示名は日本語化し、内部研究名 STEADY_UP / A / B / C はロジック内に残す。
+# - 持続上昇は既存 _live_steady_score をそのまま利用。candidate gate/priority式は変更しない。
+# - 底反転は研究A: A2（新20日安値→旧安値奪回）＋直近10日の反復吸収を表示用に判定。
+#   特に2回以上の吸収＋直近吸収安値を0.5〜3%下抜いて奪回した形を最上位表示する。
+# - 急伸は研究Cのベンチマーク条件「前日出来高比>=2.8倍 AND 前日比>=+2.9%」を独立表示。
+# - 材料先行は研究B3相当の監視フラグ。好材料を意味せず、予定決算が近い銘柄は除外する。
+# - 持越し適性は確率ではなく表示用5段階。今買える? は板/歩み値を含まない一次判定で、最終ENTRY NOWではない。
+# - LIVE Candidate Contractの候補選定・priority・top300/LIVE50は変更しない。
+# === 2026-08-21 P4-DASH: 右肩上がりスコア表示・ソート対応 ===
+# - 既存の右肩上がりスコア計算/判定は変更せず、dashboardへ「右肩S」列を追加。
+# - ヘッダークリック/高度なフィルター・ソート/Excel風列フィルターで右肩上がりスコアを利用可能にする。
+# - template.html を正式なUI正本とする。Python側の互換パッチは旧templateに右肩Sが無い場合だけ適用する。
+#
+# === 2026-08-21 P4-DASH3: Dashboard UI/SORT 意味論契約 ===
+# - Pythonが算出する値の意味とtemplateの表示名/ソート対象を明示的に一致させる。モデル計算式は変更しない。
+# - 「財務スコア」は finance_notes.score -> screener.スコア の値であり0〜100点ではない。overall_alphaは財務評価ランク。
+# - 「決算期待値」は互換キー名。意味は過去決算の翌営業日(D1)リアクション期待値で、将来決算の予測値ではない。
+# - 「予想インパクト_pct / 予測ターゲット価格」はStockSurprisePredictorの予測反応率/反応価格。投資判断上の目標株価とは呼ばない。
+# - AI目標値は分類ラベルtarget_pctの到達基準表示。銘柄別回帰目標ではない。並べ替えはAIスコアを使う。
+# - 三角スコアは単一の総合点ではない。UIの並べ替えは ▲Growth -> ◆Safety -> ■Vol の辞書順優先。
+# - 過去反応セルは履歴スパークラインを表示するが、並べ替え/数値フィルターのキーは決算勝率。
+# - 利益加速はauthoritativeな利益加速フラグを前提に、YoY整合で「加速/利益率鈍化/情報不足」を区別する。
+# - 増資リスク/増資スコア/増資理由はcurrent writerが無いため今回snapshotでは無効。authoritativeな希薄化警告はofferings_events。
+# - 仕込み/利確/損切りはATR＋支持抵抗から作る機械的な目安。ATR欠損時は未計算(-)。
+# - UI専用の _UI_SORT_* / *目安価格 / TOB件数 は表示・ソート整合用で、候補gate/priority/モデル点には使わない。
+# - RVOL代金は「当日売買代金 ÷ 20日平均売買代金」。出来高倍率と呼ばない。RS_5/RS_20/Growth_Biasは小数リターン差（0.05=5%）。
+# - 短期需給判定は前日比×RVOL代金の簡易ヒューリスティックで、板/歩み値/大口意図は観測しない。
+# - 移動平均ラベルは _pick_ma_label の優先度 5日 > 25日 > 75日。UI sortも同順。
+# - template.htmlはこの契約を満たすことを読込時にfail-visible検証し、表示名とsort keyの後退を防ぐ。
+# === 2026-08-21 P4-DASH4-VT-SINGLE: 仮想スクロール版へ一本化 ===
+# - 旧全件DOM版template.html / index_vt.htmlの二重出力を廃止。
+# - 現在の仮想スクロール版を唯一の正式正本 template.html とし、生成物も index.html のみ。
+# - template_vt.html という別名は使用しない。34px固定行 + overscan上下40行のVT方式を維持する。
+# - dashboard_data.json / monitor / LLM / LIVE Candidate feed 等の副作用は従来どおり1回だけ。
+# === 2026-08-21 P4-DASH6: 全銘柄フォロースルー環境 × 個別相場耐性 ===
+# - 特定候補ではなく、screening universe内の全個別株を母集団として直近の買いフォロースルーを測る。
+# - price_historyから1/3/5/10営業日後プラス率、5/10日MFE/MAE、5日以内+2%到達率、
+#   ブレイク後3日失敗率を算出し、直近10有効日とその前20有効日を比較する。
+# - 各銘柄には「相場耐性」と「地合い込み一次判定」を付与。既存「今買える？」を最初のgateとして尊重し、
+#   悪地合いでも相対的に強い個別だけを残す。kabuステーションの最終ENTRY NOWとは分離する。
+# === 2026-08-21 P4-DASH8: Python列値監査・欠損意味論修正 ===
+# - 信用倍率は stock_credit_margin.倍率 を優先し、欠損時は買い残/売り残で算出した信用倍率_calcを current screenerへ保存する。
+#   「内部判定では計算済み・dashboardはNULL」という不整合を禁止する。
+# - 持続上昇は日足コア情報不足を0点/非候補として明示し、前日比や20日騰落率の欠損を「非過熱」として加点しない。
+# - V5支持抵抗帯の旧「最低30円幅」を廃止し株価比率だけでクラスタ化。回帰支持/抵抗線はR²が閾値以上の時だけ最寄り候補に採用する。
+# - 地合い日次outcome/実ENTRY翌日・3日後追跡は共通 _dedupe_price_history_df() を通し、alias重複とJPX休場日legacy足を営業日として数えない。
+# - 全銘柄日次fallbackも絶対成績を主役、過去baselineとの差を補助にする。改善していても絶対勝率が低い相場を高評価しない。
+# - データ品質coverageでは '-', '--', 'N/A', 'null', '情報不足'等のplaceholderを「値あり」と数えない。
+# - finance_notes.progress_percent の負値は進捗率ではなくlegacy状態コードとして分離し、screener.進捗率はNULL、進捗状態へ意味を保存する。
+# - Algo_Momentumは60〜79点の非初動を「弱気」と表示せず、調整/強め/中立を分離する。
+# - 短期需給は前日比±0.5%未満を方向ラベル化せず、観測事実に寄せた「高RVOL上昇/低RVOL上昇/強い売り・高RVOL/低RVOL下落」へ改称する。
+# - dashboardの「初動」は旧テク初動と INITIAL_MOMENTUM(2x+2%)を混同しない。新2x+2%を主表示し旧フラグは詳細用に残す。
+# === 2026-08-22 FINAL-AUDIT2: 底反転吸収episode整合 ===
+# - 支持帯への連続タッチ日数を吸収回数と誤認しない。連続hitを1episodeに圧縮し、独立episode間の下抜けを採点する。
+# === 2026-08-22 AUDIT-REMAINDER: 監査残件修正 ===
+# - 持続上昇の日足コア不足は0点ではなくNone/DATA不足。相場耐性の再正規化から欠損として除外する。
+# - 指数行の売買代金/RVOLはN/A。指数値×出来高を個別株売買代金として計算しない。
+# === 2026-08-21 P4-DASH7: 「今日買う株」導線 + 実シグナル時点フォロースルー ===
+# - dashboardの主探索導線として「今日買う株」を追加。地合込ENTRY=◎、売買代金>=5億、相場耐性>=70、
+#   最寄り抵抗まで原則2%以上、最寄り支持から-1〜+8%以内、強い売り/極端な過熱なしを一括適用する。
+# - 「今買える？」rank=3が場中runで初めて成立した時点を1銘柄1日1イベントとしてsnapshot DBへ保存。
+# - そのsignal priceから10/30/60分、引け、翌営業日、3営業日、60分MFE/MAEを追跡する。
+# - 実シグナル統計の母数が十分になったら地合いスコアの主役(70%)へ昇格し、従来の全銘柄日次統計は
+#   補助/蓄積待ちfallbackとして残す。過去データを後知恵で「今買える？」だったことにはしない。
 # === 2026-08-19 P4-LIVE: 自動スクリーニング -> kabuステーションLIVE Candidate Contract ===
 # - output_data/live_candidate_feed.json をschema_version=1でatomic出力。HTML/dashboard_data.jsonを読み戻さない。
 # - runtime/scanner_snapshots.sqlite3へ5〜10分run単位の全評価銘柄snapshotを保存し、直近30営業日を保持。
@@ -429,6 +539,11 @@ RUNTIME_LOG_RETENTION_DAYS = max(1, int(os.environ.get("KABU_RUNTIME_LOG_RETENTI
 # P4-LIVE Candidate Contract / intraday snapshot settings.
 LIVE_CANDIDATE_SCHEMA_VERSION = 1
 LIVE_CANDIDATE_MAX = max(1, int(os.environ.get("KABU_LIVE_CANDIDATE_MAX", "300")))
+# P4-LIVE50 SAFE: keep the legacy 300-candidate contract intact and expose a separate
+# execution shortlist selected from the full pre-cap candidate pool.
+LIVE_EXECUTION_MAX = max(1, int(os.environ.get("KABU_LIVE_EXECUTION_MAX", "50")))
+LIVE_EXECUTION_INITIAL_RESERVED = max(0, int(os.environ.get("KABU_LIVE_INITIAL_RESERVED", "15")))
+LIVE_EXECUTION_STEADY_RESERVED = max(0, int(os.environ.get("KABU_LIVE_STEADY_RESERVED", "10")))
 LIVE_CANDIDATE_VALID_SECONDS = max(60, int(os.environ.get("KABU_LIVE_CANDIDATE_VALID_SECONDS", "900")))
 LIVE_SNAPSHOT_KEEP_TRADE_DAYS = max(1, int(os.environ.get("KABU_LIVE_SNAPSHOT_KEEP_TRADE_DAYS", "30")))
 LIVE_STEADY_MIN_SCORE = float(os.environ.get("KABU_STEADY_UP_MIN_SCORE", "65"))
@@ -464,6 +579,12 @@ CHARTS60_MIDDAY_REFRESH_MINUTES = 30
 CHARTS60_FOCUS_MAX_CODES = 1600
 CHARTS60_FALLBACK_CODES = 300
 CHARTS60_HISTORY_BARS = 160
+
+# WATCH-RISK-V1: 1トレード許容リスク額。0=未設定（表示のみ）
+try:
+    WATCH_MAX_TRADE_RISK_YEN = max(0.0, float(os.environ.get("KABU_WATCH_MAX_TRADE_RISK_YEN", "0") or 0))
+except (TypeError, ValueError):
+    WATCH_MAX_TRADE_RISK_YEN = 0.0
 
 # --- [3] トレンド・シグナル判定 パラメータ ---
 LOOKBACK            = 90
@@ -1062,15 +1183,16 @@ except Exception:
 # --- [END ENCODING GUARD] ---
 # === [MERGE-LIGHT-EOD] ANCHOR ===
 # -*- coding: utf-8 -*-
+# 2026-08-22 AUDIT2: EOD/PREOPENのA/B/Cはprice_history確定足を正本化。MIDDAYのみlive overlay。監査ログ追加。
 """
-自動スクリーニング_完全統合版 + 右肩上がり（Template版/両立フィルタ/Gmail/オフラインHTML/祝日対応/MIDDAY自動）
+自動スクリーニング_完全統合版 + Dashboard/LIVE連携（Template正本/オフラインHTML/祝日対応/PREOPEN・MIDDAY・EOD自動）
 
 修正点（この版）
 - HTML出力フェーズの JSON 生成で、DataFrame 内の bytes / NaN / pandas.Timestamp / NumPy スカラーを
   安全に変換できるように修正（TypeError: bytes is not JSON serializable 対策）
 
 機能ダイジェスト
-- EOD/MIDDAY 自動判定（JST 11:30–12:30 は MIDDAY スナップショット、それ以外は EOD）
+- PREOPEN/MIDDAY/EOD 自動判定（営業日9:00前=PREOPEN、9:00〜15:30未満=MIDDAY、15:30以降=EOD）
 - 祝日/土日スキップ（jpholiday + 追加休場日ファイル対応）
 - yahooquery で quotes / history を一括取得（初回は 12mo、通常は 10d）
 - 初動/底打ち/上昇余地スコア/右肩上がりスコア の判定とログ（signals_log）
@@ -1744,11 +1866,16 @@ def _live_daily_structure_map(conn: sqlite3.Connection, asof_date: str) -> dict[
     return out
 
 
-def _live_steady_score(features: dict, intraday: dict, current_price, turnover_oku, day_return_pct) -> tuple[float, bool, list[str]]:
-    """日足の上昇構造 + 場中のじわ上げ継続性を0-100で採点。単発急騰は高得点にしない。"""
+def _live_steady_score(features: dict, intraday: dict, current_price, turnover_oku, day_return_pct) -> tuple[float | None, bool, list[str]]:
+    """日足の上昇構造 + 場中のじわ上げ継続性を0-100で採点。
+
+    P4-DASH8: 欠損を「非過熱」「弱い」と推定しない。日足コア情報不足は0点/非候補。
+    """
     f = features or {}; x = intraday or {}
     p = _live_num(current_price); turn = _live_num(turnover_oku) or 0.0
     dr = _live_num(day_return_pct)
+    if dr is None:
+        dr = _live_num(f.get("day_ret_pct"))
     ma5 = _live_num(f.get("ma5")); ma25 = _live_num(f.get("ma25")); ma75 = _live_num(f.get("ma75"))
     s25 = _live_num(f.get("ma25_slope20_pct")); s75 = _live_num(f.get("ma75_slope20_pct")); s5 = _live_num(f.get("ma5_slope5_pct"))
     stay = _live_num(f.get("ma25_stay_ratio")); lowrise = _live_num(f.get("low_rise_ratio"))
@@ -1757,6 +1884,10 @@ def _live_steady_score(features: dict, intraday: dict, current_price, turnover_o
     r10 = _live_num(x.get("ret_10m")); r20 = _live_num(x.get("ret_20m")); r30 = _live_num(x.get("ret_30m")); r60 = _live_num(x.get("ret_60m"))
     upr = _live_num(x.get("up_snapshot_ratio")); pull = _live_num(x.get("max_pullback_pct"))
     score = 0.0; reasons=[]
+    _daily_aux = (ma5, ma75, s75, s5, stay, lowrise, ret20d)
+    if p is None or ma25 is None or s25 is None or sum(v is not None for v in _daily_aux) < 2:
+        # 監査残件修正: DATA不足を0点（弱い）へ変換しない。下流はNoneを欠損として再正規化する。
+        return None, False, ["日足情報不足"]
     # 日足構造: 最大65点
     if ma5 is not None and ma25 is not None and ma5 > ma25: score += 10; reasons.append("MA5>MA25")
     if ma25 is not None and ma75 is not None and ma25 > ma75: score += 8; reasons.append("MA25>MA75")
@@ -1767,7 +1898,9 @@ def _live_steady_score(features: dict, intraday: dict, current_price, turnover_o
     if up5 >= 3: score += 5; reasons.append(f"5日上昇{up5}日")
     if s5 is not None and s5 > 0: score += 5; reasons.append("MA5上向き")
     if hup > 0: score += 2; reasons.append("高値更新")
-    if (dr is None or dr <= LIVE_STEADY_MAX_DAY_RETURN_PCT) and (ret20d is None or ret20d <= 30.0): score += 2; reasons.append("非過熱")
+    # P4-DASH8: 不明を「非過熱」とみなさない。
+    if dr is not None and ret20d is not None and dr <= LIVE_STEADY_MAX_DAY_RETURN_PCT and ret20d <= 30.0:
+        score += 2; reasons.append("非過熱")
     # 場中継続性: 最大35点。10/20/30/60分、上昇snapshot比率、最大押しを正式採点。
     positive_horizons = 0
     for label, val, pts in (("10分",r10,4),("20分",r20,5),("30分",r30,6),("60分",r60,7)):
@@ -1786,7 +1919,7 @@ def _live_steady_score(features: dict, intraday: dict, current_price, turnover_o
         p is not None and ma25 is not None and p > ma25
         and s25 is not None and s25 > 0
         and turn >= LIVE_STEADY_MIN_TURNOVER_OKU
-        and (dr is None or dr <= LIVE_STEADY_MAX_DAY_RETURN_PCT)
+        and dr is not None and dr <= LIVE_STEADY_MAX_DAY_RETURN_PCT
         and intraday_ok
         and score >= LIVE_STEADY_MIN_SCORE
     )
@@ -1836,10 +1969,32 @@ def _live_prune_snapshot_trade_days(c: sqlite3.Connection) -> int:
     return c.total_changes-before
 
 
+def _live_is_market_snapshot_time(now=None) -> bool:
+    """JPXの立会時間だけintraday snapshotとして採用する。
+
+    PREOPEN・昼休み・大引け後の静止価格を10/20/30/60分特徴量へ混ぜない。
+    11:30/15:30ちょうどは前場/大引けsnapshotとして許可する。
+    休場日判定は本体の既存run gateへ委ね、ここでは時刻境界だけを担当する。
+    """
+    dt = now or _now_jst()
+    try:
+        minute = int(dt.hour) * 60 + int(dt.minute)
+    except Exception:
+        return False
+    return (9 * 60 <= minute <= 11 * 60 + 30) or (12 * 60 + 30 <= minute <= 15 * 60 + 30)
+
+
 def _live_capture_snapshots(rows: list[dict], daily_map: dict[str, dict]) -> tuple[str, str, int]:
     now = _now_jst()
     captured = now.isoformat(timespec="microseconds")
     trade_date = now.date().isoformat()
+
+    # P4-LIVE SAFE: 場中継続性を測るDBへ時間外の静止価格を入れない。
+    # EODでは書込みをskipし、同日の最後の場中snapshot履歴を後段で読む。
+    if not _live_is_market_snapshot_time(now):
+        print(f"[live-feed] intraday snapshot write skipped outside market hours: {captured}")
+        return captured, trade_date, 0
+
     vals=[]
     for r in rows:
         code=_live_stock_code(_live_get(r,"コード","code"), _live_get(r,"市場","market"), _live_get(r,"銘柄名","name"))
@@ -1880,6 +2035,380 @@ def _live_capture_snapshots(rows: list[dict], daily_map: dict[str, dict]) -> tup
     return captured, trade_date, len(vals)
 
 
+
+
+# ==============================================================================
+# P4-DASH7: 実際に「今買える？」が成立した時点のフォロースルーを保存する。
+# ==============================================================================
+ENTRY_SIGNAL_RECENT_TRADE_DAYS = max(3, int(os.environ.get("KABU_ENTRY_SIGNAL_RECENT_DAYS", "5")))
+ENTRY_SIGNAL_BASELINE_TRADE_DAYS = max(5, int(os.environ.get("KABU_ENTRY_SIGNAL_BASELINE_DAYS", "10")))
+ENTRY_SIGNAL_MIN_OBS = max(10, int(os.environ.get("KABU_ENTRY_SIGNAL_MIN_OBS", "30")))
+ENTRY_SIGNAL_KEEP_TRADE_DAYS = max(20, int(os.environ.get("KABU_ENTRY_SIGNAL_KEEP_TRADE_DAYS", "60")))
+
+
+def _daily_close_is_confirmed(day_value, now_jst=None) -> bool:
+    """日足の終値として利用してよい時点かを判定する。
+
+    過去日は確定済み、未来日は未確定。当日は東証大引け後の15:30以降だけ確定扱い。
+    MIDDAYでprice_history.終値にlive currentが入っていても、この判定を通さない限り
+    outcome/翌日終値へ利用しない。
+    """
+    try:
+        d = pd.Timestamp(day_value).date()
+    except Exception:
+        return False
+    now = now_jst or _now_jst()
+    today = now.date()
+    if d < today:
+        return True
+    if d > today:
+        return False
+    return (now.hour, now.minute, now.second) >= (15, 30, 0)
+
+
+def _confirmed_daily_outcome_cutoff(asof_value) -> str:
+    """事後成績計算に使える最終の確定日足日を返す。"""
+    try:
+        asof_d = pd.Timestamp(asof_value).date()
+    except Exception:
+        return str(asof_value)
+    now = _now_jst()
+    if _daily_close_is_confirmed(asof_d, now):
+        return asof_d.isoformat()
+    extra = _load_extra_closed(EXTRA_CLOSED_PATH)
+    return prev_business_day_jp(asof_d, extra).isoformat()
+
+
+def _entry_signal_ensure_schema(c: sqlite3.Connection) -> None:
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS intraday_buy_signal_event (
+            signal_at TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            entry_rank INTEGER NOT NULL,
+            entry_label TEXT,
+            setup_bucket TEXT,
+            steady_score REAL,
+            p10m REAL,
+            p30m REAL,
+            p60m REAL,
+            close_price REAL,
+            next1d_close REAL,
+            next3d_close REAL,
+            mfe60 REAL,
+            mae60 REAL,
+            updated_at TEXT,
+            PRIMARY KEY (trade_date, code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_buy_signal_event_at ON intraday_buy_signal_event(signal_at, code)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_buy_signal_event_date ON intraday_buy_signal_event(trade_date, code)")
+
+
+def _entry_signal_prune(c: sqlite3.Connection) -> int:
+    dates=[str(r[0]) for r in c.execute("SELECT DISTINCT trade_date FROM intraday_buy_signal_event ORDER BY trade_date DESC").fetchall()]
+    if len(dates) <= ENTRY_SIGNAL_KEEP_TRADE_DAYS:
+        return 0
+    keep=set(dates[:ENTRY_SIGNAL_KEEP_TRADE_DAYS])
+    q=",".join("?" for _ in keep)
+    before=c.total_changes
+    c.execute(f"DELETE FROM intraday_buy_signal_event WHERE trade_date NOT IN ({q})",tuple(sorted(keep)))
+    return int(c.total_changes-before)
+
+
+def _entry_signal_capture_events(rows: list[dict], live_context: dict | None) -> int:
+    """rank=3の最初の場中シグナルだけを1銘柄1日1イベントとして保存する。
+
+    過去snapshotを後から推測して陽性化しない。導入日以降に実際のrunで成立したsignalだけが正本。
+    """
+    ctx = live_context or {}
+    captured = str(ctx.get("captured") or "")
+    trade_date = str(ctx.get("trade_date") or "")
+    snapshot_rows = int(ctx.get("snapshot_rows") or 0)
+    if not captured or not trade_date or snapshot_rows <= 0:
+        print(
+            f"[entry-signal] capture skipped: captured={bool(captured)} "
+            f"trade_date={trade_date or '-'} snapshot_rows={snapshot_rows}"
+        )
+        return 0
+    vals = []
+    for r in rows:
+        rank = int(_live_num(r.get("今買えるランク")) or 0)
+        if rank < 3:
+            continue
+        code = _live_stock_code(_live_get(r,"コード"), _live_get(r,"市場"), _live_get(r,"銘柄名"))
+        px = _live_num(_live_get(r,"現在値_raw","現在値"))
+        if not code or px is None or px <= 0:
+            continue
+        vals.append((
+            captured, trade_date, code, float(px), rank, str(r.get("今買える") or ""),
+            _entry_env_current_setup_bucket(r), _live_num(r.get("持続上昇スコア")),
+            _now_jst().isoformat(timespec="seconds"),
+        ))
+    if not vals:
+        _rank3 = sum(1 for _r in rows if int(_live_num(_r.get("今買えるランク")) or 0) >= 3)
+        print(
+            f"[entry-signal] no new event candidates: rows={len(rows)} "
+            f"rank3_or_more={_rank3} captured={captured} trade_date={trade_date}"
+        )
+        return 0
+    c = _live_snapshot_conn()
+    try:
+        _entry_signal_ensure_schema(c)
+        before = c.total_changes
+        with c:
+            c.executemany("""
+                INSERT OR IGNORE INTO intraday_buy_signal_event(
+                    signal_at,trade_date,code,entry_price,entry_rank,entry_label,setup_bucket,steady_score,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+            """, vals)
+            inserted = int(c.total_changes - before)
+            _entry_signal_prune(c)
+        return inserted
+    finally:
+        c.close()
+
+
+def _entry_signal_refresh_intraday_outcomes(trade_date: str | None = None) -> int:
+    """signal後の10/30/60分と60分MFE/MAEを既存snapshotから埋める。"""
+    c = _live_snapshot_conn()
+    try:
+        _entry_signal_ensure_schema(c)
+        params = []
+        where = ""
+        if trade_date:
+            where = " WHERE trade_date=?"
+            params = [str(trade_date)]
+        ev = pd.read_sql_query(
+            "SELECT * FROM intraday_buy_signal_event" + where + " ORDER BY signal_at, code",
+            c, params=params,
+        )
+        if ev.empty:
+            return 0
+        dates = sorted(set(ev["trade_date"].astype(str)))
+        ph = ",".join("?" for _ in dates)
+        snaps = pd.read_sql_query(
+            f"SELECT captured_at,trade_date,code,current_price FROM intraday_scanner_snapshot WHERE trade_date IN ({ph}) ORDER BY captured_at,code",
+            c, params=dates,
+        )
+        if snaps.empty:
+            return 0
+        snaps["_dt"] = pd.to_datetime(snaps["captured_at"], errors="coerce", utc=True).dt.tz_convert("Asia/Tokyo")
+        snaps["current_price"] = pd.to_numeric(snaps["current_price"], errors="coerce")
+        snaps = snaps.dropna(subset=["_dt","current_price"])
+        grouped = {(str(code),str(day)): g.sort_values("_dt", kind="stable") for (code,day),g in snaps.groupby(["code","trade_date"], sort=False)}
+        updates=[]
+        for _, row in ev.iterrows():
+            code=str(row["code"]); day=str(row["trade_date"])
+            g=grouped.get((code,day))
+            if g is None or g.empty:
+                continue
+            sig=pd.to_datetime(row["signal_at"], errors="coerce", utc=True)
+            if pd.isna(sig):
+                continue
+            sig=sig.tz_convert("Asia/Tokyo")
+            ep=_live_num(row["entry_price"])
+            if ep is None or ep <= 0:
+                continue
+            vals={}
+            for mins,col,tol in ((10,"p10m",15),(30,"p30m",20),(60,"p60m",25)):
+                if _live_num(row.get(col)) is not None:
+                    vals[col]=_live_num(row.get(col)); continue
+                target=sig+pd.Timedelta(minutes=mins)
+                cand=g[(g["_dt"]>=target)&(g["_dt"]<=target+pd.Timedelta(minutes=tol))]
+                vals[col]=_live_num(cand.iloc[0]["current_price"]) if not cand.empty else None
+            w=g[(g["_dt"]>=sig)&(g["_dt"]<=sig+pd.Timedelta(minutes=60))]["current_price"].dropna()
+            mfe=(float(w.max())/ep-1.0) if len(w) else _live_num(row.get("mfe60"))
+            mae=(float(w.min())/ep-1.0) if len(w) else _live_num(row.get("mae60"))
+            updates.append((vals.get("p10m"),vals.get("p30m"),vals.get("p60m"),mfe,mae,_now_jst().isoformat(timespec="seconds"),day,code))
+        if not updates:
+            return 0
+        with c:
+            c.executemany("""
+                UPDATE intraday_buy_signal_event
+                   SET p10m=COALESCE(p10m,?), p30m=COALESCE(p30m,?), p60m=COALESCE(p60m,?),
+                       mfe60=COALESCE(?,mfe60), mae60=COALESCE(?,mae60), updated_at=?
+                 WHERE trade_date=? AND code=?
+            """, updates)
+        return len(updates)
+    finally:
+        c.close()
+
+
+def _entry_signal_refresh_daily_outcomes(conn: sqlite3.Connection) -> int:
+    """signal日の引け、翌営業日、3営業日後の確定終値をprice_historyから埋める。
+
+    当日の場中price_history.終値はlive currentなので終値扱いしない。
+    既に旧runで場中値がnext1d/next3dへ入っていても、対象日が確定後なら真の終値で上書きする。
+    対象日が今日かつ15:30前なら旧汚染値をNULLへ戻す。
+    """
+    c = _live_snapshot_conn()
+    try:
+        _entry_signal_ensure_schema(c)
+        ev = pd.read_sql_query("SELECT * FROM intraday_buy_signal_event ORDER BY trade_date,code", c)
+        if ev.empty:
+            return 0
+        codes=sorted(set(ev["code"].astype(str)))
+        min_day=str(ev["trade_date"].astype(str).min())
+        chunks=[]
+        for i in range(0,len(codes),500):
+            ch=codes[i:i+500]
+            variants=[]
+            for _code in ch:
+                variants.extend(code_query_variants(_code))
+            variants=list(dict.fromkeys(str(v) for v in variants if str(v)))
+            q=",".join("?" for _ in variants)
+            part=pd.read_sql_query(
+                f"SELECT rowid AS _rowid,コード,日付,終値 FROM price_history WHERE date(日付)>=date(?) AND CAST(コード AS TEXT) IN ({q}) ORDER BY 日付,_rowid",
+                conn, params=[min_day]+variants,
+            )
+            chunks.append(part)
+        if not chunks:
+            return 0
+        ph=pd.concat(chunks,ignore_index=True)
+        if ph.empty:
+            return 0
+        # alias重複とlegacy休場日足を除き、「3行後」=3営業日後を守る。
+        ph = _dedupe_price_history_df(ph)
+        ph["日付"]=pd.to_datetime(ph["日付"],errors="coerce").dt.strftime("%Y-%m-%d")
+        ph["終値"]=pd.to_numeric(ph["終値"],errors="coerce")
+        ph=ph.dropna(subset=["コード","日付","終値"])
+        by_code={str(code):g.sort_values("日付",kind="stable").reset_index(drop=True) for code,g in ph.groupby("コード",sort=False)}
+        updates=[]
+        now=_now_jst()
+        today=now.date().isoformat()
+
+        def _slot(g, pos):
+            if pos >= len(g):
+                return None, None, False, False
+            target_day=str(g.iloc[pos]["日付"])
+            confirmed=_daily_close_is_confirmed(target_day, now)
+            value=_live_num(g.iloc[pos]["終値"]) if confirmed else None
+            # 今日の未確定足だけは、旧版が保存した場中値を明示的に消す。
+            clear_unconfirmed=(target_day == today and not confirmed)
+            return target_day, value, confirmed, clear_unconfirmed
+
+        for _,row in ev.iterrows():
+            code=str(row["code"]); day=str(row["trade_date"]); g=by_code.get(code)
+            if g is None or g.empty:
+                continue
+            dates=g["日付"].astype(str).tolist()
+            try:
+                idx=dates.index(day)
+            except ValueError:
+                continue
+            _, close, close_ok, close_clear = _slot(g, idx)
+            _, n1, n1_ok, n1_clear = _slot(g, idx+1)
+            _, n3, n3_ok, n3_clear = _slot(g, idx+3)
+            updates.append((
+                int(close_ok), close, int(close_clear),
+                int(n1_ok), n1, int(n1_clear),
+                int(n3_ok), n3, int(n3_clear),
+                now.isoformat(timespec="seconds"), day, code,
+            ))
+        if not updates:
+            return 0
+        with c:
+            c.executemany("""
+                UPDATE intraday_buy_signal_event
+                   SET close_price = CASE WHEN ?=1 THEN ? WHEN ?=1 THEN NULL ELSE close_price END,
+                       next1d_close = CASE WHEN ?=1 THEN ? WHEN ?=1 THEN NULL ELSE next1d_close END,
+                       next3d_close = CASE WHEN ?=1 THEN ? WHEN ?=1 THEN NULL ELSE next3d_close END,
+                       updated_at=?
+                 WHERE trade_date=? AND code=?
+            """, updates)
+        return len(updates)
+    finally:
+        c.close()
+
+
+def _entry_signal_metric_summary(setup_bucket: str | None = None) -> dict:
+    """実際の『今買える？=○』初回signalの事後成績を集計する。"""
+    c=_live_snapshot_conn()
+    try:
+        _entry_signal_ensure_schema(c)
+        if setup_bucket:
+            df=pd.read_sql_query("SELECT * FROM intraday_buy_signal_event WHERE setup_bucket=? ORDER BY trade_date,signal_at",c,params=[str(setup_bucket)])
+        else:
+            df=pd.read_sql_query("SELECT * FROM intraday_buy_signal_event ORDER BY trade_date,signal_at",c)
+    finally:
+        c.close()
+    empty={"score":None,"qualified":False,"event_count":0,"metrics":{},"recent_days":0,"baseline_days":0}
+    if df.empty: return empty
+    for col in ("entry_price","p10m","p30m","p60m","close_price","next1d_close","next3d_close","mfe60","mae60"):
+        df[col]=pd.to_numeric(df[col],errors="coerce")
+    ep=df["entry_price"].replace(0,np.nan)
+    df["ret_10m"]=df["p10m"]/ep-1.0
+    df["ret_30m"]=df["p30m"]/ep-1.0
+    df["ret_60m"]=df["p60m"]/ep-1.0
+    df["ret_close"]=df["close_price"]/ep-1.0
+    df["ret_1d"]=df["next1d_close"]/ep-1.0
+    df["ret_3d"]=df["next3d_close"]/ep-1.0
+    df["hit1_60m"]=np.where(df["mfe60"].notna(),(df["mfe60"]>=0.01).astype(float),np.nan)
+    dates=sorted(df["trade_date"].astype(str).unique().tolist())
+    recent_dates=dates[-ENTRY_SIGNAL_RECENT_TRADE_DAYS:]
+    base_dates=dates[-(ENTRY_SIGNAL_RECENT_TRADE_DAYS+ENTRY_SIGNAL_BASELINE_TRADE_DAYS):-ENTRY_SIGNAL_RECENT_TRADE_DAYS] if len(dates)>ENTRY_SIGNAL_RECENT_TRADE_DAYS else []
+    specs={
+        "plus_10m":("ret_10m","positive"),"plus_30m":("ret_30m","positive"),"plus_60m":("ret_60m","positive"),
+        "plus_close":("ret_close","positive"),"plus_1d":("ret_1d","positive"),"plus_3d":("ret_3d","positive"),
+        "hit_plus1_60m":("hit1_60m","bool"),"mfe_60m":("mfe60","median"),"mae_60m":("mae60","median"),
+    }
+    def agg(x,kind):
+        z=pd.to_numeric(x,errors="coerce").dropna()
+        if z.empty:return None
+        if kind=="positive":return float((z>0).mean()*100.0)
+        if kind=="bool":return float(z.mean()*100.0)
+        return float(z.median()*100.0)
+    metrics={}
+    for key,(col,kind) in specs.items():
+        rv=df[df["trade_date"].astype(str).isin(recent_dates)][col]
+        bv=df[df["trade_date"].astype(str).isin(base_dates)][col]
+        _nr=int(pd.to_numeric(rv,errors="coerce").notna().sum())
+        _nb=int(pd.to_numeric(bv,errors="coerce").notna().sum())
+        metrics[key]={
+            "recent":None if agg(rv,kind) is None else round(agg(rv,kind),2),
+            "baseline":None if agg(bv,kind) is None else round(agg(bv,kind),2),
+            "n_recent":_nr,
+            "n_baseline":_nb,
+            "score_eligible_recent":bool(_nr >= ENTRY_SIGNAL_MIN_OBS),
+            "score_eligible_delta":bool(_nr >= ENTRY_SIGNAL_MIN_OBS and _nb >= ENTRY_SIGNAL_MIN_OBS),
+        }
+    core_n=min(metrics.get("plus_60m",{}).get("n_recent",0),metrics.get("plus_close",{}).get("n_recent",0))
+    qualified=bool(core_n>=ENTRY_SIGNAL_MIN_OBS and len(recent_dates)>=3)
+
+    # 絶対的に『買って伸びるか』を主役にし、過去baselineとの差は補助にする。
+    abs_specs={
+        "plus_10m":(8,50,1.5),"plus_30m":(12,50,1.5),"plus_60m":(18,50,1.6),"plus_close":(14,50,1.5),
+        "plus_1d":(14,50,1.4),"plus_3d":(10,50,1.3),"hit_plus1_60m":(8,35,1.5),
+        "mfe_60m":(8,1.0,25.0),"mae_60m":(8,-1.0,25.0),
+    }
+    aw=[]
+    for key,(w,center,scale) in abs_specs.items():
+        m=metrics.get(key)or{}
+        v=_live_num(m.get("recent"))
+        if v is None or int(m.get("n_recent") or 0) < ENTRY_SIGNAL_MIN_OBS:
+            continue
+        comp=_entry_env_clamp(50.0+(v-center)*scale)
+        if comp is not None:aw.append((comp,float(w)))
+    abs_score=(sum(v*w for v,w in aw)/sum(w for _,w in aw)) if aw else None
+    dw=[]
+    delta_scales={"plus_10m":12,"plus_30m":12,"plus_60m":12,"plus_close":12,"plus_1d":12,"plus_3d":12,"hit_plus1_60m":15,"mfe_60m":1.0,"mae_60m":1.0}
+    for key,sc in delta_scales.items():
+        m=metrics.get(key)or{}; rv=_live_num(m.get("recent")); bv=_live_num(m.get("baseline"))
+        if (rv is None or bv is None
+                or int(m.get("n_recent") or 0) < ENTRY_SIGNAL_MIN_OBS
+                or int(m.get("n_baseline") or 0) < ENTRY_SIGNAL_MIN_OBS):
+            continue
+        comp=_entry_env_clamp(50.0+50.0*((rv-bv)/float(sc)))
+        if comp is not None:dw.append(comp)
+    delta_score=(sum(dw)/len(dw)) if dw else None
+    if abs_score is None: score=None
+    elif delta_score is None: score=abs_score
+    else: score=abs_score*0.70+delta_score*0.30
+    score=None if score is None else round(float(_entry_env_clamp(score)),1)
+    return {"score":score,"absolute_score":None if abs_score is None else round(float(abs_score),1),"delta_score":None if delta_score is None else round(float(delta_score),1),"qualified":qualified,"event_count":int(len(df)),"metrics":metrics,"recent_days":len(recent_dates),"baseline_days":len(base_dates),"min_obs":ENTRY_SIGNAL_MIN_OBS}
+
 def _live_intraday_feature_map(trade_date: str, current_codes: set[str]) -> dict[str, dict]:
     if not current_codes:
         return {}
@@ -1893,7 +2422,23 @@ def _live_intraday_feature_map(trade_date: str, current_codes: set[str]) -> dict
         c.close()
     if df.empty: return {}
     df=df[df["code"].astype(str).isin(current_codes)].copy()
-    df["_dt"]=pd.to_datetime(df["captured_at"], errors="coerce", utc=True)
+
+    # P4-LIVE SAFE: 過去runですでに保存された時間外snapshotも計算時に除外する。
+    # captured_atはJST offset付きISOで保存されるため、一度UTCとしてparseしてJSTへ戻す。
+    df["_dt"]=pd.to_datetime(df["captured_at"], errors="coerce", utc=True).dt.tz_convert("Asia/Tokyo")
+    _minute = df["_dt"].dt.hour * 60 + df["_dt"].dt.minute
+    _market_mask = (
+        ((_minute >= 9 * 60) & (_minute <= 11 * 60 + 30))
+        | ((_minute >= 12 * 60 + 30) & (_minute <= 15 * 60 + 30))
+    )
+    _before_market_filter = len(df)
+    df = df[_market_mask].copy()
+    _ignored_afterhours = _before_market_filter - len(df)
+    if _ignored_afterhours:
+        print(f"[live-feed] ignored outside-market snapshots={_ignored_afterhours} trade_date={trade_date}")
+    if df.empty:
+        return {}
+
     for col in ("current_price","day_low","day_high","support_today"):
         df[col]=pd.to_numeric(df[col], errors="coerce")
     out={}
@@ -1954,16 +2499,1116 @@ def _live_bottom_score(intraday: dict, current_price, support_today=None) -> tup
     return round(min(100.0,score),1), gate, reasons
 
 
-def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict]) -> dict:
-    generated=_now_jst().isoformat(timespec="seconds")
-    snapshot=str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
-    asof=_expected_snapshot_date_for_run(snapshot).isoformat()
-    daily=_live_daily_structure_map(conn, asof)
-    captured, trade_date, snapshot_rows=_live_capture_snapshots(rows, daily)
-    codes={_live_stock_code(_live_get(r,"コード"),_live_get(r,"市場"),_live_get(r,"銘柄名")) for r in rows}
+
+
+def _live_build_context(conn: sqlite3.Connection, rows: list[dict]) -> dict:
+    """Dashboard/LIVE feedで同一runのSTEADY計算コンテキストを共有する。
+
+    場中は現在runのsnapshotを1回だけ保存し、そのsnapshotを含む履歴から
+    10/20/30/60分特徴量を作る。候補選定ロジック自体は変更しない。
+    """
+    snapshot = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    asof = _expected_snapshot_date_for_run(snapshot).isoformat()
+    daily = _live_daily_structure_map(conn, asof)
+    captured, trade_date, snapshot_rows = _live_capture_snapshots(rows, daily)
+    codes = {
+        _live_stock_code(_live_get(r, "コード"), _live_get(r, "市場"), _live_get(r, "銘柄名"))
+        for r in rows
+    }
     codes.discard("")
-    intraday_map=_live_intraday_feature_map(trade_date,codes)
+    intraday_map = _live_intraday_feature_map(trade_date, codes)
+    return {
+        "snapshot": snapshot,
+        "asof": asof,
+        "daily": daily,
+        "captured": captured,
+        "trade_date": trade_date,
+        "snapshot_rows": snapshot_rows,
+        "codes": codes,
+        "intraday_map": intraday_map,
+    }
+
+
+def _absorption_episode_stats(w_low: pd.Series, w_close: pd.Series, prior20_low: float) -> tuple[int, int, float | None]:
+    """支持帯での連続タッチ日を1つの吸収episodeとして数える。
+
+    旧実装は近接帯にいた"日数"を吸収回数として数えたため、7日連続で底練りしただけでも
+    7回吸収と誤認した。ここでは連続するhitを1episodeへ圧縮し、直近episodeとその1つ前の
+    episodeの安値同士でundercutを測る。
+    """
+    try:
+        p20 = float(prior20_low)
+    except Exception:
+        return 0, 0, None
+    if not np.isfinite(p20) or p20 <= 0:
+        return 0, 0, None
+
+    lows = pd.to_numeric(w_low, errors="coerce").reset_index(drop=True)
+    closes = pd.to_numeric(w_close, errors="coerce").reset_index(drop=True)
+    hit_mask = (lows <= p20 * 1.015) & (lows >= p20 * 0.96) & (closes >= p20 * 0.995)
+    hit_pos = np.flatnonzero(hit_mask.fillna(False).to_numpy(dtype=bool))
+    hit_days = int(len(hit_pos))
+    if hit_days == 0:
+        return 0, 0, None
+
+    episodes: list[tuple[int, int]] = []
+    start = prev = int(hit_pos[0])
+    for raw_pos in hit_pos[1:]:
+        pos = int(raw_pos)
+        if pos == prev + 1:
+            prev = pos
+            continue
+        episodes.append((start, prev))
+        start = prev = pos
+    episodes.append((start, prev))
+
+    # 現在日がhitでなければ、過去のepisode数だけで現在A2を強くしない。
+    current_pos = len(lows) - 1
+    current_is_hit = bool(hit_pos[-1] == current_pos)
+    episode_count = int(len(episodes)) if current_is_hit else 0
+    if episode_count < 2:
+        return episode_count, hit_days, None
+
+    ps, pe = episodes[-2]
+    cs, ce = episodes[-1]
+    prev_abs_low = _live_num(lows.iloc[ps:pe + 1].min())
+    cur_abs_low = _live_num(lows.iloc[cs:ce + 1].min())
+    if prev_abs_low in (None, 0) or cur_abs_low is None:
+        return episode_count, hit_days, None
+    undercut_pct = (float(cur_abs_low) / float(prev_abs_low) - 1.0) * 100.0
+    return episode_count, hit_days, undercut_pct
+
+
+def _dashboard_research_signal_map(conn: sqlite3.Connection, rows: list[dict], asof_date: str) -> dict[str, dict]:
+    """A/B/C研究シグナルをdashboard表示用に再現する。
+
+    これは表示・研究補助用で、LIVE Candidate Contractのgate/priorityへは混ぜない。
+    A/Cはこれまでの研究定義を優先。Bはイベント近接の監視仮説であり、好材料予測ではない。
+    """
+    row_by_code = {}
+    for r in rows:
+        code = _live_stock_code(_live_get(r, "コード"), _live_get(r, "市場"), _live_get(r, "銘柄名"))
+        if code:
+            row_by_code[code] = r
+    if not row_by_code:
+        return {}
+
+    asof_ts = pd.Timestamp(asof_date).normalize()
+    start = (asof_ts - pd.Timedelta(days=130)).strftime("%Y-%m-%d")
+    ph = pd.read_sql_query(
+        """
+        SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
+          FROM price_history
+         WHERE date(日付) >= date(?) AND date(日付) <= date(?)
+         ORDER BY 日付, rowid
+        """,
+        conn, params=[start, asof_date],
+    )
+    if ph.empty:
+        return {}
+    ph["コード"] = ph["コード"].map(canonical_code_for_db)
+    ph = ph[ph["コード"].isin(row_by_code)].copy()
+    ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce").dt.normalize()
+    for c in ("始値", "高値", "安値", "終値", "出来高"):
+        ph[c] = pd.to_numeric(ph[c], errors="coerce")
+    ph = ph.dropna(subset=["コード", "日付", "終値"]).sort_values(["コード", "日付", "_rowid"], kind="stable")
+    ph = ph.drop_duplicates(["コード", "日付"], keep="last")
+
+    out = {}
+    for code, r in row_by_code.items():
+        g = ph[ph["コード"] == code].copy().sort_values("日付", kind="stable")
+        cur = _live_num(_live_get(r, "現在値_raw", "現在値"))
+        if cur is None or cur <= 0:
+            continue
+        opn = _live_num(_live_get(r, "始値", "day_open")) or cur
+        hi = _live_num(_live_get(r, "高値", "day_high")) or cur
+        lo = _live_num(_live_get(r, "安値", "day_low")) or cur
+        vol = _live_num(_live_get(r, "出来高", "volume"))
+
+        # P4-DASH8-AUDIT2:
+        # A/B/C研究シグナルは過去replayと本番で同じ足を使う。
+        # MIDDAYだけ当日足が未確定なのでrows側のlive OHLCVをoverlayする。
+        # EOD/PREOPEN/休場日実行ではprice_historyの確定asof足を正本にする。
+        _research_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+        _use_live_bar = (_research_mode == "MIDDAY")
+
+        if not g.empty and pd.Timestamp(g.iloc[-1]["日付"]).normalize() == asof_ts:
+            if _use_live_bar:
+                idx = g.index[-1]
+                g.loc[idx, ["始値", "高値", "安値", "終値"]] = [opn, max(hi, cur), min(lo, cur), cur]
+                if vol is not None and vol > 0:
+                    g.loc[idx, "出来高"] = vol
+        elif g.empty or pd.Timestamp(g.iloc[-1]["日付"]).normalize() < asof_ts:
+            if _use_live_bar:
+                g = pd.concat([g, pd.DataFrame([{
+                    "_rowid": 10**18, "コード": code, "日付": asof_ts,
+                    "始値": opn, "高値": max(hi, cur), "安値": min(lo, cur), "終値": cur,
+                    "出来高": vol,
+                }])], ignore_index=True)
+            else:
+                # 確定asof足が無いEOD/PREOPENでは疑似足を作らない。
+                continue
+        g = g.sort_values("日付", kind="stable").reset_index(drop=True)
+        if len(g) < 22:
+            continue
+
+        close = pd.to_numeric(g["終値"], errors="coerce")
+        high = pd.to_numeric(g["高値"], errors="coerce")
+        low = pd.to_numeric(g["安値"], errors="coerce")
+        volume = pd.to_numeric(g["出来高"], errors="coerce")
+        current_i = len(g) - 1
+        prev20 = g.iloc[max(0, current_i-20):current_i]
+        if len(prev20) < 15:
+            continue
+        prior20_low = _live_num(pd.to_numeric(prev20["安値"], errors="coerce").min())
+        prior20_high = _live_num(pd.to_numeric(prev20["高値"], errors="coerce").max())
+        vol20 = _live_num(pd.to_numeric(prev20["出来高"], errors="coerce").median())
+        prev5 = g.iloc[max(0, current_i-5):current_i]
+        vol5 = _live_num(pd.to_numeric(prev5["出来高"], errors="coerce").median()) if len(prev5) >= 4 else None
+        prev_turn = pd.to_numeric(prev20["終値"], errors="coerce") * pd.to_numeric(prev20["出来高"], errors="coerce")
+        turn20 = _live_num(prev_turn.median())
+        cur_low = _live_num(low.iloc[-1]); cur_high = _live_num(high.iloc[-1]); cur_close = _live_num(close.iloc[-1]); cur_vol = _live_num(volume.iloc[-1])
+        prev_close = _live_num(close.iloc[-2]); prev_vol = _live_num(volume.iloc[-2])
+        ret1 = (cur_close / prev_close - 1.0) if cur_close is not None and prev_close not in (None, 0) else None
+        vol_ratio_prev = (cur_vol / prev_vol) if cur_vol is not None and prev_vol not in (None, 0) else None
+        dry_ratio = (vol5 / vol20) if vol5 is not None and vol20 not in (None, 0) else None
+        cur_turn = (cur_close * cur_vol) if cur_close is not None and cur_vol is not None else None
+        turn_ratio = (cur_turn / turn20) if cur_turn is not None and turn20 not in (None, 0) else None
+        clv = ((cur_close-cur_low)/(cur_high-cur_low)) if None not in (cur_close,cur_low,cur_high) and cur_high > cur_low else None
+
+        # ---- A: A2 + repeated absorption ----
+        a2 = bool(
+            None not in (prior20_low, prior20_high, cur_low, cur_close, dry_ratio)
+            and cur_low <= prior20_low
+            and (cur_low / prior20_high - 1.0) <= -0.08
+            and dry_ratio <= 0.80
+            and cur_close > prior20_low
+        )
+        absorb_count = 0
+        absorb_hit_days = 0
+        undercut_pct = None
+        if a2 and prior20_low not in (None, 0):
+            w = g.tail(10).copy()
+            absorb_count, absorb_hit_days, undercut_pct = _absorption_episode_stats(
+                w["安値"], w["終値"], float(prior20_low)
+            )
+        if a2 and absorb_count >= 2 and undercut_pct is not None and -3.0 <= undercut_pct <= -0.5:
+            a_score, a_label = 3, f"◎ {absorb_count}回吸収episode+下抜け奪回"
+        elif a2 and absorb_count >= 2:
+            a_score, a_label = 2, f"○ {absorb_count}回吸収episode"
+        elif a2:
+            a_score, a_label = 1, "△ A2奪回"
+        else:
+            a_score, a_label = 0, "-"
+
+        # ---- C: user's historical benchmark ----
+        c_on = bool(ret1 is not None and vol_ratio_prev is not None and ret1 >= 0.029 and vol_ratio_prev >= 2.80)
+        c_score = 1 if c_on else 0
+        c_label = f"🔥 {vol_ratio_prev:.2f}x/{ret1*100:+.1f}%" if c_on else "-"
+
+        # ---- B: research watch only (not positive-material prediction) ----
+        low20_inc = _live_num(pd.to_numeric(g.tail(20)["安値"], errors="coerce").min())
+        dist_low20 = (cur_close / low20_inc - 1.0) if cur_close is not None and low20_inc not in (None,0) else None
+        earnings_near = False
+        try:
+            ed = pd.Timestamp(_live_get(r, "決算発表予定日")).normalize()
+            if not pd.isna(ed):
+                earnings_near = asof_ts <= ed <= asof_ts + pd.Timedelta(days=15)
+        except Exception:
+            earnings_near = False
+        b_on = bool(
+            not earnings_near
+            and dist_low20 is not None and dist_low20 <= 0.10
+            and ret1 is not None and 0 < ret1 <= 0.10
+            and dry_ratio is not None and dry_ratio <= 0.80
+            and turn_ratio is not None and turn_ratio >= 1.50
+            and clv is not None and clv >= 0.75
+        )
+        b_score = 1 if b_on else 0
+        b_label = "👀 監視" if b_on else "-"
+
+        out[code] = {
+            "a_score": a_score, "a_label": a_label, "a_absorb_count": absorb_count,
+            "a_absorb_hit_days": absorb_hit_days, "a_undercut_pct": undercut_pct,
+            "c_score": c_score, "c_label": c_label, "c_vol_ratio_prev": vol_ratio_prev,
+            "c_ret1_pct": (ret1*100.0 if ret1 is not None else None),
+            "b_score": b_score, "b_label": b_label,
+            "b_turn_ratio": turn_ratio, "b_clv": clv, "b_dry_ratio": dry_ratio,
+        }
+    return out
+
+
+def _dashboard_apply_strategy_columns(conn: sqlite3.Connection, rows: list[dict], live_context: dict | None) -> None:
+    """売買目的別の6列をrowsへ付加する。既存候補選定には影響しない。"""
+    if not rows:
+        return
+    ctx = live_context or {}
+    snapshot = str(ctx.get("snapshot") or _auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    asof = str(ctx.get("asof") or _expected_snapshot_date_for_run(snapshot).isoformat())
+    daily = ctx.get("daily") or _live_daily_structure_map(conn, asof)
+    intraday_map = ctx.get("intraday_map") or {}
+    try:
+        research = _dashboard_research_signal_map(conn, rows, asof)
+        _a_n = sum(1 for _v in research.values() if int(_live_num(_v.get("a_score")) or 0) > 0)
+        _a2_n = sum(1 for _v in research.values() if int(_live_num(_v.get("a_score")) or 0) >= 2)
+        _a3_n = sum(1 for _v in research.values() if int(_live_num(_v.get("a_score")) or 0) >= 3)
+        _b_n = sum(1 for _v in research.values() if int(_live_num(_v.get("b_score")) or 0) > 0)
+        _c_n = sum(1 for _v in research.values() if int(_live_num(_v.get("c_score")) or 0) > 0)
+        _a_sample = [str(_k) for _k,_v in research.items() if int(_live_num(_v.get("a_score")) or 0) > 0][:10]
+        _b_sample = [str(_k) for _k,_v in research.items() if int(_live_num(_v.get("b_score")) or 0) > 0][:10]
+        print(
+            f"[dashboard-research] mode={snapshot} asof={asof} mapped={len(research)} "
+            f"A>0={_a_n} A>=2={_a2_n} A>=3={_a3_n} B>0={_b_n} C>0={_c_n} "
+            f"A_sample={','.join(_a_sample) or '-'} B_sample={','.join(_b_sample) or '-'}"
+        )
+    except Exception as e:
+        print(f"[dashboard-strategy][WARN] A/B/C research columns unavailable: {e}")
+        research = {}
+
+    for r in rows:
+        code = _live_stock_code(_live_get(r,"コード"), _live_get(r,"市場"), _live_get(r,"銘柄名"))
+        d = daily.get(code,{})
+        x = intraday_map.get(code,{})
+        current = _live_num(_live_get(r,"現在値_raw","現在値"))
+        turn = _live_num(_live_get(r,"売買代金億","売買代金(億)"))
+        dr = _live_num(_live_get(r,"前日終値比率_raw","前日終値比率"))
+        steady_score, steady_on, steady_reason = _live_steady_score(d,x,current,turn,dr)
+        rr = research.get(code,{})
+        a_score = int(rr.get("a_score") or 0)
+        c_on = bool(rr.get("c_score"))
+        b_on = bool(rr.get("b_score"))
+
+        r["持続上昇スコア"] = steady_score
+        r["持続上昇フラグ"] = "候補" if steady_on else ""
+        r["持続上昇"] = (
+            "DATA不足" if steady_score is None
+            else (f"◎ {steady_score:.0f}" if steady_on else f"{steady_score:.0f}")
+        )
+        r["持続上昇理由"] = " / ".join(steady_reason[:6])
+
+        r["底反転スコア"] = a_score
+        r["底反転"] = rr.get("a_label") or "-"
+        r["底反転吸収回数"] = rr.get("a_absorb_count")
+        r["底反転吸収日数"] = rr.get("a_absorb_hit_days")
+        r["底反転下抜け_pct"] = rr.get("a_undercut_pct")
+
+        r["急伸スコア"] = int(rr.get("c_score") or 0)
+        r["急伸"] = rr.get("c_label") or "-"
+        r["急伸出来高倍率"] = rr.get("c_vol_ratio_prev")
+        r["急伸当日騰落_pct"] = rr.get("c_ret1_pct")
+
+        r["材料先行スコア"] = int(rr.get("b_score") or 0)
+        r["材料先行"] = rr.get("b_label") or "-"
+
+        # 持越し適性: 研究/既存戦略の優先度を5段階にまとめる。確率ではない。
+        if steady_on and steady_score >= 85:
+            hold_rank = 5
+        elif steady_on and steady_score >= 75:
+            hold_rank = 4
+        elif a_score >= 3:
+            hold_rank = 4
+        elif steady_on or a_score >= 2:
+            hold_rank = 3
+        elif c_on:
+            hold_rank = 2
+        else:
+            hold_rank = 1
+        if current is not None and current <= LIVE_LOW_PRICE_MAX and hold_rank > 1:
+            hold_rank -= 1
+        if dr is not None and dr > LIVE_STEADY_MAX_DAY_RETURN_PCT and hold_rank > 2:
+            hold_rank -= 1
+        pull = _live_num(x.get("max_pullback_pct"))
+        if pull is not None and pull < -1.5 and hold_rank > 2:
+            hold_rank -= 1
+        hold_rank = int(max(1,min(5,hold_rank)))
+        r["持越し適性ランク"] = hold_rank
+        r["持越し適性"] = "★" * hold_rank + "☆" * (5-hold_rank)
+
+        # 今買える?: 板/歩み値の無い一次判定。◎は出さず最終LIVE確認を残す。
+        r20 = _live_num(x.get("ret_20m"))
+        intraday_has = sum(_live_num(x.get(k)) is not None for k in ("ret_10m","ret_20m","ret_30m","ret_60m")) >= 2
+        if dr is not None and dr > 10.0:
+            entry_rank, entry_label = 1, "△ 過熱待ち"
+        elif pull is not None and pull < -2.0:
+            entry_rank, entry_label = 1, "△ 崩れ確認"
+        elif steady_on and ((not intraday_has) or (r20 is not None and r20 > 0)):
+            entry_rank, entry_label = 3, "○ 持続候補"
+        elif a_score >= 3 and ((not intraday_has) or (r20 is not None and r20 > 0)):
+            entry_rank, entry_label = 3, "○ 反転候補"
+        elif c_on:
+            entry_rank, entry_label = 2, "△ 急伸注意"
+        elif (steady_score is not None and steady_score >= LIVE_STEADY_MIN_SCORE) or a_score >= 1 or b_on:
+            entry_rank, entry_label = 2, "△ 追加確認"
+        else:
+            entry_rank, entry_label = 0, "-"
+        r["今買えるランク"] = entry_rank
+        r["今買える"] = entry_label
+
+
+
+# ==============================================================================
+# P4-DASH6: 全銘柄フォロースルー環境 × 個別相場耐性
+# ==============================================================================
+ENTRY_ENV_RECENT_TRADE_DAYS = max(3, int(os.environ.get("KABU_ENTRY_ENV_RECENT_DAYS", "10")))
+ENTRY_ENV_BASELINE_TRADE_DAYS = max(5, int(os.environ.get("KABU_ENTRY_ENV_BASELINE_DAYS", "20")))
+ENTRY_ENV_HISTORY_CALENDAR_DAYS = max(120, int(os.environ.get("KABU_ENTRY_ENV_HISTORY_CALENDAR_DAYS", "170")))
+ENTRY_ENV_MIN_OBS = max(30, int(os.environ.get("KABU_ENTRY_ENV_MIN_OBS", "80")))
+
+
+def _entry_env_clamp(v, lo=0.0, hi=100.0):
+    try:
+        return max(lo, min(hi, float(v)))
+    except Exception:
+        return None
+
+
+def _entry_env_regime(score):
+    s = _live_num(score)
+    if s is None:
+        return "N", "DATA不足"
+    if s >= 68:
+        return "A", "追随型"
+    if s >= 52:
+        return "B", "選別型"
+    if s >= 38:
+        return "C", "逆回転型"
+    return "D", "リスクオフ"
+
+
+def _entry_env_current_setup_bucket(r: dict) -> str:
+    """現在行を価格構造ベースの大分類へ寄せる。候補集合は作らず、行ごとの比較群を選ぶだけ。"""
+    if _live_flag(r, "INITIAL_MOMENTUM") or int(_live_num(r.get("急伸スコア")) or 0) > 0:
+        return "MOMENTUM"
+    if int(_live_num(r.get("底反転スコア")) or 0) > 0:
+        return "REVERSAL"
+    early = str(r.get("右肩早期種別") or "")
+    if "20MAリバ" in early or "ポケット" in early:
+        return "PULLBACK"
+    steady = _live_num(r.get("持続上昇スコア"))
+    if steady is not None and steady >= LIVE_STEADY_MIN_SCORE:
+        return "STEADY"
+    return "OTHER"
+
+
+def _entry_env_resilience_score(r: dict) -> tuple[float | None, str, list[str]]:
+    """今の悪地合いでも個別株が崩れにくい構造かを0-100で評価する。
+
+    市場統計とは分離し、RS・持続構造・支持位置・場中引け位置・流動性/RVOL・Safetyを
+    取得できた項目だけで再正規化する。欠損を0点扱いしない。
+    """
+    comps = []
+    reasons = []
+
+    def add(score, weight, reason=None):
+        sc = _entry_env_clamp(score)
+        if sc is None:
+            return
+        comps.append((sc, float(weight)))
+        if reason:
+            reasons.append(str(reason))
+
+    rs5 = _live_num(r.get("RS_5"))
+    if rs5 is not None:
+        add(50.0 + rs5 * 400.0, 18, f"RS5={rs5*100:+.1f}%")
+    rs20 = _live_num(r.get("RS_20"))
+    if rs20 is not None:
+        add(50.0 + rs20 * 250.0, 12, f"RS20={rs20*100:+.1f}%")
+
+    steady = _live_num(r.get("持続上昇スコア"))
+    if steady is not None:
+        add(steady, 20, f"持続={steady:.0f}")
+
+    p = _live_num(_live_get(r, "現在値_raw", "現在値"))
+    sup = _live_num(_live_get(r, "最寄り支持", "支持線今日", "support_today"))
+    if p is not None and p > 0 and sup is not None and sup > 0:
+        d = (p / sup - 1.0) * 100.0
+        if d < -0.5:
+            sc = 18
+        elif d <= 2.0:
+            sc = 92
+        elif d <= 5.0:
+            sc = 82
+        elif d <= 10.0:
+            sc = 66
+        elif d <= 18.0:
+            sc = 52
+        else:
+            sc = 42
+        add(sc, 14, f"支持距離={d:+.1f}%")
+
+    hi = _live_num(_live_get(r, "高値", "day_high"))
+    lo = _live_num(_live_get(r, "安値", "day_low"))
+    if p is not None and hi is not None and lo is not None and hi > lo:
+        clv = (p - lo) / (hi - lo) * 100.0
+        add(clv, 12, f"場中位置={clv:.0f}%")
+
+    turn = _live_num(_live_get(r, "売買代金(億)", "売買代金億", "turnover_oku"))
+    if turn is not None:
+        if turn < 0.3: sc = 25
+        elif turn < 1.0: sc = 40
+        elif turn < 3.0: sc = 55
+        elif turn < 10.0: sc = 70
+        elif turn < 30.0: sc = 82
+        else: sc = 92
+        add(sc, 8, f"代金={turn:.1f}億")
+
+    rv = _live_num(r.get("RVOL代金"))
+    if rv is not None:
+        if rv < 0.5: sc = 35
+        elif rv < 0.8: sc = 45
+        elif rv < 1.2: sc = 55
+        elif rv < 1.5: sc = 64
+        elif rv < 2.0: sc = 74
+        elif rv < 3.0: sc = 84
+        else: sc = 92
+        add(sc, 7, f"RVOL代金={rv:.2f}")
+
+    safety = _live_num(r.get("tri_safety"))
+    if safety is not None:
+        add(safety, 6, f"Safety={safety:.0f}")
+
+    jq = str(r.get("短期需給判定") or "")
+    if jq:
+        if "高RVOL上昇" in jq: sc = 82
+        elif "強い売り" in jq: sc = 22
+        elif "低RVOL下落" in jq: sc = 35
+        elif "低RVOL上昇" in jq: sc = 45
+        else: sc = 50
+        add(sc, 3, jq)
+
+    if not comps:
+        return None, "⚪ DATA不足", []
+    total_w = sum(w for _, w in comps)
+    score = sum(sc * w for sc, w in comps) / total_w if total_w > 0 else None
+    score = round(float(score), 1) if score is not None else None
+    if score is None:
+        label = "⚪ DATA不足"
+    elif score >= 80:
+        label = "🛡 強"
+    elif score >= 65:
+        label = "○ やや強"
+    elif score >= 50:
+        label = "△ 中立"
+    elif score >= 35:
+        label = "⚠ 弱"
+    else:
+        label = "× 脆弱"
+    return score, label, reasons
+
+
+def _entry_env_metric_summary(df: pd.DataFrame) -> dict:
+    """全銘柄日次outcomeを絶対水準70% + 過去baseline差30%で評価する。
+
+    P4-DASH8: 「以前より改善した」だけで買いやすい相場としない。中心値・scaleは暫定設計値で、
+    学習済み係数ではない。実BUY signal統計が十分になればそちらが主役になる。
+    """
+    if df is None or df.empty:
+        return {"score": None, "absolute_score": None, "delta_score": None, "metrics": {}, "reason": "outcome data empty"}
+    recent_n=ENTRY_ENV_RECENT_TRADE_DAYS; base_n=ENTRY_ENV_BASELINE_TRADE_DAYS
+    specs={
+      "plus_1d":("ret_1d","positive_rate"),"plus_3d":("ret_3d","positive_rate"),
+      "plus_5d":("ret_5d","positive_rate"),"plus_10d":("ret_10d","positive_rate"),
+      "hit_plus2_5d":("hit2_5d","bool_rate"),"mfe_5d":("mfe_5d","median_pct"),
+      "mae_5d":("mae_5d","median_pct"),"mfe_10d":("mfe_10d","median_pct"),
+      "mae_10d":("mae_10d","median_pct"),"break_fail_3d":("break_fail_3d","bool_rate"),
+    }
+    def agg(v,kind):
+        x=pd.to_numeric(v,errors="coerce").dropna()
+        if x.empty:return None
+        if kind=="positive_rate":return float((x>0).mean()*100.0)
+        if kind=="bool_rate":return float(x.mean()*100.0)
+        return float(x.median()*100.0)
+    out={}
+    for key,(col,kind) in specs.items():
+        if col not in df.columns:
+            out[key]={"recent":None,"baseline":None,"n_recent":0,"n_baseline":0,"asof":None};continue
+        work=df[["entry_date",col]].copy();work[col]=pd.to_numeric(work[col],errors="coerce");work=work.dropna(subset=[col])
+        if work.empty:
+            out[key]={"recent":None,"baseline":None,"n_recent":0,"n_baseline":0,"asof":None};continue
+        dates=sorted(work["entry_date"].astype(str).unique().tolist())
+        rd=dates[-recent_n:]; bd=dates[-(recent_n+base_n):-recent_n] if len(dates)>recent_n else []
+        rv=work[work["entry_date"].astype(str).isin(rd)][col]; bv=work[work["entry_date"].astype(str).isin(bd)][col]
+        r=agg(rv,kind); b=agg(bv,kind); nr=int(rv.notna().sum()); nb=int(bv.notna().sum())
+        out[key]={"recent":None if r is None else round(r,2),"baseline":None if b is None else round(b,2),
+                  "recent_for_score":None if nr<ENTRY_ENV_MIN_OBS or r is None else round(r,2),
+                  "baseline_for_score":None if nb<ENTRY_ENV_MIN_OBS or b is None else round(b,2),
+                  "n_recent":nr,"n_baseline":nb,"recent_days":len(rd),"baseline_days":len(bd),"asof":rd[-1] if rd else None}
+    abs_specs={
+      "plus_1d":(14,50,1.4,True),"plus_3d":(14,50,1.4,True),"plus_5d":(14,50,1.4,True),
+      "plus_10d":(10,50,1.3,True),"hit_plus2_5d":(16,40,1.25,True),
+      "mfe_5d":(10,2.0,15.0,True),"mae_5d":(10,-2.0,15.0,True),"break_fail_3d":(12,40,1.25,False),
+    }
+    ap=[]
+    for key,(w,center,scale,higher) in abs_specs.items():
+        v=_live_num((out.get(key)or{}).get("recent_for_score"))
+        if v is None:continue
+        comp=_entry_env_clamp(50.0+((v-center) if higher else (center-v))*scale)
+        if comp is not None:ap.append((comp,float(w)))
+    abs_score=sum(v*w for v,w in ap)/sum(w for _,w in ap) if ap else None
+    delta_specs={"plus_1d":(12.5,True),"plus_3d":(12.5,True),"plus_5d":(12.5,True),"plus_10d":(12.5,True),
+                 "hit_plus2_5d":(12.5,True),"mfe_5d":(1.5,True),"mae_5d":(1.5,True),"break_fail_3d":(15.0,False)}
+    dp=[]
+    for key,(scale,higher) in delta_specs.items():
+        m=out.get(key)or{};r=_live_num(m.get("recent_for_score"));b=_live_num(m.get("baseline_for_score"))
+        if r is None or b is None:continue
+        delta=(r-b) if higher else (b-r); comp=_entry_env_clamp(50.0+50.0*(delta/float(scale)))
+        if comp is not None:dp.append(comp)
+    delta_score=sum(dp)/len(dp) if dp else None
+    score=None if abs_score is None else (abs_score if delta_score is None else abs_score*0.70+delta_score*0.30)
+    score=None if score is None else round(float(_entry_env_clamp(score)),1)
+    return {"score":score,"absolute_score":None if abs_score is None else round(float(abs_score),1),
+            "delta_score":None if delta_score is None else round(float(delta_score),1),"metrics":out,
+            "score_note":"absolute70_delta30; heuristic centers, not trained coefficients"}
+
+
+def _entry_env_build_outcomes(conn: sqlite3.Connection, rows: list[dict], asof: str) -> tuple[pd.DataFrame, set[str]]:
+    """price_historyから全個別株の日次買いoutcomeを作る。
+
+    これは候補抽出ではない。現在screening universeの個別株を全て母集団にし、
+    各営業日の終値で買った仮定の1/3/5/10日後・MFE/MAE等を横断集計する。
+    銘柄ごとの計算はNumPy配列でまとめて行い、3590銘柄×日数をPythonの行ループにしない。
+    """
+    stock_codes = set()
+    for r in rows:
+        c = _live_stock_code(_live_get(r, "コード"), _live_get(r, "市場"), _live_get(r, "銘柄名"))
+        if c:
+            stock_codes.add(c)
+    if not stock_codes:
+        return pd.DataFrame(), set()
+
+    # FINAL-CONSISTENCY: outcomeは確定引けだけを使う。
+    # MIDDAYのprice_history.終値はlive currentであり、前日entryの「翌日終値」にしてはいけない。
+    outcome_asof = _confirmed_daily_outcome_cutoff(asof)
+    if str(outcome_asof) != str(asof):
+        print(f"[entry-env] confirmed outcome cutoff: requested={asof} -> {outcome_asof}")
+    start = (pd.Timestamp(outcome_asof) - pd.Timedelta(days=ENTRY_ENV_HISTORY_CALENDAR_DAYS)).strftime("%Y-%m-%d")
+    ph = pd.read_sql_query(
+        """
+        SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
+          FROM price_history
+         WHERE date(日付) >= date(?) AND date(日付) <= date(?)
+         ORDER BY 日付, rowid
+        """,
+        conn, params=[start, outcome_asof],
+    )
+    if ph.empty:
+        return pd.DataFrame(), stock_codes
+    # P4-DASH8: 全銘柄地合いoutcomeも共通の論理価格履歴を使い、休日legacy足を除外。
+    ph = _dedupe_price_history_df(ph)
+    ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce")
+    ph = ph.dropna(subset=["コード", "日付"])
+    ph = ph[ph["コード"].astype(str).isin(stock_codes)].copy()
+    if ph.empty:
+        return pd.DataFrame(), stock_codes
+    for c in ("始値", "高値", "安値", "終値", "出来高"):
+        ph[c] = pd.to_numeric(ph[c], errors="coerce")
+    ph = ph.dropna(subset=["終値"])
+    ph = ph[np.isfinite(ph["終値"]) & (ph["終値"] > 0)].copy()
+
+    parts = []
+
+    def _future_extreme(arr: np.ndarray, h: int, mode: str) -> np.ndarray:
+        n = len(arr)
+        out = np.full(n, np.nan, dtype=float)
+        if n <= h:
+            return out
+        # window[j] = arr[j:j+h]。entry i のfutureは j=i+1。
+        win = np.lib.stride_tricks.sliding_window_view(arr, h)
+        fw = win[1:n-h+1]
+        if len(fw) != n-h:
+            return out
+        valid = np.all(np.isfinite(fw), axis=1)
+        vals = np.full(len(fw), np.nan, dtype=float)
+        if valid.any():
+            vals[valid] = np.max(fw[valid], axis=1) if mode == "max" else np.min(fw[valid], axis=1)
+        out[:n-h] = vals
+        return out
+
+    for code, g in ph.groupby("コード", sort=False):
+        g = g.sort_values("日付", kind="stable")
+        n = len(g)
+        if n < 35:
+            continue
+        dates = g["日付"].dt.strftime("%Y-%m-%d").to_numpy(dtype=object)
+        close = g["終値"].to_numpy(dtype=float)
+        high = g["高値"].to_numpy(dtype=float)
+        low = g["安値"].to_numpy(dtype=float)
+        vol = g["出来高"].to_numpy(dtype=float)
+
+        sc = pd.Series(close)
+        sh = pd.Series(high)
+        sl = pd.Series(low)
+        sv = pd.Series(vol)
+        ma5 = sc.rolling(5, min_periods=5).mean().to_numpy()
+        ma25 = sc.rolling(25, min_periods=25).mean().to_numpy()
+        ma75 = sc.rolling(75, min_periods=75).mean().to_numpy()
+        prev_high20 = sh.rolling(20, min_periods=10).max().shift(1).to_numpy()
+        prev_low20 = sl.rolling(20, min_periods=10).min().shift(1).to_numpy()
+        prev_vol20 = sv.rolling(20, min_periods=10).mean().shift(1).to_numpy()
+
+        prev = np.full(n, np.nan, dtype=float)
+        prev[1:] = close[:-1]
+        day_ret = np.full(n, np.nan, dtype=float)
+        ok_prev = np.isfinite(prev) & (prev > 0) & np.isfinite(close) & (close > 0)
+        day_ret[ok_prev] = close[ok_prev] / prev[ok_prev] - 1.0
+        vr = np.full(n, np.nan, dtype=float)
+        ok_vr = np.isfinite(vol) & np.isfinite(prev_vol20) & (prev_vol20 > 0)
+        vr[ok_vr] = vol[ok_vr] / prev_vol20[ok_vr]
+
+        setup = np.full(n, "OTHER", dtype=object)
+        steady_mask = (
+            np.isfinite(ma5) & np.isfinite(ma25) & np.isfinite(ma75)
+            & (ma5 > ma25) & (ma25 > ma75) & (close >= ma5 * 0.995)
+        )
+        pull_mask = (
+            np.isfinite(ma25) & np.isfinite(ma75) & (ma25 > ma75)
+            & (close >= ma25)
+            & (~np.isfinite(ma5) | (close <= ma5 * 1.02))
+            & (~np.isfinite(day_ret) | (day_ret > -0.03))
+        )
+        reversal_mask = (
+            np.isfinite(prev_low20) & (prev_low20 > 0) & np.isfinite(prev)
+            & (prev <= prev_low20 * 1.03) & np.isfinite(day_ret) & (day_ret >= 0.01)
+        )
+        momentum_mask = np.isfinite(day_ret) & (day_ret >= 0.02) & np.isfinite(vr) & (vr >= 2.0)
+        setup[steady_mask] = "STEADY"
+        setup[pull_mask] = "PULLBACK"
+        setup[reversal_mask] = "REVERSAL"
+        setup[momentum_mask] = "MOMENTUM"  # 優先順位はMOMENTUM > REVERSAL > PULLBACK > STEADY
+
+        data = {
+            "entry_date": dates,
+            "code": np.full(n, str(code), dtype=object),
+            "setup": setup,
+        }
+        for h in (1, 3, 5, 10):
+            ret = np.full(n, np.nan, dtype=float)
+            if n > h:
+                base = close[:-h]
+                fut = close[h:]
+                ok = np.isfinite(base) & (base > 0) & np.isfinite(fut) & (fut > 0)
+                temp = np.full(n-h, np.nan, dtype=float)
+                temp[ok] = fut[ok] / base[ok] - 1.0
+                ret[:n-h] = temp
+            data[f"ret_{h}d"] = ret
+
+        fh5 = _future_extreme(high, 5, "max")
+        fl5 = _future_extreme(low, 5, "min")
+        fh10 = _future_extreme(high, 10, "max")
+        fl10 = _future_extreme(low, 10, "min")
+        mfe5 = np.where(np.isfinite(fh5), fh5 / close - 1.0, np.nan)
+        mae5 = np.where(np.isfinite(fl5), fl5 / close - 1.0, np.nan)
+        mfe10 = np.where(np.isfinite(fh10), fh10 / close - 1.0, np.nan)
+        mae10 = np.where(np.isfinite(fl10), fl10 / close - 1.0, np.nan)
+        data["mfe_5d"] = mfe5
+        data["mae_5d"] = mae5
+        data["hit2_5d"] = np.where(np.isfinite(mfe5), (mfe5 >= 0.02).astype(float), np.nan)
+        data["mfe_10d"] = mfe10
+        data["mae_10d"] = mae10
+
+        breakout = (
+            np.isfinite(prev_high20) & (prev_high20 > 0) & (close > prev_high20 * 1.002)
+            & np.isfinite(vr) & (vr >= 1.5)
+        )
+        data["breakout"] = breakout.astype(float)
+        fh3 = _future_extreme(high, 3, "max")
+        c3 = np.full(n, np.nan, dtype=float)
+        if n > 3:
+            c3[:n-3] = close[3:]
+        bf = np.full(n, np.nan, dtype=float)
+        valid_bf = breakout & np.isfinite(fh3) & np.isfinite(c3)
+        bf[valid_bf] = ((fh3[valid_bf] < close[valid_bf] * 1.02) & (c3[valid_bf] < close[valid_bf])).astype(float)
+        data["break_fail_3d"] = bf
+        parts.append(pd.DataFrame(data))
+
+    if not parts:
+        return pd.DataFrame(), stock_codes
+    return pd.concat(parts, ignore_index=True), stock_codes
+
+
+def _dashboard_apply_entry_environment(conn: sqlite3.Connection, rows: list[dict], asof: str) -> dict:
+    """全個別株の実績環境を背景に、各銘柄へ相場耐性/地合い込み一次判定を付ける。"""
+    meta = {
+        "version": 2,
+        "universe": "ALL_STOCKS",
+        "asof": str(asof),
+        "score": None,
+        "historical_score": None,
+        "regime_code": "N",
+        "regime": "DATA不足",
+        "universe_count": 0,
+        "metrics": {},
+        "setup_scores": {},
+        "signal_environment": {},
+        "signal_setup_scores": {},
+        "breadth": {},
+        "recent_trade_days": ENTRY_ENV_RECENT_TRADE_DAYS,
+        "baseline_trade_days": ENTRY_ENV_BASELINE_TRADE_DAYS,
+        "note": "全個別株の日次統計をfallbackにし、導入後に実際の『今買える？=○』初回signal実績が十分たまればそちらを主役にする。",
+    }
+    try:
+        outcomes, stock_codes = _entry_env_build_outcomes(conn, rows, asof)
+        meta["universe_count"] = int(len(stock_codes))
+        global_pack = _entry_env_metric_summary(outcomes)
+        hist_score = _live_num(global_pack.get("score"))
+        meta["historical_score"] = hist_score
+        meta["metrics"] = global_pack.get("metrics") or {}
+
+        setup_scores = {}
+        for bucket in ("MOMENTUM", "STEADY", "PULLBACK", "REVERSAL"):
+            sub = outcomes[outcomes["setup"].eq(bucket)] if not outcomes.empty else pd.DataFrame()
+            pack = _entry_env_metric_summary(sub)
+            setup_scores[bucket] = {
+                "score": pack.get("score"),
+                "metrics": pack.get("metrics") or {},
+                "n": int(len(sub)),
+            }
+        meta["setup_scores"] = setup_scores
+
+        # P4-DASH7: 過去runで実際に『今買える？=○』になった最初の時点を追跡。
+        signal_env = _entry_signal_metric_summary()
+        signal_setup_scores = {}
+        for bucket in ("MOMENTUM", "STEADY", "PULLBACK", "REVERSAL", "OTHER"):
+            signal_setup_scores[bucket] = _entry_signal_metric_summary(bucket)
+        meta["signal_environment"] = signal_env
+        meta["signal_setup_scores"] = signal_setup_scores
+
+        # 今日の全個別株breadthは補助。実signalが十分ならsignal実績を主役にする。
+        stock_rows = []
+        for r in rows:
+            c = _live_stock_code(_live_get(r, "コード"), _live_get(r, "市場"), _live_get(r, "銘柄名"))
+            if c:
+                stock_rows.append(r)
+        day_ret = [_live_num(r.get("前日終値比率")) for r in stock_rows]
+        day_ret = [v for v in day_ret if v is not None]
+        rs5 = [_live_num(r.get("RS_5")) for r in stock_rows]
+        rs5 = [v for v in rs5 if v is not None]
+        above25 = []
+        strong_down = []
+        for r in stock_rows:
+            p = _live_num(r.get("現在値")); ma25 = _live_num(_live_get(r, "MA25", "25日", "２５日"))
+            if p is not None and ma25 is not None and ma25 > 0:
+                above25.append(int(p > ma25))
+            st = _live_num(r.get("持続上昇スコア")); dr = _live_num(r.get("前日終値比率"))
+            if st is not None and st >= LIVE_STEADY_MIN_SCORE and dr is not None:
+                strong_down.append(int(dr < 0))
+        adv = (sum(v > 0 for v in day_ret) / len(day_ret) * 100.0) if day_ret else None
+        rs5p = (sum(v > 0 for v in rs5) / len(rs5) * 100.0) if rs5 else None
+        ma25p = (sum(above25) / len(above25) * 100.0) if above25 else None
+        strong_down_rate = (sum(strong_down) / len(strong_down) * 100.0) if strong_down else None
+        meta["breadth"] = {
+            "advancing_rate": None if adv is None else round(adv, 2),
+            "rs5_positive_rate": None if rs5p is None else round(rs5p, 2),
+            "above_ma25_rate": None if ma25p is None else round(ma25p, 2),
+            "steady_down_rate": None if strong_down_rate is None else round(strong_down_rate, 2),
+            "n": len(stock_rows),
+        }
+        breadth_parts = []
+        for val in (adv, rs5p, ma25p):
+            if val is not None:
+                breadth_parts.append(_entry_env_clamp(50.0 + (val - 50.0) * 1.5))
+        breadth_score = (sum(breadth_parts) / len(breadth_parts)) if breadth_parts else None
+        signal_score = _live_num(signal_env.get("score"))
+        signal_qualified = bool(signal_env.get("qualified"))
+        if signal_qualified and signal_score is not None:
+            # 実際の買える判定後の成績を70%主役。全銘柄日次20%＋当日breadth10%は補助。
+            pieces=[]
+            pieces.append((signal_score,0.70))
+            if hist_score is not None: pieces.append((hist_score,0.20))
+            if breadth_score is not None: pieces.append((breadth_score,0.10))
+            global_score=sum(v*w for v,w in pieces)/sum(w for _,w in pieces)
+            meta["score_source"]="BUY_SIGNAL_PRIMARY"
+        elif hist_score is not None and breadth_score is not None:
+            global_score = hist_score * 0.80 + breadth_score * 0.20
+            meta["score_source"]="ALL_STOCK_DAILY_FALLBACK"
+        elif hist_score is not None:
+            global_score = hist_score
+            meta["score_source"]="ALL_STOCK_DAILY_FALLBACK"
+        else:
+            global_score = breadth_score
+            meta["score_source"]="BREADTH_ONLY"
+        global_score = None if global_score is None else round(float(_entry_env_clamp(global_score)), 1)
+        regime_code, regime = _entry_env_regime(global_score)
+        meta["score"] = global_score
+        meta["breadth_score"] = None if breadth_score is None else round(float(breadth_score), 1)
+        meta["regime_code"] = regime_code
+        meta["regime"] = regime
+
+        for r in rows:
+            resilience, res_label, res_reasons = _entry_env_resilience_score(r)
+            setup = _entry_env_current_setup_bucket(r)
+            signal_setup = signal_setup_scores.get(setup) or {}
+            signal_setup_score = _live_num(signal_setup.get("score")) if bool(signal_setup.get("qualified")) else None
+            setup_score = signal_setup_score
+            if setup_score is None:
+                setup_score = _live_num((setup_scores.get(setup) or {}).get("score"))
+            effective_env = global_score
+            if global_score is not None and setup_score is not None:
+                effective_env = round(global_score * 0.65 + setup_score * 0.35, 1)
+            elif setup_score is not None:
+                effective_env = setup_score
+
+            r["相場耐性スコア"] = resilience
+            r["相場耐性"] = (f"{resilience:.0f} {res_label}" if resilience is not None else res_label)
+            r["相場耐性理由"] = " / ".join(res_reasons[:6])
+            r["個別買い環境タイプ"] = setup
+            r["同型環境スコア"] = setup_score
+            r["地合い環境スコア"] = effective_env
+
+            base_rank = int(_live_num(r.get("今買えるランク")) or 0)
+            base_score = {0: 20.0, 1: 40.0, 2: 60.0, 3: 80.0}.get(base_rank, 20.0)
+            if resilience is None or effective_env is None:
+                final_score = None
+                final_label = "⚪ 環境統計不足"
+            else:
+                final_score = 0.50 * base_score + 0.30 * resilience + 0.20 * effective_env
+                # 「今買える？」を最初のgateとして尊重。環境だけで非候補を買いへ昇格させない。
+                cap = {0: 39.0, 1: 54.0, 2: 69.0, 3: 100.0}.get(base_rank, 39.0)
+                final_score = min(final_score, cap)
+                # 強い逆風では相場耐性の高い銘柄だけ例外的に残す。
+                if effective_env < 35:
+                    final_score = min(final_score, 64.0 if resilience >= 80 and base_rank >= 2 else 49.0)
+                elif effective_env < 45 and resilience < 60:
+                    final_score = min(final_score, 49.0)
+                if resilience < 45:
+                    final_score = min(final_score, 49.0)
+                final_score = round(float(_entry_env_clamp(final_score)), 1)
+                if final_score >= 75:
+                    final_label = "◎ 買い優位"
+                elif final_score >= 62:
+                    final_label = "○ 買い検討"
+                elif final_score >= 50:
+                    final_label = "△ 押し目限定"
+                elif final_score >= 40:
+                    final_label = "△ 反転確認"
+                else:
+                    final_label = "× 新規抑制"
+
+            r["地合い込み一次判定スコア"] = final_score
+            r["地合い込み一次判定"] = final_label
+            m5 = (meta.get("metrics") or {}).get("hit_plus2_5d") or {}
+            mfe5 = (meta.get("metrics") or {}).get("mfe_5d") or {}
+            mae5 = (meta.get("metrics") or {}).get("mae_5d") or {}
+            _fmt = lambda x, suf="": "-" if _live_num(x) is None else f"{float(x):.1f}{suf}"
+            r["地合い込み理由"] = (
+                f"今買える={r.get('今買える') or '-'} / 相場耐性={_fmt(resilience)} / "
+                f"全体={regime_code}{regime} {_fmt(global_score)}[{meta.get('score_source','-')}] / 同型={setup} {_fmt(setup_score)} / "
+                f"5日+2%到達={_fmt(m5.get('recent'),'%')} (基準{_fmt(m5.get('baseline'),'%')}) / "
+                f"MFE5={_fmt(mfe5.get('recent'),'%')} / MAE5={_fmt(mae5.get('recent'),'%')}"
+            )
+
+        return meta
+    except Exception as e:
+        print(f"[entry-env][WARN] 個別買い環境の計算に失敗: {e}")
+        for r in rows:
+            resilience, res_label, res_reasons = _entry_env_resilience_score(r)
+            r["相場耐性スコア"] = resilience
+            r["相場耐性"] = (f"{resilience:.0f} {res_label}" if resilience is not None else res_label)
+            r["相場耐性理由"] = " / ".join(res_reasons[:6])
+            r["個別買い環境タイプ"] = _entry_env_current_setup_bucket(r)
+            r["同型環境スコア"] = None
+            r["地合い環境スコア"] = None
+            r["地合い込み一次判定スコア"] = None
+            r["地合い込み一次判定"] = "⚪ 環境統計不足"
+            r["地合い込み理由"] = f"個別買い環境の計算失敗: {e}"
+        meta["error"] = str(e)
+        return meta
+
+
+def _dashboard_attach_ui_sort_contract(rows: list[dict]) -> None:
+    """P4-DASH3: Python側の意味をdashboardの並べ替えへ明示的に渡す。
+
+    ここで追加する値は UI専用。候補抽出・strategy gate・priority・モデル計算には使わない。
+    template側が表示文字列を再解釈して順位を推測しないよう、カテゴリ順位や表示価格の
+    数値版をPythonで確定する。古いJSONとの互換はtemplate側のfallbackだけに限定する。
+    """
+    if not rows:
+        return
+
+    _rec_rank = {"エントリー有力": 4, "中強度": 3, "小口提案": 2, "微小口": 1}
+    _hist_rank = {"HIGH": 4, "MEDIUM": 3, "LOW": 2, "DATA不足": 1}
+    _ma_rank = {"5": 3, "25": 2, "75": 1}  # _pick_ma_label() の優先度 5 > 25 > 75 と一致
+
+    def _alpha_rank(v):
+        s = str(v or "").strip().upper().replace("＋", "+").replace("－", "-")
+        if not s:
+            return None
+        m = re.fullmatch(r"([SABCD])(\+\+|--|\+|-)?", s)
+        if not m:
+            return None
+        base = {"S": 500, "A": 400, "B": 300, "C": 200, "D": 100}[m.group(1)]
+        adj = {"++": 20, "+": 10, "": 0, None: 0, "-": -10, "--": -20}[m.group(2)]
+        return base + adj
+
+    def _shinden_rank(v):
+        s = str(v or "").strip()
+        if not s:
+            return None
+        if s.startswith("参考"):
+            return 0
+        for label, rank in (("S", 5), ("A", 4), ("B", 3), ("C", 2), ("D", 1)):
+            if s.startswith(label):
+                return rank
+        return None
+
+    def _ai_judge_rank(v):
+        s = str(v or "").strip()
+        if not s or s == "-":
+            return None
+        if "超強気" in s:
+            return 4
+        if "到達有望" in s:
+            return 3
+        if "閾値近辺" in s:
+            return 2
+        if "閾値未満" in s:
+            return 1
+        return None
+
+    def _profit_accel_rank(v):
+        # _profit_acceleration_quality() の意味順。情報不足は弱い0ではなく未判定(None)。
+        s = str(v or "").strip()
+        if not s or "情報不足" in s:
+            return None
+        if "加速" in s and "鈍化" not in s:
+            return 3
+        if "利益率鈍化" in s:
+            return 2  # authoritative flagは立っているが、利益成長が売上成長に劣後
+        if s == "-":
+            return 1  # authoritative flagが非該当
+        return None
+
+    for r in rows:
+        g = _live_num(r.get("tri_growth")); s = _live_num(r.get("tri_safety")); v = _live_num(r.get("tri_vol"))
+        r["_UI_SORT_TRIANGLE"] = (g * 10000.0 + s * 100.0 + v) if None not in (g, s, v) else None
+        r["_UI_SORT_AI_JUDGE"] = _ai_judge_rank(r.get("AI判定"))
+        # AI目標値_raw は後方互換名だが、producerの正式意味はAI到達確率(AIスコア)のソート値。
+        r["_UI_SORT_AI_TARGET"] = _live_num(r.get("AIスコア"))
+        r["仕込み目安価格"] = _live_num(r.get("shikomi_txt"))
+        r["利確目安価格"] = _live_num(r.get("rikaku_txt"))
+        r["損切目安価格"] = _live_num(r.get("songiri_txt"))
+        r["_UI_SORT_RECOMMEND"] = _rec_rank.get(str(r.get("推奨アクション") or "").strip())
+        r["_UI_SORT_PROFIT_ACCEL"] = _profit_accel_rank(r.get("利益加速ステータス"))
+        r["_UI_SORT_PAST_REACTION"] = _live_num(r.get("決算勝率"))
+        r["_UI_SORT_ALPHA"] = _alpha_rank(r.get("overall_alpha"))
+        _tob = r.get("tob_titles")
+        r["TOB件数"] = len(_tob) if isinstance(_tob, list) else 0
+        r["_UI_SORT_SHINDEN_JUDGE"] = _shinden_rank(r.get("シンデン判定"))
+        r["_UI_SORT_HISTORY_CONF"] = _hist_rank.get(str(r.get("予想達成履歴信頼度") or "").strip().upper())
+        r["_UI_SORT_MA"] = _ma_rank.get(str(r.get("移動平均") or "").strip())
+
+
+def _live_priority_sort_key(c: dict):
+    """Existing scanner priority order. Keep this single definition authoritative."""
+    return (
+        float(c.get("priority") or 0.0),
+        float((c.get("scores") or {}).get("market_score") or 0.0),
+        float(c.get("turnover_oku") or 0.0),
+        str(c.get("code") or ""),
+    )
+
+
+def _live_select_execution_candidates(all_candidates: list[dict]) -> list[dict]:
+    """
+    Build the LIVE execution shortlist from the full pre-300 pool without changing
+    candidate gates, strategy scores, priority formula, or the legacy top-300 list.
+
+    Admission policy (defaults):
+      1) INITIAL_MOMENTUM source_rank top 15
+      2) STEADY_UP source_rank top 10, excluding already-selected codes
+      3) fill remaining slots to 50 by the existing priority order
+
+    BOTTOM_REVERSAL has no reserved quota because the existing priority order already
+    selects it strongly. A multi-source name consumes one slot only. Final display
+    order is the existing priority order, not quota/bucket order.
+    """
+    limit=max(1,int(LIVE_EXECUTION_MAX))
+    selected: dict[str, tuple[dict,str]]={}
+
+    def _reserve(source: str, quota: int, bucket: str) -> None:
+        if quota <= 0 or len(selected) >= limit:
+            return
+        pool=[c for c in all_candidates if source in (c.get("sources") or [])]
+        pool.sort(key=lambda c:(
+            int((c.get("source_rank") or {}).get(source) or 10**9),
+            -float(c.get("priority") or 0.0),
+            -float((c.get("scores") or {}).get("market_score") or 0.0),
+            -float(c.get("turnover_oku") or 0.0),
+            str(c.get("code") or ""),
+        ))
+        added=0
+        for c in pool:
+            code=str(c.get("code") or "")
+            if not code or code in selected:
+                continue
+            selected[code]=(c,bucket)
+            added+=1
+            if added >= quota or len(selected) >= limit:
+                break
+
+    _reserve("INITIAL_MOMENTUM", LIVE_EXECUTION_INITIAL_RESERVED, "INITIAL_RESERVED")
+    _reserve("STEADY_UP", LIVE_EXECUTION_STEADY_RESERVED, "STEADY_RESERVED")
+
+    ranked=sorted(all_candidates,key=_live_priority_sort_key,reverse=True)
+    for c in ranked:
+        if len(selected) >= limit:
+            break
+        code=str(c.get("code") or "")
+        if not code or code in selected:
+            continue
+        selected[code]=(c,"PRIORITY_FILL")
+
+    # Preserve the legacy priority order inside the admitted LIVE set.
+    admitted=sorted((v for v in selected.values()),key=lambda x:_live_priority_sort_key(x[0]),reverse=True)
+    out=[]
+    for live_rank,(c,bucket) in enumerate(admitted,start=1):
+        cc=dict(c)
+        cc["live_rank"]=live_rank
+        cc["live_selection_bucket"]=bucket
+        if bucket == "INITIAL_RESERVED":
+            sr=(cc.get("source_rank") or {}).get("INITIAL_MOMENTUM")
+            cc["live_selection_reason"]=f"INITIAL_MOMENTUM reserved / source_rank={sr}"
+        elif bucket == "STEADY_RESERVED":
+            sr=(cc.get("source_rank") or {}).get("STEADY_UP")
+            cc["live_selection_reason"]=f"STEADY_UP reserved / source_rank={sr}"
+        else:
+            cc["live_selection_reason"]="existing priority fill"
+        out.append(cc)
+    return out
+
+def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict], context: dict | None = None) -> dict:
+    """
+    Candidate Contract v2 (safe/minimal).
+
+    Existing scanner selection logic is intentionally preserved:
+    - INITIAL_MOMENTUM / STEADY_UP / BOTTOM_REVERSAL gates are unchanged.
+    - existing priority formula is unchanged.
+    - existing final sort/candidate cap are unchanged.
+
+    v2 only makes lineage/ranking explicit so LIVE does not destroy scanner order.
+    """
+    generated=_now_jst().isoformat(timespec="seconds")
+    _ctx = context or _live_build_context(conn, rows)
+    snapshot = str(_ctx.get("snapshot") or _auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    asof = str(_ctx.get("asof") or _expected_snapshot_date_for_run(snapshot).isoformat())
+    daily = _ctx.get("daily") or {}
+    captured = str(_ctx.get("captured") or generated)
+    trade_date = str(_ctx.get("trade_date") or _now_jst().date().isoformat())
+    snapshot_rows = int(_ctx.get("snapshot_rows") or 0)
+    codes = set(_ctx.get("codes") or set())
+    intraday_map = _ctx.get("intraday_map") or {}
     candidates=[]; counts={k:0 for k in ("INITIAL_MOMENTUM","STEADY_UP","BOTTOM_REVERSAL","FUNDAMENTAL_EARLY","THEME_DISCOVERY","PRE_EARNINGS","POST_EARNINGS")}
+
+    def _market_segment_from_market(market_value) -> str:
+        s=str(market_value or "").strip().upper()
+        if s in {"東G","G","GROWTH"} or "グロース" in s or "GROWTH" in s:
+            return "GROWTH"
+        if s in {"東P","P","PRIME"} or "プライム" in s or "PRIME" in s:
+            return "PRIME"
+        if s in {"東S","S","STANDARD"} or "スタンダード" in s or "STANDARD" in s:
+            return "STANDARD"
+        return "UNKNOWN"
+
     for r in rows:
         code=_live_stock_code(_live_get(r,"コード"),_live_get(r,"市場"),_live_get(r,"銘柄名"))
         if not code: continue
@@ -1997,11 +3642,14 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict]) -> dict:
         if bottom_on: active.append("BOTTOM_REVERSAL"); reasons.extend(bottom_reason[:4])
         if not active: continue
         for s in active: counts[s]+=1
+
+        # Existing ranking formula: intentionally unchanged in Contract v2-safe.
         strategy_scores=[scores[{"INITIAL_MOMENTUM":"initial_momentum","STEADY_UP":"steady_up","BOTTOM_REVERSAL":"bottom_reversal"}[s]] for s in active]
         base=max(strategy_scores) if strategy_scores else 0.0
         priority=base+min(10.0,max(0,len(active)-1)*3.0)
         if turn is not None and turn < LIVE_LOW_LIQUIDITY_OKU: priority-=LIVE_LOW_LIQUIDITY_PENALTY
         priority=round(max(0.0,min(100.0,priority)),1)
+
         tags=[]
         if current is not None and current <= LIVE_LOW_PRICE_MAX: tags.append("LOW_PRICE_SPECIAL")
         if rvol is not None and rvol >= 2.0: tags.append("HIGH_RVOL")
@@ -2009,9 +3657,15 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict]) -> dict:
         if current is not None and ma25 is not None and current>ma25: tags.append("ABOVE_MA25")
         if current is not None and ma75 is not None and current>ma75: tags.append("ABOVE_MA75")
         if d.get("near_90d_high"): tags.append("NEAR_90D_HIGH")
+
         candidate={
             "code":str(code), "name":name, "market":market,
-            "sources":active, "priority":priority,
+            "market_segment":_market_segment_from_market(market),
+            "sources":active,
+            "primary_source":None,
+            "source_rank":{},
+            "priority":priority,
+            "feed_rank":None,
             "current_price":current, "previous_close":prev, "day_return_pct":dr,
             "day_open":_live_num(_live_get(r,"始値")), "day_high":_live_num(_live_get(r,"高値")), "day_low":_live_num(_live_get(r,"安値")),
             "volume":vol, "turnover_oku":turn, "rvol_turnover":rvol,
@@ -2037,32 +3691,123 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict]) -> dict:
             "reason":" / ".join(dict.fromkeys(x for x in reasons if x))[:400],
         }
         candidates.append(candidate)
-    candidates.sort(key=lambda x:(x["priority"],x["scores"].get("market_score",0),x.get("turnover_oku") or 0,x["code"]), reverse=True)
+
+    # Strategy-internal ranks are metadata only; they DO NOT alter candidate selection.
+    _score_key={
+        "INITIAL_MOMENTUM":"initial_momentum",
+        "STEADY_UP":"steady_up",
+        "BOTTOM_REVERSAL":"bottom_reversal",
+    }
+    _source_preference={"INITIAL_MOMENTUM":0,"STEADY_UP":1,"BOTTOM_REVERSAL":2}
+    for _source,_sk in _score_key.items():
+        _pool=[c for c in candidates if _source in c["sources"]]
+        _pool.sort(
+            key=lambda c:(
+                float(c["scores"].get(_sk) or 0.0),
+                float(c["scores"].get("market_score") or 0.0),
+                float(c.get("turnover_oku") or 0.0),
+                c["code"],
+            ),
+            reverse=True,
+        )
+        for _rank,c in enumerate(_pool,start=1):
+            c["source_rank"][_source]=_rank
+
+    for c in candidates:
+        # Primary source is descriptive only; original ranking remains authoritative.
+        c["primary_source"]=max(
+            c["sources"],
+            key=lambda s:(
+                float(c["scores"].get(_score_key[s]) or 0.0),
+                -_source_preference.get(s,99),
+            ),
+        )
+
+    # Full pre-cap priority rank is metadata only. It lets LIVE explain cases where
+    # a reserved strategy candidate would have fallen outside the legacy top 300.
+    candidates.sort(key=_live_priority_sort_key, reverse=True)
+    for _priority_rank,c in enumerate(candidates,start=1):
+        c["priority_rank"]=_priority_rank
+
+    # NEW: select LIVE50 from the full pre-300 pool. This does NOT alter the legacy 300.
+    live_candidates=_live_select_execution_candidates(candidates)
+
+    # Existing final cap: intentionally unchanged.
     candidates=candidates[:LIVE_CANDIDATE_MAX]
+
+    for _feed_rank,c in enumerate(candidates,start=1):
+        c["feed_rank"]=_feed_rank
+        _sr=c["source_rank"].get(c["primary_source"])
+        c["selection_reason"]=(
+            f'既存priority順 / primary={c["primary_source"]}'
+            + (f' / {c["primary_source"]}#{_sr}' if _sr is not None else '')
+        )
+
+    # Back-fill legacy feed_rank onto LIVE copies when the admitted name also belongs
+    # to the legacy top 300. Reserved names outside the top 300 keep feed_rank=None.
+    _feed_rank_by_code={str(c.get("code") or ""):c.get("feed_rank") for c in candidates}
+    for c in live_candidates:
+        c["feed_rank"]=_feed_rank_by_code.get(str(c.get("code") or ""))
+
+    _live_source_counts={s:sum(1 for c in live_candidates if s in (c.get("sources") or [])) for s in ("INITIAL_MOMENTUM","STEADY_UP","BOTTOM_REVERSAL")}
+    _live_bucket_counts={b:sum(1 for c in live_candidates if c.get("live_selection_bucket")==b) for b in ("INITIAL_RESERVED","STEADY_RESERVED","PRIORITY_FILL")}
+
+    # REPRICING-DISCOVERY-V1: 既存候補/LIVE50を変えない別レーン。
+    discovery_candidates, discovery_stats=_build_repricing_discovery_feed(rows, LIVE_CANDIDATE_MAX)
+
     return {
         "schema_version":LIVE_CANDIDATE_SCHEMA_VERSION,
+        "candidate_contract_version":2,
+        "producer":"auto_screening",
+        "producer_script":Path(__file__).name,
         "generated_at":generated,
         "snapshot":snapshot,
         "source":"auto_screening",
         "valid_for_seconds":LIVE_CANDIDATE_VALID_SECONDS,
         "candidate_count":len(candidates),
         "candidates":candidates,
+        "discovery_version":1,
+        "discovery_candidate_count":len(discovery_candidates),
+        "discovery_total_count":int(discovery_stats.get("total_count", len(discovery_candidates))),
+        "discovery_candidates":discovery_candidates,
+        "discovery_stats":discovery_stats,
+        "live_selection_version":1,
+        "live_candidate_count":len(live_candidates),
+        "live_candidates":live_candidates,
+        "live_selection_policy":{
+            "max_candidates":LIVE_EXECUTION_MAX,
+            "initial_reserved":LIVE_EXECUTION_INITIAL_RESERVED,
+            "steady_reserved":LIVE_EXECUTION_STEADY_RESERVED,
+            "bottom_reserved":0,
+            "fill":"existing_priority",
+            "dedupe":"code",
+            "final_order":"existing_priority",
+            "source_pool":"pre_300",
+        },
         "stats":{
             "universe_count":len(codes), "snapshot_rows_written":snapshot_rows,
             "initial_momentum_count":counts["INITIAL_MOMENTUM"], "steady_up_count":counts["STEADY_UP"],
             "bottom_reversal_count":counts["BOTTOM_REVERSAL"],
             "exported_count":len(candidates), "max_candidates":LIVE_CANDIDATE_MAX,
+            "live_exported_count":len(live_candidates),
+            "live_initial_count":_live_source_counts["INITIAL_MOMENTUM"],
+            "live_steady_count":_live_source_counts["STEADY_UP"],
+            "live_bottom_count":_live_source_counts["BOTTOM_REVERSAL"],
+            "live_initial_reserved_count":_live_bucket_counts["INITIAL_RESERVED"],
+            "live_steady_reserved_count":_live_bucket_counts["STEADY_RESERVED"],
+            "live_priority_fill_count":_live_bucket_counts["PRIORITY_FILL"],
             "snapshot_db":str(LIVE_SNAPSHOT_DB), "captured_at":captured,
         },
     }
 
 
-def export_live_candidate_feed(conn: sqlite3.Connection, rows_or_df) -> bool:
+
+def export_live_candidate_feed(conn: sqlite3.Connection, rows_or_df, context: dict | None = None) -> bool:
     """LIVE AUTO向け正式Candidate Contractをatomic更新。失敗時は前回正常JSONを残す。"""
     try:
         if isinstance(rows_or_df,pd.DataFrame): rows=rows_or_df.to_dict(orient="records")
         else: rows=list(rows_or_df or [])
-        payload=_live_candidate_payload(conn,rows)
+        payload=_live_candidate_payload(conn,rows,context=context)
         clean=dumps_json_clean(payload, ensure_ascii=False)
         # allow_nan=False相当のdumps_json_cleanを経たうえで、再parseしてschema/count整合も確認。
         check=json.loads(clean)
@@ -2072,6 +3817,31 @@ def export_live_candidate_feed(conn: sqlite3.Connection, rows_or_df) -> bool:
             raise RuntimeError("live candidate candidate_count mismatch")
         if any(not isinstance(x.get("code"),str) for x in check["candidates"]):
             raise RuntimeError("live candidate code must be string")
+        if int(check.get("candidate_contract_version", 1)) >= 2:
+            _ranks=[x.get("feed_rank") for x in check["candidates"]]
+            if _ranks != list(range(1, len(check["candidates"])+1)):
+                raise RuntimeError("live candidate feed_rank must be contiguous and ordered")
+            if str(check.get("producer") or "") != "auto_screening":
+                raise RuntimeError("live candidate producer mismatch")
+        if "discovery_candidates" in check:
+            if not isinstance(check.get("discovery_candidates"),list):
+                raise RuntimeError("discovery_candidates must be list")
+            if int(check.get("discovery_candidate_count",-1)) != len(check["discovery_candidates"]):
+                raise RuntimeError("discovery_candidate_count mismatch")
+            _dr=[x.get("discovery_feed_rank") for x in check["discovery_candidates"]]
+            if _dr != list(range(1,len(check["discovery_candidates"])+1)):
+                raise RuntimeError("discovery_feed_rank must be contiguous and ordered")
+        if "live_candidates" in check:
+            if not isinstance(check.get("live_candidates"),list):
+                raise RuntimeError("live_candidates must be list")
+            if int(check.get("live_candidate_count",-1)) != len(check["live_candidates"]):
+                raise RuntimeError("live_candidate_count mismatch")
+            _lr=[x.get("live_rank") for x in check["live_candidates"]]
+            if _lr != list(range(1,len(check["live_candidates"])+1)):
+                raise RuntimeError("live_rank must be contiguous and ordered")
+            _codes=[x.get("code") for x in check["live_candidates"]]
+            if len(_codes) != len(set(_codes)):
+                raise RuntimeError("live_candidates must be deduped by code")
         _atomic_write_text_file(LIVE_CANDIDATE_FEED_PATH, clean)
         st=check.get("stats",{})
         print(
@@ -2079,6 +3849,10 @@ def export_live_candidate_feed(conn: sqlite3.Connection, rows_or_df) -> bool:
             f"universe={st.get('universe_count',0)} candidates={check.get('candidate_count',0)} "
             f"INITIAL_MOMENTUM={st.get('initial_momentum_count',0)} "
             f"STEADY_UP={st.get('steady_up_count',0)} BOTTOM_REVERSAL={st.get('bottom_reversal_count',0)} "
+            f"LIVE50={st.get('live_exported_count',0)} "
+            f"LIVE_INITIAL={st.get('live_initial_count',0)} LIVE_STEADY={st.get('live_steady_count',0)} "
+            f"LIVE_BOTTOM={st.get('live_bottom_count',0)} "
+            f"DISCOVERY={check.get('discovery_candidate_count',0)}/{check.get('discovery_total_count', check.get('discovery_candidate_count',0))} "
             f"snapshot_rows_written={st.get('snapshot_rows_written',0)} path={LIVE_CANDIDATE_FEED_PATH}"
         )
         return True
@@ -2161,6 +3935,21 @@ def canonical_code_for_db(code: str) -> str:
     if code is None:
         return ""
     s = str(code).strip()
+
+    # DB key safety guard:
+    # Reject accidental pandas Series/DataFrame string representations.
+    # A valid security code must never contain line breaks or pandas repr markers.
+    if (
+        "\n" in s
+        or "\r" in s
+        or "dtype:" in s
+        or "Name:" in s
+    ):
+        raise ValueError(
+            "series-like security code rejected: "
+            + repr(s[:160])
+        )
+
     if not s:
         return ""
     u = s.upper()
@@ -3013,7 +4802,6 @@ def _ensure_latest_prices_index_rows(conn):
 def setup_database_indexes(conn: sqlite3.Connection) -> None:
     """テーブル構築後、または初期化フェーズで明示的に呼び出すインデックス作成関数"""
     try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_code_date ON price_history(コード, 日付);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_code_date ON signals_log(コード, 日時);")
     except sqlite3.OperationalError as e:
         print(f"[DB Setup] インデックス作成をスキップしました: {e}")
@@ -3358,6 +5146,8 @@ _V5_TOUCH_PCT = 0.03
 _V5_TOUCH_MIN = 3
 _V5_ROUND_STEPS = [1,5,10,50,100,500,1000,5000,10000]
 _V5_SWING_LOOKBACK = 60
+# P4-DASH8: 回帰線は表示研究用に保持するが、最寄り支持/抵抗へ採用するのは説明力がある時だけ。
+_V5_LINE_MIN_R2 = max(0.0, min(1.0, float(os.environ.get("KABU_V5_LINE_MIN_R2", "0.30"))))
 _V5_HISTORY_TABLE = "price_history"
 _V5_LATEST_TABLE  = "latest_prices"
 _V5_COLS = {
@@ -3467,7 +5257,8 @@ def _v5_hist_zone(
 
     for i, v in enumerate(vals):
 
-        hi = v + max(v * band_ratio, 30)
+        # P4-DASH8: 旧最低30円幅は低位株で過大。株価比率bandだけで統一する。
+        hi = v + abs(v) * band_ratio
 
         j = i
 
@@ -3725,6 +5516,9 @@ def _v5_calc(rows, code=None):
     # --------------------------------------------------
     # 最寄り支持・抵抗
     # --------------------------------------------------
+    # P4-DASH8: 回帰線raw値/R²は残すが、低R²線は売買用の「最寄り」候補に採用しない。
+    trusted_res_line = res_line_today if (res_line_today is not None and res_r2 is not None and res_r2 >= _V5_LINE_MIN_R2) else None
+    trusted_sup_line = sup_line_today if (sup_line_today is not None and sup_r2 is not None and sup_r2 >= _V5_LINE_MIN_R2) else None
 
     if close_today is None:
 
@@ -3739,7 +5533,7 @@ def _v5_calc(rows, code=None):
             res_hh,
             high20,
             high60,
-            res_line_today,
+            trusted_res_line,
 
         ]
 
@@ -3757,7 +5551,7 @@ def _v5_calc(rows, code=None):
             sup_ll,
             low20,
             low60,
-            sup_line_today,
+            trusted_sup_line,
 
         ]
 
@@ -5070,7 +6864,8 @@ def phase_update_margin_metrics(conn: sqlite3.Connection):
     updates = []
     for _, r in df.iterrows():
         updates.append((
-            float(r['倍率']) if pd.notna(r['倍率']) else None,
+            # P4-DASH8: reported倍率欠損時は買い残/売り残から計算した値をcurrentへ保存。
+            float(r['信用倍率_calc']) if pd.notna(r['信用倍率_calc']) else None,
             float(r['売り残']) if pd.notna(r['売り残']) else None,
             float(r['買い残']) if pd.notna(r['買い残']) else None,
             float(r['需給OH']) if pd.notna(r['需給OH']) else None,
@@ -5857,35 +7652,6 @@ def _pick_bbands(row):
             continue
     return chosen
 
-def _mask_stale_pts_for_run(data_rows, run_mode=None):
-    """PTSの寿命をrun modeで制御する。
-
-    PREOPEN: 前営業日以降に取得した前夜PTSを許可。
-    MIDDAY: 当日取得分のみ許可（昨日夜PTSを場中に出さない）。
-    EOD: 当日取得分のみ許可。
-    取得時刻不明のlegacy値は安全側でmask。
-    """
-    mode = str(run_mode or _auto_run_mode()).upper()
-    now_d = _now_jst().date()
-    prev_biz = prev_business_day_jp(now_d) if mode == "PREOPEN" else now_d
-    for row in data_rows or []:
-        raw_ts = row.get("PTS取得日時")
-        try:
-            ts = pd.to_datetime(raw_ts, errors="raise") if raw_ts not in (None, "") else None
-            d = ts.date() if ts is not None else None
-        except Exception:
-            d = None
-        valid = False
-        if d is not None:
-            if mode == "PREOPEN":
-                valid = d >= prev_biz and d <= now_d
-            else:
-                valid = d == now_d
-        if not valid:
-            row["PTS株価"] = None
-            row["PTS時刻"] = None
-    return data_rows
-
 # 先頭付近
 def enhance_with_chart_flags(
     conn,
@@ -5956,15 +7722,167 @@ def enhance_with_chart_flags(
 
 # === [/charts60 flags integration] ===========================================
 
-# ダッシュボードテンプレート（P3-41: template.htmlを唯一の優先正本）
+# ダッシュボードテンプレート（P4-DASH4-VT-SINGLE: 仮想スクロール版template.htmlのみ）
 # P2-56: import時にはファイルI/Oしない。HTML生成時だけlazy-loadする。
 _template_base = os.path.dirname(__file__)
 _template_candidates = [
     os.path.join(_template_base, "template.html"),
-    os.path.join(_template_base, "template_next_turn_python_backed.html"),
 ]
 template_path = None
 DASH_TEMPLATE_STR = None
+
+def _patch_dashboard_right_up_score_ui(template_text: str) -> str:
+    """P4-DASH: 既存templateへ右肩上がりスコア列を互換追加する。
+
+    右肩上がりスコアのproducer/判定式には触れず、表示層だけを追加する。
+    正式UI正本はtemplate.html。この関数は旧template互換専用で、data-colの存在を見て二重追加しない。
+    """
+    text = str(template_text or "")
+    if 'data-col="右肩上がりスコア"' in text:
+        return text
+
+    # ヘッダー: 「右肩」の直後に数値列「右肩S」を追加。
+    header_pat = re.compile(
+        r'(<th\b[^>]*data-col="右肩上がりフラグ"[^>]*>.*?</th>)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    header_cell = (
+        r'\1\n'
+        r'            <th class="num sortable" data-col="右肩上がりスコア" data-type="num" '
+        r'style="color:#0f766e;" title="持続右肩上がり判定の0〜100点。高いほどトレンドの持続構造が強い。">'
+        r'右肩S<span class="arrow"></span></th>'
+    )
+    text, header_n = header_pat.subn(header_cell, text, count=1)
+
+    # 行: renderCand() の「右肩」セル直後へスコアを追加。
+    body_pat = re.compile(
+        r'(<td[^>]*>\s*\$\{r\["右肩上がりフラグ"\]\s*\|\|\s*""\}\s*</td>)',
+        re.IGNORECASE,
+    )
+    body_cell = (
+        r'\1\n'
+        r'        <td class="num" data-col="右肩上がりスコア">'
+        r'${Number.isFinite(Number(r["右肩上がりスコア"])) ? Number(r["右肩上がりスコア"]).toFixed(1) : "-"}'
+        r'</td>'
+    )
+    text, body_n = body_pat.subn(body_cell, text, count=1)
+
+    # 表示列と行の片方だけ入ると列ズレするためfail-visible。
+    if header_n != 1 or body_n != 1:
+        raise RuntimeError(
+            f"dashboard right-up-score UI patch failed: header={header_n} body={body_n}; "
+            "template structure changed"
+        )
+
+    # ヘルプは補助。既存templateの該当anchorがある場合だけ追加する。
+    help_anchor = '"初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。","右肩":"【シグナル】右肩上がり。","早期":"右肩の“早期”局面。"'
+    if help_anchor in text and '"右肩S":' not in text:
+        text = text.replace(
+            help_anchor,
+            '"初動":"【シグナル】資金流入の初動。","底打ち":"【シグナル】反転兆候。",'
+            '"右肩":"【シグナル】右肩上がり。",'
+            '"右肩S":"持続右肩上がり判定の0〜100点。傾き・R²・移動平均リボン維持・週足上昇比率・安値切り上げ・最大DDを合成。高いほど持続トレンド構造が強い。",'
+            '"早期":"右肩の“早期”局面。"',
+            1,
+        )
+
+    map_anchor = '"初動フラグ":"初動","初動スコア":"初動S","底打ちフラグ":"底打ち","右肩上がりフラグ":"右肩","右肩早期フラグ":"早期"'
+    if map_anchor in text and '"右肩上がりスコア":"右肩S"' not in text:
+        text = text.replace(
+            map_anchor,
+            '"初動フラグ":"初動","初動スコア":"初動S","底打ちフラグ":"底打ち",'
+            '"右肩上がりフラグ":"右肩","右肩上がりスコア":"右肩S","右肩早期フラグ":"早期"',
+            1,
+        )
+
+    return text
+
+
+def _validate_dashboard_semantic_contract(template_text: str) -> str:
+    """P4-DASH3: Python producerとdashboardの重要な意味論契約をfail-visibleで検証する。
+
+    数値モデルや候補選定は一切変更しない。templateの見出し/ソートキーだけが将来の編集で
+    古い意味へ戻った場合、誤った並びを静かに公開するより生成を止めて修正箇所を明示する。
+    """
+    text = str(template_text or "")
+    required = {
+        "三角スコア": ('data-col="三角スコア"', 'data-sort-key="_UI_SORT_TRIANGLE"'),
+        "AI判定": ('data-col="AI判定"', 'data-sort-key="_UI_SORT_AI_JUDGE"'),
+        "AI到達基準": ('data-col="AI目標値"', 'data-sort-key="_UI_SORT_AI_TARGET"'),
+        "仕込み目安": ('data-col="仕込み目安価格"',),
+        "利確目安": ('data-col="利確目安価格"',),
+        "損切目安": ('data-col="損切目安価格"',),
+        "推奨": ('data-col="推奨アクション"', 'data-sort-key="_UI_SORT_RECOMMEND"'),
+        "利益加速": ('data-col="利益加速ステータス"', 'data-sort-key="_UI_SORT_PROFIT_ACCEL"'),
+        "過去D1期待値": ('data-col="過去決算D1期待値"',),
+        "D1反応(勝率)": ('data-col="決算勝率"', 'data-sort-key="_UI_SORT_PAST_REACTION"'),
+        "財務評価": ('data-col="overall_alpha"', 'data-sort-key="_UI_SORT_ALPHA"'),
+        "財務スコア": ('data-col="スコア"',),
+        "TOB件数": ('data-col="TOB件数"',),
+        "シンデン判定": ('data-col="シンデン判定"', 'data-sort-key="_UI_SORT_SHINDEN_JUDGE"'),
+        "履歴信頼度": ('data-col="予想達成履歴信頼度"', 'data-sort-key="_UI_SORT_HISTORY_CONF"'),
+        "移動平均": ('data-col="移動平均"', 'data-sort-key="_UI_SORT_MA"'),
+        "相場耐性": ('data-col="相場耐性"', 'data-sort-key="相場耐性スコア"'),
+        "地合い込み一次判定": ('data-col="地合い込み一次判定"', 'data-sort-key="地合い込み一次判定スコア"'),
+        "基礎適正": ('data-col="適正株価"', '>基礎適正'),
+        "参考上限": ('data-col="参考上限株価"',),
+        "EPS品質": ('data-col="EPS品質"',),
+        "評価方式": ('data-col="評価方式"',),
+    }
+    problems = []
+    for label, tokens in required.items():
+        missing = [token for token in tokens if token not in text]
+        if missing:
+            problems.append(f"{label}: missing {' / '.join(missing)}")
+
+    # 以前実際に発生した誤表記/誤契約。再導入されたら生成時点で検知する。
+    forbidden = {
+        "RVOLを相対出来高と誤表記": "RVOL(相対出来高)",
+        "利益加速を旧flag列でsort": 'data-col="利益加速フラグ" data-sort-key=',
+        "財務スコアを不存在別名でfilter": 'data-col="財務スコア"',
+        "TOBを不存在列でsort": 'data-col="TOB" data-sort-key=',
+        "旧三角JS推測sort": 'data-sort-key="__tri_score"',
+        "旧alpha JS推測sort": 'data-sort-key="__alpha_rank"',
+        "旧利益加速 JS推測sort": 'data-sort-key="__profit_accel_rank"',
+    }
+    for label, token in forbidden.items():
+        if token in text:
+            problems.append(f"{label}: found {token}")
+
+    # current writerの無い希薄化legacyスコアを、再びsortableにしない。
+    if re.search(r'<th\b[^>]*class="[^"]*sortable[^"]*"[^>]*data-col="増資スコア"', text):
+        problems.append("増資スコア: current writer無しなのにsortable")
+
+    if problems:
+        raise RuntimeError(
+            "dashboard semantic contract mismatch (P4-DASH3): " + " ; ".join(problems)
+        )
+    return text
+
+
+def _validate_dashboard_vt_contract(template_text: str) -> str:
+    """P4-DASH4-VT-SINGLE: 唯一のtemplate.htmlが仮想DOM方式であることをfail-visible検証。"""
+    text = _validate_dashboard_semantic_contract(template_text)
+    required = (
+        'P4-DASH4-VT',
+        'const VIRTUAL_ROW_H = 34;',
+        'const VIRTUAL_OVERSCAN = 40;',
+        'window.__VT_FILTERED_ROWS',
+        'class="virtual-spacer"',
+        '🎯 今日買う株',
+        'window.__todayBuyScore',
+        'FUND-QUICK',
+        'REPRICING-DISCOVERY-V1',
+        '⭐ ファンダ本命',
+        '✅ 決算後本命',
+    )
+    missing = [token for token in required if token not in text]
+    if missing:
+        raise RuntimeError(
+            "dashboard VT contract mismatch (P4-DASH4-VT-SINGLE): missing " + " / ".join(missing)
+        )
+    return text
+
 
 def _load_dashboard_template_str():
     global template_path, DASH_TEMPLATE_STR
@@ -5973,13 +7891,16 @@ def _load_dashboard_template_str():
     _selected = next((p for p in _template_candidates if os.path.exists(p)), None)
     if _selected is None:
         raise FileNotFoundError(
-            "dashboard template not found; expected one of: " + ", ".join(_template_candidates)
+            "dashboard template not found; expected: " + ", ".join(_template_candidates)
         )
     with open(_selected, "r", encoding="utf-8") as _f:
         _text = _f.read()
+    _text = _patch_dashboard_right_up_score_ui(_text)
+    # template.html は今後VT版だけ。意味論契約と仮想DOM契約の両方を必須にする。
+    _text = _validate_dashboard_vt_contract(_text)
     template_path = _selected
     DASH_TEMPLATE_STR = _text
-    print(f"[template] using: {template_path}")
+    print(f"[template] using VT single source: {template_path}")
     return DASH_TEMPLATE_STR
 
 # P2-57: 旧テンプレ補助の未使用キーワード/regex定数は削除。
@@ -6031,7 +7952,6 @@ if workdays is None:
 - 初動/底打ち/上昇余地スコア/右肩上がりスコア の判定
 - 前営業日の翌日検証（判定とCSV出力）
 - オフライン1ファイルHTMLダッシュボード（候補一覧/検証/全カラム/price_history）
-- Gmail で index.html を送信（任意、ZIP同梱可）
 
 前提: Python 3.11 / pip install yahooquery pandas jpholiday
 """
@@ -9995,7 +11915,7 @@ def apply_3algo_labels(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- 1. モメンタムCTA (0〜100点) ---
     # P1-33: RS欠損/列欠如を実測0（指数並み）へ変換しない。
-    # 実測0には従来どおり中立点、欠損にはRS成分0点を与える。
+    # 実測0には中立寄りの成分点を与えるが、欠損行はmomentum_valid=Falseとなり正式ラベル/点を出さない。
     rs20_raw = pd.to_numeric(df["RS_20"], errors="coerce") if "RS_20" in df.columns else pd.Series(np.nan, index=df.index, dtype=float)
     rs5_raw = pd.to_numeric(df["RS_5"], errors="coerce") if "RS_5" in df.columns else pd.Series(np.nan, index=df.index, dtype=float)
     rs20 = rs20_raw.fillna(0.0)
@@ -10047,11 +11967,13 @@ def apply_3algo_labels(df: pd.DataFrame) -> pd.DataFrame:
     cond_mom_strong = score_mom >= 80
     cond_mom_break = (score_mom >= 60) & (has_early | has_shodou)
     cond_mom_adj = (rs20 > 0) & (rs5 < 0) & (score_mom >= 40)
+    cond_mom_positive = score_mom >= 60
+    cond_mom_neutral = score_mom >= 40
 
+    # P4-DASH8: 60〜79点の非初動を「弱気」と呼ばない。
     label_mom = np.select(
-        [~momentum_valid, cond_mom_strong, cond_mom_break, cond_mom_adj], 
-        ["情報不足", "🔥強気", "🚀初動", "⚠️調整"], 
-        default="❄️弱気"
+        [~momentum_valid, cond_mom_strong, cond_mom_break, cond_mom_adj, cond_mom_positive, cond_mom_neutral],
+        ["情報不足", "🔥強気", "🚀初動", "⚠️調整", "🟢強め", "➡️中立"], default="❄️弱気"
     )
     _mom_label_s = pd.Series(label_mom, index=df.index).astype(str)
     _mom_score_s = pd.Series(score_mom, index=df.index).astype(str)
@@ -10202,54 +12124,27 @@ def apply_3algo_labels(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def apply_volume_quality_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """出来高と値動きの質を判定する（短期需給分析）"""
-    if df is None or getattr(df, "empty", True):
-        return df
+    """前日比×RVOL代金だけから作る簡易な短期出来高品質ラベル。
 
+    板・歩み値・主体の意図は見ていない。±0.5%未満の小動きは方向ラベル化しない。
+    """
+    if df is None or getattr(df,"empty",True):return df
     import numpy as np
     import pandas as pd
-
-    # P1-50: 欠損を「前日比0% / RVOL1倍」という実測値に置換しない。
     def _first_numeric(cols):
-        out = pd.Series(np.nan, index=df.index, dtype=float)
+        out=pd.Series(np.nan,index=df.index,dtype=float)
         for col in cols:
-            if col not in df.columns:
-                continue
-            ser = pd.to_numeric(
-                df[col].astype(str).str.replace(r"[^\d\.\-]", "", regex=True),
-                errors="coerce",
-            )
-            out = out.combine_first(ser)
+            if col not in df.columns:continue
+            ser=pd.to_numeric(df[col].astype(str).str.replace(r"[^\d\.\-]","",regex=True),errors="coerce")
+            out=out.combine_first(ser)
         return out
-
-    pct_raw = _first_numeric(["前日終値比率_raw", "前日終値比率"])
-    # P1-657: current RVOL代金のみを判定入力にする。
-    rvol_raw = _first_numeric(["RVOL代金"])
-    pct = pct_raw.fillna(0.0)
-    rvol = rvol_raw.fillna(0.0)
-    valid_quality = pct_raw.notna() & rvol_raw.notna()
-    
-    # 上げ・下げの判定
-    is_up = pct > 0
-    is_down = pct < 0
-    
-    # 出来高の伴い具合 (RVOL 1.5倍以上を「伴う」、1.0未満を「伴わない」とする)
-    high_vol = rvol >= 1.5
-    low_vol = rvol < 1.0
-    
-    cond_real_up = is_up & high_vol
-    cond_fake_up = is_up & low_vol
-    cond_real_down = is_down & high_vol
-    cond_fake_down = is_down & low_vol
-    
-    label = np.select(
-        [cond_real_up, cond_fake_up, cond_real_down, cond_fake_down],
-        ["🚀本物/吸い上げ(↑)", "🎈値飛び(↑)", "💥強い売り/吸収(↓)", "🍂需給薄(↓)"],
-        default="様子見"
-    )
-    # 入力不足は「様子見」ではなく情報不足として区別する。
-    label = np.where(valid_quality, label, "⚪情報不足")
-    df["短期需給判定"] = label
+    pct_raw=_first_numeric(["前日終値比率_raw","前日終値比率"]);rvol_raw=_first_numeric(["RVOL代金"])
+    pct=pct_raw.fillna(0.0);rvol=rvol_raw.fillna(0.0);valid=pct_raw.notna()&rvol_raw.notna()
+    move_min=max(0.0,float(os.environ.get("KABU_SHORT_FLOW_MIN_MOVE_PCT","0.5")))
+    is_up=pct>=move_min;is_down=pct<=-move_min;high=rvol>=1.5;low=rvol<1.0
+    label=np.select([is_up&high,is_up&low,is_down&high,is_down&low],
+                    ["🚀高RVOL上昇(↑)","↗低RVOL上昇(↑)","💥強い売り・高RVOL(↓)","↘低RVOL下落(↓)"],default="様子見")
+    df["短期需給判定"]=np.where(valid,label,"⚪情報不足")
     return df
 
 
@@ -13117,9 +15012,1556 @@ def _dedupe_final_snapshot_logical(df: pd.DataFrame) -> pd.DataFrame:
     return out.loc[_picked["_idx"].tolist()].copy()
 
 
+
+def _overlay_latest_actual_earnings_age(df_cand: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    '''FUND-SOURCE-TRUTH: dashboard/Fair Valueへファンダ正本を付与する。
+
+    正本:
+      1) 株探 quarterly_actual_history
+         - 最新実決算日
+         - 最新Q/前年同期Qの営業利益実額
+         - 営業利益状態（符号変化を含む）
+      2) TDnet forecast_history
+         - 同一fiscal_keyの前回予想→最新予想の数値差
+         - 上方/下方/混合/据え置き
+
+    タイトルの「下方修正」等はここでは判定材料にしない。
+    取得不能はNULL/情報不足のままにし、良い判定へ補完しない。
+    '''
+    if df_cand is None or df_cand.empty:
+        return df_cand
+    out = df_cand.copy()
+
+    # dashboard/FVで共通利用する派生列。DBへ別の「予想履歴」を重複保存しない。
+    defaults = {
+        "最新決算発表日": None,
+        "決算後営業日数": np.nan,
+        "最新Q営業利益": np.nan,
+        "前年同期Q営業利益": np.nan,
+        "営業利益状態": "情報不足",
+        "最新Q経常利益": np.nan,
+        "前年同期Q経常利益": np.nan,
+        "経常利益状態": "情報不足",
+        "利益状態指標": None,
+        "利益状態": "情報不足",
+        "最新Q売上高": np.nan,
+        "前年同期Q売上高": np.nan,
+        "最新Q純利益": np.nan,
+        "前年同期Q純利益": np.nan,
+        "TDnet予想年度": None,
+        "TDnet予想修正日": None,
+        "TDnet予想修正状態": "履歴不足",
+        "TDnet前回予想営業益": np.nan,
+        "TDnet最新予想営業益": np.nan,
+        "TDnet営業益修正率": np.nan,
+        "TDnet前回予想EPS": np.nan,
+        "TDnet最新予想EPS": np.nan,
+        "TDnetEPS修正率": np.nan,
+        "希薄化状態": "情報不足",
+        "希薄化重大フラグ": np.nan,
+        "希薄化最終日": None,
+        "希薄化種別": None,
+        "希薄化タイトル": None,
+        "希薄化警戒日数": np.nan,
+    }
+    for c, v in defaults.items():
+        out[c] = v
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    asof = _expected_jpx_asof_date()
+    asof_ts = pd.Timestamp(asof)
+    keys = out["コード"].map(canonical_code_for_db)
+
+    def _finite(v):
+        try:
+            x = float(v)
+            return x if math.isfinite(x) else None
+        except Exception:
+            return None
+
+    def _op_state(latest, prev):
+        a, b = _finite(latest), _finite(prev)
+        if a is None or b is None:
+            return "情報不足"
+        eps = max(1e-9, max(abs(a), abs(b)) * 1e-9)
+        if abs(a) <= eps:
+            if b > eps: return "🟡 黒字→損益ゼロ"
+            if b < -eps: return "🟠 赤字解消目前"
+            return "⚪ 損益ゼロ"
+        if abs(b) <= eps:
+            return "🟢 黒字化" if a > eps else "🔴 赤字化"
+        if b > 0 and a > 0:
+            if a > b + eps: return "🟢 黒字拡大"
+            if a < b - eps: return "🟡 黒字減益"
+            return "⚪ 黒字横ばい"
+        if b < 0 and a > 0:
+            return "🟢 黒字転換"
+        if b > 0 and a < 0:
+            return "🔴 赤字転落"
+        # ともに赤字。絶対額の縮小/拡大で判定する。
+        if abs(a) < abs(b) - eps: return "🟠 赤字縮小"
+        if abs(a) > abs(b) + eps: return "🔴 赤字拡大"
+        return "🟠 赤字横ばい"
+
+    # ------------------------------------------------------------------
+    # 1) 株探 quarterly_actual_history
+    # ------------------------------------------------------------------
+    try:
+        if "quarterly_actual_history" in tables:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(quarterly_actual_history)").fetchall()}
+            required = {"コード", "fiscal_key", "quarter_no", "announcement_date"}
+            if required.issubset(cols):
+                updated_expr = 'updated_at' if 'updated_at' in cols else 'NULL AS updated_at'
+                op_expr = 'operating_profit' if 'operating_profit' in cols else 'NULL AS operating_profit'
+                ord_expr = 'ordinary_profit' if 'ordinary_profit' in cols else 'NULL AS ordinary_profit'
+                sales_expr = 'sales' if 'sales' in cols else 'NULL AS sales'
+                net_expr = 'net_profit' if 'net_profit' in cols else 'NULL AS net_profit'
+                q = pd.read_sql_query(
+                    f'''SELECT rowid AS _rowid, コード, fiscal_key, quarter_no, announcement_date,
+                               {op_expr}, {ord_expr}, {sales_expr}, {net_expr}, {updated_expr}
+                        FROM quarterly_actual_history
+                        WHERE announcement_date IS NOT NULL''',
+                    conn,
+                )
+                if not q.empty:
+                    q["_raw_code"] = q["コード"].astype(str).str.strip()
+                    q["コード"] = q["コード"].map(canonical_code_for_db)
+                    q["fiscal_key"] = q["fiscal_key"].fillna("").astype(str).str.strip()
+                    q["quarter_no"] = pd.to_numeric(q["quarter_no"], errors="coerce")
+                    q["_ann"] = q["announcement_date"].map(_p1_608_jst_naive_ts)
+                    q["_upd"] = q.get("updated_at").map(_p1_608_jst_naive_ts)
+                    q["_canon_match"] = (q["_raw_code"].str.upper() == q["コード"].astype(str).str.upper()).astype(int)
+                    for c in ("operating_profit", "ordinary_profit", "sales", "net_profit"):
+                        if c in q.columns:
+                            q[c] = pd.to_numeric(q[c], errors="coerce")
+                    q = q[
+                        q["コード"].astype(bool) & q["quarter_no"].isin([1,2,3,4]) &
+                        q["fiscal_key"].ne("") & q["_ann"].notna() &
+                        (q["_ann"].dt.normalize() <= asof_ts)
+                    ].copy()
+                    if not q.empty:
+                        # 同一logical Qの正本を先に確定。
+                        q = (
+                            q.sort_values(
+                                ["コード", "fiscal_key", "quarter_no", "_upd", "_canon_match", "_ann", "_rowid"],
+                                kind="stable", na_position="first"
+                            )
+                            .drop_duplicates(["コード", "fiscal_key", "quarter_no"], keep="last")
+                        )
+                        # 銘柄ごとの最新発表Q。
+                        latest_q = (
+                            q.sort_values(["コード", "_ann", "_upd", "_canon_match", "_rowid"], kind="stable", na_position="first")
+                             .groupby("コード", sort=False).tail(1)
+                        )
+                        latest_map = {str(r["コード"]): r for _, r in latest_q.iterrows()}
+
+                        # 同じquarter_noの直前年度を前年同期として採用。
+                        group_map = {}
+                        for (code, qno), g in q.groupby(["コード", "quarter_no"], sort=False):
+                            group_map[(str(code), int(qno))] = g.sort_values(["fiscal_key", "_ann", "_rowid"], kind="stable")
+
+                        ann_map, age_map = {}, {}
+                        latest_op_map, prev_op_map, op_state_map = {}, {}, {}
+                        latest_ord_map, prev_ord_map, ord_state_map = {}, {}, {}
+                        primary_state_map, primary_metric_map = {}, {}
+                        latest_sales_map, prev_sales_map = {}, {}
+                        latest_net_map, prev_net_map = {}, {}
+                        sector_map = {}
+                        if "セクター" in out.columns:
+                            sector_map = {
+                                canonical_code_for_db(c): str(s or "")
+                                for c, s in zip(out["コード"], out["セクター"])
+                            }
+                        def _is_financial_sector(sector):
+                            s = str(sector or "")
+                            return any(k in s for k in ("銀行", "証券", "保険", "その他金融"))
+                        extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
+                        age_cache = {}
+                        def _business_age(d):
+                            if d is None or d > asof:
+                                return None
+                            if d in age_cache:
+                                return age_cache[d]
+                            cur, n = d, 0
+                            while cur < asof:
+                                cur += timedelta(days=1)
+                                if not is_jp_market_holiday(cur, extra_closed):
+                                    n += 1
+                            age_cache[d] = n
+                            return n
+
+                        for code, lr in latest_map.items():
+                            ann = lr["_ann"].date() if pd.notna(lr["_ann"]) else None
+                            ann_map[code] = ann.isoformat() if ann else None
+                            age_map[code] = _business_age(ann)
+                            latest_op = _finite(lr.get("operating_profit"))
+                            latest_ord = _finite(lr.get("ordinary_profit"))
+                            latest_sales = _finite(lr.get("sales"))
+                            latest_net = _finite(lr.get("net_profit"))
+                            prev_row = None
+                            try:
+                                qno = int(lr["quarter_no"])
+                                g = group_map.get((code, qno))
+                                if g is not None:
+                                    prior = g[g["fiscal_key"].astype(str) < str(lr["fiscal_key"])].copy()
+                                    if not prior.empty:
+                                        prev_row = prior.iloc[-1]
+                            except Exception:
+                                prev_row = None
+                            prev_op = _finite(prev_row.get("operating_profit")) if prev_row is not None else None
+                            prev_ord = _finite(prev_row.get("ordinary_profit")) if prev_row is not None else None
+                            prev_sales = _finite(prev_row.get("sales")) if prev_row is not None else None
+                            prev_net = _finite(prev_row.get("net_profit")) if prev_row is not None else None
+                            latest_op_map[code], prev_op_map[code] = latest_op, prev_op
+                            latest_ord_map[code], prev_ord_map[code] = latest_ord, prev_ord
+                            latest_sales_map[code], prev_sales_map[code] = latest_sales, prev_sales
+                            latest_net_map[code], prev_net_map[code] = latest_net, prev_net
+                            op_state_map[code] = _op_state(latest_op, prev_op)
+                            ord_state_map[code] = _op_state(latest_ord, prev_ord)
+                            if _is_financial_sector(sector_map.get(code, "")):
+                                primary_metric_map[code] = "経常利益"
+                                primary_state_map[code] = ord_state_map[code]
+                            else:
+                                primary_metric_map[code] = "営業利益"
+                                primary_state_map[code] = op_state_map[code]
+
+                        out["最新決算発表日"] = keys.map(ann_map)
+                        out["決算後営業日数"] = keys.map(age_map)
+                        out["最新Q営業利益"] = keys.map(latest_op_map)
+                        out["前年同期Q営業利益"] = keys.map(prev_op_map)
+                        out["営業利益状態"] = keys.map(op_state_map).fillna("情報不足")
+                        out["最新Q経常利益"] = keys.map(latest_ord_map)
+                        out["前年同期Q経常利益"] = keys.map(prev_ord_map)
+                        out["経常利益状態"] = keys.map(ord_state_map).fillna("情報不足")
+                        out["利益状態指標"] = keys.map(primary_metric_map)
+                        out["利益状態"] = keys.map(primary_state_map).fillna("情報不足")
+                        out["最新Q売上高"] = keys.map(latest_sales_map)
+                        out["前年同期Q売上高"] = keys.map(prev_sales_map)
+                        out["最新Q純利益"] = keys.map(latest_net_map)
+                        out["前年同期Q純利益"] = keys.map(prev_net_map)
+                        valid_n = int(pd.to_numeric(out["最新Q営業利益"], errors="coerce").notna().sum())
+                        print(f"[fund-source] Kabutan quarterly truth attached: {valid_n}/{len(out)}", flush=True)
+            else:
+                print("[fund-source][WARN] quarterly_actual_history schema不足", flush=True)
+        else:
+            print("[fund-source][WARN] quarterly_actual_historyなし", flush=True)
+    except Exception as e:
+        print(f"[fund-source][WARN] Kabutan quarterly overlay failed: {e}", flush=True)
+
+    # ------------------------------------------------------------------
+    # 2) TDnet forecast_history: 同一年度の前回→最新を数値比較
+    # ------------------------------------------------------------------
+    try:
+        if "forecast_history" in tables:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(forecast_history)").fetchall()}
+            required = {"コード", "fiscal_key", "forecast_date"}
+            if required.issubset(cols) and ({"forecast_op", "forecast_eps"} & cols):
+                op_expr = 'forecast_op' if 'forecast_op' in cols else 'NULL AS forecast_op'
+                eps_expr = 'forecast_eps' if 'forecast_eps' in cols else 'NULL AS forecast_eps'
+                upd_expr = 'updated_at' if 'updated_at' in cols else 'NULL AS updated_at'
+                typ_expr = 'forecast_type' if 'forecast_type' in cols else "'' AS forecast_type"
+                title_expr = 'タイトル' if 'タイトル' in cols else "'' AS タイトル"
+                fh = pd.read_sql_query(
+                    f'''SELECT rowid AS _rowid, コード, fiscal_key, forecast_date,
+                               {typ_expr}, {op_expr}, {eps_expr}, {title_expr}, {upd_expr}
+                        FROM forecast_history
+                        WHERE fiscal_key IS NOT NULL AND forecast_date IS NOT NULL''', conn)
+                if not fh.empty:
+                    fh["_raw_code"] = fh["コード"].astype(str).str.strip()
+                    fh["コード"] = fh["コード"].map(canonical_code_for_db)
+                    fh["fiscal_key"] = fh["fiscal_key"].fillna("").astype(str).str.strip()
+                    fh["_date"] = fh["forecast_date"].map(_p1_608_jst_naive_ts)
+                    fh["_upd"] = fh.get("updated_at").map(_p1_608_jst_naive_ts)
+                    fh["_canon_match"] = (fh["_raw_code"].str.upper() == fh["コード"].astype(str).str.upper()).astype(int)
+                    fh["forecast_op"] = pd.to_numeric(fh.get("forecast_op"), errors="coerce")
+                    fh["forecast_eps"] = pd.to_numeric(fh.get("forecast_eps"), errors="coerce")
+                    fh = fh[
+                        fh["コード"].astype(bool) & fh["fiscal_key"].ne("") & fh["_date"].notna() &
+                        (fh["_date"].dt.normalize() <= asof_ts)
+                    ].copy()
+                    if not fh.empty:
+                        # 同一イベントのalias/再解析重複を正本化。
+                        event_keys = ["コード", "fiscal_key", "forecast_date", "タイトル"]
+                        fh = (
+                            fh.sort_values(event_keys + ["_upd", "_canon_match", "_rowid"], kind="stable", na_position="first")
+                              .drop_duplicates(event_keys, keep="last")
+                        )
+                        # 各コードで最新のforecast eventが属する年度だけをcurrentとして扱う。
+                        latest_event = (
+                            fh.sort_values(["コード", "_date", "_upd", "_canon_match", "_rowid"], kind="stable", na_position="first")
+                              .groupby("コード", sort=False).tail(1)
+                        )
+                        current_fiscal = {str(r["コード"]): str(r["fiscal_key"]) for _, r in latest_event.iterrows()}
+
+                        fy_map, date_map, status_map = {}, {}, {}
+                        prev_op_map, new_op_map, op_rate_map = {}, {}, {}
+                        prev_eps_map, new_eps_map, eps_rate_map = {}, {}, {}
+
+                        def _pct(new, old):
+                            a, b = _finite(new), _finite(old)
+                            if a is None or b is None or abs(b) < 1e-12:
+                                return None
+                            return ((a - b) / abs(b)) * 100.0
+                        def _dir(rate):
+                            if rate is None: return 0
+                            if rate <= -0.5: return -1
+                            if rate >= 0.5: return 1
+                            return 0
+
+                        for code, fk in current_fiscal.items():
+                            g = fh[(fh["コード"] == code) & (fh["fiscal_key"].astype(str) == fk)].copy()
+                            g = g.sort_values(["_date", "_upd", "_rowid"], kind="stable", na_position="first")
+                            if g.empty:
+                                continue
+                            lr = g.iloc[-1]
+                            pr = g.iloc[-2] if len(g) >= 2 else None
+                            fy_map[code] = fk
+                            date_map[code] = lr["_date"].strftime("%Y-%m-%d") if pd.notna(lr["_date"]) else None
+                            new_op = _finite(lr.get("forecast_op")); new_eps = _finite(lr.get("forecast_eps"))
+                            prev_op = _finite(pr.get("forecast_op")) if pr is not None else None
+                            prev_eps = _finite(pr.get("forecast_eps")) if pr is not None else None
+                            op_rate = _pct(new_op, prev_op); eps_rate = _pct(new_eps, prev_eps)
+                            prev_op_map[code], new_op_map[code], op_rate_map[code] = prev_op, new_op, op_rate
+                            prev_eps_map[code], new_eps_map[code], eps_rate_map[code] = prev_eps, new_eps, eps_rate
+                            if pr is None:
+                                ftype = str(lr.get("forecast_type") or "").strip().lower()
+                                status = "🆕 初回予想のみ" if ftype == "initial" else "⚪ 比較元不足"
+                            else:
+                                comparable_rates = [r for r in (op_rate, eps_rate) if r is not None]
+                                if not comparable_rates:
+                                    status = "⚪ 比較可能値不足"
+                                else:
+                                    dirs = [_dir(r) for r in comparable_rates if _dir(r) != 0]
+                                    if not dirs:
+                                        status = "↔ 据え置き"
+                                    elif all(d < 0 for d in dirs):
+                                        worst = min(comparable_rates, default=0.0)
+                                        status = "🔻 下方修正" if worst <= -3.0 else "↘ 小幅下方"
+                                    elif all(d > 0 for d in dirs):
+                                        best = max(comparable_rates, default=0.0)
+                                        status = "🔺 上方修正" if best >= 3.0 else "↗ 小幅上方"
+                                    else:
+                                        status = "↕ 混合修正"
+                            status_map[code] = status
+
+                        out["TDnet予想年度"] = keys.map(fy_map)
+                        out["TDnet予想修正日"] = keys.map(date_map)
+                        out["TDnet予想修正状態"] = keys.map(status_map).fillna("履歴不足")
+                        out["TDnet前回予想営業益"] = keys.map(prev_op_map)
+                        out["TDnet最新予想営業益"] = keys.map(new_op_map)
+                        out["TDnet営業益修正率"] = keys.map(op_rate_map)
+                        out["TDnet前回予想EPS"] = keys.map(prev_eps_map)
+                        out["TDnet最新予想EPS"] = keys.map(new_eps_map)
+                        out["TDnetEPS修正率"] = keys.map(eps_rate_map)
+                        latest_n = int(
+                            (
+                                pd.to_numeric(out["TDnet最新予想営業益"], errors="coerce").notna()
+                                | pd.to_numeric(out["TDnet最新予想EPS"], errors="coerce").notna()
+                            ).sum()
+                        )
+                        comparable_set = {"↔ 据え置き", "🔻 下方修正", "↘ 小幅下方", "🔺 上方修正", "↗ 小幅上方", "↕ 混合修正"}
+                        comparable_n = int(out["TDnet予想修正状態"].astype(str).isin(comparable_set).sum())
+                        print(
+                            f"[fund-source] TDnet forecast truth attached: latest={latest_n}/{len(out)} "
+                            f"comparable={comparable_n}/{len(out)}",
+                            flush=True,
+                        )
+            else:
+                print("[fund-source][WARN] forecast_history schema不足 -> 数値修正判定不能", flush=True)
+        else:
+            print("[fund-source][WARN] forecast_historyなし -> 数値修正判定不能", flush=True)
+    except Exception as e:
+        print(f"[fund-source][WARN] TDnet forecast overlay failed: {e}", flush=True)
+
+    # ------------------------------------------------------------------
+    # 3) offerings_events: 重大希薄化/供給イベント
+    #    数量までは推測せず、実際のTDnetイベントの種別と経過日だけで保守判定する。
+    #    hard: 増資/CB・EB <=180日、行使 <=90日
+    #    caution: その他の資金調達/売出/処分を含む直近365日
+    # ------------------------------------------------------------------
+    try:
+        if "offerings_events" in tables:
+            ocols = {r[1] for r in conn.execute("PRAGMA table_info(offerings_events)").fetchall()}
+            if {"コード", "提出時刻"}.issubset(ocols):
+                kind_expr = '種別' if '種別' in ocols else "'' AS 種別"
+                title_expr = 'タイトル' if 'タイトル' in ocols else "'' AS タイトル"
+                oe = pd.read_sql_query(
+                    f'''SELECT rowid AS _rowid, コード, 提出時刻, {kind_expr}, {title_expr}
+                        FROM offerings_events
+                        WHERE 提出時刻 IS NOT NULL''', conn
+                )
+                # tableが読めた時点で全銘柄を「監視可能・該当なし」にする。
+                out["希薄化状態"] = "⚪ 直近1年該当なし"
+                out["希薄化重大フラグ"] = 0
+                if not oe.empty:
+                    oe["コード"] = oe["コード"].map(canonical_code_for_db)
+                    oe["_date"] = oe["提出時刻"].map(_p1_608_jst_naive_ts)
+                    oe = oe[oe["コード"].astype(bool) & oe["_date"].notna()].copy()
+                    oe = oe[oe["_date"].dt.normalize() <= asof_ts].copy()
+                    oe["_age"] = (asof_ts - oe["_date"].dt.normalize()).dt.days
+                    oe = oe[(oe["_age"] >= 0) & (oe["_age"] <= 365)].copy()
+                    if not oe.empty:
+                        oe["種別"] = oe["種別"].fillna("").astype(str)
+                        oe["タイトル"] = oe["タイトル"].fillna("").astype(str)
+                        oe["_hard"] = (
+                            (oe["種別"].isin(["増資", "CB/EB"]) & (oe["_age"] <= 180)) |
+                            ((oe["種別"] == "行使") & (oe["_age"] <= 90))
+                        )
+                        latest_any = (
+                            oe.sort_values(["コード", "_date", "_rowid"], kind="stable")
+                              .groupby("コード", sort=False).tail(1)
+                        )
+                        hard_rows = oe[oe["_hard"]].copy()
+                        latest_hard = (
+                            hard_rows.sort_values(["コード", "_date", "_rowid"], kind="stable")
+                                     .groupby("コード", sort=False).tail(1)
+                            if not hard_rows.empty else hard_rows
+                        )
+                        any_map = {str(r["コード"]): r for _, r in latest_any.iterrows()}
+                        hard_map = {str(r["コード"]): r for _, r in latest_hard.iterrows()} if not latest_hard.empty else {}
+                        state_map, hard_flag_map, d_map, kind_map, title_map, age_map_d = {}, {}, {}, {}, {}, {}
+                        for code, r in any_map.items():
+                            hr = hard_map.get(code)
+                            chosen = hr if hr is not None else r
+                            hard = hr is not None
+                            state_map[code] = "🔴 重大希薄化警戒" if hard else "🟡 資金調達/供給イベント"
+                            hard_flag_map[code] = 1 if hard else 0
+                            d_map[code] = chosen["_date"].strftime("%Y-%m-%d") if pd.notna(chosen["_date"]) else None
+                            kind_map[code] = str(chosen.get("種別") or "")
+                            title_map[code] = str(chosen.get("タイトル") or "")
+                            age_map_d[code] = int(chosen.get("_age")) if pd.notna(chosen.get("_age")) else None
+                        out["希薄化状態"] = keys.map(state_map).fillna("⚪ 直近1年該当なし")
+                        out["希薄化重大フラグ"] = keys.map(hard_flag_map).fillna(0).astype(int)
+                        out["希薄化最終日"] = keys.map(d_map)
+                        out["希薄化種別"] = keys.map(kind_map)
+                        out["希薄化タイトル"] = keys.map(title_map)
+                        out["希薄化警戒日数"] = keys.map(age_map_d)
+                hard_n = int(pd.to_numeric(out["希薄化重大フラグ"], errors="coerce").fillna(0).eq(1).sum())
+                print(f"[fund-source] offerings dilution truth attached: hard={hard_n}/{len(out)}", flush=True)
+            else:
+                print("[fund-source][WARN] offerings_events schema不足 -> 希薄化判定不能", flush=True)
+        else:
+            print("[fund-source][WARN] offerings_eventsなし -> 希薄化判定不能", flush=True)
+    except Exception as e:
+        print(f"[fund-source][WARN] offerings overlay failed: {e}", flush=True)
+
+    # 実DB coverageを毎run出す。低coverageを良い判定へ補完せず、運用で即確認できるようにする。
+    try:
+        _total = max(len(out), 1)
+        _profit_cov = float((out["利益状態"].astype(str) != "情報不足").sum()) * 100.0 / _total
+        _actual_cov = float(out["最新決算発表日"].notna().sum()) * 100.0 / _total
+        _td_latest = (pd.to_numeric(out["TDnet最新予想営業益"], errors="coerce").notna() |
+                      pd.to_numeric(out["TDnet最新予想EPS"], errors="coerce").notna())
+        _td_cov = float(_td_latest.sum()) * 100.0 / _total
+        _comparable_status = {"↔ 据え置き", "🔻 下方修正", "↘ 小幅下方", "🔺 上方修正", "↗ 小幅上方", "↕ 混合修正"}
+        _td_cmp_cov = float(out["TDnet予想修正状態"].astype(str).isin(_comparable_status).sum()) * 100.0 / _total
+        _dil_cov = float((out["希薄化状態"].astype(str) != "情報不足").sum()) * 100.0 / _total
+        print(
+            f"[fund-source][COVERAGE] latest_actual={_actual_cov:.1f}% profit_state={_profit_cov:.1f}% "
+            f"tdnet_latest={_td_cov:.1f}% tdnet_comparable={_td_cmp_cov:.1f}% dilution_monitor={_dil_cov:.1f}%",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[fund-source][WARN] coverage calculation failed: {e}", flush=True)
+
+    return out
+
+def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    '''REPRICING-DISCOVERY-V1: 企業価値の変化と株価の織り込み遅れを分離して付与する。
+
+    研究V7〜V10Bの知見を「入口を狭めすぎない」形で本番へ移植する。
+    - 1本のAND条件で候補を削り切らず、複数ルートをORで残す。
+    - テーマはgateにしない。
+    - 重大希薄化だけは共通block。
+    - 未来予想欠損を悪い判定へ補完しない。
+    - 既存LIVE候補gate/priorityは変更しない。
+    '''
+    if df_cand is None or df_cand.empty:
+        return df_cand
+
+    out = df_cand.copy()
+    asof = _expected_jpx_asof_date()
+    asof_ts = pd.Timestamp(asof)
+    keys = out["コード"].map(canonical_code_for_db)
+
+    defaults = {
+        "最新Q売上YoY_pct_正本": np.nan,
+        "最新Q利益YoY_pct_正本": np.nan,
+        "最新Q利益率_pct_正本": np.nan,
+        "前年同期Q利益率_pct_正本": np.nan,
+        "利益率前年差_ppt_正本": np.nan,
+        "会社予想営業益_探索": np.nan,
+        "会社予想年度_探索": None,
+        "会社予想ソース_探索": "情報不足",
+        "前期通期営業益_探索": np.nan,
+        "未来営業利益YoY_pct_探索": np.nan,
+        "未来方向_探索": "情報不足",
+        "配当利回り_pct_探索": np.nan,
+        "ネットキャッシュ_探索": np.nan,
+        "待てる条件数_探索": 0,
+        "待てる評価_探索": "C",
+        "決算前基準終値_探索": np.nan,
+        "決算後現在騰落率_pct_探索": np.nan,
+        "決算後最大上昇率_pct_探索": np.nan,
+        "決算後高値から現在_pct_探索": np.nan,
+        "株価織り込み度_探索": "情報不足",
+        "株価未反応フラグ_探索": 0,
+        "FUNDAMENTAL_EARLY": 0,
+        "CYCLICAL_VALUE": 0,
+        "EARNINGS_ACCELERATION": 0,
+        "CONSERVATIVE_FORECAST": 0,
+        "QUALITY_GROWTH_UNDERREACTION": 0,
+        "再評価候補": 0,
+        "再評価ルート": "",
+        "再評価探索順位": 0,
+        "再評価探索ランク": "-",
+        "再評価余地": "-",
+        "再評価理由": "",
+        "再評価注意": "",
+    }
+    for c, v in defaults.items():
+        out[c] = v
+
+    def _num_series(name):
+        if name not in out.columns:
+            return pd.Series(np.nan, index=out.index, dtype=float)
+        return pd.to_numeric(out[name], errors="coerce")
+
+    # A) 株探Q実額から売上成長・利益成長・利益率改善を作る。
+    latest_sales = _num_series("最新Q売上高")
+    prev_sales = _num_series("前年同期Q売上高")
+    latest_profit = _num_series("最新Q営業利益")
+    prev_profit = _num_series("前年同期Q営業利益")
+    metric = out.get("利益状態指標", pd.Series("営業利益", index=out.index)).fillna("営業利益").astype(str)
+    non_fin = metric.ne("経常利益")
+
+    sales_yoy = pd.Series(
+        np.where(
+            latest_sales.notna() & prev_sales.notna() & np.isfinite(latest_sales) &
+            np.isfinite(prev_sales) & (prev_sales > 0),
+            (latest_sales / prev_sales - 1.0) * 100.0,
+            np.nan,
+        ), index=out.index, dtype=float,
+    )
+    op_yoy = pd.Series(
+        np.where(
+            non_fin & latest_profit.notna() & prev_profit.notna() &
+            np.isfinite(latest_profit) & np.isfinite(prev_profit) &
+            (latest_profit > 0) & (prev_profit > 0),
+            (latest_profit / prev_profit - 1.0) * 100.0,
+            np.nan,
+        ), index=out.index, dtype=float,
+    )
+    cur_margin = pd.Series(
+        np.where(
+            non_fin & latest_sales.notna() & (latest_sales > 0) & latest_profit.notna(),
+            latest_profit / latest_sales * 100.0,
+            np.nan,
+        ), index=out.index, dtype=float,
+    )
+    prev_margin = pd.Series(
+        np.where(
+            non_fin & prev_sales.notna() & (prev_sales > 0) & prev_profit.notna(),
+            prev_profit / prev_sales * 100.0,
+            np.nan,
+        ), index=out.index, dtype=float,
+    )
+    out["最新Q売上YoY_pct_正本"] = sales_yoy
+    out["最新Q利益YoY_pct_正本"] = op_yoy
+    out["最新Q利益率_pct_正本"] = cur_margin
+    out["前年同期Q利益率_pct_正本"] = prev_margin
+    out["利益率前年差_ppt_正本"] = cur_margin - prev_margin
+
+    # B) 3ヵ月単独actualを年度合計し、fresh finance_notesの会社予想と比較する。
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "quarterly_actual_history" in tables:
+            qcols = {r[1] for r in conn.execute("PRAGMA table_info(quarterly_actual_history)").fetchall()}
+            req = {"コード", "fiscal_key", "quarter_no", "announcement_date"}
+            if req.issubset(qcols):
+                upd_expr = 'updated_at' if 'updated_at' in qcols else 'NULL AS updated_at'
+                op_expr = 'operating_profit' if 'operating_profit' in qcols else 'NULL AS operating_profit'
+                sql = (
+                    "SELECT rowid AS _rowid, コード, fiscal_key, quarter_no, announcement_date, "
+                    + op_expr + ", " + upd_expr + " FROM quarterly_actual_history "
+                    "WHERE announcement_date IS NOT NULL"
+                )
+                q = pd.read_sql_query(sql, conn)
+                if not q.empty:
+                    q["_raw"] = q["コード"].astype(str).str.strip()
+                    q["コード"] = q["コード"].map(canonical_code_for_db)
+                    q["fiscal_key"] = q["fiscal_key"].fillna("").astype(str).str.strip()
+                    q["quarter_no"] = pd.to_numeric(q["quarter_no"], errors="coerce")
+                    q["operating_profit"] = pd.to_numeric(q["operating_profit"], errors="coerce")
+                    q["_ann"] = q["announcement_date"].map(_p1_608_jst_naive_ts)
+                    q["_upd"] = q.get("updated_at").map(_p1_608_jst_naive_ts)
+                    q["_canon"] = (q["_raw"].str.upper() == q["コード"].astype(str).str.upper()).astype(int)
+                    q = q[
+                        q["コード"].astype(bool) & q["quarter_no"].isin([1,2,3,4]) &
+                        q["fiscal_key"].ne("") & q["_ann"].notna() &
+                        (q["_ann"].dt.normalize() <= asof_ts)
+                    ].copy()
+                    if not q.empty:
+                        q = (
+                            q.sort_values(
+                                ["コード","fiscal_key","quarter_no","_upd","_canon","_ann","_rowid"],
+                                kind="stable", na_position="first"
+                            )
+                            .drop_duplicates(["コード","fiscal_key","quarter_no"], keep="last")
+                        )
+                        latest_q = (
+                            q.sort_values(["コード","_ann","_upd","_rowid"], kind="stable", na_position="first")
+                             .groupby("コード", sort=False).tail(1)
+                        )
+                        annual = (
+                            q[q["operating_profit"].notna()]
+                            .groupby(["コード","fiscal_key"], as_index=False)
+                            .agg(_qcount=("quarter_no","nunique"), _op_sum=("operating_profit","sum"), _ann_max=("_ann","max"))
+                        )
+                        annual = annual[annual["_qcount"].eq(4)].copy()
+                        annual_map = {
+                            (str(r["コード"]), str(r["fiscal_key"])): float(r["_op_sum"])
+                            for _, r in annual.iterrows()
+                            if pd.notna(r["_op_sum"]) and math.isfinite(float(r["_op_sum"]))
+                        }
+                        context_map = {}
+                        for _, lr in latest_q.iterrows():
+                            code = str(lr["コード"])
+                            fiscal = str(lr["fiscal_key"])
+                            qno = int(lr["quarter_no"])
+                            a = annual[annual["コード"].eq(code)].sort_values(["_ann_max","fiscal_key"], kind="stable")
+                            base = None
+                            if qno < 4:
+                                prev_a = a[a["fiscal_key"].astype(str) != fiscal]
+                                if not prev_a.empty:
+                                    base = float(prev_a.iloc[-1]["_op_sum"])
+                                target_fiscal = fiscal
+                            else:
+                                base = annual_map.get((code, fiscal))
+                                _m = re.fullmatch(r"(20\d{2})[-/](\d{1,2})", fiscal)
+                                target_fiscal = (
+                                    f"{int(_m.group(1))+1:04d}-{int(_m.group(2)):02d}"
+                                    if _m else ""
+                                )
+                            context_map[code] = {"base": base, "target_fiscal": target_fiscal}
+
+                        # forecast_history (既にFUND-SOURCE-TRUTHで正本化済み)を最優先。
+                        # 対象年度が一致する数値だけを使い、finance_notesはfresh fallback。
+                        fwd_map = {}
+                        fwd_source_map = {}
+                        fwd_fiscal_map = {}
+                        _non_fin_codes = {
+                            canonical_code_for_db(c)
+                            for c, _nf in zip(out["コード"], non_fin)
+                            if bool(_nf) and canonical_code_for_db(c)
+                        }
+                        _td_fy = out.get("TDnet予想年度", pd.Series(None, index=out.index))
+                        _td_op = pd.to_numeric(
+                            out.get("TDnet最新予想営業益", pd.Series(np.nan, index=out.index)),
+                            errors="coerce",
+                        )
+                        for _idx, _code in keys.items():
+                            if not bool(non_fin.loc[_idx]):
+                                continue
+                            _ctx = context_map.get(_code) or {}
+                            _target = str(_ctx.get("target_fiscal") or "").strip()
+                            _fy = str(_td_fy.loc[_idx] or "").strip()
+                            _val = _td_op.loc[_idx]
+                            if _target and _fy == _target and pd.notna(_val):
+                                try:
+                                    _fv = float(_val)
+                                    if math.isfinite(_fv):
+                                        fwd_map[_code] = _fv
+                                        fwd_source_map[_code] = "forecast_history"
+                                        fwd_fiscal_map[_code] = _target
+                                except Exception:
+                                    pass
+                        if "finance_notes" in tables:
+                            fncols = {r[1] for r in conn.execute("PRAGMA table_info(finance_notes)").fetchall()}
+                            if {"コード","forecast_op"}.issubset(fncols):
+                                upd_sel = 'updated_at' if 'updated_at' in fncols else 'NULL AS updated_at'
+                                fn = pd.read_sql_query(
+                                    "SELECT rowid AS _rowid, コード, forecast_op, " + upd_sel + " FROM finance_notes",
+                                    conn,
+                                )
+                                if not fn.empty:
+                                    fn = _latest_finance_notes_by_canonical(fn, "コード")
+                                    fn["forecast_op"] = pd.to_numeric(fn["forecast_op"], errors="coerce")
+                                    stale = _finance_codes_stale_after_latest_earnings(conn)
+                                    for _, fr in fn.iterrows():
+                                        code = canonical_code_for_db(fr.get("コード"))
+                                        val = fr.get("forecast_op")
+                                        if (not code) or code not in _non_fin_codes or code in stale or pd.isna(val) or code in fwd_map:
+                                            continue
+                                        # 金融業はforecast_opを経常利益予想の代替にしない。
+                                        _ctx = context_map.get(code) or {}
+                                        if not _ctx:
+                                            continue
+                                        try:
+                                            fv = float(val)
+                                            if math.isfinite(fv):
+                                                fwd_map[code] = fv
+                                                fwd_source_map[code] = "finance_notes_fresh"
+                                                fwd_fiscal_map[code] = str(_ctx.get("target_fiscal") or "")
+                                        except Exception:
+                                            pass
+
+                        def _future_state(fwd, base):
+                            try:
+                                a = float(fwd); b = float(base)
+                                if not (math.isfinite(a) and math.isfinite(b)):
+                                    return ("情報不足", None)
+                            except Exception:
+                                return ("情報不足", None)
+                            eps = max(1e-9, max(abs(a),abs(b))*1e-9)
+                            if b < -eps:
+                                if a > eps: return ("黒字転換予想", None)
+                                if a > b: return ("赤字縮小予想", None)
+                                if a < b: return ("赤字拡大予想", None)
+                                return ("赤字横ばい予想", None)
+                            if b > eps:
+                                if a < -eps: return ("赤字転落予想", None)
+                                yoy = (a / b - 1.0) * 100.0
+                                if yoy >= 20: return ("大幅成長予想", yoy)
+                                if yoy >= 5: return ("成長予想", yoy)
+                                if yoy > -5: return ("横ばい予想", yoy)
+                                if yoy > -20: return ("減益予想", yoy)
+                                return ("大幅減益予想", yoy)
+                            if a > eps: return ("ゼロ→黒字予想", None)
+                            if a < -eps: return ("ゼロ→赤字予想", None)
+                            return ("ゼロ横ばい予想", 0.0)
+
+                        base_map, future_state_map, future_yoy_map = {}, {}, {}
+                        for code, ctx in context_map.items():
+                            base = ctx.get("base")
+                            fwd = fwd_map.get(code)
+                            if base is not None:
+                                base_map[code] = base
+                            if fwd is not None and base is not None:
+                                st, yoy = _future_state(fwd, base)
+                                future_state_map[code] = st
+                                if yoy is not None:
+                                    future_yoy_map[code] = yoy
+                        out["会社予想営業益_探索"] = keys.map(fwd_map)
+                        out["会社予想年度_探索"] = keys.map(fwd_fiscal_map)
+                        out["会社予想ソース_探索"] = keys.map(fwd_source_map).fillna("情報不足")
+                        out["前期通期営業益_探索"] = keys.map(base_map)
+                        out["未来方向_探索"] = keys.map(future_state_map).fillna("情報不足")
+                        out["未来営業利益YoY_pct_探索"] = keys.map(future_yoy_map)
+
+                        # REPRICING-DISCOVERY-V1.1:
+                        # finance_notes.forecast_op は営業利益予想。金融業は本番FUND-SOURCE-TRUTHで
+                        # 経常利益を主指標にしているため、営業利益actualとの混在比較を禁止する。
+                        # 金融業の未来方向は、経常利益の会社予想正本が実装されるまでは「情報不足」とする。
+                        out.loc[~non_fin, "会社予想営業益_探索"] = np.nan
+                        out.loc[~non_fin, "会社予想年度_探索"] = None
+                        out.loc[~non_fin, "会社予想ソース_探索"] = "情報不足"
+                        out.loc[~non_fin, "前期通期営業益_探索"] = np.nan
+                        out.loc[~non_fin, "未来営業利益YoY_pct_探索"] = np.nan
+                        out.loc[~non_fin, "未来方向_探索"] = "情報不足"
+    except Exception as e:
+        print(f"[repricing][WARN] future-direction overlay failed: {e}", flush=True)
+
+    # C) 待てる度。単一のPBRや配当をhard gateにはしない。
+    px = _num_series("現在値")
+    pbr = _num_series("PBR")
+    equity = _num_series("自己資本比率")
+    div1y = _num_series("配当1年合計")
+    cash = _num_series("現金同等物")
+    debt = _num_series("有利子負債")
+    ocf4q = _num_series("営業CF_4Q合計")
+    div_yield = pd.Series(
+        np.where(px.notna() & (px > 0) & div1y.notna(), div1y / px * 100.0, np.nan),
+        index=out.index, dtype=float,
+    )
+    net_cash = cash - debt
+    out["配当利回り_pct_探索"] = div_yield
+    out["ネットキャッシュ_探索"] = net_cash
+    conds = pd.DataFrame(index=out.index)
+    conds["pbr"] = pbr.notna() & (pbr <= 1.20)
+    conds["equity"] = equity.notna() & (equity >= 60.0)
+    conds["yield"] = div_yield.notna() & (div_yield >= 2.5)
+    conds["netcash"] = net_cash.notna() & (net_cash > 0)
+    conds["ocf"] = ocf4q.notna() & (ocf4q > 0)
+    wait_count = conds.sum(axis=1).astype(int)
+    out["待てる条件数_探索"] = wait_count
+    out["待てる評価_探索"] = np.select([wait_count >= 4, wait_count >= 3, wait_count >= 2], ["S","A","B"], default="C")
+
+    # D) 最新決算後の株価織り込み度。
+    try:
+        ann = pd.to_datetime(out.get("最新決算発表日"), errors="coerce")
+        age = _num_series("決算後営業日数")
+        valid_dates = ann.dropna()
+        all_tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if not valid_dates.empty and "price_history" in all_tables:
+            start_date = max(asof - timedelta(days=220), valid_dates.min().date() - timedelta(days=14))
+            ph = pd.read_sql_query(
+                "SELECT rowid AS _rowid, コード, 日付, 終値, 高値 FROM price_history "
+                "WHERE date(日付) >= date(?) AND date(日付) <= date(?)",
+                conn, params=(start_date.isoformat(), asof.isoformat()),
+            )
+            if not ph.empty:
+                ph["_raw"] = ph["コード"].astype(str).str.strip()
+                ph["コード"] = ph["コード"].map(canonical_code_for_db)
+                ph["_date"] = pd.to_datetime(ph["日付"], errors="coerce").dt.normalize()
+                ph["終値"] = pd.to_numeric(ph["終値"], errors="coerce")
+                ph["高値"] = pd.to_numeric(ph["高値"], errors="coerce")
+                ph["_canon"] = (ph["_raw"].str.upper() == ph["コード"].astype(str).str.upper()).astype(int)
+                ph = ph[ph["コード"].astype(bool) & ph["_date"].notna() & ph["終値"].notna() & np.isfinite(ph["終値"]) & (ph["終値"] > 0)].copy()
+                ph = ph.sort_values(["コード","_date","_canon","_rowid"], kind="stable").drop_duplicates(["コード","_date"], keep="last")
+                ph_groups = {str(c): g.sort_values("_date", kind="stable") for c,g in ph.groupby("コード", sort=False)}
+                pre_map, cur_ret_map, max_ret_map, draw_map, absorb_map, under_map = {}, {}, {}, {}, {}, {}
+                current_map, ann_map, age_map = {}, {}, {}
+                for c, v in zip(out["コード"], px):
+                    ck = canonical_code_for_db(c)
+                    try:
+                        fv = float(v); current_map[ck] = fv if math.isfinite(fv) and fv > 0 else None
+                    except Exception:
+                        current_map[ck] = None
+                for c, d in zip(out["コード"], ann):
+                    if pd.notna(d): ann_map[canonical_code_for_db(c)] = d.normalize()
+                for c, v in zip(out["コード"], age):
+                    ck = canonical_code_for_db(c)
+                    try:
+                        fv = float(v); age_map[ck] = fv if math.isfinite(fv) else None
+                    except Exception:
+                        age_map[ck] = None
+                for code, ad in ann_map.items():
+                    g = ph_groups.get(code); cur = current_map.get(code); aget = age_map.get(code)
+                    if g is None or g.empty or cur is None: continue
+                    pre = g[g["_date"] < ad]
+                    if pre.empty: continue
+                    base = float(pre.iloc[-1]["終値"])
+                    if not math.isfinite(base) or base <= 0: continue
+                    pre_map[code] = base
+                    cur_ret = (cur / base - 1.0) * 100.0
+                    post = g[g["_date"] > ad].copy()
+                    max_high = cur
+                    if not post.empty:
+                        vals = pd.concat([pd.to_numeric(post["高値"], errors="coerce"), pd.to_numeric(post["終値"], errors="coerce")], ignore_index=True)
+                        vals = vals[vals.notna() & np.isfinite(vals)]
+                        if not vals.empty: max_high = max(max_high, float(vals.max()))
+                    max_ret = (max_high / base - 1.0) * 100.0
+                    draw = (cur / max_high - 1.0) * 100.0 if max_high > 0 else None
+                    cur_ret_map[code] = cur_ret; max_ret_map[code] = max_ret
+                    if draw is not None: draw_map[code] = draw
+                    if aget is None or aget < 0:
+                        state_txt, under_flag = "情報不足", 0
+                    elif aget == 0:
+                        state_txt, under_flag = "決算当日", 0
+                    elif aget <= 20:
+                        if cur_ret <= -3: state_txt, under_flag = "逆行・未評価", 1
+                        elif cur_ret <= 5 and max_ret <= 10: state_txt, under_flag = "未反応", 1
+                        elif cur_ret <= 10 and max_ret <= 15: state_txt, under_flag = "反応小", 1
+                        elif cur_ret <= 20: state_txt, under_flag = "一部反応", 0
+                        else: state_txt, under_flag = "織り込み進行", 0
+                    else:
+                        state_txt, under_flag = "決算後経過", 0
+                    absorb_map[code] = state_txt; under_map[code] = under_flag
+                out["決算前基準終値_探索"] = keys.map(pre_map)
+                out["決算後現在騰落率_pct_探索"] = keys.map(cur_ret_map)
+                out["決算後最大上昇率_pct_探索"] = keys.map(max_ret_map)
+                out["決算後高値から現在_pct_探索"] = keys.map(draw_map)
+                out["株価織り込み度_探索"] = keys.map(absorb_map).fillna("情報不足")
+                out["株価未反応フラグ_探索"] = keys.map(under_map).fillna(0).astype(int)
+    except Exception as e:
+        print(f"[repricing][WARN] price-underreaction overlay failed: {e}", flush=True)
+
+    # E) 独立ルート。厳密CORE再現ではなく、取りこぼしを抑えたCandidate Engine。
+    state = out.get("利益状態", pd.Series("情報不足", index=out.index)).fillna("情報不足").astype(str)
+    sales_yoy = _num_series("最新Q売上YoY_pct_正本")
+    profit_yoy = _num_series("最新Q利益YoY_pct_正本")
+    margin_delta = _num_series("利益率前年差_ppt_正本")
+    progress = _num_series("季節調整済進捗差分")
+    hist_n = _num_series("過去同Q件数")
+    future_yoy = _num_series("未来営業利益YoY_pct_探索")
+    future_state = out["未来方向_探索"].fillna("情報不足").astype(str)
+    age = _num_series("決算後営業日数")
+    cur_react = _num_series("決算後現在騰落率_pct_探索")
+    max_react = _num_series("決算後最大上昇率_pct_探索")
+    under = pd.to_numeric(out["株価未反応フラグ_探索"], errors="coerce").fillna(0).eq(1)
+
+    improve_states = {"🟢 黒字拡大","🟢 黒字転換","🟢 黒字化","🟠 赤字縮小","🟠 赤字解消目前"}
+    black_improve_states = {"🟢 黒字拡大","🟢 黒字転換","🟢 黒字化"}
+    bad_states = {"🔴 赤字転落","🔴 赤字拡大","🔴 赤字化","🟡 黒字減益"}
+    future_bad = {"減益予想","大幅減益予想","赤字転落予想","赤字拡大予想","ゼロ→赤字予想"}
+    future_growth = future_state.isin({"大幅成長予想","成長予想","黒字転換予想","赤字縮小予想","赤字解消予想","ゼロ→黒字予想"}) | (future_yoy.notna() & (future_yoy >= 5))
+    future_not_bad = ~future_state.isin(future_bad)
+    progress_good = progress.notna() & hist_n.notna() & (hist_n >= 2) & (progress >= 5)
+    progress_strong = progress.notna() & hist_n.notna() & (hist_n >= 2) & (progress >= 10)
+    sales_positive = sales_yoy.notna() & (sales_yoy >= 0)
+    sales_growth = sales_yoy.notna() & (sales_yoy >= 5)
+    margin_good = margin_delta.notna() & (margin_delta >= 1)
+    profit_large = profit_yoy.notna() & (profit_yoy >= 30)
+    improving = state.isin(improve_states)
+    black_improving = state.isin(black_improve_states)
+    rev_op = _num_series("TDnet営業益修正率")
+    rev_eps = _num_series("TDnetEPS修正率")
+    hard_down = (rev_op.notna() & (rev_op <= -3)) | (rev_op.isna() & rev_eps.notna() & (rev_eps <= -3))
+    hard_dilution = _num_series("希薄化重大フラグ").fillna(0).eq(1)
+    hard_block = hard_dilution
+    recent20 = age.notna() & (age >= 1) & (age <= 20)
+    recent40 = age.notna() & (age >= 1) & (age <= 40)
+    not_overreacted_40 = recent40 & (cur_react.isna() | (cur_react <= 15)) & (max_react.isna() | (max_react <= 25))
+
+    fundamental_early = (~hard_block) & improving & recent20 & under & (sales_positive | margin_good | progress_good)
+    cyclical_value = (~hard_block) & improving & (wait_count >= 3) & (sales_growth | margin_good | progress_good) & not_overreacted_40
+    earnings_accel = (~hard_block) & black_improving & sales_growth & (margin_good | profit_large | progress_good) & future_not_bad & (~hard_down)
+    conservative = (~hard_block) & recent40 & sales_positive & future_state.isin({"横ばい予想","成長予想"}) & (progress_strong | (profit_yoy.notna() & (profit_yoy >= 50)))
+    quality_under = (~hard_block) & black_improving & future_growth & (wait_count >= 2) & recent20 & under
+
+    out["FUNDAMENTAL_EARLY"] = fundamental_early.astype(int)
+    out["CYCLICAL_VALUE"] = cyclical_value.astype(int)
+    out["EARNINGS_ACCELERATION"] = earnings_accel.astype(int)
+    out["CONSERVATIVE_FORECAST"] = conservative.astype(int)
+    out["QUALITY_GROWTH_UNDERREACTION"] = quality_under.astype(int)
+
+    route_defs = [
+        ("FUNDAMENTAL_EARLY","🌱ファンダ初動"),
+        ("CYCLICAL_VALUE","🔄回復割安"),
+        ("EARNINGS_ACCELERATION","⚡業績加速"),
+        ("CONSERVATIVE_FORECAST","🧮予想保守"),
+        ("QUALITY_GROWTH_UNDERREACTION","💎成長未反応"),
+    ]
+    route_count = pd.Series(0, index=out.index, dtype=int)
+    route_text = pd.Series("", index=out.index, dtype=object)
+    for col, label in route_defs:
+        on = pd.to_numeric(out[col], errors="coerce").fillna(0).eq(1)
+        route_count = route_count + on.astype(int)
+        route_text = pd.Series(np.where(on, np.where(route_text.eq(""), label, route_text + " / " + label), route_text), index=out.index, dtype=object)
+    repricing = route_count.gt(0)
+    out["再評価候補"] = repricing.astype(int)
+    out["再評価ルート"] = route_text
+
+    future_support = future_growth | future_state.eq("横ばい予想")
+    rank_num = pd.Series(0, index=out.index, dtype=int)
+    rank_num.loc[repricing] = 1
+    rank_num.loc[repricing & under] = 2
+    rank_num.loc[repricing & under & (route_count >= 2)] = 3
+    rank_num.loc[repricing & under & (route_count >= 2) & future_support & (wait_count >= 2)] = 4
+    out["再評価探索順位"] = rank_num
+    out["再評価探索ランク"] = rank_num.map({4:"S",3:"A",2:"B",1:"C",0:"-"}).fillna("-")
+    out["再評価余地"] = np.select([rank_num.eq(4),rank_num.eq(3),rank_num.eq(2),rank_num.eq(1)], ["高","中〜高","中","要確認"], default="-")
+
+    def _reason_row(r):
+        facts = []
+        for label, key, suffix in (("売上","最新Q売上YoY_pct_正本","%"),("利益","最新Q利益YoY_pct_正本","%"),("利益率差","利益率前年差_ppt_正本","pt"),("進捗差","季節調整済進捗差分","pt"),("未来","未来営業利益YoY_pct_探索","%"),("決算後","決算後現在騰落率_pct_探索","%")):
+            try:
+                x = float(r.get(key))
+                if math.isfinite(x): facts.append(f"{label}{x:+.1f}{suffix}")
+            except Exception: pass
+        if str(r.get("利益状態") or "") not in ("","情報不足"): facts.append(str(r.get("利益状態")))
+        if str(r.get("株価織り込み度_探索") or "") not in ("","情報不足"): facts.append(str(r.get("株価織り込み度_探索")))
+        facts.append(f"待てる{int(r.get('待てる条件数_探索') or 0)}/5")
+        return " / ".join(facts[:8])
+
+    def _warn_row(r):
+        warns = []
+        if int(r.get("希薄化重大フラグ") or 0) == 1: warns.append("重大希薄化")
+        if str(r.get("利益状態") or "") in bad_states: warns.append(str(r.get("利益状態")))
+        if str(r.get("未来方向_探索") or "") in future_bad: warns.append(str(r.get("未来方向_探索")))
+        try:
+            if float(r.get("決算後最大上昇率_pct_探索")) >= 25: warns.append("株価反応済み")
+        except Exception: pass
+        if str(r.get("未来方向_探索") or "") == "情報不足": warns.append("未来予想不足")
+        return " / ".join(dict.fromkeys(warns))
+
+    out["再評価理由"] = out.apply(_reason_row, axis=1)
+    out["再評価注意"] = out.apply(_warn_row, axis=1)
+    try:
+        counts = {c:int(pd.to_numeric(out[c], errors="coerce").fillna(0).eq(1).sum()) for c,_ in route_defs}
+        print("[repricing] " + f"candidate={int(repricing.sum())} S={int(rank_num.eq(4).sum())} A={int(rank_num.eq(3).sum())} B={int(rank_num.eq(2).sum())} C={int(rank_num.eq(1).sum())} " + " ".join(f"{k}={v}" for k,v in counts.items()), flush=True)
+    except Exception:
+        pass
+    return out
+
+
+
+# === POST-EARNINGS-MIGRATION-V1 ===
+def _apply_post_earnings_strategy_overlay(df_cand: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    """決算後専用3ルートを本線へ統合。既存LIVE candidate gate/priorityは変更しない。"""
+    if df_cand is None or df_cand.empty:
+        return df_cand
+    out = df_cand.copy()
+    defaults = {
+        "POST_EARNINGS":0, "POST_EARNINGS_CONTINUATION":0, "POST_EARNINGS_RECOVERY":0,
+        "GOOD_EARNINGS_OVERSOLD":0, "POST_EARNINGS_SCORE":0.0, "POST_EARNINGS_TYPE":"",
+        "POST_EARNINGS_REASON":"", "決算後D1騰落率_pct":np.nan,
+    }
+    for c,v in defaults.items():
+        out[c]=v
+    if "コード" not in out.columns:
+        return out
+    keys=out["コード"].map(canonical_code_for_db)
+
+    def _num(name):
+        return pd.to_numeric(out[name],errors="coerce") if name in out.columns else pd.Series(np.nan,index=out.index,dtype=float)
+
+    # 最新実決算と一致するD1だけを採用
+    d1_map={}
+    try:
+        tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "earnings_reaction_labels" in tables:
+            cols={r[1] for r in conn.execute("PRAGMA table_info(earnings_reaction_labels)").fetchall()}
+            if {"コード","発表日時","D1終値騰落率"}.issubset(cols):
+                upd="updated_at" if "updated_at" in cols else "NULL AS updated_at"
+                rdf=pd.read_sql_query(
+                    f"SELECT rowid AS _rowid,コード,発表日時,D1終値騰落率,{upd} FROM earnings_reaction_labels WHERE D1終値騰落率 IS NOT NULL",
+                    conn
+                )
+                if not rdf.empty:
+                    rdf["_raw"]=rdf["コード"].astype(str).str.strip()
+                    rdf["コード"]=rdf["コード"].map(canonical_code_for_db)
+                    rdf["_event"]=rdf["発表日時"].map(_p1_608_jst_naive_ts)
+                    rdf["_upd"]=rdf.get("updated_at").map(_p1_608_jst_naive_ts)
+                    rdf["_canon"]=(rdf["_raw"].str.upper()==rdf["コード"].astype(str).str.upper()).astype(int)
+                    rdf["D1終値騰落率"]=pd.to_numeric(rdf["D1終値騰落率"],errors="coerce")
+                    rdf=rdf[rdf["コード"].astype(bool)&rdf["_event"].notna()&rdf["D1終値騰落率"].notna()].copy()
+                    rdf["_day"]=rdf["_event"].dt.strftime("%Y-%m-%d")
+                    rdf=(rdf.sort_values(["コード","_day","_upd","_canon","_rowid"],kind="stable",na_position="first")
+                           .drop_duplicates(["コード","_day"],keep="last"))
+                    actual={}
+                    if "最新決算発表日" in out.columns:
+                        for k,v in zip(keys.tolist(),out["最新決算発表日"].tolist()):
+                            if not k or v in (None,""): continue
+                            try: actual[k]=str(pd.Timestamp(v).date())
+                            except Exception: actual[k]=str(v)[:10]
+                    for _,rr in rdf.iterrows():
+                        code=canonical_code_for_db(rr.get("コード"))
+                        if code and actual.get(code)==str(rr.get("_day") or ""):
+                            try:
+                                x=float(rr["D1終値騰落率"])
+                                if math.isfinite(x): d1_map[code]=x
+                            except Exception: pass
+    except Exception as e:
+        print(f"[post-earnings][WARN] D1 reaction overlay failed: {e}",flush=True)
+    out["決算後D1騰落率_pct"]=keys.map(d1_map)
+
+    age=_num("決算後営業日数"); cur=_num("決算後現在騰落率_pct_探索")
+    mx=_num("決算後最大上昇率_pct_探索"); draw=_num("決算後高値から現在_pct_探索")
+    d1=_num("決算後D1騰落率_pct"); sales=_num("最新Q売上YoY_pct_正本"); profit=_num("最新Q利益YoY_pct_正本")
+    margin=_num("利益率前年差_ppt_正本"); prog=_num("季節調整済進捗差分"); hist=_num("過去同Q件数")
+    future=_num("未来営業利益YoY_pct_探索"); revop=_num("TDnet営業益修正率"); reveps=_num("TDnetEPS修正率")
+    dilution=_num("希薄化重大フラグ").fillna(0).eq(1)
+    state=out.get("利益状態",pd.Series("情報不足",index=out.index)).fillna("情報不足").astype(str)
+    fdir=out.get("未来方向_探索",pd.Series("情報不足",index=out.index)).fillna("情報不足").astype(str)
+
+    healthy=state.isin({"🟢 黒字拡大","🟢 黒字転換","🟢 黒字化"})
+    improving=healthy|state.isin({"🟠 赤字縮小","🟠 赤字解消目前"})
+    future_bad=fdir.isin({"減益予想","大幅減益予想","赤字転落予想","赤字拡大予想","ゼロ→赤字予想"})|(future.notna()&(future<=-20))
+    hard_down=(revop.notna()&(revop<=-3))|(revop.isna()&reveps.notna()&(reveps<=-3))
+    recent=age.notna()&(age>=1)&(age<=20)
+    prog_good=prog.notna()&hist.notna()&(hist>=2)&(prog>=5)
+    growth_good=(sales.notna()&(sales>=5))|(profit.notna()&(profit>=20))|(margin.notna()&(margin>=1))|prog_good
+    good_result=recent&improving&growth_good&~future_bad&~hard_down&~dilution
+
+    continuation=good_result&cur.notna()&(cur>=5)&draw.notna()&(draw>=-4)
+    recovery=good_result&d1.notna()&(d1<0)&cur.notna()&(cur>=5)&draw.notna()&(draw>=-4)
+    oversold=good_result&~continuation&(
+        (d1.notna()&(d1<=-3))|(cur.notna()&(cur<=-3))|((cur.notna()&(cur<=2))&(mx.notna()&(mx<=8)))
+    )
+
+    out["POST_EARNINGS_CONTINUATION"]=continuation.astype(int)
+    out["POST_EARNINGS_RECOVERY"]=recovery.astype(int)
+    out["GOOD_EARNINGS_OVERSOLD"]=oversold.astype(int)
+    out["POST_EARNINGS"]=(continuation|recovery|oversold).astype(int)
+
+    score=pd.Series(0.0,index=out.index,dtype=float)
+    score+=healthy.astype(float)*20+growth_good.astype(float)*15+prog_good.astype(float)*10
+    score+=(future.notna()&(future>=5)).astype(float)*10+(d1.notna()&(d1<0)).astype(float)*5
+    score+=continuation.astype(float)*20+recovery.astype(float)*15+oversold.astype(float)*10
+    score+=(draw.notna()&(draw>=-4)).astype(float)*5
+    out["POST_EARNINGS_SCORE"]=score.clip(0,100).round(1)
+
+    typ=pd.Series("",index=out.index,dtype=object)
+    typ.loc[oversold]="GOOD_EARNINGS_OVERSOLD"
+    typ.loc[continuation]="POST_EARNINGS_CONTINUATION"
+    typ.loc[recovery]="POST_EARNINGS_RECOVERY"
+    out["POST_EARNINGS_TYPE"]=typ
+
+    def _reason(r):
+        if int(r.get("POST_EARNINGS") or 0)!=1: return ""
+        label={"POST_EARNINGS_CONTINUATION":"好決算後の評価継続","POST_EARNINGS_RECOVERY":"D1売り→評価反転","GOOD_EARNINGS_OVERSOLD":"好決算売られすぎ監視"}.get(str(r.get("POST_EARNINGS_TYPE") or ""),"")
+        p=[label] if label else []
+        for nm,key in (("D1","決算後D1騰落率_pct"),("決算前比","決算後現在騰落率_pct_探索"),("高値から","決算後高値から現在_pct_探索"),("利益","最新Q利益YoY_pct_正本"),("進捗差","季節調整済進捗差分")):
+            try:
+                x=float(r.get(key))
+                if math.isfinite(x): p.append(f"{nm}{x:+.1f}%")
+            except Exception: pass
+        return " / ".join(p[:7])
+    out["POST_EARNINGS_REASON"]=out.apply(_reason,axis=1)
+    try:
+        print(f"[post-earnings] all={int(out['POST_EARNINGS'].sum())} continuation={int(out['POST_EARNINGS_CONTINUATION'].sum())} recovery={int(out['POST_EARNINGS_RECOVERY'].sum())} oversold={int(out['GOOD_EARNINGS_OVERSOLD'].sum())}",flush=True)
+    except Exception: pass
+    return out
+# === /POST-EARNINGS-MIGRATION-V1 ===
+
+
+def _build_repricing_discovery_feed(rows: list[dict], limit: int | None = None) -> tuple[list[dict], dict]:
+    '''REPRICING-DISCOVERY-V1: 既存LIVE候補とは別系統の監査用候補feed。'''
+    cap = max(1, int(limit or LIVE_CANDIDATE_MAX))
+    items = []
+    route_cols = ("FUNDAMENTAL_EARLY","CYCLICAL_VALUE","EARNINGS_ACCELERATION","CONSERVATIVE_FORECAST","QUALITY_GROWTH_UNDERREACTION")
+    for r in rows:
+        try:
+            if int(float(_live_get(r,"再評価候補") or 0)) != 1: continue
+        except Exception:
+            continue
+        code = _live_stock_code(_live_get(r,"コード"), _live_get(r,"市場"), _live_get(r,"銘柄名"))
+        if not code: continue
+        active = [c for c in route_cols if _live_flag(r,c)]
+        if not active: continue
+        items.append({
+            "code":str(code), "name":str(_live_get(r,"銘柄名") or ""), "market":str(_live_get(r,"市場") or ""),
+            "routes":active, "route_count":len(active),
+            "discovery_rank":str(_live_get(r,"再評価探索ランク") or "-"),
+            "discovery_rank_value":int(_live_num(_live_get(r,"再評価探索順位")) or 0),
+            "repricing_room":str(_live_get(r,"再評価余地") or "-"),
+            "reason":str(_live_get(r,"再評価理由") or "")[:500], "warning":str(_live_get(r,"再評価注意") or "")[:300],
+            "current_price":_live_num(_live_get(r,"現在値_raw","現在値")), "turnover_oku":_live_num(_live_get(r,"売買代金億","売買代金(億)")),
+            "latest_earnings_date":_live_get(r,"最新決算発表日"), "earnings_age_business_days":_live_num(_live_get(r,"決算後営業日数")),
+            "post_earnings_return_pct":_live_num(_live_get(r,"決算後現在騰落率_pct_探索")), "post_earnings_max_return_pct":_live_num(_live_get(r,"決算後最大上昇率_pct_探索")),
+            "post_earnings_strategy":bool(_live_flag(r,"POST_EARNINGS")), "post_earnings_type":str(_live_get(r,"POST_EARNINGS_TYPE") or ""),
+            "post_earnings_score":_live_num(_live_get(r,"POST_EARNINGS_SCORE")), "post_earnings_d1_return_pct":_live_num(_live_get(r,"決算後D1騰落率_pct")),
+            "good_earnings_oversold":bool(_live_flag(r,"GOOD_EARNINGS_OVERSOLD")), "post_earnings_reason":str(_live_get(r,"POST_EARNINGS_REASON") or "")[:400],
+            "underreaction":bool(_live_flag(r,"株価未反応フラグ_探索")), "future_direction":str(_live_get(r,"未来方向_探索") or "情報不足"),
+            "future_op_yoy_pct":_live_num(_live_get(r,"未来営業利益YoY_pct_探索")),
+            "forecast_source":str(_live_get(r,"会社予想ソース_探索") or "情報不足"), "forecast_fiscal":_live_get(r,"会社予想年度_探索"),
+            "sales_yoy_pct":_live_num(_live_get(r,"最新Q売上YoY_pct_正本")),
+            "profit_yoy_pct":_live_num(_live_get(r,"最新Q利益YoY_pct_正本")), "margin_delta_ppt":_live_num(_live_get(r,"利益率前年差_ppt_正本")),
+            "seasonal_progress_delta_ppt":_live_num(_live_get(r,"季節調整済進捗差分")), "waitable_count":int(_live_num(_live_get(r,"待てる条件数_探索")) or 0),
+            "waitable_grade":str(_live_get(r,"待てる評価_探索") or "-"), "pbr":_live_num(_live_get(r,"PBR")), "equity_ratio":_live_num(_live_get(r,"自己資本比率")),
+            "dividend_yield_pct":_live_num(_live_get(r,"配当利回り_pct_探索")), "major_dilution":bool(_live_flag(r,"希薄化重大フラグ")),
+        })
+    rank_order = {"S":4,"A":3,"B":2,"C":1,"-":0}; room_order = {"高":4,"中〜高":3,"中":2,"要確認":1,"-":0}
+    items.sort(key=lambda x:(rank_order.get(x.get("discovery_rank"),0),int(bool(x.get("underreaction"))),int(x.get("route_count") or 0),room_order.get(x.get("repricing_room"),0),int(x.get("waitable_count") or 0),float(x.get("turnover_oku") or 0.0),x.get("code") or ""), reverse=True)
+
+    # REPRICING-DISCOVERY-V1.1:
+    # statsは全母集団、JSON本体は上限件数。上限後だけ集計すると「市場に何件あったか」が消える。
+    all_items = list(items)
+    items = items[:cap]
+    for i, x in enumerate(items, start=1):
+        x["discovery_feed_rank"] = i
+    stats = {
+        "count": len(all_items),
+        "total_count": len(all_items),
+        "exported_count": len(items),
+        "max_candidates": cap,
+        **{c.lower(): sum(1 for x in all_items if c in (x.get("routes") or [])) for c in route_cols},
+        "rank_s": sum(1 for x in all_items if x.get("discovery_rank") == "S"),
+        "rank_a": sum(1 for x in all_items if x.get("discovery_rank") == "A"),
+        "rank_b": sum(1 for x in all_items if x.get("discovery_rank") == "B"),
+        "rank_c": sum(1 for x in all_items if x.get("discovery_rank") == "C"),
+    }
+    return items, stats
+
+
+
+# === WATCH-TIMING-V1: ファンダ候補の「待ち→接近→動き出し→買い条件到達」を状態化 ===
+def _ensure_watch_signal_state_schema(conn: sqlite3.Connection) -> None:
+    """買い時監視の最新状態と状態遷移履歴を専用テーブルへ保持する。"""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watch_signal_state (
+            code TEXT PRIMARY KEY,
+            state TEXT NOT NULL,
+            previous_state TEXT,
+            quality_score REAL,
+            price_score REAL,
+            trigger_score REAL,
+            route TEXT,
+            reason TEXT,
+            source TEXT,
+            first_seen_at TEXT,
+            state_changed_at TEXT,
+            last_seen_at TEXT,
+            notified_state TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watch_signal_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            from_state TEXT,
+            to_state TEXT NOT NULL,
+            quality_score REAL,
+            price_score REAL,
+            trigger_score REAL,
+            route TEXT,
+            reason TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_signal_history_code_time ON watch_signal_history(code, observed_at)")
+
+
+def _watch_f(v):
+    try:
+        if v is None: return None
+        x=float(str(v).replace(',', '').replace('円','').replace('%','').replace('％','').strip())
+        return x if math.isfinite(x) else None
+    except Exception:
+        return None
+
+
+def _watch_alpha_rank(v) -> float:
+    raw=str(v or '').strip().upper().replace('＋','+').replace('－','-')
+    m=re.match(r'^([SABCD])(\+\+|--|\+|-)?$', raw)
+    if not m: return 0.0
+    base={'S':100.0,'A':80.0,'B':60.0,'C':40.0,'D':20.0}[m.group(1)]
+    adj={'++':8.0,'+':4.0,'':0.0,'-':-4.0,'--':-8.0}.get(m.group(2) or '',0.0)
+    return max(0.0,min(100.0,base+adj))
+
+
+def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
+    """1銘柄を同一snapshotだけで評価。売買指示ではなく「確認優先度」の状態機械。"""
+    code=canonical_code_for_db(r.get('コード'))
+    px=_watch_f(r.get('現在値'))
+    discount=_watch_f(r.get('割安度'))
+    sales=_watch_f(r.get('直近売上YoY'))
+    op=_watch_f(r.get('直近営業益YoY'))
+    progress=_watch_f(r.get('季節調整済進捗差分'))
+    hist=_watch_f(r.get('過去同Q件数'))
+    future=_watch_f(r.get('未来営業利益YoY_pct_探索'))
+    rev_op=_watch_f(r.get('TDnet営業益修正率'))
+    rev_eps=_watch_f(r.get('TDnetEPS修正率'))
+    sup=_watch_f(r.get('最寄り支持')) or _watch_f(r.get('支持帯中心'))
+    res=_watch_f(r.get('最寄り抵抗')) or _watch_f(r.get('抵抗帯中心'))
+    ma5=_watch_f(r.get('5日'))
+    ma25=_watch_f(r.get('25日'))
+    atr=_watch_f(r.get('ATR14')) or _watch_f(r.get('ATR_14'))
+    day_low=_watch_f(r.get('安値'))
+    mechanical_stop=_watch_f(r.get('損切目安価格'))
+    rvol=_watch_f(r.get('RVOL代金'))
+    rs5=_watch_f(r.get('RS_5'))
+    rs20=_watch_f(r.get('RS_20'))
+    dayret=_watch_f(r.get('前日終値比率'))
+    now_rank=_watch_f(r.get('今買えるランク')) or 0.0
+    bottom=_watch_f(r.get('底反転スコア')) or 0.0
+    steady=_watch_f(r.get('持続上昇スコア')) or 0.0
+    im=int(_watch_f(r.get('INITIAL_MOMENTUM')) or 0)
+    alpha=_watch_alpha_rank(r.get('overall_alpha'))
+    st=str(r.get('利益状態') or r.get('営業利益状態') or '情報不足').strip()
+    epsq=str(r.get('EPS品質') or '').strip()
+    heat=str(r.get('イナゴ過熱判定') or '')
+    env=str(r.get('地合い込み一次判定') or '')
+    future_dir=str(r.get('未来方向_探索') or '')
+    dilution=int(_watch_f(r.get('希薄化重大フラグ')) or 0)
+    route_cols=('FUNDAMENTAL_EARLY','CYCLICAL_VALUE','EARNINGS_ACCELERATION','CONSERVATIVE_FORECAST','QUALITY_GROWTH_UNDERREACTION')
+    routes=[k for k in route_cols if int(_watch_f(r.get(k)) or 0)==1]
+    repricing=int(_watch_f(r.get('再評価候補')) or 0)==1
+    repr_rank=str(r.get('再評価探索ランク') or '').strip().upper()
+    age=_watch_f(r.get('決算後営業日数'))
+
+    healthy=st in {'🟢 黒字拡大','🟢 黒字転換','🟢 黒字化'}
+    improving=healthy or st in {'🟠 赤字縮小','🟠 赤字解消目前'}
+    hard_down=(rev_op is not None and rev_op <= -5) or (rev_op is None and rev_eps is not None and rev_eps <= -5)
+    severe_bad=(dilution==1 or hard_down or st in {'🔴 赤字転落','🔴 赤字拡大','🔴 赤字化'} or
+                (future is not None and future <= -20) or
+                (sales is not None and sales <= -20 and op is not None and op <= 0))
+
+    # JSのファンダ本命と同じ思想（厳格な正本）をPython監視母集団でも再現。
+    fund_main=(healthy and not hard_down and dilution!=1 and
+               (sales is None or sales > -10) and
+               not (hist is not None and hist >= 2 and progress is not None and progress <= -10) and
+               discount is not None and discount >= 15 and alpha >= 80 and epsq == '通常')
+    quality_growth=(improving and not severe_bad and alpha >= 84 and
+                    ((op is not None and op >= 15) or (sales is not None and sales >= 10) or (future is not None and future >= 10)))
+    repricing_good=(repricing and not severe_bad and (repr_rank in {'S','A'} or len(routes) >= 2))
+    post_main=bool(fund_main and age is not None and 0 <= age <= 10)
+    post_cont=int(_watch_f(r.get('POST_EARNINGS_CONTINUATION')) or 0)==1
+    post_recovery=int(_watch_f(r.get('POST_EARNINGS_RECOVERY')) or 0)==1
+    post_oversold=int(_watch_f(r.get('GOOD_EARNINGS_OVERSOLD')) or 0)==1
+
+    # QUALITY 0-100: 「会社を欲しい度」。価格・短期需給は混ぜない。
+    q=0.0
+    q += min(32.0, alpha*0.32)
+    if healthy: q += 18
+    elif improving: q += 10
+    if sales is not None:
+        q += 10 if sales >= 20 else (7 if sales >= 10 else (3 if sales >= 0 else -5))
+    if op is not None:
+        q += 14 if op >= 50 else (10 if op >= 20 else (5 if op > 0 else -6))
+    if progress is not None and hist is not None and hist >= 2:
+        q += 9 if progress >= 10 else (6 if progress >= 5 else (-7 if progress <= -10 else 0))
+    if future is not None:
+        q += 10 if future >= 20 else (6 if future >= 5 else (-10 if future <= -20 else 0))
+    elif future_dir in {'成長予想','大幅成長予想'}:
+        q += 5
+    if len(routes) >= 3: q += 8
+    elif len(routes) == 2: q += 5
+    elif len(routes) == 1: q += 2
+    if post_cont: q += 6
+    if post_recovery: q += 8
+    if post_oversold: q += 5
+    if hard_down: q -= 25
+    if dilution==1: q -= 40
+    quality=max(0.0,min(100.0,q))
+
+    source=[]
+    if fund_main: source.append('FUNDAMENTAL_MAIN')
+    if post_main: source.append('POST_EARNINGS_MAIN')
+    if post_cont: source.append('POST_EARNINGS_CONTINUATION')
+    if post_recovery: source.append('POST_EARNINGS_RECOVERY')
+    if post_oversold: source.append('GOOD_EARNINGS_OVERSOLD')
+    if repricing_good: source.append('REPRICING')
+    if quality_growth: source.append('QUALITY_GROWTH')
+    candidate=bool(source) and quality >= 65 and px is not None and px > 0
+
+    # PRICE 0-100: 安くなった/支持へ来た度。単なる下落率ではなく「価値+支持」を優先。
+    ps=0.0; price_reasons=[]
+    if px is not None and px > 0 and sup is not None and sup > 0:
+        gap=(px/sup-1.0)*100.0
+        if -2.0 <= gap <= 1.0: ps+=38; price_reasons.append(f'支持まで{gap:+.1f}%')
+        elif 1.0 < gap <= 3.0: ps+=30; price_reasons.append(f'支持まで+{gap:.1f}%')
+        elif 3.0 < gap <= 5.0: ps+=18; price_reasons.append(f'支持まで+{gap:.1f}%')
+        elif -5.0 <= gap < -2.0: ps+=12; price_reasons.append(f'支持割れ{gap:.1f}%')
+    if discount is not None:
+        if discount >= 50: ps+=28
+        elif discount >= 30: ps+=23
+        elif discount >= 20: ps+=18
+        elif discount >= 15: ps+=12
+        if discount >= 20: price_reasons.append(f'割安度{discount:.0f}%')
+    if px is not None and px > 0 and ma25 is not None and ma25 > 0:
+        g25=abs(px/ma25-1.0)*100.0
+        if g25 <= 2.0: ps+=18; price_reasons.append('25日線±2%')
+        elif g25 <= 4.0: ps+=10
+    if px is not None and px > 0 and res is not None and res > px:
+        room=(res/px-1.0)*100.0
+        if room >= 8: ps+=12
+        elif room >= 4: ps+=7
+        elif room < 1.5: ps-=8
+    price=max(0.0,min(100.0,ps))
+
+    # TRIGGER 0-100: 「市場が評価し始めた度」。既存短期エンジンを再利用。
+    ts=0.0; trigger_reasons=[]
+    if im==1: ts+=28; trigger_reasons.append('INITIAL_MOMENTUM')
+    if bottom >= 70: ts+=25; trigger_reasons.append(f'底反転{bottom:.0f}')
+    elif bottom >= 50: ts+=18
+    if steady >= 70: ts+=22; trigger_reasons.append(f'持続{steady:.0f}')
+    elif steady >= 50: ts+=12
+    if rvol is not None:
+        if rvol >= 1.5: ts+=20; trigger_reasons.append(f'RVOL{rvol:.2f}')
+        elif rvol >= 1.2: ts+=13
+        elif rvol >= 0.9: ts+=5
+    # RSはデータ世代によって0.03(=3%) / 3.0(=3%)の両表現があり得るので正規化。
+    def _rs_pct(x):
+        if x is None: return None
+        return x*100.0 if abs(x) <= 2.0 else x
+    rs5p=_rs_pct(rs5); rs20p=_rs_pct(rs20)
+    if rs5p is not None:
+        if rs5p >= 3: ts+=16; trigger_reasons.append(f'RS5 {rs5p:+.1f}%')
+        elif rs5p > 0: ts+=9
+    if rs5p is not None and rs20p is not None and rs5p > rs20p: ts+=6
+    if dayret is not None:
+        if dayret >= 2: ts+=12
+        elif dayret >= 0.5: ts+=6
+    if px is not None and ma5 is not None and ma5 > 0 and px >= ma5: ts+=7
+    if now_rank >= 3: ts+=15; trigger_reasons.append('今買える3')
+    elif now_rank >= 2: ts+=9
+    if '🔥過熱' in heat or ('過熱' in heat and '微熱' not in heat): ts-=22
+    elif '微熱' in heat: ts-=5
+    trigger=max(0.0,min(100.0,ts))
+
+    env_block=('×' in env or '新規抑制' in env)
+    heat_block=('🔥過熱' in heat or ('過熱' in heat and '微熱' not in heat))
+
+    # 既存監視銘柄だけは、前提崩壊をBROKENとして残す。初見の悪い銘柄を大量表示しない。
+    if prev_state and (severe_bad or (not candidate and quality < 50)):
+        state='BROKEN'; route='BROKEN'
+    elif not candidate:
+        state='NONE'; route=''
+    else:
+        ready_price=(price >= 70 and trigger >= 45)
+        ready_start=(price >= 50 and trigger >= 65)
+        # 既存の「今買えるランク3」は価格・地合い・支持抵抗を既に統合した厳格判定。
+        # WATCH側で同じ条件を二重に要求せず、高品質ファンダならREADYへ昇格させる。
+        ready_existing=(now_rank >= 3 and quality >= 68 and not post_oversold)
+        if (ready_existing or (quality >= 70 and (ready_price or ready_start))) and not env_block and not heat_block:
+            state='READY'; route='ENTRY_NOW' if ready_existing else ('BOTH' if price >= 60 and trigger >= 60 else ('PRICE' if ready_price else 'START'))
+        elif trigger >= 60:
+            state='START'; route='START'
+        elif price >= 60:
+            state='NEAR'; route='PRICE'
+        else:
+            state='WATCH'; route='WAIT'
+
+    # WATCH-RISK-V1: 通知候補と同時に「シナリオ無効化価格」を固定する。
+    # 固定-3/-5%ではなく、支持・MA・当日安値・既存ATR損切りからroute別に決める。
+    exit_price=None
+    exit_reason=''
+    risk_pct=None
+    risk_per_share=None
+    risk_100=None
+    risk_level=''
+    risk_judgement=''
+    max_shares_by_risk=None
+
+    if px is not None and px > 0 and state in {'WATCH','NEAR','START','READY'}:
+        _atr = atr if atr is not None and atr > 0 else None
+        _candidates=[]
+
+        def _add_exit(label, anchor_price, atr_mult=0.35, pct_buffer=0.008):
+            if anchor_price is None or anchor_price <= 0 or anchor_price >= px:
+                return
+            stop = (float(anchor_price)-float(_atr)*float(atr_mult)) if _atr is not None else float(anchor_price)*(1.0-float(pct_buffer))
+            if stop > 0 and stop < px:
+                _candidates.append((stop,label))
+
+        if route in {'PRICE','BOTH','ENTRY_NOW'}:
+            _add_exit('支持帯割れ', sup, 0.35, 0.008)
+            _add_exit('25日線割れ', ma25, 0.45, 0.010)
+        if route in {'START','BOTH','ENTRY_NOW'}:
+            _add_exit('5日線・初動失敗', ma5, 0.40, 0.010)
+            _add_exit('当日安値割れ', day_low, 0.25, 0.006)
+            _add_exit('支持帯割れ', sup, 0.35, 0.008)
+        if post_recovery or post_oversold or post_cont:
+            _add_exit('決算後支持割れ', sup, 0.40, 0.010)
+            _add_exit('反転安値割れ', day_low, 0.30, 0.008)
+        if mechanical_stop is not None and 0 < mechanical_stop < px:
+            _candidates.append((float(mechanical_stop),'既存ATR損切目安'))
+
+        if _candidates:
+            _valid=[x for x in _candidates if (px-x[0])/px*100.0 >= 0.3]
+            chosen=max((_valid or _candidates), key=lambda x:x[0])
+            exit_price=round(float(chosen[0]),1)
+            exit_reason=str(chosen[1])
+            risk_per_share=max(0.0,float(px)-float(exit_price))
+            risk_pct=(risk_per_share/float(px))*100.0
+            risk_100=risk_per_share*100.0
+            if risk_pct <= 2.5: risk_level='🟢低'
+            elif risk_pct <= 4.5: risk_level='🟡中'
+            elif risk_pct <= 7.0: risk_level='🟠高'
+            else: risk_level='🔴非常に高'
+            if WATCH_MAX_TRADE_RISK_YEN > 0:
+                if risk_per_share > 0:
+                    raw_shares=int(WATCH_MAX_TRADE_RISK_YEN // risk_per_share)
+                    max_shares_by_risk=max(0,(raw_shares//100)*100)
+                risk_judgement=(f'許容内（上限{WATCH_MAX_TRADE_RISK_YEN:,.0f}円）' if risk_100 <= WATCH_MAX_TRADE_RISK_YEN else f'100株で許容超過（上限{WATCH_MAX_TRADE_RISK_YEN:,.0f}円）')
+            else:
+                risk_judgement='許容額未設定'
+
+    reasons=[]
+    if source: reasons.append('/'.join(source))
+    if state=='BROKEN':
+        if dilution==1: reasons.append('重大希薄化')
+        if hard_down: reasons.append('下方修正')
+        if st.startswith('🔴'): reasons.append(st)
+        if future is not None and future <= -20: reasons.append(f'将来営業益{future:.0f}%')
+        if not reasons: reasons.append('監視基準から脱落')
+    else:
+        reasons.extend(price_reasons[:2])
+        reasons.extend(trigger_reasons[:2])
+        if env_block and state in {'NEAR','START'}: reasons.append('地合い込み新規抑制')
+    reason=' / '.join(reasons[:6])
+    return {
+        'code':code,'state':state,'quality':round(quality,1),'price':round(price,1),'trigger':round(trigger,1),
+        'route':route,'reason':reason,'source':','.join(source),
+        'exit_price':exit_price,
+        'risk_pct':(None if risk_pct is None else round(risk_pct,2)),
+        'risk_per_share_yen':(None if risk_per_share is None else round(risk_per_share,1)),
+        'risk_100_shares_yen':(None if risk_100 is None else round(risk_100,0)),
+        'risk_level':risk_level,'risk_judgement':risk_judgement,
+        'max_shares_by_risk':max_shares_by_risk,'exit_reason':exit_reason,
+    }
+
+
+def _apply_watch_signal_overlay(rows: list[dict], conn: sqlite3.Connection) -> tuple[list[dict], list[dict], dict]:
+    """rowsへWATCH_*を付与し、HTML成功後commitするpending状態を返す。"""
+    _ensure_watch_signal_state_schema(conn)
+    prev={}
+    try:
+        prev={str(c):str(st or '') for c,st in conn.execute('SELECT code,state FROM watch_signal_state').fetchall()}
+    except Exception:
+        prev={}
+    pending=[]; counts={k:0 for k in ('WATCH','NEAR','START','READY','BROKEN')}
+    for r in rows:
+        code=canonical_code_for_db(r.get('コード'))
+        ev=_watch_eval_row(r, prev.get(code))
+        state=ev['state']
+        r['WATCH_STATE']=state
+        r['WATCH_QUALITY']=ev['quality']
+        r['PRICE_OPPORTUNITY']=ev['price']
+        r['TRIGGER_SCORE']=ev['trigger']
+        r['WATCH_ROUTE']=ev['route']
+        r['WATCH_REASON']=ev['reason']
+        r['WATCH_SOURCE']=ev['source']
+        r['EXIT_INVALIDATION_PRICE']=ev.get('exit_price')
+        r['EXIT_RISK_PCT']=ev.get('risk_pct')
+        r['EXIT_RISK_PER_SHARE_YEN']=ev.get('risk_per_share_yen')
+        r['EXIT_RISK_100_SHARES_YEN']=ev.get('risk_100_shares_yen')
+        r['EXIT_RISK_LEVEL']=ev.get('risk_level')
+        r['EXIT_RISK_JUDGEMENT']=ev.get('risk_judgement')
+        r['EXIT_MAX_SHARES_BY_RISK']=ev.get('max_shares_by_risk')
+        r['EXIT_REASON']=ev.get('exit_reason')
+        old=prev.get(code,'')
+        # 初回baselineは「状態変化通知」にしない。
+        changed=int(bool(old) and old != state)
+        r['WATCH_PREVIOUS_STATE']=old
+        r['WATCH_STATE_CHANGED']=changed
+        if state in counts: counts[state]+=1
+        if state!='NONE' or old:
+            pending.append({**ev,'previous_state':old,'changed':changed})
+    counts['TOTAL']=sum(counts.values())-counts.get('BROKEN',0)
+    return rows,pending,counts
+
+
+def _commit_watch_signal_state(conn: sqlite3.Connection, pending: list[dict]) -> None:
+    """HTML+dashboard_data.json成功後だけ監視状態をauthoritativeに進める。"""
+    if pending is None: return
+    _ensure_watch_signal_state_schema(conn)
+    now=_now_jst().isoformat(timespec='seconds')
+    cur=conn.cursor(); sp=f'sp_watch_state_{time.time_ns()}'
+    cur.execute(f'SAVEPOINT {sp}')
+    try:
+        for ev in pending:
+            code=str(ev.get('code') or '')
+            if not code: continue
+            state=str(ev.get('state') or 'NONE')
+            old=str(ev.get('previous_state') or '')
+            row=cur.execute('SELECT first_seen_at,state,notified_state FROM watch_signal_state WHERE code=?',(code,)).fetchone()
+            if state=='NONE':
+                # 前提悪化でなく自然に監視対象から外れた銘柄は状態表から退役。
+                if row:
+                    cur.execute('DELETE FROM watch_signal_state WHERE code=?',(code,))
+                continue
+            first_seen=(row[0] if row and row[0] else now)
+            current_old=(row[1] if row else old)
+            changed=bool(current_old and current_old != state)
+            changed_at=now if changed or not row else cur.execute('SELECT state_changed_at FROM watch_signal_state WHERE code=?',(code,)).fetchone()[0]
+            notified=(row[2] if row else state)  # Phase1初回は現状態をbaseline扱い。
+            cur.execute("""
+                INSERT INTO watch_signal_state(
+                    code,state,previous_state,quality_score,price_score,trigger_score,route,reason,source,
+                    first_seen_at,state_changed_at,last_seen_at,notified_state
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(code) DO UPDATE SET
+                    state=excluded.state, previous_state=excluded.previous_state,
+                    quality_score=excluded.quality_score, price_score=excluded.price_score,
+                    trigger_score=excluded.trigger_score, route=excluded.route, reason=excluded.reason,
+                    source=excluded.source, state_changed_at=excluded.state_changed_at,
+                    last_seen_at=excluded.last_seen_at, notified_state=excluded.notified_state
+            """,(code,state,current_old,ev.get('quality'),ev.get('price'),ev.get('trigger'),ev.get('route'),ev.get('reason'),ev.get('source'),first_seen,changed_at,now,notified))
+            if changed:
+                cur.execute("""
+                    INSERT INTO watch_signal_history(code,observed_at,from_state,to_state,quality_score,price_score,trigger_score,route,reason)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                """,(code,now,current_old,state,ev.get('quality'),ev.get('price'),ev.get('trigger'),ev.get('route'),ev.get('reason')))
+        cur.execute(f'RELEASE SAVEPOINT {sp}')
+    except Exception:
+        try:
+            cur.execute(f'ROLLBACK TO SAVEPOINT {sp}'); cur.execute(f'RELEASE SAVEPOINT {sp}')
+        except Exception: pass
+        raise
+    finally:
+        cur.close()
+# === /WATCH-TIMING-V1 ===
+
 def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates",
                                         include_log: bool=False, log_limit: int=2000):
-    """HTMLダッシュボード出力（1ファイル完結版：二重管理を廃止した高速一本化モデル）"""
+    """P4-DASH4-VT-SINGLE: 仮想スクロール版template.htmlからindex.htmlだけを生成する。
+
+    rows/data_json・monitor・LLM・LIVE feed等は1回だけ計算/更新する。旧全件DOM版とindex_vt.htmlは生成しない。
+    """
 
     try:
         from zoneinfo import ZoneInfo
@@ -13196,6 +16638,47 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
       FROM screener s
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
+    # FUND-QUALITY-V2: 予定日ではなくquarterly_actual_historyの実発表日をdashboardへ付与。
+    df_cand = _overlay_latest_actual_earnings_age(df_cand, conn)
+
+    # P4-DASH9: 信用倍率の最終整合ガード。
+    # PREOPEN日次markerにより phase_update_margin_metrics が再実行されない日でも、
+    # 買い残/売り残がcurrentに存在するのに信用倍率だけNULLという表示不整合を残さない。
+    # 売り残>0は買い残/売り残、売り残=0かつ買い残>0は既存内部規約どおり999.9で表現する。
+    if {"信用倍率", "買い残", "売り残"}.issubset(df_cand.columns):
+        _mr_reported = pd.to_numeric(df_cand["信用倍率"], errors="coerce")
+        _mr_buy = pd.to_numeric(df_cand["買い残"], errors="coerce")
+        _mr_sell = pd.to_numeric(df_cand["売り残"], errors="coerce")
+        _mr_calc = pd.Series(np.nan, index=df_cand.index, dtype=float)
+        _mr_known = _mr_buy.notna() & _mr_sell.notna()
+        _mr_calc.loc[_mr_known & (_mr_sell > 0)] = (
+            _mr_buy.loc[_mr_known & (_mr_sell > 0)] / _mr_sell.loc[_mr_known & (_mr_sell > 0)]
+        )
+        _mr_calc.loc[_mr_known & (_mr_sell == 0) & (_mr_buy > 0)] = 999.9
+        _mr_final = _mr_reported.combine_first(_mr_calc)
+        _mr_fill = _mr_reported.isna() & _mr_final.notna()
+        if bool(_mr_fill.any()):
+            df_cand.loc[_mr_fill, "信用倍率"] = _mr_final.loc[_mr_fill]
+            _mr_updates = [
+                (float(_mr_final.loc[i]), str(df_cand.loc[i, "コード"]))
+                for i in df_cand.index[_mr_fill]
+            ]
+            _mr_sp = f"sp_export_margin_ratio_{time.time_ns()}"
+            conn.execute(f"SAVEPOINT {_mr_sp}")
+            try:
+                conn.executemany(
+                    "UPDATE screener SET 信用倍率=? WHERE コード=? AND 信用倍率 IS NULL",
+                    _mr_updates,
+                )
+                conn.execute(f"RELEASE SAVEPOINT {_mr_sp}")
+                _p(f"margin ratio final guard: filled={len(_mr_updates)}")
+            except Exception:
+                try:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {_mr_sp}")
+                    conn.execute(f"RELEASE SAVEPOINT {_mr_sp}")
+                except Exception:
+                    pass
+                raise
 
     # P1-647: markerの無いraw値はこの実装が保存した「前回公開snapshot」ではない。
     # legacy DBの偶然残った推奨比率_rawをヒステリシスへ混ぜない。
@@ -13411,7 +16894,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         money   = ["売買代金(億)","売買代金億","売買代金20日平均億","RVOL代金","時価総額億円","初動売買代金億","初動出来高倍率20","初動代金倍率20","初動レンジ拡大率"]
         price   = ["現在値","前日終値","前日円差","始値","高値","安値","終値"]
         score   = [
-            "右肩早期スコア","合成スコア","スコア","INITIAL_MOMENTUM_SCORE",
+            "右肩上がりスコア","右肩早期スコア","合成スコア","スコア","INITIAL_MOMENTUM_SCORE",
             "シンデン総合スコア","シンデン正式スコア","シンデン参考スコア","シンデンソート値",
             "予想ギャップスコア","予想信頼性スコア",
             "予想根拠スコア","予想可視性スコア","未織り込みスコア",
@@ -13425,6 +16908,11 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
 
     _round2_inplace(df_cand)
+
+    # P4-DASH: 表示列ガード。欠損時は0点にせず未判定(None)のまま出す。
+    if "右肩上がりスコア" not in df_cand.columns:
+        df_cand["右肩上がりスコア"] = None
+        print("[right-up-score][WARN] screener列が無いためdashboardは未判定表示")
 
     # === 決算跨ぎワンクリックUI用 必須列ガード ===
     # shinden_logic.py が screener に保存した列をHTMLへ渡す。
@@ -13628,9 +17116,42 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         print(f"[seasonality][FATAL] 実行/反映失敗: {e}")
         raise RuntimeError("seasonality refresh failed; refusing stale seasonal metrics") from e
 
+    # REPRICING-DISCOVERY-V1: 研究知見を全銘柄へ広く付与。
+    # 既存候補gate/priorityは変えず、dashboardと別discovery feedへ載せる。
+    df_cand = _apply_repricing_discovery_overlay(df_cand, conn)
+    df_cand = _apply_post_earnings_strategy_overlay(df_cand, conn)
+    _tick("repricing_discovery_overlay")
+
     # ここで生成される rows には、自動的に予測値が含まれるようになります
     # 全銘柄の行整形は1回だけ実行する
+    # P4-DASH7: PTS表示は廃止。DBにlegacy列が残っていてもdashboard/JSONへは出さない。
+    _legacy_pts_cols = [c for c in ("PTS株価", "PTS時刻", "PTS取得日時") if c in df_cand.columns]
+    if _legacy_pts_cols:
+        df_cand = df_cand.drop(columns=_legacy_pts_cols)
     rows = _prepare_rows(df_cand, conn)
+
+    # P4-DASH2: dashboardとLIVE feedで同じrunの場中特徴量を共有し、
+    # 売買目的別6列を全銘柄へ付加する。失敗時は既存dashboardを壊さず空欄化する。
+    _dashboard_live_context = None
+    try:
+        _dashboard_live_context = _live_build_context(conn, rows)
+        _dashboard_apply_strategy_columns(conn, rows, _dashboard_live_context)
+        _signal_new = _entry_signal_capture_events(rows, _dashboard_live_context)
+        _signal_intraday = _entry_signal_refresh_intraday_outcomes((_dashboard_live_context or {}).get("trade_date"))
+        _signal_daily = _entry_signal_refresh_daily_outcomes(conn)
+        _p(
+            "strategy columns: 持越し/持続/底反転/急伸/材料先行/今買える attached "
+            f"/ buy-signal events new={_signal_new} intraday_refresh={_signal_intraday} daily_refresh={_signal_daily}"
+        )
+    except Exception as _strategy_e:
+        print(f"[dashboard-strategy][WARN] strategy enrichment failed: {_strategy_e}")
+        for _sr in rows:
+            _sr.setdefault("持越し適性ランク", 0); _sr.setdefault("持越し適性", "-")
+            _sr.setdefault("持続上昇スコア", None); _sr.setdefault("持続上昇フラグ", ""); _sr.setdefault("持続上昇", "-")
+            _sr.setdefault("底反転スコア", 0); _sr.setdefault("底反転", "-")
+            _sr.setdefault("急伸スコア", 0); _sr.setdefault("急伸", "-")
+            _sr.setdefault("材料先行スコア", 0); _sr.setdefault("材料先行", "-")
+            _sr.setdefault("今買えるランク", 0); _sr.setdefault("今買える", "-")
 
     # P1-647: DBへの保存はHTML atomic write成功後に行う。ここでは今回値だけ保持する。
     # 失敗runの推奨を「前回公開値」にしないため、export途中ではDBを進めない。
@@ -13722,12 +17243,14 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     rows = enrich_rows_with_price_summary(rows, summary_map)
     _tick("price_summary_enrich")
 
-    # P3-43: 前夜PTSはPREOPENだけ許可し、場中/EODは当日取得分以外をmask。
-    _mask_stale_pts_for_run(rows, _auto_run_mode())
-
     # chart / 移動平均 / ボリバン / GC / 三役
     enhance_with_chart_flags(conn, rows)
     _tick("chart_flags_enhance")
+
+    # WATCH-TIMING-V1: MA/RS/支持抵抗/短期戦略が揃った同一snapshotで監視状態を計算。
+    rows, _watch_state_pending, _watch_state_counts = _apply_watch_signal_overlay(rows, conn)
+    _p(f"watch timing: {_watch_state_counts}")
+    _tick("watch_timing_overlay")
     
     # P1-587: 決算リアクションは予測器より前でcurrent-run値へ確定済み。
     # ここでは再計算せず、同じsnapshotをrowsへ同期するだけにする。
@@ -13837,8 +17360,9 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         # P1-571: Algo_Factor/Algo_総合は割安度を入力に使うため、fair value再計算前に
         # 一度作ったAlgo列をそのまま出すと前回runの割安度が混ざる。今回の適正株価/割安度を
         # df_candへ戻して3Algoを再計算し、HTML rowsとLLM用df_candを同一snapshotへ揃える。
+        _fv_cols_now = ["コード", *FAIR_VALUE_OUTPUT_COLUMNS]
         _fv_now = pd.read_sql_query(
-            "SELECT コード, 適正株価, 割安度, 期待株価 FROM screener",
+            "SELECT " + ", ".join(f'"{c}"' for c in _fv_cols_now) + " FROM screener",
             conn,
         )
         _fv_map_now = {}
@@ -13846,14 +17370,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             for _, _fr in _fv_now.iterrows():
                 _fk = canonical_code_for_db(_fr.get("コード"))
                 if _fk:
-                    _fv_map_now[_fk] = {
-                        "適正株価": _fr.get("適正株価"),
-                        "割安度": _fr.get("割安度"),
-                        "期待株価": _fr.get("期待株価"),
-                    }
+                    _fv_map_now[_fk] = {c: _fr.get(c) for c in FAIR_VALUE_OUTPUT_COLUMNS}
         if "コード" in df_cand.columns:
             _cand_keys_now = df_cand["コード"].map(canonical_code_for_db)
-            for _fc in ("適正株価", "割安度", "期待株価"):
+            for _fc in FAIR_VALUE_OUTPUT_COLUMNS:
                 df_cand[_fc] = _cand_keys_now.map(
                     lambda _k, _c=_fc: (_fv_map_now.get(_k) or {}).get(_c)
                 )
@@ -13878,6 +17398,23 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         print(f"[fair-value][FATAL] 最新AI/インパクト・適正株価・Algo再同期に失敗: {e}")
         raise RuntimeError("fair-value/algo refresh failed; refusing inconsistent dashboard") from e
 
+    # P4-DASH6: 全個別株の最近の「買ってから伸びる/潰される」実績を背景統計にし、
+    # 各銘柄へ 相場耐性 -> 地合い込み一次判定 を付与する。候補集合ではなく全個別株が母集団。
+    _entry_env_asof = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+    _entry_env_meta = _dashboard_apply_entry_environment(conn, rows, _entry_env_asof)
+    meta["entry_environment"] = _entry_env_meta
+    _p(
+        "entry-env: all-stock follow-through attached "
+        f"universe={_entry_env_meta.get('universe_count',0)} "
+        f"regime={_entry_env_meta.get('regime_code','N')}{_entry_env_meta.get('regime','DATA不足')} "
+        f"score={_entry_env_meta.get('score')}"
+    )
+
+    # P4-DASH3: 最終snapshotの意味に基づくUIソート契約をここで確定。
+    # AI/予想インパクト/Algo/TOB/財務/シンデンが揃った後に実行し、モデル本体には逆流させない。
+    _dashboard_attach_ui_sort_contract(rows)
+    _p("dashboard UI/sort semantic contract: attached")
+
     # === ★追加: セクターランキングの集計 ===
     try:
         sync_sector_data(conn)
@@ -13900,22 +17437,22 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     # P3-41: publish-quality。欠損を0点に偽装せず、空洞化も画面上で検知する。
     def _coverage_pct(col):
-        if not rows:
-            return None
-        ok = 0
+        """P4-DASH8: 実値coverage。表示placeholderは値ありに数えない。"""
+        if not rows: return None
+        missing_tokens={"","-","--","n/a","na","null","none","nan","情報不足","⚪情報不足"}
+        ok=0
         for _r in rows:
-            _v = _r.get(col)
-            if _v is None or _v == "":
-                continue
+            _v=_r.get(col)
+            if _v is None:continue
+            if isinstance(_v,str):
+                _t=_v.strip().lower()
+                if _t in missing_tokens or "--点" in _t:continue
             try:
-                if isinstance(_v, (float, np.floating)) and not math.isfinite(float(_v)):
-                    continue
-                if pd.isna(_v):
-                    continue
-            except Exception:
-                pass
-            ok += 1
-        return round(ok * 100.0 / len(rows), 1)
+                if isinstance(_v,(float,np.floating)) and not math.isfinite(float(_v)):continue
+                if pd.isna(_v):continue
+            except Exception:pass
+            ok+=1
+        return round(ok*100.0/len(rows),1)
 
     _quality_cols = [
         "現在値", "出来高", "売買代金(億)", "RVOL代金", "ATR14%",
@@ -13928,17 +17465,55 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         _pct = _coverage.get(_c)
         if _pct is not None and _pct < 80.0:
             _warnings.append(f"{_c} coverage={_pct:.1f}%")
+    # FUND-SOURCE-TRUTH FINAL: 正本coverageもdashboard metaへ出す。
+    def _status_cov(col, missing_values):
+        if not rows: return None
+        ok = sum(1 for r in rows if str(r.get(col) or "").strip() not in missing_values)
+        return round(ok * 100.0 / len(rows), 1)
+    def _either_num_cov(c1, c2):
+        if not rows: return None
+        ok = 0
+        for r in rows:
+            vals = []
+            for c in (c1, c2):
+                try:
+                    x = float(r.get(c))
+                    vals.append(math.isfinite(x))
+                except Exception:
+                    vals.append(False)
+            if any(vals):
+                ok += 1
+        return round(ok * 100.0 / len(rows), 1)
+    _fund_cov = {
+        "最新実決算": _coverage_pct("最新決算発表日"),
+        "利益状態": _status_cov("利益状態", {"", "情報不足", "none", "nan"}),
+        "TDnet最新予想": _either_num_cov("TDnet最新予想営業益", "TDnet最新予想EPS"),
+        "TDnet比較可能": _status_cov("TDnet予想修正状態", {"", "履歴不足", "🆕 初回予想のみ", "⚪ 比較元不足", "⚪ 比較可能値不足", "none", "nan"}),
+        "希薄化監視": _status_cov("希薄化状態", {"", "情報不足", "none", "nan"}),
+    }
+    for _c in ("利益状態", "希薄化監視"):
+        _pct = _fund_cov.get(_c)
+        if _pct is not None and _pct < 30.0:
+            _warnings.append(f"ファンダ正本 {_c} coverage={_pct:.1f}%")
+    if _fund_cov.get("TDnet最新予想") is not None and _fund_cov["TDnet最新予想"] < 5.0:
+        _warnings.append(f"ファンダ正本 TDnet最新予想 coverage={_fund_cov['TDnet最新予想']:.1f}%")
     meta["quality"] = {
         "rows": len(rows),
         "coverage": _coverage,
+        "fund_source_coverage": _fund_cov,
         "warnings": _warnings,
         "run_mode": _auto_run_mode(),
         "external_live": _external_job_state("live_materials"),
         "shinden_job": _external_job_state("live_shinden_full"),
     }
+    meta["watch_timing"] = {
+        "version": 1,
+        "counts": dict(_watch_state_counts) if isinstance(_watch_state_counts, dict) else {},
+        "phase": "baseline_no_notifications",
+    }
 
-    # 9) data オブジェクトに組み込む
-    offering_code_set = _load_offering_codes_from_db(conn, days=3650)
+    # 9) data オブジェクトに組み込む。旧10年バッジではなく直近1年だけを「増資経歴」表示へ。
+    offering_code_set = _load_offering_codes_from_db(conn, days=365)
     data_obj = {
         "cand": rows,
         "meta": meta,
@@ -13954,7 +17529,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # ここではパスだけ準備し、完成JSONのstage/commitはHTML最終書込み直前〜直後に行う。
     json_export_path = os.path.join(OUTPUT_DIR, "dashboard_data.json")
 
-    # 10) テンプレ描画
+    # 10) テンプレ描画：VT版へ一本化。template.html -> dashboard.html -> index.html。
     _ensure_template_file(template_dir, overwrite=True)
     env = Environment(loader=FileSystemLoader(template_dir, encoding="utf-8"),
                       autoescape=select_autoescape(["html"]))
@@ -13967,31 +17542,26 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     except Exception:
         build_id = _now_jst().strftime("%Y-%m-%d %H:%M:%S")
 
-    tpl = env.get_template("dashboard.html")
-    html_output = tpl.render(
+    _render_kw = dict(
         include_log=include_log,
-        data_json="{}", # テンプレート側には空を渡す
+        data_json="{}", # 実データは後段でdata_jsonを注入
         generated_at=build_id,
-        build_id=build_id
+        build_id=build_id,
     )
-    _tick("template done")
+    html_output = env.get_template("dashboard.html").render(**_render_kw)
+    _tick("template VT-single done")
 
     # 11) __DATA__ を安全にインライン注入
     t_inject = time.perf_counter()
-    try:
-        # ★修正1：標準の json.dumps だと NaN がそのまま出力されてブラウザが死ぬため、
-        # 9) のステップで安全に生成済みの「data_json」を再利用します。
-        data_json_str = data_json
-        
-        # ★修正2：HTMLの崩れを防ぐエスケープ ＋ 万が一残ったNaNをnullに強制置換する徹底ガード
-        data_json_str = data_json_str.replace("<", "\\u003c").replace(">", "\\u003e")
-        import re
-        data_json_str = re.sub(r':\s*NaN', ': null', data_json_str)
-        data_json_str = re.sub(r':\s*Infinity', ': null', data_json_str)
-        data_json_str = re.sub(r':\s*-Infinity', ': null', data_json_str)
-        
-        # 埋め込んだJSONをダッシュボードに読み込ませる「JavaScriptの紐付け処理」
-        json_script = f"""
+
+    def _inject_inline_data(html_text: str) -> str:
+        try:
+            data_json_str = data_json
+            data_json_str = data_json_str.replace("<", "\\u003c").replace(">", "\\u003e")
+            data_json_str = re.sub(r':\s*NaN', ': null', data_json_str)
+            data_json_str = re.sub(r':\s*Infinity', ': null', data_json_str)
+            data_json_str = re.sub(r':\s*-Infinity', ': null', data_json_str)
+            json_script = f"""
 <script id="__DATA__" type="application/json">
 {data_json_str}
 </script>
@@ -13999,7 +17569,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     try {{
         var el = document.getElementById('__DATA__');
         if (el) {{
-            // 埋め込まれたテキストを読み込み、ダッシュボードのシステム(window.DATA)に渡す
             window.__DATA__ = JSON.parse(el.textContent);
             window.DATA = window.__DATA__;
         }}
@@ -14008,52 +17577,50 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     }}
 </script>
 """
-        
-        # 既存の古いタグを掃除
-        import re
-        html_output = re.sub(r'<script\s+id="__DATA__"[^>]*>.*?</script>', '', html_output, flags=re.DOTALL | re.IGNORECASE)
-        html_output = re.sub(r'<script\s+id="(data_inline|inline-data)"[^>]*>.*?</script>', '', html_output, flags=re.DOTALL | re.IGNORECASE)
-        
-        # </body> の直前に挿入
-        if "</body>" in html_output:
-            html_output = html_output.replace("</body>", json_script + "\n</body>")
-        else:
-            html_output += json_script
-            
-    except Exception as e:
-        # P1-319: テンプレートへは data_json="{}" を渡しているため、埋め込み失敗を
-        # 成功扱いすると中身が空のダッシュボードを公開してしまう。必ず上位へ失敗を返す。
-        logging.error(f"[HTML-EXPORT][ERROR] JSONデータの埋め込みに失敗しました", exc_info=True)
-        raise RuntimeError("dashboard JSON inline injection failed") from e
-        
-    _p(f"inject_inline_data_json: dt={( time.perf_counter() - t_inject ): .2f}s")
-    
-    # 12) 書き出し
+            out = re.sub(r'<script\s+id="__DATA__"[^>]*>.*?</script>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+            out = re.sub(r'<script\s+id="(data_inline|inline-data)"[^>]*>.*?</script>', '', out, flags=re.DOTALL | re.IGNORECASE)
+            if "</body>" in out:
+                out = out.replace("</body>", json_script + "\n</body>")
+            else:
+                out += json_script
+            return out
+        except Exception as e:
+            logging.error("[HTML-EXPORT][ERROR] JSONデータの埋め込みに失敗しました", exc_info=True)
+            raise RuntimeError("dashboard JSON inline injection failed") from e
+
+    html_output = _inject_inline_data(html_output)
+    _p(f"inject_inline_data_json: dt={(time.perf_counter() - t_inject):.2f}s")
+
+    # 12) 書き出し：完成stageを作ってからindex.htmlへatomic replace。
     t_write = time.perf_counter()
-    os.makedirs(os.path.dirname(html_path), exist_ok=True)
-    
-    # P1-649: live dashboard JSONを本番名へ出す前に隠しstageへ完成させる。
-    # stage作成失敗ならHTMLも進めない。
+    os.makedirs(os.path.dirname(html_path) or ".", exist_ok=True)
+
+    # live dashboard JSONも先にstageへ完成。
     _json_stage_path = f"{json_export_path}.stage.{os.getpid()}.{time.time_ns()}"
+    _html_stage_path = f"{html_path}.stage.{os.getpid()}.{time.time_ns()}"
     try:
         _atomic_write_text_file(_json_stage_path, data_json)
+        _atomic_write_text_file(_html_stage_path, html_output)
     except Exception as e:
-        logging.error("[JSON-EXPORT][ERROR] live dashboard JSON staging failed", exc_info=True)
-        raise RuntimeError("dashboard live JSON staging failed") from e
+        for _pstage in (_json_stage_path, _html_stage_path):
+            try:
+                if os.path.exists(_pstage): os.unlink(_pstage)
+            except Exception:
+                pass
+        logging.error("[HTML-EXPORT][ERROR] VT-single staging failed", exc_info=True)
+        raise RuntimeError("dashboard VT-single staging failed") from e
 
-    # 書き込み
     try:
-        # P1-321: index.html は直接truncateせず、完成した一時ファイルをatomic replaceする。
-        _atomic_write_text_file(html_path, html_output)
+        os.replace(_html_stage_path, html_path)
+        print(f"[HTML-EXPORT] VT index={html_path}")
     except Exception as e:
-        try:
-            if os.path.exists(_json_stage_path):
-                os.unlink(_json_stage_path)
-        except Exception:
-            pass
-        # P1-320: 書込失敗を握りつぶすと、この後Git同期が古いindex.htmlを再公開し得る。
-        logging.error(f"[HTML-EXPORT][ERROR] ファイルの書き出しに失敗しました", exc_info=True)
-        raise RuntimeError(f"dashboard HTML write failed: {html_path}") from e
+        for _pstage in (_html_stage_path, _json_stage_path):
+            try:
+                if os.path.exists(_pstage): os.unlink(_pstage)
+            except Exception:
+                pass
+        logging.error("[HTML-EXPORT][ERROR] VT-single HTML commit failed", exc_info=True)
+        raise RuntimeError(f"dashboard VT-single HTML write failed: {html_path}") from e
 
     # P1-649: HTML成功後にだけlive dashboard_data.jsonを同一snapshotへ進める。
     # commitに失敗した場合は旧JSONを残す方が危険なのでinvalidateして上位へ失敗を返す。
@@ -14073,6 +17640,13 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             print(f"[JSON-EXPORT][WARN] stale live JSON removal failed: {_rm_e}")
         logging.error("[JSON-EXPORT][ERROR] live dashboard JSON commit failed", exc_info=True)
         raise RuntimeError("dashboard live JSON commit failed after HTML write") from e
+
+    # WATCH-TIMING-V1: HTML + current dashboard JSONが同じsnapshotで成功した後だけ状態DBを進める。
+    try:
+        _commit_watch_signal_state(conn, _watch_state_pending)
+    except Exception as _watch_commit_e:
+        logging.error("[WATCH-TIMING][ERROR] state commit failed after dashboard publish", exc_info=True)
+        raise RuntimeError("watch timing state commit failed") from _watch_commit_e
 
     # 履歴JSONはlive参照ではない。HTML＋current JSONの成功snapshotだけを記録する。
     # P1-199/P1-384: JST＋マイクロ秒名でrun単位に一意化。
@@ -14101,7 +17675,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     # P4-LIVE: HTML/dashboard_data.jsonと同じ最終rowsから正式Candidate Contractを生成。
     # HTMLを読み戻さず、失敗時は前回正常feedを保持して既存dashboard処理を壊さない。
-    _live_ok = export_live_candidate_feed(conn, rows)
+    _live_ok = export_live_candidate_feed(conn, rows, context=_dashboard_live_context)
     if _live_ok is False:
         print("[live-feed][WARN] candidate contract was not advanced for this run")
 
@@ -14251,7 +17825,28 @@ def export_llm_dataset(df_cand, filename="llm_dataset.csv"):
             "初動出来高倍率20", "初動代金倍率20", "初動騰落率", "初動終値位置", "初動レンジ拡大率",
             "初動20日高値更新", "初動20日終値ブレイク", "初動事前5日騰落率", "初動事前20日騰落率",
             "初動売買代金億", "初動低位株タグ", "Algo_総合判定",
-            "イナゴ過熱判定", "信用需給判定", "機関売り判定"
+            "イナゴ過熱判定", "信用需給判定", "機関売り判定",
+
+            # REPRICING-DISCOVERY-V1.1:
+            # LLM/Geminiにも「企業変化」と「株価織り込み」を分離した同じ正本を渡す。
+            "再評価候補", "再評価探索ランク", "再評価探索順位", "再評価余地",
+            "再評価ルート", "再評価理由", "再評価注意",
+            "FUNDAMENTAL_EARLY", "CYCLICAL_VALUE", "EARNINGS_ACCELERATION",
+            "CONSERVATIVE_FORECAST", "QUALITY_GROWTH_UNDERREACTION",
+            "最新Q売上YoY_pct_正本", "最新Q利益YoY_pct_正本",
+            "最新Q利益率_pct_正本", "利益率前年差_ppt_正本",
+            "未来方向_探索", "未来営業利益YoY_pct_探索",
+            "会社予想営業益_探索", "会社予想年度_探索", "会社予想ソース_探索",
+            "前期通期営業益_探索",
+            "株価織り込み度_探索", "株価未反応フラグ_探索",
+            "決算前基準終値_探索", "決算後現在騰落率_pct_探索",
+            "決算後最大上昇率_pct_探索", "決算後高値から現在_pct_探索",
+            "待てる条件数_探索", "待てる評価_探索", "配当利回り_pct_探索",
+            "ネットキャッシュ_探索", "利益状態", "利益状態指標",
+            "TDnet予想修正状態", "希薄化重大フラグ",
+            "WATCH_STATE", "WATCH_PREVIOUS_STATE", "WATCH_STATE_CHANGED",
+            "WATCH_QUALITY", "PRICE_OPPORTUNITY", "TRIGGER_SCORE",
+            "WATCH_ROUTE", "WATCH_SOURCE", "WATCH_REASON"
         ]
 
         # P1-359: 有効候補0件/売買代金列欠損でも旧CSVを残さず、
@@ -14577,6 +18172,8 @@ def update_seasonal_progress(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE screener ADD COLUMN 過去平均進捗率 REAL")
     if "季節調整済進捗差分" not in screener_cols:
         conn.execute("ALTER TABLE screener ADD COLUMN 季節調整済進捗差分 REAL")
+    if "過去同Q件数" not in screener_cols:
+        conn.execute("ALTER TABLE screener ADD COLUMN 過去同Q件数 INTEGER")
     conn.commit()
 
     # P1-444: 計算途中では旧snapshotを触らない。意味的に「計算結果なし」まで
@@ -14585,13 +18182,14 @@ def update_seasonal_progress(conn: sqlite3.Connection) -> None:
         cur = conn.cursor()
         try:
             cur.execute("SAVEPOINT p1_444_seasonality")
-            cur.execute("UPDATE screener SET 過去平均進捗率=NULL, 季節調整済進捗差分=NULL")
+            cur.execute("UPDATE screener SET 過去平均進捗率=NULL, 季節調整済進捗差分=NULL, 過去同Q件数=NULL")
             if _updates:
                 cur.executemany(
                     """
                     UPDATE screener
                     SET 過去平均進捗率=?,
-                        季節調整済進捗差分=?
+                        季節調整済進捗差分=?,
+                        過去同Q件数=?
                     WHERE コード=?
                     """,
                     _updates,
@@ -15017,7 +18615,7 @@ def update_seasonal_progress(conn: sqlite3.Connection) -> None:
 
     # v13:
     # 2年度以上は正式採用、1年度のみは参考値としてfallback採用。
-    # 表示列は増やさず、履歴数はログで監査する。
+    # FUND-QUALITY-V2: 1年度は参考値として保持するが、過去同Q件数も保存しUI側で正式判定と分離する。
     avg = avg[avg["過去同Q件数"] >= 1].copy()
     if avg.empty:
         print("[seasonality] 過去同Q履歴がある銘柄なし")
@@ -15051,6 +18649,7 @@ def update_seasonal_progress(conn: sqlite3.Connection) -> None:
                 (
                     round(float(r["過去平均進捗率"]), 2),
                     round(float(r["季節調整済進捗差分"]), 2),
+                    int(r["過去同Q件数"]) if pd.notna(r.get("過去同Q件数")) else None,
                     str(r["_screener_code_raw"]),
                 )
             )
@@ -15161,6 +18760,8 @@ def apply_auto_metrics_midday(conn: sqlite3.Connection,
             UPDATE screener
             SET 売買代金億 =
               CASE
+                -- 監査残件修正: 指数の出来高×指数値を個別株の売買代金として扱わない。
+                WHEN COALESCE(市場,'') LIKE '%指数%' OR CAST(コード AS TEXT) LIKE '^%' THEN NULL
                 WHEN 現在値 IS NOT NULL AND 出来高 IS NOT NULL AND 出来高 > 0
                 THEN ROUND((現在値 * 出来高) / 100000000.0, 2)
               END
@@ -15222,13 +18823,20 @@ def apply_auto_metrics_eod(conn: sqlite3.Connection, denom_floor: float = 1.0):
         hist["終値"] = pd.to_numeric(hist["終値"], errors="coerce")
         hist["出来高"] = pd.to_numeric(hist["出来高"], errors="coerce")
     raw_map = {}
-    for (_raw,) in conn.execute("SELECT コード FROM screener").fetchall():
+    index_keys = set()
+    for _raw, _market in conn.execute("SELECT コード, 市場 FROM screener").fetchall():
         k = canonical_code_for_db(_raw)
         if k and k not in raw_map:
             raw_map[k] = _raw
+        if k and (str(_raw).startswith("^") or "指数" in str(_market or "")):
+            index_keys.add(k)
     by_code = {k:g.sort_values("日付") for k,g in hist.groupby("コード", sort=False)} if not hist.empty else {}
     updates=[]
     for k, raw in raw_map.items():
+        # 監査残件修正: 指数行の売買代金/RVOLはN/A。指数値×出来高を金額化しない。
+        if k in index_keys:
+            updates.append((None, None, None, raw))
+            continue
         g=by_code.get(k)
         latest_turn = avg20 = rvol = None
         if g is not None and not g.empty:
@@ -15630,18 +19238,39 @@ def apply_shodou_score(conn: sqlite3.Connection):
 ALLOW_LEGACY_SCREENER_EPS_FALLBACK = False
 
 
+# === 2026-08-22 FV-SAFE: EPS品質ゲート + 基礎価値/参考上限分離 ===
+# - 適正株価は「買い判断に使う基礎価値」。一過性利益を含む強気上限を入れない。
+# - 本業赤字なのに最終益/EPSだけ黒字、または予想EPSが株価に対して極端な場合はPERを禁止。
+# - その場合はcurrent BPSを基礎にPBR評価へ切替。参考上限は別列で、Algo_Factor/割安度へ入れない。
+# - 株探ファンダ.py は財務producerのみ。Fair Valueの唯一writerは本関数。
+FAIR_VALUE_OUTPUT_COLUMNS = (
+    "適正株価", "割安度", "期待株価", "通常価値",
+    "参考下限株価", "参考上限株価",
+    "評価方式", "EPS品質", "適正株価注記",
+    "基準PBR", "参考下限PBR", "参考上限PBR", "PBR参照元",
+)
+
+
 def _ensure_fair_value_schema(conn: sqlite3.Connection):
-    """Fair Valueと、そのcurrent入力を保存する列を不足時だけ追加する。"""
+    """Fair Valueと、その判定根拠を保存する列を不足時だけ追加する。"""
     required_columns = (
         ("適正株価", "REAL"),
         ("割安度", "REAL"),
         ("期待株価", "REAL"),
+        ("通常価値", "REAL"),
+        ("参考下限株価", "REAL"),
+        ("参考上限株価", "REAL"),
+        ("評価方式", "TEXT"),
+        ("EPS品質", "TEXT"),
+        ("適正株価注記", "TEXT"),
+        ("基準PBR", "REAL"),
+        ("参考下限PBR", "REAL"),
+        ("参考上限PBR", "REAL"),
+        ("PBR参照元", "TEXT"),
         ("AIスコア", "REAL"),
         ("予想インパクト_pct", "REAL"),
     )
-    schema_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(screener)").fetchall()
-    }
+    schema_cols = {r[1] for r in conn.execute("PRAGMA table_info(screener)").fetchall()}
     added = []
     for col_name, ddl in required_columns:
         if col_name not in schema_cols:
@@ -15655,65 +19284,170 @@ def _ensure_fair_value_schema(conn: sqlite3.Connection):
 def _read_fair_value_screener_inputs(conn: sqlite3.Connection) -> pd.DataFrame:
     """DB世代差のあるFair Value入力列を、欠損時はNULLとして同じ論理schemaで読む。"""
     input_columns = (
-        "コード", "現在値", "EPS", "需給OH", "売買代金億", "売り残", "買い残",
+        "コード", "現在値", "EPS", "BPS", "PBR", "セクター",
+        "需給OH", "売買代金億", "売り残", "買い残",
         "機関空売り合計株数", "RS_20", "AIスコア", "予想インパクト_pct",
         "利益加速フラグ", "直近売上YoY", "直近営業益YoY",
+        "季節調整済進捗差分", "過去同Q件数",
     )
-    schema_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(screener)").fetchall()
-    }
+    schema_cols = {r[1] for r in conn.execute("PRAGMA table_info(screener)").fetchall()}
     missing_required = [c for c in ("コード", "現在値") if c not in schema_cols]
     if missing_required:
-        raise RuntimeError(
-            "screener Fair Value必須列がありません: " + ", ".join(missing_required)
-        )
-    missing_optional = [
-        c for c in input_columns if c not in schema_cols and c not in missing_required
-    ]
+        raise RuntimeError("screener Fair Value必須列がありません: " + ", ".join(missing_required))
+    missing_optional = [c for c in input_columns if c not in schema_cols and c not in missing_required]
     if missing_optional:
-        print(
-            "[fair-value] screener任意入力列なし→NULL扱い: "
-            + ", ".join(missing_optional)
-        )
-    select_exprs = [
-        f'"{c}"' if c in schema_cols else f'NULL AS "{c}"'
-        for c in input_columns
-    ]
-    return pd.read_sql_query(
-        "SELECT " + ", ".join(select_exprs) + " FROM screener",
-        conn,
-    )
+        print("[fair-value] screener任意入力列なし→NULL扱い: " + ", ".join(missing_optional))
+    select_exprs = [f'"{c}"' if c in schema_cols else f'NULL AS "{c}"' for c in input_columns]
+    return pd.read_sql_query("SELECT " + ", ".join(select_exprs) + " FROM screener", conn)
+
+
+def _fair_value_eps_quality_code(row) -> str:
+    """PERへ流してよいEPSかを、観測可能な財務構造だけで判定する。"""
+    def _n(name):
+        try:
+            v = row.get(name)
+            return float(v) if pd.notna(v) and math.isfinite(float(v)) else None
+        except Exception:
+            return None
+
+    price = _n("現在値")
+    eps = _n("forecast_eps")
+    prev_eps = _n("previous_eps")
+    op = _n("forecast_op")
+    net = _n("forecast_net_profit")
+
+    if eps is None or eps <= 0:
+        return "NO_EPS"
+    if op is not None and op <= 0 and net is not None and net > 0:
+        return "ONE_OFF_DOMINANT"
+    if op is not None and op > 0 and net is not None and net > 0:
+        net_op_ratio = net / op if op else None
+        eps_jump = prev_eps is None or prev_eps <= 0 or eps >= max(prev_eps * 2.5, prev_eps + 50.0)
+        if net_op_ratio is not None and net_op_ratio >= 2.5 and eps_jump:
+            return "ONE_OFF_SUSPECT"
+    if price is not None and price > 0 and (price / eps) < 2.0:
+        return "EPS_EXTREME_UNVERIFIED"
+    return "NORMAL"
+
+
+def _build_special_pbr_band_map(conn: sqlite3.Connection, df: pd.DataFrame) -> dict:
+    """一過性利益等でPERを止めた銘柄だけ、軽量にPBR参照帯を作る。
+
+    真の過去PBR時系列がまだ無い銘柄では、過去終値÷current BPSを近似として使う。
+    近似値だけへ依存せず、保守基準と同業current PBRを混ぜ、構造赤字銘柄では上限を抑える。
+    """
+    out = {}
+    if df is None or df.empty or "_eps_quality_code" not in df.columns:
+        return out
+    special = df[df["_eps_quality_code"].isin(
+        ["ONE_OFF_DOMINANT", "ONE_OFF_SUSPECT", "EPS_EXTREME_UNVERIFIED"]
+    )].copy()
+    if special.empty:
+        return out
+
+    sector_bands = {}
+    if "セクター" in df.columns and "PBR" in df.columns:
+        _tmp = df[["セクター", "PBR"]].copy()
+        _tmp["PBR"] = pd.to_numeric(_tmp["PBR"], errors="coerce")
+        _tmp = _tmp[_tmp["PBR"].between(0.1, 10.0, inclusive="both")]
+        for sec, g in _tmp.dropna(subset=["セクター"]).groupby("セクター"):
+            vals = g["PBR"].dropna().to_numpy(dtype=float)
+            if len(vals) >= 10:
+                q20, q50, q80 = np.quantile(vals, [0.20, 0.50, 0.80])
+                sector_bands[str(sec)] = (float(q20), float(q50), float(q80), int(len(vals)))
+
+    hist_map = {}
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "price_history" in tables:
+            keys = [canonical_code_for_db(v) for v in special["コード"].tolist()]
+            keys = [k for k in dict.fromkeys(keys) if k]
+            query_codes = expand_code_query_variants(keys)
+            cutoff = (date.fromisoformat(_today_jst()) - timedelta(days=1095)).isoformat()
+            parts = []
+            for i in range(0, len(query_codes), 700):
+                part = query_codes[i:i+700]
+                if not part:
+                    continue
+                ph = ",".join("?" for _ in part)
+                parts.append(pd.read_sql_query(
+                    f'''SELECT rowid AS _rowid, コード, 日付, 終値
+                        FROM price_history
+                        WHERE CAST(コード AS TEXT) IN ({ph})
+                          AND 日付 >= ? AND 終値 IS NOT NULL''',
+                    conn, params=[*part, cutoff]
+                ))
+            phdf = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+            if not phdf.empty:
+                phdf["_key"] = phdf["コード"].map(canonical_code_for_db)
+                phdf["終値"] = pd.to_numeric(phdf["終値"], errors="coerce")
+                phdf["日付"] = pd.to_datetime(phdf["日付"], errors="coerce")
+                phdf = (phdf.dropna(subset=["_key", "日付", "終値"])
+                              .sort_values(["_key", "日付", "_rowid"], kind="stable")
+                              .drop_duplicates(["_key", "日付"], keep="last"))
+                bps_map = {
+                    canonical_code_for_db(r.get("コード")): pd.to_numeric(pd.Series([r.get("BPS")]), errors="coerce").iloc[0]
+                    for _, r in special.iterrows()
+                }
+                for key, g in phdf.groupby("_key"):
+                    bps = bps_map.get(key)
+                    if pd.isna(bps) or bps <= 0:
+                        continue
+                    proxy = (g["終値"] / float(bps)).replace([np.inf, -np.inf], np.nan).dropna()
+                    proxy = proxy[(proxy >= 0.1) & (proxy <= 10.0)]
+                    if len(proxy) >= 120:
+                        q20, q50, q80 = np.quantile(proxy.to_numpy(dtype=float), [0.20, 0.50, 0.80])
+                        hist_map[key] = (float(q20), float(q50), float(q80), int(len(proxy)))
+    except Exception as e:
+        print(f"[fair-value][WARN] special PBR履歴近似の作成失敗: {e}")
+
+    base_anchor = (0.60, 1.20, 1.75)
+    for _, r in special.iterrows():
+        key = canonical_code_for_db(r.get("コード"))
+        if not key:
+            continue
+        sec = str(r.get("セクター") or "").strip()
+        hb = hist_map.get(key)
+        sb = sector_bands.get(sec)
+        if hb is not None:
+            if sb is not None:
+                low = hb[0] * 0.60 + sb[0] * 0.20 + base_anchor[0] * 0.20
+                mid = hb[1] * 0.60 + sb[1] * 0.20 + base_anchor[1] * 0.20
+                high = hb[2] * 0.60 + sb[2] * 0.20 + base_anchor[2] * 0.20
+                source = f"自己3年価格÷現BPS近似(n={hb[3]})+業種PBR(n={sb[3]})"
+            else:
+                low = hb[0] * 0.70 + base_anchor[0] * 0.30
+                mid = hb[1] * 0.70 + base_anchor[1] * 0.30
+                high = hb[2] * 0.70 + base_anchor[2] * 0.30
+                source = f"自己3年価格÷現BPS近似(n={hb[3]})+保守基準"
+        elif sb is not None:
+            low = base_anchor[0] * 0.80 + sb[0] * 0.20
+            mid = base_anchor[1] * 0.80 + sb[1] * 0.20
+            high = base_anchor[2] * 0.80 + sb[2] * 0.20
+            source = f"保守基準+業種PBR(n={sb[3]})"
+        else:
+            low, mid, high = base_anchor
+            source = "保守PBR基準(履歴不足)"
+
+        low = float(np.clip(low, 0.25, 1.00))
+        mid = float(np.clip(mid, max(low, 0.50), 1.20))
+        high = float(np.clip(high, max(mid, 0.80), 1.75))
+        out[key] = {"low": low, "mid": mid, "high": high, "source": source}
+    return out
 
 
 def apply_fair_value_metrics(conn: sqlite3.Connection):
-    """
-    【機関投資家風・最高峰 動的適正株価＆期待株価算出エンジン】
-    【高成長・PER主軸・PBR完全撤廃版】
-
-    ■ 基本思想
-    - 適正株価はPER法（予想EPS × 動的許容PER）のみで算出
-    - PBR / ROE / BPS、およびテーマ補正・ブレンドは完全撤廃
-    - 営業利益成長、EPS成長、利益加速、総合財務評価、信用需給で許容PERを動的算出
-    - 3ヶ月期待株価は企業価値50% ＋ 市場モメンタム（RS20・予想インパクト・AI・空売り踏み上げ）50%
-    """
-    # P2-9/P3-43: 出力列に加え、HTML内で確定するcurrentモデル入力もschema保証する。
-    # 旧DBではAIスコア/予想インパクト_pctが未作成で、最終同期時に落ちていた。
+    """EPS品質を先に判定し、PERとPBR基礎価値を安全に使い分ける。"""
     _ensure_fair_value_schema(conn)
-
-    # P1-227/P3-44: SQLの生コード完全一致JOINをやめ、canonical結合する。
-    # 機関空売り等のDB世代差がある任意列は固定SELECTで落とさず、NULLとして読んだ後に
-    # current authoritative sourceをoverlayする。
     df = _read_fair_value_screener_inputs(conn)
-    # P1-603: finance_notesはproducer/DB世代によって列構成が異なる。
-    # 現行の株探ファンダは prev_eps を保存する一方、旧DBには previous_eps があり得る。
-    # optional列を固定SELECTすると、1列でも無いDBで適正株価フェーズ全体がSQLエラーになるため、
-    # 実在列だけを読み、欠損列はNULLとして同じ論理schemaへ正規化する。
+
     _fin_cols = {r[1] for r in conn.execute("PRAGMA table_info(finance_notes)").fetchall()}
     _fin_logical = [
         ("forecast_eps", ("forecast_eps",)),
         ("previous_eps", ("prev_eps", "previous_eps")),
-        # P1-654: YoYは現行FUND_SCRIPTがscreenerへ直接current更新する。
-        # finance_notesの旧世代列は現行producerが更新しないためFair Valueへoverlayしない。
+        ("forecast_op", ("forecast_op",)),
+        ("forecast_net_profit", ("forecast_net_profit", "forecast_net")),
+        ("finance_bps", ("bps",)),
         ("overall_alpha", ("overall_alpha",)),
     ]
     if "コード" in _fin_cols:
@@ -15721,31 +19455,21 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         _sel.append('updated_at' if "updated_at" in _fin_cols else 'NULL AS updated_at')
         for _out, _candidates in _fin_logical:
             _srcs = [_c for _c in _candidates if _c in _fin_cols]
-            # P1-658: 現行FUND_SCRIPTが更新するprev_eps列が存在するDBでは、
-            # current prev_eps=NULLを旧previous_epsで行単位fallbackしない。
-            # 旧schemaでprev_eps列自体が無い場合だけprevious_epsを互換利用する。
             if _out == "previous_eps" and "prev_eps" in _fin_cols:
                 _srcs = ["prev_eps"]
             if not _srcs:
                 _sel.append(f'NULL AS "{_out}"')
             elif len(_srcs) == 1:
                 _src = _srcs[0]
-                if _src == _out:
-                    _sel.append(f'"{_src}"')
-                else:
-                    _sel.append(f'"{_src}" AS "{_out}"')
+                _sel.append(f'"{_src}"' if _src == _out else f'"{_src}" AS "{_out}"')
             else:
-                # 複数の現役candidateを持つ論理列用。P1-658のprevious_epsは上で1列へ固定済み。
                 _sel.append('COALESCE(' + ', '.join(f'"{_c}"' for _c in _srcs) + f') AS "{_out}"')
         fin = pd.read_sql_query("SELECT " + ", ".join(_sel) + " FROM finance_notes", conn)
     else:
         fin = pd.DataFrame(columns=["_rowid", "コード", "updated_at"] + [_x[0] for _x in _fin_logical])
+
     if not df.empty:
         df["_code_key"] = df["コード"].map(canonical_code_for_db)
-
-        # P1-617: Fair Valueだけscreener保存済みの機関空売り合計を読むと、
-        # HTML/risk側がinstitution_short_salesから再集計したcurrent snapshotと時点が分裂する。
-        # 踏み上げボーナスへ直接効くため、ここでもcurrent authoritative集計をoverlayする。
         try:
             _inst_now = _load_institution_short_summary(conn)
         except Exception as _e:
@@ -15757,41 +19481,41 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
                 if _ik:
                     _iv = pd.to_numeric(pd.Series([_ir.get("機関空売り合計株数")]), errors="coerce").iloc[0]
                     _inst_now_map[_ik] = _iv if pd.notna(_iv) else np.nan
-        # summaryに銘柄行が無い = current残高を確認できない。旧screener値へfallbackしない。
         df["機関空売り合計株数"] = df["_code_key"].map(_inst_now_map)
+
     _stale_finance_codes = _finance_codes_stale_after_latest_earnings(conn)
     if not fin.empty:
         fin = _latest_finance_notes_by_canonical(fin, "_code_key")
-        # P1-670: current finance正本の「行が存在する」ことと forecast_eps の値有無を分離する。
-        # 正本行があるのにforecast_eps=NULLなら旧screener.EPSへ行単位fallbackしない。
         fin["_finance_row_present"] = 1
         fin = fin.drop(columns=["コード", "_rowid", "updated_at"], errors="ignore")
         df = df.merge(fin, on="_code_key", how="left")
     else:
-        for _c in ("forecast_eps", "previous_eps", "overall_alpha"):
+        for _c in ("forecast_eps", "previous_eps", "forecast_op", "forecast_net_profit", "finance_bps", "overall_alpha"):
             df[_c] = np.nan
         df["_finance_row_present"] = 0
+
+    # FUND-SOURCE-TRUTH: Fair Valueもdashboardと同じ株探Q実額/TDnet予想履歴を見る。
+    df = _overlay_latest_actual_earnings_age(df, conn)
 
     if df.empty:
         return
 
-    # P1-608: 新決算がfinance_notesより新しい銘柄は、screener.EPSへのfallbackも含め
-    # 旧財務を使った適正株価を出さない。詳細財務refresh完了まで一旦NULLにする。
     df["_finance_stale_after_event"] = df["_code_key"].isin(_stale_finance_codes)
-
     numeric_columns = [
-        "現在値", "EPS", "forecast_eps", "previous_eps",
-        "直近営業益YoY", "需給OH",
+        "現在値", "EPS", "BPS", "PBR", "forecast_eps", "previous_eps",
+        "forecast_op", "forecast_net_profit", "finance_bps", "直近営業益YoY", "需給OH",
         "売買代金億", "売り残", "買い残", "機関空売り合計株数", "RS_20",
-        "AIスコア", "予想インパクト_pct", "利益加速フラグ", "直近売上YoY"
+        "AIスコア", "予想インパクト_pct", "利益加速フラグ", "直近売上YoY",
+        "季節調整済進捗差分", "過去同Q件数",
+        "最新Q営業利益", "前年同期Q営業利益", "最新Q売上高", "前年同期Q売上高",
+        "最新Q純利益", "前年同期Q純利益",
+        "TDnet前回予想営業益", "TDnet最新予想営業益", "TDnet営業益修正率",
+        "TDnet前回予想EPS", "TDnet最新予想EPS", "TDnetEPS修正率",
     ]
-
     for c in numeric_columns:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # P2-10/P2-11: 「計算結果が空」の原因を運用ログから即座に判別できるよう、
-    # 生forecast_eps件数ではなく、stale maskとlegacy fallback設定まで反映した実効入力を数える。
     _finance_present_mask = pd.to_numeric(df.get("_finance_row_present"), errors="coerce").fillna(0).eq(1)
     _forecast_raw_valid_mask = df["forecast_eps"].notna() & (df["forecast_eps"] > 0)
     if ALLOW_LEGACY_SCREENER_EPS_FALLBACK:
@@ -15800,58 +19524,101 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         _legacy_eps_valid_mask = pd.Series(False, index=df.index)
     _effective_eps_mask = (_finance_present_mask & _forecast_raw_valid_mask) | _legacy_eps_valid_mask
     _stale_mask = df["_finance_stale_after_event"].fillna(False).astype(bool)
-    _forecast_raw_valid = int(_forecast_raw_valid_mask.sum())
-    _forecast_usable = int((_effective_eps_mask & ~_stale_mask).sum())
-    _finance_rows = int(_finance_present_mask.sum())
-    _stale_rows = int(_stale_mask.sum())
     print(
-        f"[quant][P2-11] forecast_eps_raw={_forecast_raw_valid}/{len(df)} "
-        f"usable={_forecast_usable}/{len(df)} finance_rows={_finance_rows} stale_rows={_stale_rows} "
-        f"legacy_eps_fallback={ALLOW_LEGACY_SCREENER_EPS_FALLBACK}",
-        flush=True,
+        f"[quant][FV-SAFE] forecast_eps_raw={int(_forecast_raw_valid_mask.sum())}/{len(df)} "
+        f"usable={int((_effective_eps_mask & ~_stale_mask).sum())}/{len(df)} "
+        f"finance_rows={int(_finance_present_mask.sum())} stale_rows={int(_stale_mask.sum())} "
+        f"legacy_eps_fallback={ALLOW_LEGACY_SCREENER_EPS_FALLBACK}", flush=True,
     )
-    if len(df) and _forecast_usable == 0:
-        print("[quant][WARN] no usable forecast EPS for current earnings snapshot; Fair Value will remain NULL", flush=True)
+
+    df["_eps_quality_code"] = df.apply(_fair_value_eps_quality_code, axis=1)
+    _special_pbr = _build_special_pbr_band_map(conn, df)
+    print(f"[quant][FV-SAFE] EPS quality={df['_eps_quality_code'].value_counts(dropna=False).to_dict()}", flush=True)
 
     def calc_dynamic_fair_value(row):
+        empty = {
+            "fair": np.nan, "expected": np.nan, "normal": np.nan, "low": np.nan, "high": np.nan,
+            "method": "判定不能", "eps_quality": "情報不足", "note": "", "pbr_mid": np.nan,
+            "pbr_low": np.nan, "pbr_high": np.nan, "pbr_source": "",
+        }
         if bool(row.get("_finance_stale_after_event", False)):
-            return np.nan, np.nan
-        price = row["現在値"]
-        
-        # 1. 予想EPSの確定
-        # P2-2: forecast EPSの出所を厳密化。current finance正本がある場合はforecast_epsだけを使う。
-        # finance_notes正本自体が無いlegacy環境でも、screener.EPSは予想値と保証できないため既定では使わない。
-        # 互換運用が必要な場合だけ ALLOW_LEGACY_SCREENER_EPS_FALLBACK=True で明示opt-inする。
-        _has_finance_row = bool(pd.notna(row.get("_finance_row_present")) and float(row.get("_finance_row_present")) == 1.0)
-        forecast_eps = (
-            row["forecast_eps"]
-            if _has_finance_row
-            else (row["EPS"] if ALLOW_LEGACY_SCREENER_EPS_FALLBACK else np.nan)
-        )
-        if pd.isna(forecast_eps) or forecast_eps <= 0:
-            return np.nan, np.nan
+            empty["note"] = "新しい決算後の財務再取得待ち"
+            return empty
 
-        # 2. 特徴量の抽出
-        op_yoy = row["直近営業益YoY"] if pd.notna(row["直近営業益YoY"]) else 0.0
-        
-        # current finance正本があるならprevious_epsもその正本だけを信頼する。
-        # 欠損時に同じscreener.EPSを前期EPSとして流用し、成長率を捏造しない。
-        prev_eps = (
-            row["previous_eps"]
-            if _has_finance_row
-            else (row["EPS"] if ALLOW_LEGACY_SCREENER_EPS_FALLBACK else np.nan)
-        )
+        price = row.get("現在値")
+        _has_finance_row = bool(pd.notna(row.get("_finance_row_present")) and float(row.get("_finance_row_present")) == 1.0)
+        forecast_eps = row.get("forecast_eps") if _has_finance_row else (row.get("EPS") if ALLOW_LEGACY_SCREENER_EPS_FALLBACK else np.nan)
+        quality = str(row.get("_eps_quality_code") or "NO_EPS")
+
+        if quality in {"ONE_OFF_DOMINANT", "ONE_OFF_SUSPECT", "EPS_EXTREME_UNVERIFIED"}:
+            key = canonical_code_for_db(row.get("コード"))
+            band = _special_pbr.get(key) or {"low": 0.60, "mid": 1.20, "high": 1.75, "source": "保守PBR基準(履歴不足)"}
+            bps = row.get("BPS")
+            bps_source = "screener.current BPS"
+            if pd.isna(bps) or bps <= 0:
+                bps = row.get("finance_bps")
+                bps_source = "finance_notes BPS(fallback)"
+            if pd.isna(bps) or bps <= 0:
+                empty["method"] = "PBR評価不能"
+                empty["eps_quality"] = "⚠EPS要確認"
+                empty["note"] = "PER禁止条件だが有効なBPSが無いため基礎価値を計算しない"
+                return empty
+
+            low = float(bps) * band["low"]
+            normal = float(bps) * band["mid"]
+            high = float(bps) * band["high"]
+
+            # TDnet正本で数値下方修正が確認できる場合、PER禁止銘柄でも基礎価値を無傷にしない。
+            _rev_rates = [
+                float(v) for v in (row.get("TDnet営業益修正率"), row.get("TDnetEPS修正率"))
+                if pd.notna(v) and math.isfinite(float(v))
+            ]
+            _worst_rev = min(_rev_rates) if _rev_rates else None
+            _pbr_revision_factor = 1.0
+            if _worst_rev is not None and _worst_rev <= -3.0:
+                _pbr_revision_factor = float(np.clip(1.0 + (_worst_rev / 200.0), 0.75, 0.95))
+                low *= _pbr_revision_factor
+                normal *= _pbr_revision_factor
+                high *= _pbr_revision_factor
+
+            if quality == "ONE_OFF_DOMINANT":
+                qlabel = "⚠特益依存"
+                note = "本業予想が赤字/非黒字なのに最終益とEPSが黒字。PERは不使用。参考上限は買い目標ではない。"
+            elif quality == "ONE_OFF_SUSPECT":
+                qlabel = "⚠一過性疑い"
+                note = "最終益が営業益を大幅に上回りEPSも急膨張。PERは不使用。参考上限は買い目標ではない。"
+            else:
+                qlabel = "⚠EPS異常値"
+                note = "生PERが2倍未満の極端値。内訳確認までPERは不使用。参考上限は買い目標ではない。"
+
+            rs20 = np.clip(row.get("RS_20") if pd.notna(row.get("RS_20")) else 0.0, -1.0, 1.0)
+            ai_score = row.get("AIスコア") if pd.notna(row.get("AIスコア")) else 50.0
+            expected_impact = row.get("予想インパクト_pct") if pd.notna(row.get("予想インパクト_pct")) else 0.0
+            ai_score_clamped = float(np.clip(ai_score, 0.0, 100.0))
+            raw_momentum_multiplier = 1.0 + (rs20 * 0.20) + (expected_impact * 0.005) + ((ai_score_clamped - 50.0) * 0.001)
+            mm = float(np.clip(raw_momentum_multiplier, 0.75, 1.25))
+            expected = (normal * 0.5) + ((float(price) * mm) * 0.5) if pd.notna(price) and price > 0 else normal
+            expected = min(expected, high)
+            return {
+                "fair": normal, "expected": expected, "normal": normal, "low": low, "high": high,
+                "method": "PBR基礎(特益/EPS異常除外)", "eps_quality": qlabel,
+                "note": f"{note} / BPS={bps_source} / PBR={band['source']}" +
+                        (f" / TDnet下方修正で基礎価値×{_pbr_revision_factor:.2f}" if _pbr_revision_factor < 1.0 else ""),
+                "pbr_mid": band["mid"], "pbr_low": band["low"], "pbr_high": band["high"], "pbr_source": band["source"],
+            }
+
+        if pd.isna(forecast_eps) or forecast_eps <= 0:
+            empty["note"] = "有効な会社予想EPSなし"
+            return empty
+
+        op_yoy = row.get("直近営業益YoY") if pd.notna(row.get("直近営業益YoY")) else 0.0
+        prev_eps = row.get("previous_eps") if _has_finance_row else (row.get("EPS") if ALLOW_LEGACY_SCREENER_EPS_FALLBACK else np.nan)
         eps_growth = 0.0
         if pd.notna(prev_eps) and prev_eps > 0:
             eps_growth = ((forecast_eps / prev_eps) - 1.0) * 100.0
-
-        # P1-30: 赤字脱却・V字回復判定。旧式は prev_eps>0 が必須だったため、
-        # 本当の赤字(prev_eps<=0)→黒字(forecast_eps>0)を「赤字脱却」と判定できなかった。
         turnaround_flag = bool(pd.notna(prev_eps) and forecast_eps > 0 and prev_eps <= 0)
         near_zero_recovery = bool(pd.notna(prev_eps) and prev_eps > 0 and prev_eps < forecast_eps * 0.1)
         if turnaround_flag:
-            # 赤字からの成長率は分母が成立しないためEPS成長加点は0。
-            # 代わりに後段のPER上限25倍を適用し、過大評価を防ぐ。
             eps_growth_effect = 0.0
         elif near_zero_recovery:
             turnaround_flag = True
@@ -15859,19 +19626,13 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         else:
             eps_growth_effect = eps_growth
 
-        rs20 = np.clip(row["RS_20"] if pd.notna(row["RS_20"]) else 0.0, -1.0, 1.0)
-
-        ai_score = row["AIスコア"] if pd.notna(row["AIスコア"]) else 50.0
-
-        # P1-25: 信用データ欠損を「需給OH=2日 / 売買代金5億 / 残高0株」と捏造しない。
-        # 欠損時に後段の「需給良好 +1PER」が発動していたため、Noneのまま評価不能とする。
-        demand_days = row["需給OH"] if pd.notna(row["需給OH"]) else None
-        turnover_oku = row["売買代金億"] if pd.notna(row["売買代金億"]) and row["売買代金億"] > 0 else None
-        sell_margin = row["売り残"] if pd.notna(row["売り残"]) else None
-        buy_margin = row["買い残"] if pd.notna(row["買い残"]) else None
-
-        # P1-26: 期待株価の踏み上げ成分にもP1-20以降で正しく集計した機関空売り残高を含める。
-        inst_short = row["機関空売り合計株数"] if pd.notna(row["機関空売り合計株数"]) else None
+        rs20 = np.clip(row.get("RS_20") if pd.notna(row.get("RS_20")) else 0.0, -1.0, 1.0)
+        ai_score = row.get("AIスコア") if pd.notna(row.get("AIスコア")) else 50.0
+        demand_days = row.get("需給OH") if pd.notna(row.get("需給OH")) else None
+        turnover_oku = row.get("売買代金億") if pd.notna(row.get("売買代金億")) and row.get("売買代金億") > 0 else None
+        sell_margin = row.get("売り残") if pd.notna(row.get("売り残")) else None
+        buy_margin = row.get("買い残") if pd.notna(row.get("買い残")) else None
+        inst_short = row.get("機関空売り合計株数") if pd.notna(row.get("機関空売り合計株数")) else None
         short_margin_days = None
         buy_margin_days = None
         if pd.notna(price) and price > 0 and turnover_oku is not None:
@@ -15881,31 +19642,87 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
             if buy_margin is not None:
                 buy_margin_days = (max(buy_margin, 0.0) * price / 1e8) / max(turnover_oku, 0.5)
 
-        expected_impact = row["予想インパクト_pct"] if pd.notna(row["予想インパクト_pct"]) else 0.0
-        # P3-16: flag単独ではなく、P3-4と同じauthoritativeな加速品質を使う。
+        expected_impact = row.get("予想インパクト_pct") if pd.notna(row.get("予想インパクト_pct")) else 0.0
         accel_quality = _profit_acceleration_quality(row)
-        alpha_rank = str(row["overall_alpha"]).strip() if pd.notna(row["overall_alpha"]) else ""
+        sales_yoy = row.get("直近売上YoY") if pd.notna(row.get("直近売上YoY")) else 0.0
+        progress_diff = row.get("季節調整済進捗差分") if pd.notna(row.get("季節調整済進捗差分")) else None
+        progress_hist_n = row.get("過去同Q件数") if pd.notna(row.get("過去同Q件数")) else None
 
-        # 3. 動的許容PERの算出（PER法100%）
+        def _alpha_score(v):
+            s = str(v or "").strip().upper().replace("＋", "+").replace("－", "-")
+            m = re.fullmatch(r"([SABCD])(\+\+|--|\+|-)?", s)
+            if not m:
+                return None
+            base = {"S": 500, "A": 400, "B": 300, "C": 200, "D": 100}[m.group(1)]
+            adj = {"++": 20, "+": 10, "": 0, None: 0, "-": -10, "--": -20}[m.group(2)]
+            return base + adj
+
+        alpha_score = _alpha_score(row.get("overall_alpha"))
+        op_state = str(row.get("利益状態") or row.get("営業利益状態") or "情報不足")
+        profit_metric = str(row.get("利益状態指標") or "営業利益")
+        tdnet_revision_status = str(row.get("TDnet予想修正状態") or "履歴不足")
+        _tdnet_rates = [
+            float(v) for v in (row.get("TDnet営業益修正率"), row.get("TDnetEPS修正率"))
+            if pd.notna(v) and math.isfinite(float(v))
+        ]
+        worst_tdnet_revision = min(_tdnet_rates) if _tdnet_rates else None
+
         target_per = 12.0
-
-        if op_yoy > 0:
-            # P3-10: tiny-base由来の数千%YoYだけでPERが上限へ張り付かないよう、
-            # EPS成長加点と同じ7倍相当を上限にする。
-            target_per += min(math.sqrt(max(op_yoy, 0)) * 0.22, 7.0)
-
+        # 上向き要因: 営業益YoYは「黒字拡大」のときだけ通常成長として加点。
+        # 黒字転換は別枠の小幅加点、赤字縮小を+成長として誤加点しない。
+        if op_state == "🟢 黒字拡大" and op_yoy > 0:
+            target_per += min(math.sqrt(op_yoy) * 0.22, 7.0)
+        elif op_state in {"🟢 黒字転換", "🟢 黒字化"}:
+            target_per += 0.75
         if eps_growth_effect > 0:
-            target_per += min(math.sqrt(max(eps_growth_effect, 0)) * 0.35, 7.0)
-
-        if accel_quality == "quality":
+            target_per += min(math.sqrt(eps_growth_effect) * 0.35, 7.0)
+        if accel_quality == "quality" and op_state in {"🟢 黒字拡大", "🟢 黒字転換", "🟢 黒字化"}:
             target_per += 1.0
-
-        if alpha_rank in ["S++", "S"]:
+        if alpha_score is not None and alpha_score >= 500:
             target_per += 1.5
-        elif alpha_rank in ["A+", "A"]:
+        elif alpha_score is not None and alpha_score >= 410:
+            target_per += 1.0
+        elif alpha_score is not None and alpha_score >= 400:
             target_per += 0.8
 
-        # P1-25: 取得できた需給指標だけでPER補正する。欠損は良好/悪化どちらにも寄せない。
+        # 悪化要因。符号変化は利益状態（一般=営業利益、金融=経常利益）を正本にする。
+        deterioration = []
+        if sales_yoy < 0:
+            p = min(math.sqrt(abs(float(sales_yoy))) * 0.10, 1.50)
+            deterioration.append(("売上減", p))
+
+        if op_state == "🔴 赤字転落":
+            deterioration.append((f"{profit_metric}赤字転落", 4.00))
+        elif op_state in {"🔴 赤字拡大", "🔴 赤字化"}:
+            deterioration.append((f"{profit_metric}赤字拡大", 3.00))
+        elif op_state in {"🟠 赤字縮小", "🟠 赤字横ばい", "🟠 赤字解消目前"}:
+            deterioration.append((f"{profit_metric}赤字継続", 0.75))
+        elif op_state in {"🟡 黒字減益", "🟡 黒字→損益ゼロ"} and op_yoy < 0:
+            p = min(math.sqrt(abs(float(op_yoy))) * 0.20, 3.00)
+            deterioration.append((f"{profit_metric}減益", p))
+        elif op_state == "情報不足" and op_yoy < 0:
+            p = min(math.sqrt(abs(float(op_yoy))) * 0.20, 3.00)
+            deterioration.append(("利益減速(状態実額不足)", p))
+
+        if eps_growth_effect < 0:
+            p = min(math.sqrt(abs(float(eps_growth_effect))) * 0.18, 3.00)
+            deterioration.append(("予想EPS減", p))
+        if accel_quality == "margin_lag":
+            deterioration.append(("利益率鈍化", 0.75))
+        if progress_hist_n is not None and float(progress_hist_n) >= 2 and progress_diff is not None and float(progress_diff) <= -5.0:
+            p = min((abs(float(progress_diff)) - 5.0) * 0.05, 1.50)
+            if p > 0:
+                deterioration.append(("季節進捗下振れ", p))
+
+        # TDnet forecast_historyの同一年度・前回→最新の数値差を直接使う。
+        # キーワード判定や自動スクリーニング独自の予想snapshotは作らない。
+        if worst_tdnet_revision is not None and worst_tdnet_revision <= -3.0:
+            p = min(0.50 + math.sqrt(abs(float(worst_tdnet_revision))) * 0.22, 2.50)
+            deterioration.append(("TDnet下方修正", p))
+
+        deterioration_penalty = min(sum(p for _, p in deterioration), 7.0)
+        target_per -= deterioration_penalty
+
         overhang_high = (buy_margin_days is not None and buy_margin_days > 20.0) or (demand_days is not None and demand_days > 30.0)
         overhang_mid = (buy_margin_days is not None and buy_margin_days > 10.0) or (demand_days is not None and demand_days > 15.0)
         overhang_low = (buy_margin_days is not None and buy_margin_days < 3.0) or (demand_days is not None and 0 < demand_days < 5.0)
@@ -15916,67 +19733,69 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         elif overhang_low:
             target_per += 1.0
 
-        max_per = 36.0
-        if turnaround_flag:
-            max_per = min(max_per, 25.0)
-
-        target_per = np.clip(target_per, 8.0, max_per)
-
-        # 4. 適正株価 = 予想EPS × 許容PER
-        fair_per = forecast_eps * target_per
-        target_price = fair_per
-
-        # 5. 3ヶ月期待株価の算出（企業価値50% ＋ 市場モメンタム50%）
-        short_squeeze_bonus = (
-            min(math.sqrt(max(short_margin_days, 0.0)) * 0.015, 0.12)
-            if short_margin_days is not None else 0.0
-        )
-        
-        # P3-11: AIスコアは50を中立点として左右対称に使う。旧式は50未満を
-        # すべて50相当へ切り上げ、AIが悪材料を示しても期待株価へ反映されなかった。
+        max_per = 25.0 if turnaround_flag else 36.0
+        severe_red = op_state in {"🔴 赤字転落", "🔴 赤字拡大", "🔴 赤字化"}
+        min_per = 5.5 if severe_red else (6.0 if deterioration_penalty >= 3.0 else (7.0 if deterioration_penalty > 0 else 8.0))
+        target_per = float(np.clip(target_per, min_per, max_per))
+        target_price = float(forecast_eps) * target_per
+        short_squeeze_bonus = min(math.sqrt(max(short_margin_days, 0.0)) * 0.015, 0.12) if short_margin_days is not None else 0.0
         ai_score_clamped = float(np.clip(ai_score, 0.0, 100.0))
-        raw_momentum_multiplier = (
-            1.0 
-            + (rs20 * 0.20) 
-            + (expected_impact * 0.005) 
-            + ((ai_score_clamped - 50.0) * 0.001)
-            + short_squeeze_bonus
-        )
-        
-        clamped_momentum_mult = np.clip(raw_momentum_multiplier, 0.75, 1.55)
-        expected_3m_price = (target_price * 0.5) + ((price * clamped_momentum_mult) * 0.5)
+        raw_momentum_multiplier = 1.0 + (rs20 * 0.20) + (expected_impact * 0.005) + ((ai_score_clamped - 50.0) * 0.001) + short_squeeze_bonus
+        clamped_momentum_mult = float(np.clip(raw_momentum_multiplier, 0.75, 1.55))
+        expected_3m_price = (target_price * 0.5) + ((price * clamped_momentum_mult) * 0.5) if pd.notna(price) and price > 0 else target_price
+        deterioration_note = ""
+        if deterioration:
+            deterioration_note = " / 業績悪化PER減点=" + ",".join(f"{name}-{p:.2f}倍" for name, p in deterioration) + f" (cap後-{deterioration_penalty:.2f}倍)"
+        source_note = f" / 利益状態={op_state}({profit_metric}) / TDnet予想修正={tdnet_revision_status}"
+        return {
+            "fair": target_price, "expected": expected_3m_price, "normal": target_price, "low": np.nan, "high": np.nan,
+            "method": f"PER {target_per:.1f}倍" + ("(悪化減点込)" if deterioration_penalty > 0 else ""),
+            "eps_quality": "通常", "note": "継続利益EPSとしてPER評価" + deterioration_note + source_note,
+            "pbr_mid": np.nan, "pbr_low": np.nan, "pbr_high": np.nan, "pbr_source": "",
+        }
 
-        return float(target_price), float(expected_3m_price)
-
-    results = df.apply(calc_dynamic_fair_value, axis=1)
-    df["適正株価"] = [r[0] for r in results]
-    df["期待株価"] = [r[1] for r in results]
-
+    results = [calc_dynamic_fair_value(r) for _, r in df.iterrows()]
+    df["適正株価"] = [r["fair"] for r in results]
+    df["期待株価"] = [r["expected"] for r in results]
+    df["通常価値"] = [r["normal"] for r in results]
+    df["参考下限株価"] = [r["low"] for r in results]
+    df["参考上限株価"] = [r["high"] for r in results]
+    df["評価方式"] = [r["method"] for r in results]
+    df["EPS品質"] = [r["eps_quality"] for r in results]
+    df["適正株価注記"] = [r["note"] for r in results]
+    df["基準PBR"] = [r["pbr_mid"] for r in results]
+    df["参考下限PBR"] = [r["pbr_low"] for r in results]
+    df["参考上限PBR"] = [r["pbr_high"] for r in results]
+    df["PBR参照元"] = [r["pbr_source"] for r in results]
     df["割安度"] = np.where(
         (df["適正株価"] > 0) & (df["現在値"] > 0),
         ((df["適正株価"] - df["現在値"]) / df["現在値"]) * 100.0,
-        np.nan
+        np.nan,
     )
 
-    # P1-228: 今回計算不能になった銘柄もNULLで更新し、前回の適正/期待株価を残さない。
     updates = []
     for _, r in df.iterrows():
+        def _rv(col, digits=1):
+            v = r.get(col)
+            return round(float(v), digits) if pd.notna(v) and math.isfinite(float(v)) else None
         updates.append((
-            round(r["適正株価"], 1) if pd.notna(r["適正株価"]) else None,
-            round(r["割安度"], 2) if pd.notna(r["割安度"]) else None,
-            round(r["期待株価"], 1) if pd.notna(r["期待株価"]) else None,
-            str(r["コード"])
+            _rv("適正株価", 1), _rv("割安度", 2), _rv("期待株価", 1), _rv("通常価値", 1),
+            _rv("参考下限株価", 1), _rv("参考上限株価", 1),
+            str(r.get("評価方式") or ""), str(r.get("EPS品質") or ""), str(r.get("適正株価注記") or ""),
+            _rv("基準PBR", 3), _rv("参考下限PBR", 3), _rv("参考上限PBR", 3), str(r.get("PBR参照元") or ""),
+            str(r["コード"]),
         ))
 
     if updates:
-        # P1-447: 適正/割安/期待株価を全銘柄同一snapshotで反映。
         cur = conn.cursor()
         try:
             cur.execute("SAVEPOINT p1_447_fair_value")
             cur.executemany("""
                 UPDATE screener
-                SET 適正株価=?, 割安度=?, 期待株価=?
-                WHERE コード=?
+                   SET 適正株価=?, 割安度=?, 期待株価=?, 通常価値=?,
+                       参考下限株価=?, 参考上限株価=?, 評価方式=?, EPS品質=?, 適正株価注記=?,
+                       基準PBR=?, 参考下限PBR=?, 参考上限PBR=?, PBR参照元=?
+                 WHERE コード=?
             """, updates)
             cur.execute("RELEASE SAVEPOINT p1_447_fair_value")
         except Exception:
@@ -15988,8 +19807,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
             raise
         finally:
             cur.close()
-        print(f"[quant] 高成長・PER主軸・PBR完全撤廃型エンジンによる更新完了: {len(updates)} 銘柄")
-
+        print(f"[quant][FV-SAFE] EPS品質ゲート付きFair Value更新完了: {len(updates)} 銘柄")
 
 def _sync_latest_model_outputs_and_refresh_fair_value(conn: sqlite3.Connection, rows):
     """
@@ -16063,8 +19881,9 @@ def _sync_latest_model_outputs_and_refresh_fair_value(conn: sqlite3.Connection, 
     if updates:
         print(f"[fair-value] 最新AI/予想インパクトをDB同期: {len(updates)}銘柄")
 
+    _fv_cols = ["コード", *FAIR_VALUE_OUTPUT_COLUMNS]
     fv = pd.read_sql_query(
-        "SELECT コード, 適正株価, 割安度, 期待株価 FROM screener",
+        "SELECT " + ", ".join(f'"{c}"' for c in _fv_cols) + " FROM screener",
         conn,
     )
     if fv.empty:
@@ -16073,11 +19892,7 @@ def _sync_latest_model_outputs_and_refresh_fair_value(conn: sqlite3.Connection, 
     fv_map = {}
     for _, rr in fv.iterrows():
         code = canonical_code_for_db(rr.get("コード"))
-        fv_map[code] = {
-            "適正株価": rr.get("適正株価"),
-            "割安度": rr.get("割安度"),
-            "期待株価": rr.get("期待株価"),
-        }
+        fv_map[code] = {c: rr.get(c) for c in FAIR_VALUE_OUTPUT_COLUMNS}
 
     for r in rows:
         code = canonical_code_for_db(r.get("コード"))
@@ -17531,6 +21346,7 @@ def phase_sync_finance_comments(conn):
         ("財務コメント","TEXT"),
         ("スコア","INTEGER"),
         ("進捗率","REAL"),
+        ("進捗状態","TEXT"),
         ("overall_alpha","TEXT"),
         # P1-654: 現行FUND_SCRIPT（株探ファンダ.py）がscreenerへ直接current値を書き込む。
         # schema保証だけここでも維持するが、finance_notesからは上書きしない。
@@ -17625,6 +21441,15 @@ def phase_sync_finance_comments(conn):
             _fn = _latest_finance_notes_by_canonical(_fn, "_key")
             _nmap = {r["_key"]: r for _, r in _fn.iterrows()}
         _stale_finance_codes = _finance_codes_stale_after_latest_earnings(conn)
+
+        def _normalize_progress_percent(v):
+            """finance_notes legacy負値を実進捗率と混ぜない。返り値=(進捗率,進捗状態)。"""
+            n=_to_float(v)
+            if n is None:return None,"データなし"
+            if n>=0:return n,None
+            state_map={-1.0:"予想データ欠損",-2.0:"通期予想ゼロ",-4.0:"今期予想発表済・1Q待機"}
+            return None,state_map.get(float(n),f"legacy状態コード({n:g})")
+
         if _stale_finance_codes:
             print(f"[sync][P1-608] newer earnings event -> stale finance mask: {len(_stale_finance_codes)} codes", flush=True)
         if not _sc_codes.empty:
@@ -17635,19 +21460,20 @@ def phase_sync_finance_comments(conn):
                     # P1-608: finance正本が無い場合も含め、fetch_allが新決算を先に認識したら
                     # 古い評価値を「今回の決算評価」として同期しない。EPS自体はlast-known
                     # 公表値として保持するが、コメントは再取得待ちを明示して旧評価文の誤読を防ぐ。
-                    _sync_rows.append(("⚠️ 新しい決算を検知。財務再取得待ち", None, None, None, _raw_code))
+                    _sync_rows.append(("⚠️ 新しい決算を検知。財務再取得待ち", None, None, "財務再取得待ち", None, _raw_code))
                     continue
                 if _n is None:
                     # P1-589: 今回finance_notesに正本行が存在しない銘柄も、最新決算由来の
                     # score/progress/overall_alphaだけはauthoritativeにNULLへ戻す。finance_notes全体が
                     # 空の場合も同じ。旧実装はcontinue/外側条件で前回評価を永久保持できた。
                     # コメントはlast-known表示として保持する。
-                    _sync_rows.append((None, None, None, None, _raw_code))
+                    _sync_rows.append((None, None, None, "データなし", None, _raw_code))
                     continue
                 # P1-654: YoY/利益加速はFUND_SCRIPTがscreenerへ直接current更新済み。
                 # finance_notesのlegacy列で上書きせず、そのcurrent値を保持する。
+                _progress,_progress_state=_normalize_progress_percent(_n.get("progress_percent"))
                 _sync_rows.append((
-                    _n.get("財務コメント"), _n.get("score"), _n.get("progress_percent"),
+                    _n.get("財務コメント"), _n.get("score"), _progress, _progress_state,
                     _n.get("overall_alpha"), _raw_code
                 ))
         if _sync_rows:
@@ -17659,6 +21485,7 @@ def phase_sync_finance_comments(conn):
                        -- 季節進捗・Factor/適正株価へ古い評価をfresh値として持ち越すため直接置換する。
                        スコア        = ?,
                        進捗率        = ?,
+                       進捗状態      = NULLIF(?, ''),
                        overall_alpha= NULLIF(?, '')
                        -- P1-670: screener.EPS と finance_notes.forecast_eps を同じ列へ混在させない。
                        -- EPSはYahoo財務等のlast-known EPS、予想EPSはfinance_notes側で別管理する。
@@ -18372,7 +22199,7 @@ def _external_live_materials_ready(max_age_minutes: int = 45) -> tuple[bool, str
 
     # P3-42: EODはlive_materialsがpartialでも通さない。Yahoo確定足のEOD専用job成功を要求。
     if _mode_now == "EOD":
-        eod = _external_job_state("live_eod_finalize")
+        eod = _external_job_state("eod_finalize")
         if str(eod.get("status") or "") != "success":
             return False, f"EOD finalize status={eod.get('status') or 'missing'}"
         ets = eod.get("last_finished_at") or eod.get("last_success_at")
@@ -19152,7 +22979,7 @@ def main():
             # (8) ダッシュボード出力
             html_path = os.path.join(OUTPUT_DIR, "index.html")
             try:
-                _timed("export_html_dashboard", phase_export_html_dashboard_offline, conn, html_path)
+                _timed("export_html_dashboard", phase_export_html_dashboard_offline, conn, html_path, "templates", False, 2000)
             except Exception as e:
                 print(f"[HTML-EXPORT][FATAL] HTML生成中に致命的なエラーが発生しました: {e}")
                 raise
@@ -19312,3 +23139,4 @@ if __name__ == "__main__":
             _release_shared_writer_lock(_shared_writer_token)
         except Exception as _e:
             print("[shared-writer-lock][WARN] release:", _e)
+

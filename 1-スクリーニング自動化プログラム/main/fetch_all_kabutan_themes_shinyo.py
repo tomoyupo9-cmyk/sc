@@ -73,15 +73,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
     """)
 
-    # 旧版は コード PRIMARY KEY で最新1行を上書きしていた。
-    # 自動スクリーニングは5期/20期変化を見るため、時系列PKへ安全に移行する。
-    wanted_pk = ["コード", "基準日"]
-    if _table_exists(conn, "stock_credit_margin") and _pk_columns(conn, "stock_credit_margin") != wanted_pk:
-        legacy = "stock_credit_margin_legacy_latest_only"
-        if _table_exists(conn, legacy):
-            conn.execute(f'DROP TABLE "{legacy}"')
-        conn.execute('ALTER TABLE stock_credit_margin RENAME TO "stock_credit_margin_legacy_latest_only"')
-
+    # 信用残は現行の時系列schemaだけを許容する。
+    # 旧「コード単独PRIMARY KEY」schemaからの自動rename/migrationは廃止済み。
     conn.execute("""
         CREATE TABLE IF NOT EXISTS stock_credit_margin (
             コード TEXT NOT NULL,
@@ -93,18 +86,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (コード, 基準日)
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_credit_code_date ON stock_credit_margin(コード, 基準日 DESC)")
 
-    if _table_exists(conn, "stock_credit_margin_legacy_latest_only"):
-        cols = {r[1] for r in conn.execute('PRAGMA table_info("stock_credit_margin_legacy_latest_only")')}
-        needed = {"コード", "基準日", "売り残", "買い残", "倍率", "取得日"}
-        if needed.issubset(cols):
-            conn.execute("""
-                INSERT OR IGNORE INTO stock_credit_margin(コード,基準日,売り残,買い残,倍率,取得日)
-                SELECT CAST(コード AS TEXT), CAST(基準日 AS TEXT), 売り残, 買い残, 倍率, 取得日
-                FROM stock_credit_margin_legacy_latest_only
-                WHERE コード IS NOT NULL AND 基準日 IS NOT NULL AND TRIM(CAST(基準日 AS TEXT))<>''
-            """)
+    wanted_pk = ["コード", "基準日"]
+    actual_pk = _pk_columns(conn, "stock_credit_margin")
+    if actual_pk != wanted_pk:
+        raise RuntimeError(
+            "stock_credit_margin schema mismatch: "
+            f"primary key={actual_pk!r}, expected={wanted_pk!r}. "
+            "Automatic legacy migration is disabled."
+        )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_credit_code_date "
+        "ON stock_credit_margin(コード, 基準日 DESC)"
+    )
 
     try:
         conn.execute("ALTER TABLE screener ADD COLUMN 決算発表予定日 TEXT")

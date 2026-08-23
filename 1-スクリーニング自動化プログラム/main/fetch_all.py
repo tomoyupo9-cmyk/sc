@@ -994,16 +994,15 @@ def ensure_forecast_history_schema(conn: sqlite3.Connection):
     """
     TDnet正式予想イベント履歴。
 
-    v21 migration:
-    旧・株探ファンダ_new.py が作った
-      forecast_history(captured_at NOT NULL, ...)
-    を検出した場合、
-      forecast_observation_history
-    へコピーしてから旧テーブルを退避し、
-    TDnet正式スキーマの forecast_history を新規作成する。
+    現行運用では旧Kabutan版 forecast_history からの自動migrationは行わない。
+    forecast_observation_history は独立した観測履歴として維持し、
+    forecast_history はTDnet正式schemaだけを許容する。
+
+    想定外schemaを検出した場合は、legacyテーブルを再生成・リネームせず
+    明示エラーで停止する。DBを勝手に変形させないためのfail-fast。
     """
 
-    # --- 株探観測履歴の受け皿 ---
+    # --- 株探観測履歴の受け皿（現役・独立テーブル） ---
     conn.execute("""
     CREATE TABLE IF NOT EXISTS forecast_observation_history(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1022,79 +1021,6 @@ def ensure_forecast_history_schema(conn: sqlite3.Connection):
     CREATE INDEX IF NOT EXISTS idx_forecast_observation_code_date
     ON forecast_observation_history(コード, captured_at);
     """)
-
-    # --- 旧forecast_historyが存在するか確認 ---
-    exists = conn.execute("""
-        SELECT 1 FROM sqlite_master
-        WHERE type='table' AND name='forecast_history'
-        LIMIT 1
-    """).fetchone()
-
-    if exists:
-        info = conn.execute("PRAGMA table_info(forecast_history)").fetchall()
-        colmap = {r[1]: r for r in info}
-
-        # 旧株探版の決定的特徴:
-        # captured_at があり、NOT NULL。
-        legacy_kabutan = (
-            "captured_at" in colmap
-            and int(colmap["captured_at"][3] or 0) == 1
-        )
-
-        if legacy_kabutan:
-            print("[forecast_history][MIGRATE] legacy Kabutan table detected")
-
-            cols = set(colmap)
-            # 旧株探データを観測履歴へ安全コピー
-            select_parts = {
-                "コード": '"コード"' if "コード" in cols else "NULL",
-                "fiscal_key": "fiscal_key" if "fiscal_key" in cols else "''",
-                "captured_at": "captured_at",
-                "forecast_revenue": "forecast_revenue" if "forecast_revenue" in cols else "NULL",
-                "forecast_op": "forecast_op" if "forecast_op" in cols else "NULL",
-                "forecast_net": "forecast_net" if "forecast_net" in cols else "NULL",
-                "forecast_eps": "forecast_eps" if "forecast_eps" in cols else "NULL",
-                "source": "COALESCE(source,'kabutan')" if "source" in cols else "'kabutan'",
-            }
-
-            conn.execute(f"""
-                INSERT OR IGNORE INTO forecast_observation_history(
-                    コード,fiscal_key,captured_at,
-                    forecast_revenue,forecast_op,forecast_net,forecast_eps,source
-                )
-                SELECT
-                    {select_parts['コード']},
-                    {select_parts['fiscal_key']},
-                    {select_parts['captured_at']},
-                    {select_parts['forecast_revenue']},
-                    {select_parts['forecast_op']},
-                    {select_parts['forecast_net']},
-                    {select_parts['forecast_eps']},
-                    {select_parts['source']}
-                FROM forecast_history
-                WHERE {select_parts['コード']} IS NOT NULL
-                  AND {select_parts['captured_at']} IS NOT NULL
-            """)
-
-            # バックアップを1本だけ残す。
-            backup_exists = conn.execute("""
-                SELECT 1 FROM sqlite_master
-                WHERE type='table' AND name='forecast_history_kabutan_legacy'
-                LIMIT 1
-            """).fetchone()
-
-            if not backup_exists:
-                conn.execute("""
-                    ALTER TABLE forecast_history
-                    RENAME TO forecast_history_kabutan_legacy
-                """)
-                print("[forecast_history][MIGRATE] old table -> forecast_history_kabutan_legacy")
-            else:
-                # 既にバックアップがある場合は観測履歴へコピー済みなので現行legacyを削除。
-                conn.execute("DROP TABLE forecast_history")
-                print("[forecast_history][MIGRATE] duplicate legacy table removed after copy")
-
-            conn.commit()
 
     # --- TDnet正式履歴 ---
     conn.execute("""
@@ -1116,11 +1042,27 @@ def ensure_forecast_history_schema(conn: sqlite3.Connection):
     );
     """)
 
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(forecast_history)")}
+    info = conn.execute("PRAGMA table_info(forecast_history)").fetchall()
+    colmap = {r[1]: r for r in info}
+
+    required_core = {"id", "コード", "fiscal_key", "forecast_date"}
+    missing_core = sorted(required_core - set(colmap))
+    if missing_core:
+        raise RuntimeError(
+            "forecast_history schema mismatch: missing required columns "
+            + ", ".join(missing_core)
+            + ". Automatic legacy migration is disabled."
+        )
+
+    # captured_at は旧Kabutan schemaの決定的特徴。現行テーブルへ混在させない。
+    if "captured_at" in colmap:
+        raise RuntimeError(
+            "forecast_history legacy schema detected (captured_at present). "
+            "Automatic legacy migration is disabled."
+        )
+
+    # 現行schemaの将来互換: 非core列だけ不足時に安全追加する。
     additions = [
-        ("コード","TEXT"),
-        ("fiscal_key","TEXT"),
-        ("forecast_date","TEXT"),
         ("forecast_type","TEXT"),
         ("forecast_op","REAL"),
         ("forecast_eps","REAL"),
@@ -1133,18 +1075,14 @@ def ensure_forecast_history_schema(conn: sqlite3.Connection):
         ("updated_at","TEXT"),
     ]
     for c,t in additions:
-        if c not in cols:
-            try:
-                conn.execute(f'ALTER TABLE forecast_history ADD COLUMN "{c}" {t}')
-            except sqlite3.OperationalError:
-                pass
+        if c not in colmap:
+            conn.execute(f'ALTER TABLE forecast_history ADD COLUMN "{c}" {t}')
 
     conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_tdnet_forecast_history_code_fiscal_date
     ON forecast_history(コード, fiscal_key, forecast_date);
     """)
     conn.commit()
-
 
 def _classify_shinden_doc(title: str) -> str:
     t = title or ""
