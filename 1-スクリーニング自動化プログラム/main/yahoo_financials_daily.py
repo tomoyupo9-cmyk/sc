@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Yahoo/yahooquery財務補完producer。
 
-全銘柄取得は週次maintenanceから実行する。通常実行は7日cache、
-週次の確実な再取得には --force-refresh を使用する。
+通常はrefresh-days以内のcacheを再利用し、欠損/schema更新/最新決算後は即再取得する。
+--force-refresh は障害復旧・手動監査用の明示的な全件再取得として残す。
 """
 from __future__ import annotations
 import argparse
@@ -22,14 +22,19 @@ def _load_scanner():
 
 def main(argv=None)->int:
     ap=argparse.ArgumentParser(description='Yahoo財務補完（週次全件更新）')
-    ap.add_argument('--force-refresh',action='store_true',help='7日cacheを無視して全銘柄を再取得')
+    ap.add_argument('--force-refresh',action='store_true',help='cacheを無視して全銘柄を再取得（手動復旧/監査用）')
+    ap.add_argument('--refresh-days',type=int,default=7,help='通常cacheの最大日数。weekly smartは28推奨')
     args=ap.parse_args(argv)
     try:
         m=_load_scanner(); conn=m._get_db_conn()
         try:
             m.ensure_runlog_schema(conn)
             summary=m.batch_update_all_financials(
-                conn, chunk_size=200, force_refresh=bool(args.force_refresh), verbose=True
+                conn,
+                chunk_size=200,
+                force_refresh=bool(args.force_refresh),
+                refresh_days=max(1,int(args.refresh_days)),
+                verbose=True,
             )
             print(f'[yahoo-financials] complete: {summary}')
             return 0

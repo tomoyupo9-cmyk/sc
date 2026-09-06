@@ -1,15 +1,14 @@
-import logging
+﻿import logging
 import json
 import requests
 import sys
+import os
+from pathlib import Path
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import subprocess
-from fastapi.responses import JSONResponse
-import os
-from fastapi import BackgroundTasks 
-
+from fastapi.responses import JSONResponse, FileResponse
 # ======== ロギング設定 ========
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +30,82 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ======== Dashboard LIVE配信 ========
+# 自動スクリーニングは従来どおり output_data/index.html と dashboard_data.json を更新。
+# このFastAPIはそれらを読むだけで、スクリーナーやDB writerには触れない。
+_BASE_DIR = Path(__file__).resolve().parent
+_DASHBOARD_DIR = Path(
+    os.environ.get(
+        "KABU_OUTPUT_DIR",
+        r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data",
+    )
+)
+
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+@app.get("/health")
+async def health():
+    return {
+        "ok": True,
+        "service": "stock_ai_server",
+        "dashboard_dir": str(_DASHBOARD_DIR),
+    }
+
+@app.get("/dashboard")
+async def dashboard():
+    path = _DASHBOARD_DIR / "index.html"
+    if not path.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "index.html not found", "path": str(path)},
+            headers=_NO_CACHE_HEADERS,
+        )
+    return FileResponse(
+        str(path),
+        media_type="text/html; charset=utf-8",
+        headers=_NO_CACHE_HEADERS,
+    )
+
+@app.get("/dashboard_data.json")
+async def dashboard_data():
+    path = _DASHBOARD_DIR / "dashboard_data.json"
+    if not path.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "dashboard_data.json not found", "path": str(path)},
+            headers=_NO_CACHE_HEADERS,
+        )
+    return FileResponse(
+        str(path),
+        media_type="application/json; charset=utf-8",
+        headers=_NO_CACHE_HEADERS,
+    )
+
+@app.get("/__dashboard_version__")
+async def dashboard_version():
+    path = _DASHBOARD_DIR / "dashboard_data.json"
+    if not path.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "dashboard_data.json not found", "path": str(path)},
+            headers=_NO_CACHE_HEADERS,
+        )
+    st = path.stat()
+    return JSONResponse(
+        content={
+            "ok": True,
+            "mtime_ns": st.st_mtime_ns,
+            "size": st.st_size,
+            "updated_at": datetime.fromtimestamp(st.st_mtime).astimezone().isoformat(timespec="seconds"),
+        },
+        headers=_NO_CACHE_HEADERS,
+    )
 
 class StockRequest(BaseModel):
     data: dict
@@ -172,36 +247,3 @@ async def analyze_stock(req: StockRequest):
     except Exception as e:
         logger.error(f"JSONパースエラー: {e} | Raw出力: {result}")
         return {"raw": result, "error": "JSON parse failed"}
-        
-# ======== ヤフ板分析の実行 ========
-def execute_yabb_script(code: str):
-    script_path = r"D:\kabu\main\1-スクリーニング自動化プログラム\main\ヤフ板分析.py"
-    try:
-        subprocess.run([sys.executable, script_path, code.upper()], check=True)
-        logger.info(f"ヤフ板分析スクリプト正常終了: {code}")
-    except Exception as e:
-        logger.error(f"ヤフ板分析スクリプト実行失敗: {e}")
-
-@app.get("/run_yabb")
-async def run_yahoo_bbs_analysis(code: str, background_tasks: BackgroundTasks):
-    report_path = rf"D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data\report_{code.upper()}.html"
-    
-    # ★修正箇所：新しく分析を回す前に、もし古いレポートが存在していれば確実に削除する
-    if os.path.exists(report_path):
-        try:
-            os.remove(report_path)
-            logger.info(f"古いレポートを削除しました: {report_path}")
-        except Exception as e:
-            logger.error(f"古いレポートの削除に失敗: {e}")
-
-    # 即座にレスポンスを返し、実際の分析は裏側で開始
-    background_tasks.add_task(execute_yabb_script, code.upper())
-    return {"status": "started"}
-
-@app.get("/check_yabb_status")
-async def check_yabb_status(code: str):
-    # レポートファイルが生成された時点で「完了」とみなす
-    report_path = rf"D:\kabu\main\1-スクリーニング自動化プログラム\main\output_data\report_{code.upper()}.html"
-    if os.path.exists(report_path):
-        return {"status": "completed"}
-    return {"status": "processing"}

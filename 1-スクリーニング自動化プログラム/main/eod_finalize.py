@@ -84,34 +84,17 @@ def main() -> int:
         if not codes:
             raise RuntimeError("screener universe is empty")
 
-        # P3-51: EODは10分周期で再試行される。既に当日price_historyが完全なら、
-        # Yahoo全銘柄再取得を絶対に繰り返さない。max(日付)だけでは一部銘柄でも通るため、
-        # scanner本体の完全性判定 _require_current_price_history_snapshot をprecheckに再利用する。
-        snapshot_ready = False
-        try:
-            _run_step(
-                "require_current_price_history_snapshot_precheck",
-                m._require_current_price_history_snapshot,
-                conn,
-                "EOD precheck",
-            )
-            snapshot_ready = True
-        except Exception as exc:
-            print(
-                f"[eod] current price snapshot not ready -> yahoo refresh required: "
-                f"{type(exc).__name__}: {exc}",
-                flush=True,
-            )
-
-        if snapshot_ready:
-            print("[eod] yahoo_bulk_refresh skipped: current EOD snapshot already valid", flush=True)
-        else:
-            # Yahooの当日期待足がまだ無ければphase側が例外を返し、成功markerは立たない。
-            _run_step(
-                "yahoo_bulk_refresh",
-                m._timed_daily_once,
-                "yahoo_bulk_refresh", m.phase_yahoo_bulk_refresh, conn, codes, batch_size=200,
-            )
+        # EOD-EXPECTED-DATE-GUARD-V1:
+        # MIDDAYはprice_historyへ当日行を書き込むため、MAX(日付)系のprecheckでは
+        # 「一部/多数の当日場中行がある」だけでEOD確定済みと誤認し得る。
+        # EOD Yahoo refreshの完了判定は _timed_daily_once の成功markerだけを正本にする。
+        # markerが無ければ必ずphase_yahoo_bulk_refreshを呼び、phase側で銘柄単位の
+        # expected-date検証を通過した時だけmarkerを作る。
+        _run_step(
+            "yahoo_bulk_refresh",
+            m._timed_daily_once,
+            "yahoo_bulk_refresh", m.phase_yahoo_bulk_refresh, conn, codes, batch_size=200,
+        )
         _run_step(
             "refresh_full_history_for_insufficient",
             m._timed_daily_once,

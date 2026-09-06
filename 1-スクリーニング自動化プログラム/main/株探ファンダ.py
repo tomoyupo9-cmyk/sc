@@ -1,4 +1,4 @@
-# === 2026-08-22 FV-SAFE連携 ===
+﻿# === 2026-08-22 FV-SAFE連携 ===
 # Fair Valueの唯一writerは自動スクリーニング.py。ここは財務入力producerのみ。
 # === 2026-08-16 日次差分・週次補修対応 ===
 # - PTS取得/保存を廃止
@@ -123,7 +123,9 @@ HEADERS = {
                    "Chrome/126.0.0.0 Safari/537.36")
 }
 ASYNC_CONCURRENCY_LIMIT = 7
-MASTER_CODES_PATH = os.environ.get('KABU_CODES_PATH', r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt")
+# BRISK-FUNDA-UNIVERSE-V1
+from brisk_universe_source import resolve_codes_path as _resolve_brisk_codes_path
+MASTER_CODES_PATH = str(_resolve_brisk_codes_path())
 DB_PATH = os.environ.get('KABU_DB_PATH', r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db")
 OUTPUT_DIR = os.environ.get('KABU_OUTPUT_DIR', r"H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data")
 
@@ -817,27 +819,36 @@ def export_html(df: pd.DataFrame, code: str, out_html: str, qp_result=None, verd
         fig.update_yaxes(title_text="金額（億円）", range=[None, max_sales_op_range], row=1, col=1, secondary_y=False)
         fig.update_yaxes(title_text="EPS / 配当（円）", range=[None, max_eps_div_range], row=1, col=1, secondary_y=True)
 
+        # KABUTAN-GROWTH-SHORT-HISTORY-V1 2026-09-07
+        # pct_changeの先頭行は必ずNaNなので、成長率x軸(N-1)とy系列(N-1)を揃える。
+        # 実績1行+予想1行しかない新設/持株会社でも [-2] を参照しない。
         x_full_growth_plot = x_full_plot[1:]
         if not df_growth.empty:
             if "売上高" in df_growth.columns and df_growth["売上高"].notna().any():
-                sales_growth_full = df_growth["売上高"].tolist()
-                fig.add_trace(go.Scatter(x=x_full_growth_plot[:-1], y=sales_growth_full[:-1], mode="lines+markers", name="売上高成長率（%）", hovertemplate='売上高成長率: %{y:.1f}%%<extra></extra>', showlegend=True), row=2, col=1)
-                if len(sales_growth_full) >= 2 and pd.notna(sales_growth_full[-1]):
-                    fig.add_trace(go.Scatter(x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[sales_growth_full[-2], sales_growth_full[-1]], mode="lines", name="売上高（予）接続（成長率）", line=dict(dash='dot'), hovertemplate='売上高(予)接続 (成長率)<extra></extra>', showlegend=False), row=2, col=1)
+                sales_growth_full = df_growth["売上高"].iloc[1:].tolist()
+                if len(sales_growth_full) >= 2:
+                    fig.add_trace(go.Scatter(x=x_full_growth_plot[:-1], y=sales_growth_full[:-1], mode="lines+markers", name="売上高成長率（%）", hovertemplate='売上高成長率: %{y:.1f}%%<extra></extra>', showlegend=True), row=2, col=1)
+                if len(sales_growth_full) >= 1 and pd.notna(sales_growth_full[-1]):
+                    if len(sales_growth_full) >= 2:
+                        fig.add_trace(go.Scatter(x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[sales_growth_full[-2], sales_growth_full[-1]], mode="lines", name="売上高（予）接続（成長率）", line=dict(dash='dot'), hovertemplate='売上高(予)接続 (成長率)<extra></extra>', showlegend=False), row=2, col=1)
                     fig.add_trace(go.Scatter(x=[x_full_growth_plot[-1]], y=[sales_growth_full[-1]], mode="markers", name="売上高成長率（予）", marker_symbol="square-open", customdata=[df["決算期"].iloc[-1]], hovertemplate=f'<b>%{{customdata}}</b><br>売上高成長率(予): %{{y:.1f}}%%<extra></extra>', showlegend=True), row=2, col=1)
 
             if "営業益" in df_growth.columns and df_growth["営業益"].notna().any():
-                op_growth_full = df_growth["営業益"].tolist()
-                fig.add_trace(go.Scatter(x=x_full_growth_plot[:-1], y=op_growth_full[:-1], mode="lines+markers", name="営業益成長率（%）", hovertemplate='営業益成長率: %{y:.1f}%%<extra></extra>', showlegend=True), row=2, col=1)
-                if len(op_growth_full) >= 2 and pd.notna(op_growth_full[-1]):
-                    fig.add_trace(go.Scatter(x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[op_growth_full[-2], op_growth_full[-1]], mode="lines", name="営業益（予）接続（成長率）", line=dict(dash='dot'), hovertemplate='営業益(予)接続 (成長率)<extra></extra>', showlegend=False), row=2, col=1)
+                op_growth_full = df_growth["営業益"].iloc[1:].tolist()
+                if len(op_growth_full) >= 2:
+                    fig.add_trace(go.Scatter(x=x_full_growth_plot[:-1], y=op_growth_full[:-1], mode="lines+markers", name="営業益成長率（%）", hovertemplate='営業益成長率: %{y:.1f}%%<extra></extra>', showlegend=True), row=2, col=1)
+                if len(op_growth_full) >= 1 and pd.notna(op_growth_full[-1]):
+                    if len(op_growth_full) >= 2:
+                        fig.add_trace(go.Scatter(x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[op_growth_full[-2], op_growth_full[-1]], mode="lines", name="営業益（予）接続（成長率）", line=dict(dash='dot'), hovertemplate='営業益(予)接続 (成長率)<extra></extra>', showlegend=False), row=2, col=1)
                     fig.add_trace(go.Scatter(x=[x_full_growth_plot[-1]], y=[op_growth_full[-1]], mode="markers", name="営業益成長率（予）", marker_symbol="circle-open", customdata=[df["決算期"].iloc[-1]], hovertemplate=f'<b>%{{customdata}}</b><br>営業益成長率(予): %{{y:.1f}}%%<extra></extra>', showlegend=True), row=2, col=1)
 
             if "修正1株益" in df_growth.columns and df_growth["修正1株益"].notna().any():
-                eps_growth_full = df_growth["修正1株益"].tolist()
-                fig.add_trace(go.Scatter(x=x_full_growth_plot[:-1], y=eps_growth_full[:-1], mode="lines+markers", name="EPS成長率（%）", hovertemplate='EPS成長率: %{y:.1f}%%<extra></extra>', showlegend=True), row=2, col=1)
-                if len(eps_growth_full) >= 2 and pd.notna(eps_growth_full[-1]):
-                    fig.add_trace(go.Scatter(x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[eps_growth_full[-2], eps_growth_full[-1]], mode="lines", name="EPS（予）接続（成長率）", line=dict(dash='dot'), hovertemplate='EPS(予)接続 (成長率)<extra></extra>', showlegend=False), row=2, col=1)
+                eps_growth_full = df_growth["修正1株益"].iloc[1:].tolist()
+                if len(eps_growth_full) >= 2:
+                    fig.add_trace(go.Scatter(x=x_full_growth_plot[:-1], y=eps_growth_full[:-1], mode="lines+markers", name="EPS成長率（%）", hovertemplate='EPS成長率: %{y:.1f}%%<extra></extra>', showlegend=True), row=2, col=1)
+                if len(eps_growth_full) >= 1 and pd.notna(eps_growth_full[-1]):
+                    if len(eps_growth_full) >= 2:
+                        fig.add_trace(go.Scatter(x=[x_full_growth_plot[-2], x_full_growth_plot[-1]], y=[eps_growth_full[-2], eps_growth_full[-1]], mode="lines", name="EPS（予）接続（成長率）", line=dict(dash='dot'), hovertemplate='EPS(予)接続 (成長率)<extra></extra>', showlegend=False), row=2, col=1)
                     fig.add_trace(go.Scatter(x=[x_full_growth_plot[-1]], y=[eps_growth_full[-1]], mode="markers", name="EPS成長率（予）", marker_symbol="diamond-open", customdata=[df["決算期"].iloc[-1]], hovertemplate=f'<b>%{{customdata}}</b><br>EPS成長率(予): %{{y:.1f}}%%<extra></extra>', showlegend=True), row=2, col=1)
 
         fig.update_xaxes(title_text="決算期", tickangle=0, type='category', ticktext=x_full_growth_plot, tickvals=x_full_growth_plot, row=2, col=1)

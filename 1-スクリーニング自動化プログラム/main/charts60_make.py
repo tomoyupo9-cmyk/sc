@@ -10,7 +10,7 @@ charts60_make_v4.py — ローソク足＋出来高＋MA/BB/一目雲(+26) + ク
 - 【追加】凡例バー（▲=GC、◆=三役好転）とツールチップへのマーク説明
 
 2026-08-17 P2-96 引継ぎ:
-- 10分スクリーニングからは ``--codes @file`` で監視候補だけを生成する。引け後の
+- SHORT-HISTORY-V1: 最低20本あれば簡易チャート生成。MA25/MA75等は本数不足なら未計算のまま表示する。\n- 10分スクリーニングからは ``--codes @file`` で監視候補だけを生成する。引け後の
   EODは全銘柄を補修するため、codes未指定も従来どおり対応する。
 - 旧版は1銘柄ごとにprice_history全期間SELECTとlatest_prices SELECTを行い、4380銘柄で
   約2分40秒がtimer外に隠れていた。対象raw codeを一時表へ入れ、履歴・当日価格を
@@ -989,7 +989,7 @@ def parse_args():
     ap.add_argument("--out", default=str(OUT_DIR), help="出力ディレクトリ")
     ap.add_argument("--codes", default=None,
                     help="生成対象のコード（カンマ/空白区切り or @codes.txt）")
-    ap.add_argument("--min-bars", type=int, default=80, help="最低必要本数（既定:80）")
+    ap.add_argument("--min-bars", type=int, default=20, help="最低必要本数（既定:20。短期履歴銘柄も簡易チャート生成）")
     ap.add_argument(
         "--history-bars", type=int, default=0,
         help="DBから読む最新本数。0は全履歴（既定）。10分スクリーナーは160を指定",

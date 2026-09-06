@@ -1,11 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import ast, importlib.util, os, sqlite3, sys
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
 DB=Path(os.environ.get('KABU_DB_PATH', r'H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\db\kani2.db'))
 OUT=Path(os.environ.get('KABU_OUTPUT_DIR', r'H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\output_data'))
-CODES=Path(os.environ.get('KABU_CODES_PATH', r'H:\desctop\株攻略\1-スクリーニング自動化プログラム\main\input_data\株コード番号.txt'))
+# BRISK-PREFLIGHT-UNIVERSE-V1
+from brisk_universe_source import resolve_codes_path as _resolve_brisk_codes_path
+CODES=Path(_resolve_brisk_codes_path())
 MODEL_DIR=Path(os.environ.get('KABU_MODEL_DIR', str(HERE/'model')))
 
 REQUIRED_FILES=['system_jobs.py','fetch_all.py','株探ファンダ.py','fetch_all_kabutan_themes_shinyo.py','空売り無しリスト出しスクリプト.py','浮動.py','shinden_logic.py','eod_finalize.py','yahoo_financials_daily.py','モデル学習_catboost.py','charts60_make.py','自動スクリーニング.py','template.html']

@@ -1,427 +1,54 @@
-﻿# === 2026-08-23 WATCH-RISK-V1 ===
-# 買い時監視に撤退ライン・リスク幅・100株損失額・許容額判定を追加。
-# === /2026-08-23 WATCH-RISK-V1 ===
+﻿# -*- coding: utf-8 -*-
+# ==============================================================================
+# 自動スクリーニング.py — CURRENT FIX CONTRACT (2026-09-06)
+# ==============================================================================
+# このヘッダーは「現在の実装」を説明する。過去バージョンの変更履歴はソース本体から撤去し、
+# 実装と矛盾する古いコメントを正本として扱わない。挙動の正本は下記の現行コードとDB schema。
+#
+# ■ 実行モード / 公開安全性
+# - AUTO は時刻・営業日から PREOPEN / MIDDAY / EOD を固定し、process中にmodeを変えない。
+# - 外部producerの鮮度が必要なmodeでは stale snapshot を公開せず fail/skip する。
+# - HTML / dashboard_data.json は同一snapshotをstageして atomic replace。途中失敗で旧新混在を残さない。
+#
+# ■ Candidate / LIVE
+# - 正式candidate source: INITIAL_MOMENTUM / STEADY_UP / BOTTOM_REVERSAL。
+# - QUALITYは独立sourceとして未実装。意味の異なるproxyをQUALITYとして流用しない。
+# - Candidate Contract / priority / top300 / LIVE50 は専用producerの現行実装を正本とする。
+#
+# ■ 現在の価格目安（表示用。candidate gate / priority / model scoreには使わない）
+# - 仕込み/損切 anchor: 最寄り支持 -> 支持帯中心 -> 直近安値90日。
+# - 利確 anchor: 最寄り抵抗 -> 抵抗帯中心 -> 直近高値90日。
+# - ATR14が無ければ仕込み/利確/損切は未計算(-)。架空ATRで補完しない。
+# - 仕込みは支持+0.2ATR（現在値の99.5%を上限）、損切は支持-0.2ATR。
+# - 利確は現在値より3%以上上の抵抗があれば抵抗×0.99、無ければ現在値+5ATR。
+#
+# ■ 信用 / 機関空売りの表示意味論
+# - 信用倍率の内部999.9は「売り残0・買い残あり」の計算用sentinel。dashboard表示は「売り残0」。
+# - 機関空売りは過去履歴とcurrent取得状態を分離。取得未成功/現在不明を0株と表示しない。
+# - 内部列「本日の増減合計株数」は互換維持。実意味は「最新報告日に更新された機関の増減合計」。
+#
+# ■ Fair Value
+# - 基礎適正は finance_notes.forecast_eps 等の現行入力とEPS品質gateを使う。
+# - screener.EPSは参考表示であり、既定ではFair Valueの予想EPSfallbackに使わない。
+# - 一過性利益/EPS異常時はPERを禁止しPBR基礎へ切替。参考上限は基礎適正と分離する。
+#
+# ■ UI / コメント保守方針
+# - template.html がdashboard UIの唯一の正本。
+# - ?ヘルプは全表示列をcoverage監査し、説明準備中のまま公開しない。
+# - 今後コメントと実装が矛盾した場合は実装を正としてコメントを更新/削除する。
+# ==============================================================================
 
-# === 2026-08-23 POST-EARNINGS-MIGRATION-V1 ===
-# 旧決算後上昇スクリーニングの決算後専用価値を本線へ統合。既存LIVEランキングは変更しない。
-# === /2026-08-23 POST-EARNINGS-MIGRATION-V1 ===
-
-# === 2026-08-23 REPRICING-DISCOVERY-V1 ===
-# V1.1: financial metric guard / full discovery stats / LLM discovery fields
-# - 研究V7〜V10Bの知見を本番スクリーナーへ移植。厳格ANDで削り切らず、複数の独立ルートをORで保持する。
-# - 狙いは「良い会社」ではなく、企業価値の改善に対して株価の再評価が遅れている候補。
-# - FUNDAMENTAL_EARLY / CYCLICAL_VALUE / EARNINGS_ACCELERATION / CONSERVATIVE_FORECAST /
-#   QUALITY_GROWTH_UNDERREACTION を独立フラグ化し、重大希薄化以外は極力ハード除外しない。
-# - 既存 INITIAL_MOMENTUM / STEADY_UP / BOTTOM_REVERSAL の候補gate・priority・top300・LIVE50配分は変更しない。
-# - 新ファンダ探索は live_candidate_feed.json の discovery_candidates とdashboardワンタッチへ追加し、
-#   既存LIVEランキングへ混ぜる前に実データ監査できるようにする。
-# === /2026-08-23 REPRICING-DISCOVERY-V1 ===
-
-# === 2026-08-23 FUND-SOURCE-TRUTH FINAL ===
-# - ファンダ判定の正本を「株探 quarterly_actual_history + TDnet forecast_history + offerings_events」に統一。
-# - 一般企業は営業利益、銀行/証券/保険/その他金融は経常利益の最新Q/前年同期Q実額から利益状態を判定。
-# - 下方修正はキーワードではなくTDnet同一年度の予想スナップショット数値差を正本とする。
-# - 初回予想のみ/比較元不足/比較可能値不足を据え置きと混同しない。情報不足はファンダ本命へ昇格させない。
-# - 重大希薄化はofferings_eventsの実イベントから判定し、直近の増資/CB・EB/継続行使はファンダ本命から除外。
-# - 実runごとに株探実績・TDnet予想履歴・希薄化監視のcoverageをmeta/logへ出す。
-# ============================================================================
-# 2026-08-22 FUND-QUALITY-V2: ファンダ抽出品質 + 業績悪化PER減点
-# - 財務優良はalpha順位で判定し、S-/A++等の派生ランクを文字列漏れさせない。
-# - 季節進捗に過去同Q件数を保存し、正式な進捗上振れは2期以上・+5pt以上で判定可能にする。
-# - dashboardへ最新実決算日/決算後JPX営業日数を付与し、予定日欠損を「決算通過」と誤認しない。
-# - Fair Valueは悪化決算をPER据え置きにせず、売上減・営業減益・EPS減益・利益率鈍化・
-#   季節進捗下振れを観測できた範囲だけ段階減点。減点理由は適正株価注記へ残す。
-# ============================================================================
-# ============================================================================
-# 2026-08-22 FV-SAFE: 適正株価の一過性利益暴走を防止
-# - 適正株価を「基礎価値」に固定し、特益/EPS異常時はPER禁止→PBR基礎へ切替。
-# - 参考上限を別列化し、割安度/Algo_Factorへは入れない。
-# - EPS品質/評価方式/注記/PBR根拠をscreenerへ保存しdashboardへ同期。
-# ============================================================================
-# 2026-08-22 FINAL-CONSISTENCY: 後段4件の整合修正
-# - MIDDAYの当日live終値を、地合いoutcomeの確定終値として使わない。事後成績は確定引けまででcutoff。
-# - BUYイベントのclose/翌日/3日後終値は、対象営業日の15:30以降のみ確定。過去の場中誤保存も確定値で上書き修復する。
-# - 実BUY統計は各時間軸ごとにrecent観測数>=ENTRY_SIGNAL_MIN_OBSの指標だけを採点する。少数標本を満額加点しない。
-# - 底反転Aは吸収回数==2限定を廃止し、2回以上をscore2/3対象にする。
-# ============================================================================
-# ============================================================================
-# 2026-08-17 V6 運用障害・性能改善の引継ぎ記録（次回改修者は先に読むこと）
-# ============================================================================
-#
-# ■ 本番の置き場所とジョブ境界
-# - 本番rootは D:\kabu\main\1-スクリーニング自動化プログラム\main 。
-#   system_rework_v5_final_candidate_* は検証元であり、Task Schedulerの実行先へ戻さない。
-# - DBはH:側の kani2.db を正本として参照する。D:側は同じ実体へリンクされているため、
-#   「別DB」とみなしてコピー/統合しない。共有writer lock中は本体をskipし、lockを手で消さない。
-# - P3-41/P3-42以降、この本体は外部producerを起動しない。
-#   system_jobsのdailyは開示取得→変更銘柄だけ株探ファンダ差分実行、全銘柄補修はweekly。
-#
-# ■ ここへ至った実障害（2026-08-16〜17）
-# - 旧dailyは株探ファンダ/Yahoo財務/テーマ・信用等を約3590銘柄へ毎日実行し数時間化。
-#   差分daily＋全件weeklyへ分離し、途中経過をsystem_jobsの標準出力/個別logへ可視化した。
-# - 自動スクリーニングは旧版で exportL V5 collect から1時間超、修正後の完走でも20分15秒。
-#   主因はderive_update 8分45秒など、巨大price_historyを銘柄chunkごとに反復走査するSQL。
-# - SQLiteへnumpy/pandas scalarを直接bindして resistance_update が失敗したため、DB投入値を
-#   Python scalarへ正規化した。Fair Valueでは AIスコア/予想インパクト_pct 等のschema不足と
-#   任意列「機関空売り合計株数」不存在で停止したため、必須schema保証＋任意列NULL読込へ修正。
-# - 生成HTML 3591行を監査すると RS_5/RS_20/ATR14/ATR14_PCT/tri_vol/イナゴ過熱が全件欠損。
-#   これはtemplate表示不良ではなく、TOPIX取得・ATR最終書込み・派生入力のproducer不良だった。
-#
-# ■ V6で確定した原因と設計（対応箇所 P2-80〜P2-87）
-# 1. DB内のTOPIX正規codeは ^TOPX のまま、Yahoo Japanへの通信symbolだけ998405.Tとする。
-#    MIDDAYの時価総額filterに指数を混ぜず、^TOPX/^N225/2516はbenchmarkとして明示追加する。
-# 2. Growth指数は新鮮な^GRT250履歴を第一優先。利用不能時だけ2516.Tの「期間return」を
-#    proxyに使う。2516の価格水準を^GRT250として保存すると時系列が破壊されるので禁止。
-#    同様にTOPIXは^TOPX/998405.Tを第一優先とし、場中quoteが当日未到達のときだけ1306.Tの
-#    期間returnをproxyに使う。1306の価格水準を^TOPXとして保存してはならない。
-# 3. derive/PREOPEN/price-summaryは、CAST(code AS TEXT) IN (...)をchunk反復しない。
-#    ROW_NUMBERの単一passまたは対象期間1回読込→メモリ分割を維持する。
-# 4. ATR14の最終正本writerはphase_resistance_update。同じcurrent履歴から支持抵抗と同時算出し、
-#    latest_pricesへ原子的に保存する。export側はそのATR_14からATR14_PCT/tri_volを派生する。
-# 5. 株探newsは最大6workerの有界並列＋429/5xx/通信例外を1回retry。無制限thread化しない。
-#
-# ■ データ品質の不変条件（速くても破ってはいけない）
-# - 欠損を0で埋めて「弱い銘柄」に見せない。RS/ATR/三角モデルは入力不足なら未判定のまま。
-# - 株探テーマは初動スコアのauthoritative snapshot。theme schema/取得/解析失敗を成功扱いせず、
-#   daily markerを進めない（テーマ詳細ページ巡回はせず、3日間ランキング掲載銘柄だけ取得）。
-# - aliasはlogical codeへ正規化し、ランキング・集計・HTMLを1銘柄1票/1行にする。
-# - producer失敗やschema不整合はfail-visible。古い値・部分値で「正常完了」を装わない。
-#
-# ■ V6/P2-87 本番結果と次段階
-# - 2026-08-17 MIDDAY実測はSHA-256=326E2E672471AC4989FE4AE4972AE79B8C5E25A9FB01140266E94EFED97F4C08
-#   のP2-87適用前版でEXIT=0、
-#   合計11分03秒（旧20分15秒）。derive_updateは
-#   8分45秒→21.75秒、株探news初回は86.97秒→21.33秒、ATR14 valid=3539まで復旧。
-# - ただしRS_5/RS_20/イナゴ過熱は572件(15.9%)に留まった。2516代理を使うGrowth銘柄だけ
-#   計算でき、TOPIX側が当日未到達だったため、P2-87で1306 return proxyを追加した。
-# - P2-87追加版は2026-08-17 MIDDAYの2回目実行で本番検証済み。1306.T/2516.Tの代理使用logを確認し、
-#   EXIT=0、内部10分55秒・Stopwatch合計11分03.99秒。ATR14 valid=3545、tri_vol=3543(98.7%)、
-#   RS_5=3543(98.7%)、RS_20=3538(98.5%)、イナゴ過熱=3542(98.6%)まで復旧した。
-# - よってP2-87のデータ品質受入は合格。以後、RS有効率572件(15.9%)の旧結果を現状扱いしない。
-# - ただし実行時間11分超は10分triggerより長い。重複起動を許可せず、本番Taskはまだ無効のまま。
-#   次はsignal_detection(1分50秒)とexport(3分18秒、主にAIニュース補完)、次いでYahoo quote(44.93秒)、
-#   右肩持続(42.46秒)を最適化し、10分周期に十分な余裕が出てから有効化する。
-# - P2-88は2026-08-17本番でsignal_detection 1分48秒→30.40秒、品質98%台を維持して合格。
-# - P2-89の32銘柄RSS queryは本番で初回記事2346→1217、AI補完ニュース有378→196へ約半減。
-#   Google News側のquery内結果上限によるcoverage低下と判断し、速度が上がっても不採用・撤回した。
-# - P2-90（本番未検証）: 8銘柄queryへ戻してcoverageを維持し、有界workerだけ3→6へ増加。
-# - P2-91（本番未検証）: CatBoost最新推論は最大MA75なので全期間履歴読込を廃止し、raw/logicalとも
-#   最新120観測へ限定。AI本体と後続RSS補完の個別timerも追加し、次runで結果一致と時間を確認する。
-# - P2-92（本番未検証）: ニュースを銘柄単位で30分cache。新規初動/AI陽性はcache missで即時取得し、
-#   HTTP/XML失敗はcacheを進めず次runで再試行。P2-89で失った8銘柄queryのcoverageは維持する。
-# - P2-93（本番未検証）: MIDDAYで右肩持続・信用需給・deriveだけ30分間隔化。
-#   右肩早期・RS・signal_detection・初動スコアは10分ごとを維持し、初動速報性を落とさない。
-# - P2-94（本番未検証）: PREOPEN価格派生とPREOPEN/EOD共通価格派生を同日・同buildで1回化。
-#   finance/material同期とHTML出力は毎run続行し、更新開示を見逃さない。charts60に独立timerも追加。
-# - P2-95（本番未検証）: charts60は成功manifestに生成銘柄・時刻・mode・script hashを保存。
-#   MIDDAYは30分、PREOPEN/EODは同日固定価格token一致時だけ再利用し、生成失敗では旧manifestへ逃げない。
-# - P2-96/P2-97（本番未検証）: charts60_makeは対象履歴/当日価格を一括取得し、mainは
-#   MIDDAY/PREOPENで現在シグナル＋前回監視＋前回AI陽性だけ（上限1600銘柄）を生成する。
-#   新規候補が前回request集合へ追加された時は30分TTL内でも即再生成し、候補から外れただけなら
-#   既存HTMLを再利用してリンク集合だけ縮小する。EODは全銘柄を1日1回補修する。
-#   直近160本は初期表示60本のMA75/一目SpanB(+26)に必要なwarm-upを満たす。
-# - P2-90〜P2-97は2026-08-17本番でEXIT=0、合計6分16秒/6分28秒を確認した。
-#   charts60は候補1600銘柄で9.33秒、最終品質はRS_5=98.9%、RS_20=98.8%、
-#   tri_vol=98.9%、ATR14有効3555件。10分周期は処理時間上は採用可能と判断する。
-# - P2-98: LIVE_MATERIALSと本体が同じ10分境界で起動するため、旧版は共有writer lockを
-#   1回だけ試して約10秒で正常skipしていた。13分周期へずらすと位相が再衝突するため不採用。
-#   外部producerのlockだけ最大180秒待ち、解放後に本体を開始する。別のauto_screeningが
-#   lock所有中なら重複計算を避けて即skipし、180秒後もproducer実行中なら従来どおり安全skipする。
-#   lockの削除・迂回やproducerの本体内再統合は行わない。
-# - P2-99: Task Schedulerはpythonw.exe実行のため、P2-98の標準出力は画面に残らない。
-#   producer待機開始・待機後取得・timeout・本体重複skipだけをruntime/screening_lock_events.logへ
-#   追記し、定期実行の衝突を後から検証可能にする。通常取得時は記録せず、1MBで1世代rotateする。
-# - 旧添付index.htmlのATR14全NULLや旧logの「no such column: AIスコア」は修正前の証跡。
-#   最新状態の判定には使わず、必ず上記EXIT=0 runとP2-87再実行結果を基準にする。
-# - py_compile成功、最終EXIT=0。
-# - resistance logの「ATR14 valid」が0より大きい。
-# - model-quality/生成HTMLでATR14/ATR14_PCT/tri_volは90%以上、RS_5/RS_20も原則90%以上。
-#   イナゴ過熱はRS復旧に連動して増えること。単に0件より多いだけでは合格にしない。
-# - 実行時間は約11分を現行基準に比較する。10分周期に十分な余裕が出るまで本番Taskを有効化しない。
-# - 最適化時は各phaseの[TIMER]と上記valid件数を必ず比較し、速度だけで採用しない。
-#
-# === 2026-08-21 P4-DASH2: 売買目的別6列（持越し/持続/底反転/急伸/材料先行/今買える） ===
-# - ダッシュボード表示名は日本語化し、内部研究名 STEADY_UP / A / B / C はロジック内に残す。
-# - 持続上昇は既存 _live_steady_score をそのまま利用。candidate gate/priority式は変更しない。
-# - 底反転は研究A: A2（新20日安値→旧安値奪回）＋直近10日の反復吸収を表示用に判定。
-#   特に2回以上の吸収＋直近吸収安値を0.5〜3%下抜いて奪回した形を最上位表示する。
-# - 急伸は研究Cのベンチマーク条件「前日出来高比>=2.8倍 AND 前日比>=+2.9%」を独立表示。
-# - 材料先行は研究B3相当の監視フラグ。好材料を意味せず、予定決算が近い銘柄は除外する。
-# - 持越し適性は確率ではなく表示用5段階。今買える? は板/歩み値を含まない一次判定で、最終ENTRY NOWではない。
-# - LIVE Candidate Contractの候補選定・priority・top300/LIVE50は変更しない。
-# === 2026-08-21 P4-DASH: 右肩上がりスコア表示・ソート対応 ===
-# - 既存の右肩上がりスコア計算/判定は変更せず、dashboardへ「右肩S」列を追加。
-# - ヘッダークリック/高度なフィルター・ソート/Excel風列フィルターで右肩上がりスコアを利用可能にする。
-# - template.html を正式なUI正本とする。Python側の互換パッチは旧templateに右肩Sが無い場合だけ適用する。
-#
-# === 2026-08-21 P4-DASH3: Dashboard UI/SORT 意味論契約 ===
-# - Pythonが算出する値の意味とtemplateの表示名/ソート対象を明示的に一致させる。モデル計算式は変更しない。
-# - 「財務スコア」は finance_notes.score -> screener.スコア の値であり0〜100点ではない。overall_alphaは財務評価ランク。
-# - 「決算期待値」は互換キー名。意味は過去決算の翌営業日(D1)リアクション期待値で、将来決算の予測値ではない。
-# - 「予想インパクト_pct / 予測ターゲット価格」はStockSurprisePredictorの予測反応率/反応価格。投資判断上の目標株価とは呼ばない。
-# - AI目標値は分類ラベルtarget_pctの到達基準表示。銘柄別回帰目標ではない。並べ替えはAIスコアを使う。
-# - 三角スコアは単一の総合点ではない。UIの並べ替えは ▲Growth -> ◆Safety -> ■Vol の辞書順優先。
-# - 過去反応セルは履歴スパークラインを表示するが、並べ替え/数値フィルターのキーは決算勝率。
-# - 利益加速はauthoritativeな利益加速フラグを前提に、YoY整合で「加速/利益率鈍化/情報不足」を区別する。
-# - 増資リスク/増資スコア/増資理由はcurrent writerが無いため今回snapshotでは無効。authoritativeな希薄化警告はofferings_events。
-# - 仕込み/利確/損切りはATR＋支持抵抗から作る機械的な目安。ATR欠損時は未計算(-)。
-# - UI専用の _UI_SORT_* / *目安価格 / TOB件数 は表示・ソート整合用で、候補gate/priority/モデル点には使わない。
-# - RVOL代金は「当日売買代金 ÷ 20日平均売買代金」。出来高倍率と呼ばない。RS_5/RS_20/Growth_Biasは小数リターン差（0.05=5%）。
-# - 短期需給判定は前日比×RVOL代金の簡易ヒューリスティックで、板/歩み値/大口意図は観測しない。
-# - 移動平均ラベルは _pick_ma_label の優先度 5日 > 25日 > 75日。UI sortも同順。
-# - template.htmlはこの契約を満たすことを読込時にfail-visible検証し、表示名とsort keyの後退を防ぐ。
-# === 2026-08-21 P4-DASH4-VT-SINGLE: 仮想スクロール版へ一本化 ===
-# - 旧全件DOM版template.html / index_vt.htmlの二重出力を廃止。
-# - 現在の仮想スクロール版を唯一の正式正本 template.html とし、生成物も index.html のみ。
-# - template_vt.html という別名は使用しない。34px固定行 + overscan上下40行のVT方式を維持する。
-# - dashboard_data.json / monitor / LLM / LIVE Candidate feed 等の副作用は従来どおり1回だけ。
-# === 2026-08-21 P4-DASH6: 全銘柄フォロースルー環境 × 個別相場耐性 ===
-# - 特定候補ではなく、screening universe内の全個別株を母集団として直近の買いフォロースルーを測る。
-# - price_historyから1/3/5/10営業日後プラス率、5/10日MFE/MAE、5日以内+2%到達率、
-#   ブレイク後3日失敗率を算出し、直近10有効日とその前20有効日を比較する。
-# - 各銘柄には「相場耐性」と「地合い込み一次判定」を付与。既存「今買える？」を最初のgateとして尊重し、
-#   悪地合いでも相対的に強い個別だけを残す。kabuステーションの最終ENTRY NOWとは分離する。
-# === 2026-08-21 P4-DASH8: Python列値監査・欠損意味論修正 ===
-# - 信用倍率は stock_credit_margin.倍率 を優先し、欠損時は買い残/売り残で算出した信用倍率_calcを current screenerへ保存する。
-#   「内部判定では計算済み・dashboardはNULL」という不整合を禁止する。
-# - 持続上昇は日足コア情報不足を0点/非候補として明示し、前日比や20日騰落率の欠損を「非過熱」として加点しない。
-# - V5支持抵抗帯の旧「最低30円幅」を廃止し株価比率だけでクラスタ化。回帰支持/抵抗線はR²が閾値以上の時だけ最寄り候補に採用する。
-# - 地合い日次outcome/実ENTRY翌日・3日後追跡は共通 _dedupe_price_history_df() を通し、alias重複とJPX休場日legacy足を営業日として数えない。
-# - 全銘柄日次fallbackも絶対成績を主役、過去baselineとの差を補助にする。改善していても絶対勝率が低い相場を高評価しない。
-# - データ品質coverageでは '-', '--', 'N/A', 'null', '情報不足'等のplaceholderを「値あり」と数えない。
-# - finance_notes.progress_percent の負値は進捗率ではなくlegacy状態コードとして分離し、screener.進捗率はNULL、進捗状態へ意味を保存する。
-# - Algo_Momentumは60〜79点の非初動を「弱気」と表示せず、調整/強め/中立を分離する。
-# - 短期需給は前日比±0.5%未満を方向ラベル化せず、観測事実に寄せた「高RVOL上昇/低RVOL上昇/強い売り・高RVOL/低RVOL下落」へ改称する。
-# - dashboardの「初動」は旧テク初動と INITIAL_MOMENTUM(2x+2%)を混同しない。新2x+2%を主表示し旧フラグは詳細用に残す。
-# === 2026-08-22 FINAL-AUDIT2: 底反転吸収episode整合 ===
-# - 支持帯への連続タッチ日数を吸収回数と誤認しない。連続hitを1episodeに圧縮し、独立episode間の下抜けを採点する。
-# === 2026-08-22 AUDIT-REMAINDER: 監査残件修正 ===
-# - 持続上昇の日足コア不足は0点ではなくNone/DATA不足。相場耐性の再正規化から欠損として除外する。
-# - 指数行の売買代金/RVOLはN/A。指数値×出来高を個別株売買代金として計算しない。
-# === 2026-08-21 P4-DASH7: 「今日買う株」導線 + 実シグナル時点フォロースルー ===
-# - dashboardの主探索導線として「今日買う株」を追加。地合込ENTRY=◎、売買代金>=5億、相場耐性>=70、
-#   最寄り抵抗まで原則2%以上、最寄り支持から-1〜+8%以内、強い売り/極端な過熱なしを一括適用する。
-# - 「今買える？」rank=3が場中runで初めて成立した時点を1銘柄1日1イベントとしてsnapshot DBへ保存。
-# - そのsignal priceから10/30/60分、引け、翌営業日、3営業日、60分MFE/MAEを追跡する。
-# - 実シグナル統計の母数が十分になったら地合いスコアの主役(70%)へ昇格し、従来の全銘柄日次統計は
-#   補助/蓄積待ちfallbackとして残す。過去データを後知恵で「今買える？」だったことにはしない。
-# === 2026-08-19 P4-LIVE: 自動スクリーニング -> kabuステーションLIVE Candidate Contract ===
-# - output_data/live_candidate_feed.json をschema_version=1でatomic出力。HTML/dashboard_data.jsonを読み戻さない。
-# - runtime/scanner_snapshots.sqlite3へ5〜10分run単位の全評価銘柄snapshotを保存し、直近30営業日を保持。
-# - INITIAL_MOMENTUM / STEADY_UP / BOTTOM_REVERSALを独立strategy scoreとして保持。
-# - 正式QUALITYは未実装。tri_safety等をQUALITY proxyとして流用しない。
-# - STEADY_UPは日足構造 + 10/20/30/60分の場中継続性を正式採点し、瞬間急騰を主条件にしない。
-# - BOTTOM_REVERSALは当日安値反発だけでなく、安値更新停止 + 複数snapshot切上げを必須gateにする。
-# - 同一codeは1candidateへ統合しsources/scores/tags/reasonを保持。priorityは監視優先度でありBUY確率ではない。
-# - feed失敗時は前回正常JSONを残し、既存dashboard/HTML/CSV処理を失敗させない。
-# === 2026-08-19 P4-1: INITIAL_MOMENTUM Candidate Engine分離・本体統合 ===
-# - 既存の初動フラグ/初動スコアは変更せず、独立した INITIAL_MOMENTUM を追加。
-# - 核条件は「当日出来高 ÷ 当日を除く直前20営業日平均出来高 >= 2.0」かつ「前日比 >= +2.0%」。
-# - RVOL代金は流用せず price_history から独立再計算し、研究定義と本番定義を一致。
-# - 低位株は除外せずタグ化。ETF/指数等だけ対象外。EOD確定候補は candidate_signal_log に保存。
-# - charts60 / rss_monitor_list / 技術シグナルニュース取得 / LLM CSV へ独立候補を伝播。
-# - INITIAL_MOMENTUM_SCORE は暫定説明スコアで、candidate gateとは分離。P4-2全期間検証で校正予定。
-# === 2026-08-16 P3-1〜: モデル品質・スコア意味論監査 ===
-# - P3-1: percentile順位をworst=0/best=1、単一・全同値は中立0.5へ統一し母集団サイズ由来の歪みを除去
-# - P3-2: 合成/初動/テーマランキング母集団をlogical codeで1銘柄1票に統一しalias重複による順位水増しを防止
-# - P3-3: 機関空売りは「日付だけ存在・残高/増減不明」を安全0点/なし扱いせず部分欠損として不明化
-# - P3-4: 営業益YoY>0を「利益加速」とみなす混同を廃止し、利益加速フラグをauthoritativeに品質判定
-# - P3-5: 立会時間判定でJPXカレンダー障害をFalseへ握り潰さずfail-visible化
-# - P3-6: 三角Growthを100点の成分予算制へ再配分し、高合成S+重複シグナルで100点飽和する構造を緩和
-# - P3-7: 最終snapshotに欠損率・分布・飽和率・高相関を監査するmodel-qualityログを追加
-# - P3-8: 三角VolはATR欠損を「低ボラ0点」と見せず未判定(None/■--)として区別
-# - P3-9: SurpriseのElasticityは既存の流動性下限0.5億円を共有し、超薄商いだけで跳ねやすさが発散する構造を抑制
-# - P3-10: Fair Valueの営業益YoY PER加点を最大7倍相当にcapし、低い前年母数による極端YoYの暴走を抑制
-# - P3-11: Fair ValueのAI補正を50点中立の左右対称へ変更し、50点未満も負の情報として反映
-# - P3-12: 初動スコアとテーマランキングのテーマ強度を共通式 median_turnover×(1+signal_density) へ統一
-# - P3-13: 上昇余地スコアのNaN→満点化を修正し、3要素中2要素以上で欠損配点を再正規化
-# - P3-14: 過去D1決算リアクションを「事前期待ハードル」として逆符号利用する既定補正を停止
-# - P3-15: 決算リアクションの正式スコアは直近3観測以上を要求し、1〜2件の偶然で0/100へ極端化しない
-# - P3-16: Fair Valueの利益加速PER加点もP3-4のauthoritative品質判定へ統一し、flagだけ/利益率鈍化へ加点しない
-# - P3-17: 3大Algo総合は3要素未完備時に参考平均点を正式点のように表示せず「--点」へ変更
-# - P3-18: VolTarget欠損を「情報不足 (0点)」と表示せず「情報不足 (--点)」へ変更
-# - P3-19: 過去決算リアクションはrun snapshot日より未来のイベントを除外し、future-dated DB混入の先読みを防止
-# - P3-20: 決算リアクションのrows同期を行ごとのDataFrame検索からcanonical mapへ変更し順序依存/O(N²)を除去
-# - P3-21: セクターランキングもlogical code 1銘柄1票へ統一し、alias重複による売買代金/人数水増しを除去
-# - P3-22: model-quality監査を右肩/上昇余地/決算反応/需給/シンデン系まで拡張
-# - P3-23: 最終snapshotのlogical code重複をWARNし、alias残存を運用ログで即検出
-# - P3-24: 主要スコアの仕様範囲外値をWARNし、単位違い/壊れたproducerを早期検出
-# - P3-25: 決算リアクションの観測件数を出力し、勝率/平均/正式スコアの信頼度を可視化
-# - P3-26: LLM入力では曖昧な「決算期待値」を「過去決算D1期待値」へ明示し、過去反応を事前期待と誤認しない
-# - P3-27: 最終判定で未使用かつchunk/過去行依存だったSqueeze順位・ラベル計算を実行経路から削除
-# - P3-28: 一時特徴ATR20を高安差平均ではなく前日終値ギャップを含むTrue Range 20日平均へ修正
-# - P3-29: 三角Growthは主成分の合成S欠損時、Safetyは根拠0件時に正式0/50点を出さず未判定化
-# - P3-30: model-qualityへ決算反応件数0-8検証と正式反応スコアの最低3件整合性監査を追加
-# - P3-31: 3大AlgoのMomentum/Factorも情報不足時は部分点を正式点のように表示せず「--点」へ統一
-# - P3-32: Surpriseの過去決算D1入力は明示名を優先し、旧「決算期待値」は互換fallbackのみに限定
-# - P3-33: HTML/LLM最終snapshotをlogical code 1銘柄1行へ正規化しalias重複表示・二重評価を防止
-# - P3-34: model-qualityへ主要スコアの低カバレッジ警告を追加し「計算できていないモデル」を可視化
-# - P3-35: Surprise custom weightsを既定値への部分override方式へ変更し、欠落key/typo設定による実行時崩壊を防止
-# - P3-36: Surprise材料が1件も無い場合の「正式0%予測」を廃止し、材料不足としてNaNへ明示
-# - P3-37: 持続右肩スコアはMA100×直近30日の完全観測に必要な129営業日を満たす銘柄だけ正式判定
-# - P3-38: 踏み上げ期待は信用倍率欠損を0点へ落とさず未判定化し、売り残0の実測だけ0点を維持
-# - P3-39: model-quality監査へ踏み上げ期待スコアを追加し0-100範囲/欠損分布を可視化
-# - P3-40: 営利対時価flagは必要財務欠損を「0=条件外」とせず空欄=未判定で保持
-# - P3-45: 機関空売りを「過去履歴」「現在の公開残高」「当日取得状態」へ分離。
-#   institution_short_salesの最新公開報告とinstitution_short_snapshotの当日crawl成否を別々に出力し、
-#   当日取得失敗/未取得を過去の「なし」で補完しない。旧screener.空売り機関は互換用に残すが現在判定には使わない。
-# - P3-46: ダッシュボードの曖昧な「空売」列を「現在/履歴/取得」の明示状態へ置換。
-#   明示0株はN/Aではなく0株と表示し、未取得だけをN/A/不明にする。
-# - P3-47: shinden_logicの互換列「シンデン総合スコア」は変更せず、最終snapshotで
-#   「シンデン正式スコア」「シンデン参考スコア」「シンデン評価区分」を派生する。
-#   履歴0〜1期など判定が「参考：...」の行を正式ランキング・正式coverageへ混ぜない。
-#   これは計算式の変更ではなく、既存producerが付けた正式/参考ラベルを表示・監査へ伝える境界修正。
-#
-# === 2026-08-15 P2-12/P2-13 追加監査 ===
-# - 未使用代入/不要SELECT列を整理（挙動不変）
-# - 旧シグナル判定 _best_signal_today と専用MA/ATR helperを削除
-# - 旧ライブ価格override一式と連鎖した価格helperを削除
-# - 未使用Single-Writerキュー機構を削除
-# - 旧信用残map/旧RS計算/旧単発株探ニュースfetchを削除
-# - Gmail削除後に残っていた未使用import群を削除
-# - top-level重複定義を解消、内部参照ゼロhelperを整理
-#
-# === 2026-08-15 P2-1〜P2-73: 品質・モデル設計/実行品質改善 ===
-# - P2-14: yfinance.download全5経路をrepair=True共通ラッパー化（旧版のみ引数互換fallback）
-# - P2-15: yahooquery key_stats/financial_data/major_holdersもsymbol単位へ正規化し、複数銘柄payload混線を防止
-# - P2-16: 主要schema追加のexcept-passをPRAGMA方式へ統一し、duplicate以外のSQLite障害をfail-visible化
-# - P2-17: screener価格同期のprice_history N+1 SELECTを200銘柄bulk読込へ変更（履歴意味は維持）
-# - P2-18: screener raw更新キーmapの取得失敗をsilent fallbackせずfail-visible化
-# - P2-19: deriveのprice_history N+1 SELECTと銘柄別祝日再生成をbulk preload/共通calendarへ変更
-# - P2-20: 財務fetch schema versionを3へ上げ、P2-15修正後に旧7日cacheを強制再取得
-# - P2-21: relax_rejudge_signalsのシグナル単位N+1 SELECTをbulk preloadへ変更
-# - P2-22: update_since_datesのsignals_log連続判定を銘柄群bulk preloadへ変更
-# - P2-23: 株探テーマID取得のテーマ単位N+1 SELECTをbulk化
-# - P2-24: 旧Yahoo suffix override探索をschema-aware化し例外総当たりを廃止
-# - P2-25: Yahoo symbol解決を複数銘柄bulk化し主要batchへ適用
-# - P2-26: 12mo補完入口の最新2日判定をprice_history一括読込へ変更
-# - P2-27: Yahoo NONE/HISTORY_NONE sentinel判定をbulk化
-# - P2-28: 異なる銘柄が同一Yahoo symbolへ解決する設定衝突をfail-fast化
-# - P2-29: 株探ニュースbulkの長URL縮小時に1銘柄をskipする分岐を修正
-# - P2-30: 時価総額/MIDDAY更新先をYahoo symbol逆算ではなく問い合わせ元codeへ固定
-# - P2-31: MIDDAY前日終値の銘柄別N+1 SELECTをbulk preloadへ変更
-# - P2-32: 翌営業日検証の「価格待ち」と実障害を分離し、実障害をfail-visible化
-# - P2-33: Yahoo企業API対象の市場map読込失敗をsilent fallbackせずfail-visible化
-# - P2-34: bootstrap有効履歴件数の銘柄別N+1 COUNTをlogical alias bulk集計へ変更
-# - P2-35: alias分散履歴がlogical 60日以上ある既存銘柄のbootstrap推定漏れを修正
-# - P2-36: marketCapのyfinance fallbackもYahoo symbolをbulk解決しDB N+1を回避
-# - P2-37: sentinel override読込障害をoverride無し扱いせずfail-visible化
-# - P2-38: bulk Yahoo resolverのlegacy schema読込障害をsilent無視せずfail-visible化
-# - P2-39: yfinance MultiIndexのTicker階層を自動検出しPrice/Ticker逆順にも対応
-# - P2-40: dashboard Yahoo URLも明示overrideを市場推定より優先しsymbol整合性を統一
-# - P2-41: _prepare_rowsのYahoo URL解決を全行scalar DB探索から1回のbulk解決へ変更
-# - P2-42: 配当1年合計をcutoff以上かつtoday以下へ限定し未来日混入を防止
-# - P2-43: 財務batch内helperに完全shadowされる旧トップレベル財務helper3本を削除
-# - P2-44: Yahoo override schema ensureの無条件commitを廃止し呼出元transaction原子性を保護
-# - P2-45: 翌日検証CSVを手動comma joinからcsv.writerへ変更し理由内comma等を安全にescape
-# - P2-46: 主要Yahoo batchは全対象symbolを先に一括解決しchunk境界を跨ぐoverride衝突も検知
-# - P2-47: yfinance MultiIndex stackをfuture_stack優先＋旧Pandas互換fallback化
-# - P2-48: Yahoo企業API市場判定を対象銘柄限定bulk＋canonical alias優先へ決定化
-# - P2-49: 財務payload解析例外時に途中までの値で更新日を進めず銘柄単位でatomicに再取得対象化
-# - P2-50: 財務batchのfresh取得専用loopに残っていた到達不能な旧raw-cache解析分岐を削除
-# - P2-51: 財務部に残っていた未使用YQダミーblock/後勝ちしない重複YQ_MAX_WORKERS定義を削除
-# - P2-52: yahooqueryを任意import化しmarketCap fallbackを実到達可能に、必須phaseは明示エラー化
-# - P2-53: jpholidayも任意import化し非祝日系処理の起動を妨げず、祝日計算時だけ明示エラー化
-# - P2-54: 財務legacy-cleanupの無条件commitをSAVEPOINT化し呼出元transaction原子性を保護
-# - P2-55: yfinanceも任意import化し、未導入時は取得phaseで明示エラー（module import検査を可能化）
-# - P2-56: dashboard templateのimport時即openを廃止しHTML生成時lazy-loadへ変更
-# - P2-57: 設定に見えるが実装参照ゼロだった旧定数/regex/cacheを削除し誤設定リスクを除去
-# - P2-58: Yahoo bulk resolverをsymbol→codeだけでなくcode→symbolも1対1検証し二重更新を防止
-# - P2-59: legacy Yahoo suffix overrideも7203.0等aliasをcanonical優先で解決しbulk/scalarを一致
-# - P2-60: 財務cache/更新先raw keyを同一canonical優先snapshotから決めalias混線を防止
-# - P2-61: 財務executemanyの実更新行数を検証し0件/重複複数行UPDATEをrollback
-# - P2-62: 時価総額executemanyも期待件数と実更新件数を照合しsilent no-opを防止
-# - P2-63: 残存unused local/QUIET/Gmail現行説明など実装と不一致の休眠記述を整理
-# - P2-64: latest_prices/抵抗線/テーマschema helperの無条件commitをSAVEPOINT化
-# - P2-65: V5支持抵抗schema helperもSAVEPOINT化し未close cursor/無条件commitを解消
-# - P2-66: exec_manyの隠れcommitを廃止し、空売りsnapshot SAVEPOINTを途中破壊する実行時バグを修正
-# - P2-67: テーマランキング内部DB障害を正常な空ランキングへ変換せず、呼出側だけでoptional fallback化
-# - P2-68: 財務loggerの壊れた引用注釈とscore→alpha説明不一致を修正し、任意index失敗をWARN可視化
-# - P2-69: 財務コメント同期DMLをBEGIN/conn.rollbackではなくSAVEPOINT化し、呼出元transactionを保護
-# - P2-70: JPXカレンダー依存/設定障害を「休場日」に変換せずfail-visible化し平日のEOD誤分類を防止
-# - P2-71: 翌日検証でsignal日付parse不正だけskipし、営業日カレンダー障害は握り潰さずdaily成功誤認を防止
-# - P2-72: finance_notes→screener同期もexecutemany実更新行数を検証し重複raw keyの多重UPDATEをrollback
-# - P2-73: legacy Yahoo overrideの実SELECT障害もoverride無し扱いせずbulk resolverでfail-visible化
-# - P2-1: 三角Safetyの欠損時基準点を60→50へ中立化
-# - P2-2: Fair Valueの予想EPSをfinance_notes.forecast_eps正本に限定（legacy fallbackは明示opt-in）
-# - P2-3: yfinance日足fallbackでrepair=Trueを試行し、非対応版のみ互換fallback
-# - P2-4: 19時財務batchの未使用flags_rows/専用判定を削除
-# - P2-5: pl_quarter.updated_atが存在する将来schemaではupdated_at優先で重複正本を選択
-# - P2-6: Fair Value内の未使用/常時中立特徴量を除去し、モデル説明と実装を一致
-# - P2-7: yfinanceのMultiIndex列をOHLCV列へ安全に正規化
-# - P2-8: 営業利益更新の未使用read-okフラグを削除
-# - P2-9: Fair Valueの列追加をPRAGMA確認方式へ変更し、DBエラー握り潰しを廃止
-# - P2-10: strict forecast EPSの有効件数をログ表示して全欠損を可視化
-# - P2-11: forecast EPSログをstale/legacy fallback込みの「実際に計算可能な件数」へ厳密化
-# === 2026-08-13 v14: 次期急回復型（6340型）Python連携 ===
-# - shinden_logic_v24_next_turn.py を自動スクリーニングから安全に実行
-# - 次期転換8列をDB→JSON/HTML/LLM CSVへ一貫して伝播
-# - backfill実行中はシンデン更新を自動SKIP
-# - template_next_turn_python_backed.html が同階層にあれば優先使用（無ければtemplate.html）
-# === 2026-08-13 v13: 季節進捗 1年度fallback ===
-# - 過去同Qが1年度しかない銘柄も参考値として表示
-# - 2年以上は従来どおり正式平均、1年参考/2年以上をログで監査
-# === 2026-08-13 v12: 季節進捗 quarterly_actual_history 実DB準拠 ===
-# - pl_quarter依存を廃止
-# - quarterly_actual_history 28k件から3ヵ月営業利益を年度内累積
-# - tdnet_xbrl_metrics.actual_opを通期実績の第一ソースに採用
-# - 現在年度除外・直近最大5年度・2年度以上で過去平均を算出
-# === 2026-08-13 v11: 季節進捗の全空欄修正 ===
-# - 全NULL化→途中returnで全空欄になる事故を修正
-# - pl_quarter完了年度4Q合計を通期実績fallbackに追加
-# === 2026-08-13 v10: 決算跨ぎS/AワンクリックUI対応 ===
-# - dashboard用に決算発表予定日・シンデン主要列の存在を保証
-# - template側の「今日の決算跨ぎ S/A」フィルターを安全に利用可能
-# === 2026-08-12 v9: 過去決算反応の復元・診断強化 ===
-# - Gmailアプリパスワードは環境変数 GMAIL_APP_PASSWORD から取得（ハードコード廃止）
-# - finance_notes.past_earnings_dates が空のとき明示WARN
-# - コード型を4桁文字列に統一して結合漏れを防止
-# - 既存の反応列があってもmerge suffixで消えないよう再計算値を優先
-# - UI表記に合わせ直近8回で勝率/期待値/履歴を計算
-# === 2026-08-12 v8: 季節進捗を実績から再構成 ===
-# - pl_quarter.進捗率という不存在列への依存を廃止
-# - 3ヵ月営業利益累積 / 完了年度actual_op で過去同Q進捗を再構成
-# - current_quarter不要、過去2期以上のみ採用
-# === 2026-08-12 v7: TTM pandas互換修正 + seasonality schema-safe ===
-# - groupby.applyを廃止し直近4行→groupby.aggへ変更
-# - DeprecationWarningとrename失敗を解消
-# - v6のcurrent_quarter非依存季節調整を維持
-# === 2026-08-12 v6: 季節調整 schema-safe 修正 ===
-# - finance_notes.current_quarter 依存を廃止
-# - pl_quarter 最新行から現在Qを判定
-# - 現在期自身を過去同Q平均から除外
-# - 旧失敗マーカー回避のため daily phase を v2 化
-# === 2026-08-12 v5: CatBoost学習/推論19特徴量完全一致 ===
-# - body/RSI/stop_hunt/POC を学習側と統一
-# - perfect_order/trend_strong/market3特徴量のダミー0を廃止
-# - model metadata の validation閾値/target_pct を使用
-# - AIスコアの強制モメンタム上書きを廃止
-# - 特徴量不足を0埋めせず判定対象外
-# === 2026-08-16 P3-42: EOD確定処理もexternal live-materialsへ分離 ===
-# === 2026-08-16 P3-41: 外部producer/Task Scheduler新構成へ統合 ===
-# - fetch_all / 株探ファンダ / 空売り / シンデン / テーマWeb取得を本体から起動しない
-# - 空売りなしはinstitution_short_snapshotを正本化
-# - system_jobs共有writer lockとモデルgeneration整合を追加
-# === 2026-08-12 v4: シンデン日次バッチ分離 + backfill時fetch_all自動SKIP ===
-# - v25 worker heartbeat優先
-# - v24以前のrunning CLAIMも互換検出
-# - stale状態は6時間で無効
-#
-# === 2026-08-12 再点検版 ===
-# - shinden_logic v2(history guard)対応
-# - 株探ファンダ日次呼び出しの誤引数修正
-# - _prepare_rows二重実行を除去
-# - LLM用CSVへシンデン主要列を追加
-#
 # --- 標準ライブラリ ---
 import csv
 import io
 import decimal
 import html
+import hashlib
 import json
 import logging
 import math
 import os
+import pickle
 import re
 import shutil
 import sqlite3
@@ -446,8 +73,10 @@ from zoneinfo import ZoneInfo
 # --- 拡張ライブラリ（フォールバック処理） ---
 try:
     import orjson
+    _ORJSON_NATIVE = True
 except ImportError:
     import json as orjson  # orjsonがない環境では標準のjsonで代用
+    _ORJSON_NATIVE = False
 
 # --- サードパーティライブラリ ---
 import bs4 # BeautifulSoup
@@ -480,8 +109,10 @@ from markupsafe import Markup, escape
 # P1-361: 通知は補助機能。plyer未導入で全スクリーナーを起動不能にしない。
 try:
     from plyer import notification
+    _PLYER_NOTIFICATION_AVAILABLE = True
 except Exception:
     notification = None
+    _PLYER_NOTIFICATION_AVAILABLE = False
 # P1-362: BERTは設定で無効化可能な任意機能。transformersを起動時必須にしない。
 try:
     from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
@@ -555,7 +186,138 @@ LIVE_LOW_LIQUIDITY_OKU = float(os.environ.get("KABU_LIVE_LOW_LIQUIDITY_OKU", "0.
 LIVE_LOW_LIQUIDITY_PENALTY = float(os.environ.get("KABU_LIVE_LOW_LIQUIDITY_PENALTY", "15"))
 LIVE_LOW_PRICE_MAX = float(os.environ.get("KABU_LIVE_LOW_PRICE_MAX", "300"))
 LIVE_SNAPSHOT_DB = Path(os.environ.get("KABU_LIVE_SNAPSHOT_DB", str(SCREEN_RUNTIME_DIR / "scanner_snapshots.sqlite3")))
+ROTATION_HISTORY_KEEP_TRADE_DAYS = max(30, int(os.environ.get("KABU_ROTATION_HISTORY_KEEP_TRADE_DAYS", "250")))
+ROTATION_DASHBOARD_TRADE_DAYS = max(1, int(os.environ.get("KABU_ROTATION_DASHBOARD_TRADE_DAYS", "30")))
+MARKET_BREADTH_HISTORY_KEEP_TRADE_DAYS = max(30, int(os.environ.get("KABU_MARKET_BREADTH_HISTORY_KEEP_TRADE_DAYS", "250")))
+MARKET_BREADTH_DASHBOARD_TRADE_DAYS = max(1, int(os.environ.get("KABU_MARKET_BREADTH_DASHBOARD_TRADE_DAYS", "30")))
 LIVE_CANDIDATE_FEED_PATH = Path(os.environ.get("KABU_LIVE_CANDIDATE_FEED", str(Path(OUTPUT_DIR) / "live_candidate_feed.json")))
+WATCH_NOTIFICATION_PREVIEW_PATH = Path(os.environ.get("KABU_WATCH_NOTIFICATION_PREVIEW", str(Path(OUTPUT_DIR) / "watch_notification_preview.json")))
+
+# INTRADAY-STABILITY-V1: partial snapshotを正式履歴へ混ぜない品質gate。
+try:
+    INTRADAY_SNAPSHOT_MIN_STOCK_ROWS = max(50, int(os.environ.get("KABU_INTRADAY_MIN_STOCK_ROWS", "500")))
+except (TypeError, ValueError):
+    INTRADAY_SNAPSHOT_MIN_STOCK_ROWS = 500
+try:
+    INTRADAY_SNAPSHOT_MIN_COVERAGE = float(os.environ.get("KABU_INTRADAY_MIN_COVERAGE", "0.80"))
+except (TypeError, ValueError):
+    INTRADAY_SNAPSHOT_MIN_COVERAGE = 0.80
+INTRADAY_SNAPSHOT_MIN_COVERAGE = min(0.99, max(0.50, INTRADAY_SNAPSHOT_MIN_COVERAGE))
+SCREEN_CURRENT_PHASE_PATH = Path(os.environ.get(
+    "KABU_SCREEN_CURRENT_PHASE", str(SCREEN_RUNTIME_DIR / "screening_current_phase.json")
+))
+GITHUB_SYNC_ASYNC = os.environ.get("KABU_GITHUB_SYNC_ASYNC", "1").strip().lower() not in {"0","false","no","off"}
+GITHUB_SYNC_ONLY_ARG = "--git-sync-only"
+GITHUB_SYNC_LOG_PATH = Path(os.environ.get(
+    "KABU_GITHUB_SYNC_LOG", str(SCREEN_RUNTIME_DIR / "github_sync.log")
+))
+# V25.2-GIT-MEMORY-GUARD: async Gitの多重起動と高Commit時起動を防ぐ。
+GITHUB_SYNC_LOCK_PATH = Path(os.environ.get(
+    "KABU_GITHUB_SYNC_LOCK", str(SCREEN_RUNTIME_DIR / "github_sync_singleflight.lock")
+))
+try:
+    GITHUB_SYNC_MAX_COMMIT_PCT = float(os.environ.get("KABU_GITHUB_SYNC_MAX_COMMIT_PCT", "80"))
+except (TypeError, ValueError):
+    GITHUB_SYNC_MAX_COMMIT_PCT = 80.0
+GITHUB_SYNC_MAX_COMMIT_PCT = min(95.0, max(50.0, GITHUB_SYNC_MAX_COMMIT_PCT))
+try:
+    GITHUB_SYNC_STALE_LOCK_SECONDS = max(120, int(os.environ.get("KABU_GITHUB_SYNC_STALE_LOCK_SECONDS", "900")))
+except (TypeError, ValueError):
+    GITHUB_SYNC_STALE_LOCK_SECONDS = 900
+try:
+    GITHUB_SYNC_SLOW_WARN_SECONDS = max(30, int(os.environ.get("KABU_GITHUB_SYNC_SLOW_WARN_SECONDS", "300")))
+except (TypeError, ValueError):
+    GITHUB_SYNC_SLOW_WARN_SECONDS = 300
+
+# LEADER-SIGNAL-SHADOW-V1: 自動スクリーニング側の主役化/継続確認/通知。
+LEADER_SHADOW_ENABLED = os.environ.get("KABU_LEADER_SHADOW_ENABLED", "1").strip().lower() not in {"0","false","no","off"}
+LEADER_OS_NOTIFY = os.environ.get("KABU_LEADER_OS_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
+# LIVE-FOCUS-NOTIFY-V1:
+# 自動スクリーニング通知は「候補発見」に限定し、既定は新規🌈S主役化だけ。
+# FULLなら従来の🌈S / 🚀S点火 / 🔥S・A継続 / ⚠本命失速、OFFなら全停止。
+LEADER_NOTIFY_PROFILE = str(os.environ.get("KABU_LEADER_NOTIFY_PROFILE", "RAINBOW_ONLY") or "RAINBOW_ONLY").strip().upper()
+if LEADER_NOTIFY_PROFILE not in {"RAINBOW_ONLY", "FULL", "OFF"}:
+    print(f"[leader-notify][WARN] unknown KABU_LEADER_NOTIFY_PROFILE={LEADER_NOTIFY_PROFILE!r}; fallback=RAINBOW_ONLY", flush=True)
+    LEADER_NOTIFY_PROFILE = "RAINBOW_ONLY"
+# LEADER-PRIORITY-TRACKING-V2: 全🌈/🔥を鳴らさず、本命通知後の失速だけ警告する。
+LEADER_RISK_NOTIFY = os.environ.get("KABU_LEADER_RISK_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
+LEADER_NOTIFICATION_TEST_ARG = "--leader-notify-test"
+LEADER_NOTIFICATION_POPUP_TEST_ARG = "--leader-notify-test-popup"
+LEADER_ACTION_URI_SCHEME = "kabu-leader"
+LEADER_ACTION_HANDLER_PATH = Path(os.environ.get("KABU_LEADER_ACTION_HANDLER", str(_SCRIPT_DIR / "runtime" / "leader_action_handler.pyw")))
+LEADER_DASHBOARD_PATH = Path(os.environ.get("KABU_LEADER_DASHBOARD_PATH", str(_SCRIPT_DIR / "output_data" / "index.html")))
+LEADER_NOTIFICATION_PATH = Path(os.environ.get("KABU_LEADER_NOTIFICATION_PATH", str(Path(OUTPUT_DIR) / "leader_signal_notifications.json")))
+LEADER_MINUTE_BATCH = max(5, int(os.environ.get("KABU_LEADER_MINUTE_BATCH", "240")))
+# V37: baseline保有の1d取得だけ大きめbatch。7d/historyは従来240を維持。
+LEADER_MINUTE_TODAY_BATCH = max(5, int(os.environ.get("KABU_LEADER_MINUTE_TODAY_BATCH", "720")))
+LEADER_MINUTE_V32_FAST = os.environ.get("KABU_SCREEN_V32_FAST", "1").strip().lower() not in {"0","false","no","off"}
+# V38: V32 baseline利用時の当日1分特徴量だけNumPy同値fastpath。7d/history経路は従来pandas。
+LEADER_FEATURES_V38_FAST = os.environ.get("KABU_SCREEN_V38_FAST", "1").strip().lower() not in {"0","false","no","off"}
+LEADER_MINUTE_BASELINE_CACHE_PATH = Path(os.environ.get(
+    "KABU_LEADER_MINUTE_BASELINE_CACHE", str(SCREEN_RUNTIME_DIR / "leader_minute_baseline_v32.pkl")
+))
+LEADER_MINUTE_BASELINE_SCHEMA = 1
+# V33: MIDDAY右肩早期の前営業日までの日足canonical baseline。
+RIGHT_UP_EARLY_V33_FAST = os.environ.get("KABU_SCREEN_V33_FAST", "1").strip().lower() not in {"0","false","no","off"}
+RIGHT_UP_EARLY_V33_CACHE_PATH = Path(os.environ.get(
+    "KABU_RIGHT_UP_EARLY_BASELINE_CACHE", str(SCREEN_RUNTIME_DIR / "right_up_early_daily_baseline_v33.pkl")
+))
+RIGHT_UP_EARLY_V33_CACHE_SCHEMA = 1
+# V34: MIDDAY後段の日足履歴共有。
+MIDDAY_SHARED_DAILY_V34_FAST = os.environ.get("KABU_SCREEN_V34_FAST", "1").strip().lower() not in {"0","false","no","off"}
+MIDDAY_V25_BASELINE_V34_CACHE_PATH = Path(os.environ.get(
+    "KABU_MIDDAY_V25_BASELINE_CACHE", str(SCREEN_RUNTIME_DIR / "midday_v25_legacy_daily_baseline_v34.pkl")
+))
+MIDDAY_V25_BASELINE_V34_CACHE_SCHEMA = 1
+LEADER_STAGE1_LATE_NOTICE_MIN = max(0.0, float(os.environ.get("KABU_LEADER_STAGE1_LATE_NOTICE_MIN", "12")))
+# 状態ベース主役化: 前日比/時刻は記録のみでgateに使わない。
+LEADER_BASE_SCORE = 60.0
+LEADER_STAGE1_MIN_VWAP_GAP_PCT = 0.8
+LEADER_STAGE1_MIN_RS5 = 0.0
+LEADER_FIRE_MIN_MFE_PCT = 0.8
+LEADER_RISK_SCORE_MAX = 40.0
+LEADER_RISK_DRAWDOWN_PCT = -2.0
+# prefilterは🌈条件ではない。1分足取得対象を軽く絞るためのDIFF相当条件。
+LEADER_PREFILTER_SHORT_PCT = 0.10
+LEADER_PREFILTER_30M_PCT = 0.15
+LEADER_PREFILTER_NEAR_HIGH_RATIO = 0.985
+LEADER_PREFILTER_RVOL_MIN = 1.15
+# LEADER-PREFILTER-RESILIENCE-V1: capture番号ではなく実時間差でshort/30m参照を検証。
+LEADER_PREFILTER_SHORT_TARGET_MIN = 10.0
+LEADER_PREFILTER_SHORT_MIN_GAP_MIN = 3.0
+LEADER_PREFILTER_SHORT_MAX_GAP_MIN = 25.0
+LEADER_PREFILTER_30M_TARGET_MIN = 30.0
+LEADER_PREFILTER_30M_MIN_GAP_MIN = 15.0
+LEADER_PREFILTER_30M_MAX_GAP_MIN = 45.0
+LEADER_PREFILTER_LATEST_MAX_AGE_MIN = 35.0
+# snapshot非依存の当日強度救済。これは🌈成立条件ではなく1分足取得対象のfallback。
+LEADER_PREFILTER_RESCUE_LOW_TO_NOW_PCT = 2.0
+LEADER_EXPECTANCY_MODEL_PATH = Path(os.environ.get(
+    "KABU_FIRE_EXPECTANCY_MODEL",
+    str(Path(OUTPUT_DIR) / "fire_expectancy_scorecard_model.json")
+))
+
+# LEADER-REIGNITE-V1:
+# ⚠RISK_PROVISIONAL は終点にせず、最大60分だけ再監視する。
+# 研究未校正のため既存V3 Stage1/Stage2閾値とは分離し、保守的な暫定条件でshadow運用。
+LEADER_REIGNITE_ENABLED = os.environ.get("KABU_LEADER_REIGNITE_ENABLED", "1").strip().lower() not in {"0","false","no","off"}
+LEADER_REIGNITE_MAX_MINUTES = max(10.0, float(os.environ.get("KABU_LEADER_REIGNITE_MAX_MINUTES", "60")))
+LEADER_REIGNITE_MIN_POSTRISK_MFE_PCT = float(os.environ.get("KABU_LEADER_REIGNITE_MIN_POSTRISK_MFE_PCT", "1.0"))
+LEADER_REIGNITE_MIN_RET_SIGNAL_PCT = float(os.environ.get("KABU_LEADER_REIGNITE_MIN_RET_SIGNAL_PCT", "0.5"))
+LEADER_REIGNITE_BREAKOUT_LOOKBACK_MIN = max(3, int(os.environ.get("KABU_LEADER_REIGNITE_BREAKOUT_LOOKBACK_MIN", "5")))
+
+# LEADER-MULTI-EPISODE-V1:
+# 最初の主役化が失敗/弱化しても、その日の監視を終了しない。
+# 「いったん条件が崩れたあと、新しく条件を取り戻した」時だけ独立episodeとして再主役化する。
+LEADER_REENTRY_ENABLED = os.environ.get("KABU_LEADER_REENTRY_ENABLED", "1").strip().lower() not in {"0","false","no","off"}
+LEADER_MAX_EPISODES_PER_DAY = max(1, int(os.environ.get("KABU_LEADER_MAX_EPISODES_PER_DAY", "3")))
+LEADER_REENTRY_COOLDOWN_MIN = max(5.0, float(os.environ.get("KABU_LEADER_REENTRY_COOLDOWN_MIN", "10")))
+LEADER_REENTRY_RESET_BELOW_SIGNAL_PCT = max(0.0, float(os.environ.get("KABU_LEADER_REENTRY_RESET_BELOW_SIGNAL_PCT", "0.5")))
+# 再主役化は寄り30分限定のV3 Stage1とは別の前向き検証ルート。
+# 大引け10分前より後は10分確認ができないため新規episodeを作らない。
+LEADER_REENTRY_MAX_CLOCK_MIN = max(9*60+31, int(os.environ.get("KABU_LEADER_REENTRY_MAX_CLOCK_MIN", str(15*60+20))))
+
+LEADER_RESEARCH_VERSION = "V3_MAX_17D_12047_STAGE2_BEST"
 
 EXTERNAL_JOBS_REQUIRED = os.environ.get("KABU_EXTERNAL_JOBS_REQUIRED", "1").strip().lower() not in {"0","false","no","off"}
 try:
@@ -569,6 +331,7 @@ except (TypeError, ValueError):
 RUN_SESSION         = "EOD"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
 #RUN_SESSION         = "MIDDAY"   # "EOD"(普通はこちら) または "MIDDAY"(全部やりたいときこちら)
 AUTO_MODE           = True    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
+_RUN_MODE_LOCKED    = None    # INTRADAY-STABILITY-V1: 1process内のrun開始モードを最後まで固定
 #AUTO_MODE           = False    # 自動判定フラグ 時間帯によって自動でMIDDAY(False)とEOD(True)を強制する
 USE_CSV             = True    # CSV取り込みフラグ
 TEST_MODE           = False   # テストモードフラグ（件数制限）
@@ -579,6 +342,35 @@ CHARTS60_MIDDAY_REFRESH_MINUTES = 30
 CHARTS60_FOCUS_MAX_CODES = 1600
 CHARTS60_FALLBACK_CODES = 300
 CHARTS60_HISTORY_BARS = 160
+
+# V60 all-in performance switches (test build defaults ON; each can be disabled independently).
+V60_ALLIN_FAST = os.environ.get("KABU_SCREEN_V60_FAST", "1").strip().lower() not in {"0","false","no","off"}
+V60_CANON_PERSIST = V60_ALLIN_FAST and os.environ.get("KABU_SCREEN_V60_CANON", "1").strip().lower() not in {"0","false","no","off"}
+V60_AI_TAIL_FAST = V60_ALLIN_FAST and os.environ.get("KABU_SCREEN_V60_AI_TAIL", "1").strip().lower() not in {"0","false","no","off"}
+V60_INTRADAY_WINDOW_FAST = V60_ALLIN_FAST and os.environ.get("KABU_SCREEN_V60_INTRADAY", "0").strip().lower() not in {"0","false","no","off"}
+V60_CHART_INCREMENTAL = V60_ALLIN_FAST and os.environ.get("KABU_SCREEN_V60_CHARTS", "0").strip().lower() not in {"0","false","no","off"}
+V60_LEADER_PARALLEL = False  # V61: hard-disabled after V60 coverage/rescue regression
+V60_PRICE_SUMMARY_CANON = V60_ALLIN_FAST and os.environ.get("KABU_SCREEN_V60_PRICE_SUMMARY", "1").strip().lower() not in {"0","false","no","off"}
+V60_LEADER_PARALLEL_WORKERS = max(1, min(2, int(os.environ.get("KABU_SCREEN_V60_LEADER_WORKERS", "2"))))
+V60_INTRADAY_RECENT_MINUTES = max(61, int(os.environ.get("KABU_SCREEN_V60_INTRADAY_MINUTES", "65")))
+V60_CANON_CALENDAR_DAYS = max(430, int(os.environ.get("KABU_SCREEN_V60_CANON_DAYS", "460")))
+V60_CANON_CACHE_PATH = Path(os.environ.get("KABU_SCREEN_V60_CANON_CACHE", str(SCREEN_RUNTIME_DIR / "midday_canonical_baseline_v60.pkl")))
+V60_CANON_CACHE_SCHEMA = 1
+
+# V62 display-only theme heat + export safe fastpaths
+V62_THEME_HEAT = os.environ.get("KABU_SCREEN_V62_THEME_HEAT", "1").strip().lower() not in {"0","false","no","off"}
+V62_AI_FB_REPLACE = os.environ.get("KABU_SCREEN_V62_AI_FB", "1").strip().lower() not in {"0","false","no","off"}
+V62_PRICE_SUMMARY_FAST = os.environ.get("KABU_SCREEN_V62_PRICE_SUMMARY", "1").strip().lower() not in {"0","false","no","off"}
+V62_PRICE_SUMMARY_CACHE_PATH = Path(os.environ.get("KABU_SCREEN_V62_PRICE_CACHE", str(SCREEN_RUNTIME_DIR / "price_summary_midday_baseline_v62.pkl")))
+V62_PRICE_SUMMARY_AUDIT_PATH = Path(os.environ.get("KABU_SCREEN_V62_PRICE_AUDIT", str(SCREEN_RUNTIME_DIR / "price_summary_midday_audit_v62.json")))
+V62_PRICE_SUMMARY_CACHE_SCHEMA = 1
+
+# V64: derive_update canonical history reuse. First use per trade-date/build is full legacy audited.
+V64_DERIVE_CANON_FAST = os.environ.get("KABU_SCREEN_V64_DERIVE_CANON", "1").strip().lower() not in {"0","false","no","off"}
+V64_DERIVE_AUDIT_PATH = Path(os.environ.get(
+    "KABU_SCREEN_V64_DERIVE_AUDIT", str(SCREEN_RUNTIME_DIR / "derive_canon_audit_v64.json")
+))
+V64_DERIVE_AUDIT_SCHEMA = 1
 
 # WATCH-RISK-V1: 1トレード許容リスク額。0=未設定（表示のみ）
 try:
@@ -631,7 +423,11 @@ _KABUNEWS_CONF = {
     "lang": "ja",
     "gl": "JP",
     "ceid": "JP:ja",
-    "max_items_per_symbol": 3,
+    # 🌈専用: 直近5日を取りこぼしにくくするため取得は最大20件。
+    # dashboardは display_items_per_symbol 件だけ表示し、判定用全文には取得分を保持する。
+    "max_items_per_symbol": 20,
+    "display_items_per_symbol": 3,
+    "lookback_days": 5,
     "enable_bert": False,
     "bert_model": "koheiduck/bert-japanese-finetuned-sentiment",
     "http_timeout": 8,
@@ -643,11 +439,26 @@ _KABUNEWS_CONF = {
     # P2-92: 10分runで同じ候補を連続照会しない。新規候補はcache missのため即時取得、
     # 既存候補だけ30分間再利用する。HTTP/parse失敗はcacheを進めず次runで再試行する。
     "cache_ttl_minutes": 30,
-    "cache_schema_version": 1,
+    "cache_schema_version": 3,
+    # LEADER-NEWS-EPISODE-ARCHIVE-V1: 当日active主役の場中RSS再確認間隔。
+    "leader_live_refresh_minutes": 30,
+    # RATE-LIMIT-GUARD-V2: 新規🌈は別枠で即時。既存active/backlogだけ1run上限を掛ける。
+    "leader_live_refresh_max_codes_per_run": 48,
+    # signal_atがこの時間内なら「今回発生した新規🌈」として上限外で即時取得する。
+    "leader_new_immediate_minutes": 20,
+    # 503/timeout等の取得失敗が連続したらprovider全体を一時停止。
+    "leader_news_breaker_failures": 3,
+    "leader_news_breaker_cooldown_minutes": 30,
+    "episode_max_business_days": 20,
+    # ニュース取得窓: 場中/PREOPENは速度優先で初回🌈前5日、EOD研究は前10日。
+    "episode_pre_days": 10,
+    "episode_pre_days_live": 5,
+    "episode_pre_days_preopen": 5,
+    "dual_search": True,
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "pos_keywords": [
         "上方修正", "増額修正", "業績予想の上方修正", "最高益", "過去最高益", 
-        "上場来高値", "配当増額", "増配", "大幅増益", "好決算", 
+        "配当増額", "増配", "大幅増益", "好決算", 
         "連結営業利益の増加", "株式分割", "自社株買い", "中期経営計画", "大型受注"
     ],
 }
@@ -680,7 +491,7 @@ def _charts60_focus_codes(conn: sqlite3.Connection) -> set[str]:
     wanted = [
         "コード", "初動フラグ", "INITIAL_MOMENTUM", "底打ちフラグ", "右肩上がりフラグ", "右肩早期フラグ",
         "右肩早期種別", "AIスコア", "初動スコア", "INITIAL_MOMENTUM_SCORE", "右肩早期スコア",
-        "右肩上がりスコア", "合成スコア", "売買代金億",
+        "右肩上がりスコア", "合成スコア", "売買代金億", "経過日数",
     ]
     exprs = [f'"{c}"' if c in columns else f'NULL AS "{c}"' for c in wanted]
     rows = conn.execute(f"SELECT {','.join(exprs)} FROM screener").fetchall()
@@ -728,13 +539,21 @@ def _charts60_focus_codes(conn: sqlite3.Connection) -> set[str]:
             _charts60_number(row[idx["合成スコア"]]),
         )
         turnover = _charts60_number(row[idx["売買代金億"]], 0.0)
+        # SHORT-HISTORY-V1: IPOマスタは使わない。screener登録から120日以内を
+        # 「短期履歴候補」のfocus proxyとして扱い、チャート生成漏れだけを防ぐ。
+        # 売買候補source/rankingには混ぜない。
+        age_days = _charts60_number(row[idx["経過日数"]], 999999.0)
+        recent_short_focus = bool(
+            0.0 <= age_days <= 120.0
+            and (turnover >= 1.0 or score >= 55.0)
+        )
         priority = (
             int(initial_momentum), int(initial or bottom), int(early), int(was_monitored), int(ai_positive), int(right),
-            score, ai_score, turnover, code,
+            int(recent_short_focus), score, ai_score, turnover, code,
         )
         if code not in fallback or priority > fallback[code]:
             fallback[code] = priority
-        if initial_momentum or initial or bottom or right or early or ai_positive or was_monitored:
+        if initial_momentum or initial or bottom or right or early or ai_positive or was_monitored or recent_short_focus:
             if code not in ranked or priority > ranked[code]:
                 ranked[code] = priority
 
@@ -791,6 +610,7 @@ def _run_charts60(py_path: str, requested_codes=None):
         sys.executable, str(py), "--db", str(DB_PATH),
         "--out", str(Path(OUTPUT_DIR) / "charts60"),
         "--history-bars", str(CHARTS60_HISTORY_BARS),
+        "--min-bars", "20",
     ]
     _codes_file = None
     if requested is not None:
@@ -957,6 +777,27 @@ def _charts60_reusable_manifest(
         return None
 
 
+def _v60_charts_incremental_plan(conn: sqlite3.Connection, py_path: str, run_mode: str, requested_codes):
+    if not V60_CHART_INCREMENTAL or str(run_mode or "").upper()!="MIDDAY" or requested_codes is None:
+        return None
+    try:
+        raw=json.loads(CHARTS60_MANIFEST_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw,dict) or int(raw.get("schema",-1))!=2:return None
+        if str(raw.get("day") or "")!=_today_jst():return None
+        if str(raw.get("build") or "")!=_daily_build_token():return None
+        if str(raw.get("mode") or "").upper()!="MIDDAY":return None
+        if str(raw.get("script_sha256") or "")!=_charts60_script_fingerprint(py_path):return None
+        age=time.time()-float(raw.get("generated_at")); ttl=CHARTS60_MIDDAY_REFRESH_MINUTES*60
+        if age< -300 or age>ttl:return None
+        if str(raw.get("scope_kind") or "")!="focus":return None
+        old_req={canonical_code_for_db(c) for c in (raw.get("requested_codes") or []) if canonical_code_for_db(c)}
+        gen={canonical_code_for_db(c) for c in (raw.get("codes") or []) if canonical_code_for_db(c)}
+        req={canonical_code_for_db(c) for c in requested_codes if canonical_code_for_db(c)}
+        new=req-old_req
+        if not new:return None
+        return raw,req,old_req,gen,new,age
+    except Exception:return None
+
 def _run_or_reuse_charts60(conn: sqlite3.Connection, py_path: str, run_mode: str):
     """P2-95/P2-97: 場中候補をrefreshし、EODは全銘柄を補修する。"""
     mode = str(run_mode or "").upper()
@@ -970,6 +811,21 @@ def _run_or_reuse_charts60(conn: sqlite3.Connection, py_path: str, run_mode: str
             f"age={max(0.0, age):.0f}s codes={len(codes)} at={generated_at_jst or '-'}"
         )
         return codes
+
+    _inc=_v60_charts_incremental_plan(conn,py_path,run_mode,requested)
+    if _inc is not None:
+        raw,req,old_req,gen,new_codes,age=_inc
+        print(f"[V60-CHARTS] incremental new={len(new_codes)} requested={len(req)} age={age:.0f}s",flush=True)
+        generated_new=_timed("charts60_generate_incremental",_run_charts60,py_path,new_codes)
+        generated_new={canonical_code_for_db(c) for c in (generated_new or set()) if canonical_code_for_db(c)}
+        all_gen=set(gen)|generated_new
+        raw["requested_codes"]=sorted(req); raw["codes"]=sorted(all_gen)
+        # generated_atは最後のfull refresh時刻を維持し、差分追加でTTLを延命しない。
+        _atomic_write_text_file(CHARTS60_MANIFEST_PATH,json.dumps(raw,ensure_ascii=False,separators=(",",":")))
+        globals()["_CHARTS60_SNAPSHOT_AT"]=str(raw.get("generated_at_jst") or "")
+        current=(all_gen & req)
+        print(f"[V60-CHARTS] incremental done generated_new={len(generated_new)} current={len(current)}",flush=True)
+        return current
 
     scope_log = "all" if requested is None else f"focus:{len(requested)}"
     print(f"[charts60] generate scope={scope_log} history_bars={CHARTS60_HISTORY_BARS}")
@@ -1170,7 +1026,236 @@ def sync_to_github_pages(repo_root: str, target_file: str):
 # ==============================================================================
 
 
+# ===== [PERF-OPT-V25.2 / GIT-MEMORY-GUARD] =====
+def _github_sync_commit_snapshot():
+    """Windows system commitをGetPerformanceInfoで読む。失敗時は(None, None, None)。"""
+    if os.name != "nt":
+        return None, None, None
+    try:
+        import ctypes
+        from ctypes import wintypes
 
+        class _PERFORMANCE_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("CommitTotal", ctypes.c_size_t),
+                ("CommitLimit", ctypes.c_size_t),
+                ("CommitPeak", ctypes.c_size_t),
+                ("PhysicalTotal", ctypes.c_size_t),
+                ("PhysicalAvailable", ctypes.c_size_t),
+                ("SystemCache", ctypes.c_size_t),
+                ("KernelTotal", ctypes.c_size_t),
+                ("KernelPaged", ctypes.c_size_t),
+                ("KernelNonpaged", ctypes.c_size_t),
+                ("PageSize", ctypes.c_size_t),
+                ("HandleCount", wintypes.DWORD),
+                ("ProcessCount", wintypes.DWORD),
+                ("ThreadCount", wintypes.DWORD),
+            ]
+
+        pi = _PERFORMANCE_INFORMATION()
+        pi.cb = ctypes.sizeof(pi)
+        if not ctypes.windll.psapi.GetPerformanceInfo(ctypes.byref(pi), pi.cb):
+            return None, None, None
+        total = float(pi.CommitTotal * pi.PageSize)
+        limit = float(pi.CommitLimit * pi.PageSize)
+        pct = (total / limit * 100.0) if limit > 0 else None
+        return total, limit, pct
+    except Exception:
+        return None, None, None
+
+
+def _github_sync_pid_alive(pid: int) -> bool:
+    if not pid or pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            return False
+    try:
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _github_sync_read_lock():
+    try:
+        if not GITHUB_SYNC_LOCK_PATH.exists():
+            return None
+        raw = GITHUB_SYNC_LOCK_PATH.read_text(encoding="utf-8", errors="replace")
+        obj = json.loads(raw) if raw.strip() else {}
+        if not isinstance(obj, dict):
+            obj = {}
+        obj["_age_sec"] = max(0.0, time.time() - GITHUB_SYNC_LOCK_PATH.stat().st_mtime)
+        return obj
+    except Exception:
+        try:
+            return {"_age_sec": max(0.0, time.time() - GITHUB_SYNC_LOCK_PATH.stat().st_mtime)}
+        except Exception:
+            return None
+
+
+def _github_sync_existing_lock_active() -> bool:
+    info = _github_sync_read_lock()
+    if not info:
+        return False
+    age = float(info.get("_age_sec") or 0.0)
+    try:
+        pid = int(info.get("pid") or 0)
+    except Exception:
+        pid = 0
+    if pid > 0 and _github_sync_pid_alive(pid) and age < GITHUB_SYNC_STALE_LOCK_SECONDS:
+        print(f"[git][GUARD] sync already active pid={pid} age={age:.0f}s; new launch skipped")
+        return True
+    # 自分の管理lockだけを掃除する。git.exe自体はkillしない。
+    if age >= GITHUB_SYNC_STALE_LOCK_SECONDS or pid <= 0 or not _github_sync_pid_alive(pid):
+        try:
+            GITHUB_SYNC_LOCK_PATH.unlink()
+            print(f"[git][GUARD] stale/orphan single-flight lock removed pid={pid} age={age:.0f}s")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"[git][WARN] stale single-flight lock cleanup failed: {e}")
+            return True
+    return False
+
+
+def _github_sync_acquire_child_lock(repo_root: str, target_file: str) -> bool:
+    GITHUB_SYNC_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": _now_jst().isoformat(timespec="seconds"),
+        "repo_root": str(repo_root),
+        "target_file": str(target_file),
+    }
+    try:
+        fd = os.open(str(GITHUB_SYNC_LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        if _github_sync_existing_lock_active():
+            return False
+        try:
+            fd = os.open(str(GITHUB_SYNC_LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except Exception:
+            return False
+    try:
+        os.write(fd, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
+
+
+def _github_sync_release_child_lock():
+    try:
+        info = _github_sync_read_lock() or {}
+        if int(info.get("pid") or 0) == os.getpid():
+            GITHUB_SYNC_LOCK_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[git][WARN] single-flight lock release failed: {e}")
+
+
+def _run_github_sync_child(repo_root: str, target_file: str) -> bool:
+    if not _github_sync_acquire_child_lock(repo_root, target_file):
+        print("[git][GUARD] child sync skipped because another sync owns the lock")
+        return True
+    started = time.perf_counter()
+    total, limit, pct = _github_sync_commit_snapshot()
+    try:
+        target_mb = None
+        try:
+            target_mb = Path(target_file).stat().st_size / (1024 * 1024)
+        except Exception:
+            pass
+        print(
+            f"[git][GUARD] child start pid={os.getpid()} "
+            f"commit={pct:.1f}%" if pct is not None else f"[git][GUARD] child start pid={os.getpid()} commit=unknown",
+            flush=True,
+        )
+        if target_mb is not None:
+            print(f"[git][GUARD] target_size={target_mb:.1f}MB target={target_file}", flush=True)
+        return sync_to_github_pages(repo_root, target_file)
+    finally:
+        elapsed = time.perf_counter() - started
+        _t2, _l2, pct2 = _github_sync_commit_snapshot()
+        pct_text = f"{pct2:.1f}%" if pct2 is not None else "unknown"
+        print(f"[git][GUARD] child end pid={os.getpid()} elapsed={elapsed:.1f}s commit={pct_text}", flush=True)
+        if elapsed >= GITHUB_SYNC_SLOW_WARN_SECONDS:
+            print(f"[git][GUARD][WARN] slow sync elapsed={elapsed:.1f}s threshold={GITHUB_SYNC_SLOW_WARN_SECONDS}s", flush=True)
+        _github_sync_release_child_lock()
+
+
+def _launch_github_sync_async(repo_root: str, target_file: str) -> bool:
+    """GitHub同期をscanner本体のcritical pathから分離。V25.2でsingle-flight/commit guardを追加。"""
+    if not GITHUB_SYNC_ASYNC:
+        return sync_to_github_pages(repo_root, target_file)
+    try:
+        GITHUB_SYNC_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        # 高Commit時は公開同期だけを見送る。ローカルHTML/DB/候補生成には触れない。
+        _ct, _cl, _cpct = _github_sync_commit_snapshot()
+        if _cpct is not None and _cpct >= GITHUB_SYNC_MAX_COMMIT_PCT:
+            print(
+                f"[git][GUARD] system commit {_cpct:.1f}% >= {GITHUB_SYNC_MAX_COMMIT_PCT:.1f}%; "
+                "async Git sync skipped (local outputs are already complete)"
+            )
+            return True
+
+        if _github_sync_existing_lock_active():
+            return True
+
+        try:
+            if GITHUB_SYNC_LOG_PATH.exists() and GITHUB_SYNC_LOG_PATH.stat().st_size > 2 * 1024 * 1024:
+                old = GITHUB_SYNC_LOG_PATH.with_suffix(GITHUB_SYNC_LOG_PATH.suffix + ".1")
+                try:
+                    old.unlink()
+                except FileNotFoundError:
+                    pass
+                os.replace(GITHUB_SYNC_LOG_PATH, old)
+        except Exception:
+            pass
+        cmd = [sys.executable, str(Path(__file__).resolve()), GITHUB_SYNC_ONLY_ARG, str(repo_root), str(target_file)]
+        flags = 0
+        if os.name == "nt":
+            flags = (getattr(subprocess, "DETACHED_PROCESS", 0) |
+                     getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) |
+                     getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        with GITHUB_SYNC_LOG_PATH.open("a", encoding="utf-8") as lf:
+            lf.write(
+                f"\n=== launch {_now_jst().isoformat(timespec='seconds')} "
+                f"parent_pid={os.getpid()} commit={_cpct if _cpct is not None else 'unknown'}% ===\n"
+            )
+            lf.flush()
+            child = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                cwd=str(_SCRIPT_DIR),
+                shell=False,
+                creationflags=flags,
+                close_fds=True,
+            )
+        print(
+            f"[git] async sync launched pid={child.pid}; "
+            f"commit={_cpct:.1f}%" if _cpct is not None else f"[git] async sync launched pid={child.pid}; commit=unknown",
+            f"log={GITHUB_SYNC_LOG_PATH}"
+        )
+        return True
+    except Exception as e:
+        print(f"[git][WARN] async launch failed: {e}")
+        return False
+# ===== [/PERF-OPT-V25.2 / GIT-MEMORY-GUARD] =====
 
 
 # --- [ENCODING GUARD | Windows cp932 safe] ---
@@ -1570,6 +1655,8 @@ def dumps_json_clean(obj,
     _obj_clean = _finite_clean(obj)
 
     try:
+        if not _ORJSON_NATIVE:
+            raise TypeError("stdlib json fallback")
         opt = 0
         try:
             opt |= orjson.OPT_SERIALIZE_NUMPY
@@ -1579,7 +1666,8 @@ def dumps_json_clean(obj,
         s = bs.decode("utf-8")
         if ensure_ascii:
             s = s.encode("unicode_escape").decode("ascii")
-        if indent or separators is not None:
+        # orjsonは既定でcompact。dashboardの標準指定(',', ':')なら意味同値の再parse/re-dumpを省く。
+        if indent or (separators is not None and tuple(separators) != (",", ":")):
             s = json.dumps(json.loads(s), ensure_ascii=ensure_ascii, indent=indent, separators=separators)
         return s
     except Exception:
@@ -1787,74 +1875,542 @@ def _live_stock_code(code, market="", name="") -> str:
     return str(c)
 
 
-def _live_daily_structure_map(conn: sqlite3.Connection, asof_date: str) -> dict[str, dict]:
-    """日足構造だけからSTEADY_UP用特徴量を計算。既存右肩判定は変更しない。"""
-    start = (pd.Timestamp(asof_date) - pd.Timedelta(days=240)).strftime("%Y-%m-%d")
-    ph = pd.read_sql_query(
-        """
-        SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
-          FROM price_history
-         WHERE date(日付) >= date(?) AND date(日付) <= date(?)
-         ORDER BY 日付, rowid
-        """,
-        conn, params=[start, asof_date],
+# PERF-OPT-V3: 同一run内で同じprice_history期間を何度もSQLite->pandas転送しない。
+# raw行だけを共有し、consumer固有のdedupe/holiday/quality semanticsは各関数側に残す。
+_PERF_PH_RAW_CACHE: dict[str, dict] = {}
+
+def _perf_price_history_raw_range(
+    conn: sqlite3.Connection,
+    start_date: str,
+    end_date: str,
+    *,
+    tag: str = "",
+) -> pd.DataFrame:
+    _cols = ["_rowid", "コード", "日付", "始値", "高値", "安値", "終値", "出来高"]
+    _start = pd.Timestamp(start_date).normalize()
+    _end = pd.Timestamp(end_date).normalize()
+    if pd.isna(_start) or pd.isna(_end) or _start > _end:
+        return pd.DataFrame(columns=_cols)
+    _date_key = _end.strftime("%Y-%m-%d")
+    _key = (id(conn), _date_key)
+    _cache = _PERF_PH_RAW_CACHE.get(_key)
+    _t0 = time.perf_counter()
+
+    def _read_between(_lo: str, _hi: str, _hi_inclusive: bool = True) -> pd.DataFrame:
+        _op = "<=" if _hi_inclusive else "<"
+        _sql = (
+            "SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高 "
+            "FROM price_history "
+            "WHERE date(日付) >= date(?) AND date(日付) " + _op + " date(?) "
+            "ORDER BY 日付, rowid"
+        )
+        return pd.read_sql_query(_sql, conn, params=[_lo, _hi])
+
+    _mode = "hit"
+    if _cache is None:
+        _df = _read_between(_start.strftime("%Y-%m-%d"), _date_key, True)
+        if not _df.empty:
+            _df["_perf_date_key"] = pd.to_datetime(_df["日付"], errors="coerce").dt.normalize()
+        else:
+            _df["_perf_date_key"] = pd.Series(dtype="datetime64[ns]")
+        _cache = {"start": _start, "end": _end, "df": _df}
+        _PERF_PH_RAW_CACHE[_key] = _cache
+        _mode = "load"
+    elif _start < _cache["start"]:
+        _old_start = pd.Timestamp(_cache["start"]).normalize()
+        _older = _read_between(_start.strftime("%Y-%m-%d"), _old_start.strftime("%Y-%m-%d"), False)
+        if not _older.empty:
+            _older["_perf_date_key"] = pd.to_datetime(_older["日付"], errors="coerce").dt.normalize()
+            _df = pd.concat([_older, _cache["df"]], ignore_index=True)
+            _df = _df.sort_values(["_perf_date_key", "_rowid"], kind="stable").reset_index(drop=True)
+        else:
+            _df = _cache["df"]
+        _cache = {"start": _start, "end": _end, "df": _df}
+        _PERF_PH_RAW_CACHE[_key] = _cache
+        _mode = "expand"
+
+    _base = _cache["df"]
+    if _base.empty:
+        _out = pd.DataFrame(columns=_cols)
+    else:
+        _mask = _base["_perf_date_key"].between(_start, _end, inclusive="both")
+        _out = _base.loc[_mask, _cols].copy()
+    _dt = time.perf_counter() - _t0
+    print(
+        f"[ph-run-cache] tag={tag or '-'} mode={_mode} start={_start.date()} end={_end.date()} "
+        f"rows={len(_out)} cached_rows={len(_cache['df'])} dt={_dt:.2f}s",
+        flush=True,
     )
+    return _out
+
+
+# === PERF-OPT-V60 persistent MIDDAY canonical superset ===
+_V60_CANON_RUN_CACHE = {}
+_V60_TAIL_RUN_CACHE = {}
+
+def _v60_midday_canon_superset(conn: sqlite3.Connection, end_date: str):
+    """前営業日までのcanonical履歴をdisk永続化し、当日分だけrunごとに結合する。
+
+    V21 canonicalと同じ _dedupe_price_history_df + numeric normalize を使う。
+    過去期間のrevision tokenが変われば必ずbaselineを再構築する。
+    """
+    if (not V60_CANON_PERSIST) or str(_auto_run_mode() or "").upper() != "MIDDAY":
+        return None
+    try:
+        end_ts = pd.Timestamp(end_date).normalize()
+        trade_date_s = _expected_snapshot_date_for_run("MIDDAY").isoformat()
+        trade_ts = pd.Timestamp(trade_date_s).normalize()
+        if pd.isna(end_ts) or end_ts != trade_ts:
+            return None
+        key=(id(conn), trade_date_s)
+        hit=_V60_CANON_RUN_CACHE.get(key)
+        if isinstance(hit,pd.DataFrame):
+            return hit
+        extra=_load_extra_closed(EXTRA_CLOSED_PATH)
+        trade_date=date.fromisoformat(trade_date_s)
+        prior_end=prev_business_day_jp(trade_date,extra)
+        prior_end_s=prior_end.isoformat()
+        start_ts=trade_ts-pd.Timedelta(days=int(V60_CANON_CALENDAR_DAYS))
+        start_s=start_ts.strftime("%Y-%m-%d")
+        rev=_v41_price_history_revision_token(conn,start_s,prior_end_s) if _v41_revision_fast_enabled() else ""
+        base=None
+        p=V60_CANON_CACHE_PATH
+        tload=time.perf_counter()
+        try:
+            if p.exists():
+                with p.open("rb") as fh: obj=pickle.load(fh)
+                if (isinstance(obj,dict) and int(obj.get("schema") or 0)==V60_CANON_CACHE_SCHEMA
+                    and str(obj.get("trade_date") or "")==trade_date_s
+                    and str(obj.get("start") or "")==start_s
+                    and str(obj.get("prior_end") or "")==prior_end_s
+                    and str(obj.get("revision") or "")==str(rev or "")
+                    and isinstance(obj.get("df"),pd.DataFrame)):
+                    base=obj["df"]
+                    print(f"[V60-CANON] baseline HIT rows={len(base)} dt={time.perf_counter()-tload:.2f}s",flush=True)
+        except Exception as e:
+            print(f"[V60-CANON][WARN] baseline load failed: {e}",flush=True); base=None
+        if base is None:
+            tb=time.perf_counter()
+            raw=_perf_price_history_raw_range(conn,start_s,prior_end_s,tag="v60_canon_baseline")
+            base=_dedupe_price_history_df(raw[["_rowid","コード","日付","始値","高値","安値","終値","出来高"]].copy()) if not raw.empty else pd.DataFrame(columns=["_rowid","コード","日付","始値","高値","安値","終値","出来高"])
+            if not base.empty:
+                base["日付"]=pd.to_datetime(base["日付"],errors="coerce").dt.normalize()
+                for c in ("始値","高値","安値","終値","出来高"): base[c]=pd.to_numeric(base[c],errors="coerce")
+                base=base.dropna(subset=["コード","日付"]).sort_values(["コード","日付"],kind="stable").reset_index(drop=True)
+                base=base[base["日付"]<trade_ts].copy()
+            try:
+                p.parent.mkdir(parents=True,exist_ok=True)
+                fd,name=tempfile.mkstemp(prefix=p.name+".",suffix=".tmp",dir=str(p.parent)); os.close(fd); tmp=Path(name)
+                with tmp.open("wb") as fh:
+                    pickle.dump({"schema":V60_CANON_CACHE_SCHEMA,"trade_date":trade_date_s,"start":start_s,"prior_end":prior_end_s,"revision":str(rev or ""),"df":base,"saved_at":_now_jst().isoformat(timespec="seconds")},fh,protocol=pickle.HIGHEST_PROTOCOL)
+                os.replace(tmp,p)
+            except Exception as e:
+                print(f"[V60-CANON][WARN] baseline store failed: {e}",flush=True)
+            print(f"[V60-CANON] baseline BUILD rows={len(base)} dt={time.perf_counter()-tb:.2f}s",flush=True)
+        tt=time.perf_counter()
+        raw_today=_perf_price_history_raw_range(conn,trade_date_s,trade_date_s,tag="v60_canon_today")
+        today=_dedupe_price_history_df(raw_today[["_rowid","コード","日付","始値","高値","安値","終値","出来高"]].copy()) if not raw_today.empty else pd.DataFrame(columns=base.columns)
+        if not today.empty:
+            today["日付"]=pd.to_datetime(today["日付"],errors="coerce").dt.normalize()
+            for c in ("始値","高値","安値","終値","出来高"): today[c]=pd.to_numeric(today[c],errors="coerce")
+            today=today[today["日付"]==trade_ts].copy()
+        if base is None or base.empty: out=today.reset_index(drop=True)
+        elif today.empty: out=base.copy()
+        else: out=pd.concat([base,today],ignore_index=True).sort_values(["コード","日付"],kind="stable").reset_index(drop=True)
+        _V60_CANON_RUN_CACHE[key]=out
+        print(f"[V60-CANON] combined base={0 if base is None else len(base)} today={len(today)} rows={len(out)} dt={time.perf_counter()-tt:.2f}s",flush=True)
+        return out
+    except Exception as e:
+        print(f"[V60-CANON][WARN] persistent superset failed -> legacy: {e}",flush=True)
+        return None
+
+def _v60_midday_canon_slice(conn,start_date,end_date,consumer=""):
+    if not V60_CANON_PERSIST or str(_auto_run_mode() or "").upper()!="MIDDAY": return None
+    base=_v60_midday_canon_superset(conn,end_date)
+    if not isinstance(base,pd.DataFrame): return None
+    try:
+        lo=pd.Timestamp(start_date).normalize(); hi=pd.Timestamp(end_date).normalize()
+        if base.empty: return base.copy()
+        min_date=pd.to_datetime(base["日付"],errors="coerce").min()
+        if pd.notna(min_date) and lo < pd.Timestamp(min_date).normalize(): return None
+        t=time.perf_counter(); dts=pd.to_datetime(base["日付"],errors="coerce").dt.normalize()
+        out=base.loc[dts.between(lo,hi,inclusive="both")].copy()
+        dt=time.perf_counter()-t
+        print(f"[V60-CANON] slice consumer={consumer or '-'} rows={len(out)} dt={dt:.3f}s",flush=True)
+        try:_perf_record_phase(f"backend-detail:v60_canon_slice:{consumer or 'unknown'}",dt,"HIT")
+        except Exception:pass
+        return out
+    except Exception:
+        return None
+
+def _v60_midday_tail_frame(conn, cutoff_date: str, history_rows: int):
+    if not V60_AI_TAIL_FAST or str(_auto_run_mode() or "").upper()!="MIDDAY": return None
+    key=(id(conn),str(cutoff_date),int(history_rows))
+    hit=_V60_TAIL_RUN_CACHE.get(key)
+    if isinstance(hit,pd.DataFrame): return hit
+    base=_v60_midday_canon_superset(conn,cutoff_date)
+    if not isinstance(base,pd.DataFrame): return None
+    t=time.perf_counter()
+    if base.empty: tail=base.copy()
+    else:
+        # canonical supersetは既にコード/日付順。再sortせずgroup tailだけ取る。
+        tail=base.groupby("コード",sort=False,group_keys=False).tail(int(history_rows)).reset_index(drop=True)
+    _V60_TAIL_RUN_CACHE[key]=tail
+    dt=time.perf_counter()-t
+    print(f"[V60-AI-TAIL] BUILD rows={len(tail)} n={history_rows} dt={dt:.2f}s",flush=True)
+    try:_perf_record_phase("export-detail:v60_ai_tail_build",dt,"OK")
+    except Exception:pass
+    return tail
+# === /PERF-OPT-V60 persistent MIDDAY canonical superset ===
+
+# === PERF-OPT-V34 MIDDAY V33 canonical share (AI and other V21-canonical consumers) ===
+def _v34_midday_shared_daily_fast_enabled() -> bool:
+    return bool(MIDDAY_SHARED_DAILY_V34_FAST)
+
+
+def _v34_midday_v33_canon_slice(
+    conn: sqlite3.Connection,
+    start_date: str,
+    end_date: str,
+    *,
+    consumer: str = "",
+):
+    """V33同一run canonical supersetから要求期間をslice。無ければNone。"""
+    if (not _v34_midday_shared_daily_fast_enabled()) or str(_auto_run_mode() or "").upper() != "MIDDAY":
+        return None
+    try:
+        req_start = pd.Timestamp(start_date).normalize()
+        req_end = pd.Timestamp(end_date).normalize()
+        if pd.isna(req_start) or pd.isna(req_end) or req_start > req_end:
+            return None
+        cache = globals().get("_V33_RIGHT_UP_EARLY_RUN_CACHE")
+        if not isinstance(cache, dict) or not cache:
+            return None
+        cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+        best = None
+        best_start = None
+        for key, df in list(cache.items()):
+            if not (isinstance(key, tuple) and len(key) >= 3 and isinstance(df, pd.DataFrame)):
+                continue
+            try:
+                conn_id, trade_date_s, cache_start_s = key[:3]
+                if int(conn_id) != id(conn):
+                    continue
+                cache_start = pd.Timestamp(cache_start_s).normalize()
+                cache_end = pd.Timestamp(trade_date_s).normalize()
+                if cache_start > req_start or cache_end < req_end:
+                    continue
+                if any(c not in df.columns for c in cols):
+                    continue
+                if best is None or cache_start < best_start:
+                    best = df; best_start = cache_start
+            except Exception:
+                continue
+        if best is None:
+            return None
+        t0 = time.perf_counter()
+        dts = pd.to_datetime(best["日付"], errors="coerce").dt.normalize()
+        out = best.loc[dts.between(req_start, req_end, inclusive="both"), cols].copy()
+        out["日付"] = pd.to_datetime(out["日付"], errors="coerce").dt.normalize()
+        dt = time.perf_counter() - t0
+        print(
+            f"[V34][canon-share] consumer={consumer or '-'} start={req_start.date()} end={req_end.date()} "
+            f"rows={len(out)} source_rows={len(best)} dt={dt:.3f}s", flush=True
+        )
+        try: _perf_record_phase(f"backend-detail:v34_canon_share:{consumer or 'unknown'}", dt, "HIT")
+        except Exception: pass
+        return out
+    except Exception as e:
+        print(f"[V34][canon-share][WARN] consumer={consumer or '-'} fallback: {e}", flush=True)
+        return None
+# === /PERF-OPT-V34 MIDDAY V33 canonical share ===
+
+# === PERF-OPT-V21 shared canonical daily cache ===
+_PERF_PH_CANON_CACHE: dict[tuple, dict] = {}
+
+def _v21_fast_enabled() -> bool:
+    return str(os.getenv("KABU_SCREEN_V21_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+
+def _perf_price_history_canonical_range(
+    conn: sqlite3.Connection,
+    start_date: str,
+    end_date: str,
+    *,
+    tag: str = "",
+    prime_calendar_days: int = 430,
+) -> pd.DataFrame:
+    """V21: canonical+holiday filter+dedupe+numeric normalizeを同一runで共有。
+
+    最初の呼出しで最低prime_calendar_daysを読み、右肩早期→MarketMetrics→signal→AIの
+    後続呼出しをsliceだけにする。consumer側で必要な追加意味論は従来どおり保持する。
+    """
+    cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+    req_start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    if pd.isna(req_start) or pd.isna(end) or req_start > end:
+        return pd.DataFrame(columns=cols)
+    _v60_shared = _v60_midday_canon_slice(
+        conn, req_start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+        consumer=f"canon:{tag or '-'}"
+    )
+    if isinstance(_v60_shared, pd.DataFrame):
+        return _v60_shared
+    _v34_shared = _v34_midday_v33_canon_slice(
+        conn, req_start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+        consumer=f"canon:{tag or '-'}"
+    )
+    if isinstance(_v34_shared, pd.DataFrame):
+        return _v34_shared
+    prime_start = min(req_start, end - pd.Timedelta(days=max(0, int(prime_calendar_days))))
+    key = (id(conn), end.strftime("%Y-%m-%d"))
+    cached = _PERF_PH_CANON_CACHE.get(key)
+    t0 = time.perf_counter()
+    mode = "hit"
+    if cached is None or pd.Timestamp(cached.get("start")).normalize() > prime_start:
+        raw = _perf_price_history_raw_range(
+            conn, prime_start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), tag=f"v21canon:{tag or '-'}"
+        )
+        if raw.empty:
+            canon = pd.DataFrame(columns=cols)
+        else:
+            canon = _dedupe_price_history_df(raw[cols].copy())
+            canon["日付"] = pd.to_datetime(canon["日付"], errors="coerce").dt.normalize()
+            for c in ("始値","高値","安値","終値","出来高"):
+                canon[c] = pd.to_numeric(canon[c], errors="coerce")
+            canon = canon.dropna(subset=["コード","日付"]).sort_values(["コード","日付"], kind="stable").reset_index(drop=True)
+        cached = {"start": prime_start, "end": end, "df": canon}
+        _PERF_PH_CANON_CACHE[key] = cached
+        mode = "build"
+    base = cached["df"]
+    if base.empty:
+        out = pd.DataFrame(columns=cols)
+    else:
+        mask = base["日付"].between(req_start, end, inclusive="both")
+        out = base.loc[mask, cols].copy()
+    dt = time.perf_counter() - t0
+    print(
+        f"[ph-canon-cache] tag={tag or '-'} mode={mode} start={req_start.date()} end={end.date()} "
+        f"rows={len(out)} cached_rows={len(base)} dt={dt:.2f}s", flush=True
+    )
+    return out
+
+
+# === PERF-OPT-V29 PREOPEN derivatives cache reuse ===
+def _v29_derivatives_fast_enabled() -> bool:
+    return str(os.getenv("KABU_SCREEN_V29_FAST", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _v31_cold_preopen_fast_enabled() -> bool:
+    return str(os.getenv("KABU_SCREEN_V31_FAST", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _v29_existing_canonical_range(
+    conn: sqlite3.Connection,
+    start_date: str,
+    end_date: str,
+    *,
+    tag: str = "",
+):
+    """V29: 既にV21 canonical cacheが存在し、要求範囲を完全に覆う時だけsliceを返す。
+
+    standalone/profile呼出しで巨大cacheを新規構築しない。cache未準備・範囲不足ならNoneを返し、
+    callerは従来SQLへfallbackする。
+    """
+    if not _v29_derivatives_fast_enabled():
+        return None
+    try:
+        req_start = pd.Timestamp(start_date).normalize()
+        end = pd.Timestamp(end_date).normalize()
+        key = (id(conn), end.strftime("%Y-%m-%d"))
+        cached = _PERF_PH_CANON_CACHE.get(key)
+        if cached is None:
+            return None
+        cache_start = pd.Timestamp(cached.get("start")).normalize()
+        cache_end = pd.Timestamp(cached.get("end")).normalize()
+        if pd.isna(req_start) or pd.isna(end) or cache_start > req_start or cache_end < end:
+            return None
+        base = cached.get("df")
+        cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+        if base is None or getattr(base, "empty", True):
+            out = pd.DataFrame(columns=cols)
+        else:
+            mask = base["日付"].between(req_start, end, inclusive="both")
+            out = base.loc[mask, [c for c in cols if c in base.columns]].copy()
+        print(
+            f"[V29][ph-canon-reuse] tag={tag or '-'} start={req_start.date()} end={end.date()} "
+            f"rows={len(out)} cached_rows={0 if base is None else len(base)}",
+            flush=True,
+        )
+        return out
+    except Exception as e:
+        print(f"[V29][ph-canon-reuse][WARN] tag={tag or '-'} fallback: {e}", flush=True)
+        return None
+
+
+def _v21_roll_mean_at(arr, end_idx: int, window: int, min_periods: int | None = None):
+    a = np.asarray(arr, dtype=float)
+    if end_idx < 0 or len(a) == 0:
+        return np.nan
+    lo = max(0, int(end_idx) - int(window) + 1)
+    w = a[lo:int(end_idx)+1]
+    finite = np.isfinite(w)
+    need = int(window if min_periods is None else min_periods)
+    if int(finite.sum()) < need:
+        return np.nan
+    return float(np.mean(w[finite]))
+
+def _v21_roll_max_at(arr, end_idx: int, window: int, min_periods: int | None = None):
+    a = np.asarray(arr, dtype=float)
+    if end_idx < 0 or len(a) == 0:
+        return np.nan
+    lo = max(0, int(end_idx) - int(window) + 1)
+    w = a[lo:int(end_idx)+1]
+    finite = np.isfinite(w)
+    need = int(window if min_periods is None else min_periods)
+    if int(finite.sum()) < need:
+        return np.nan
+    return float(np.max(w[finite]))
+
+def _v21_ma_series_tail(close: np.ndarray, start_idx: int, window: int, min_periods: int = 1) -> np.ndarray:
+    """指定start_idx以降だけrolling meanを返す。closeはfinite正値系列を想定。"""
+    a = np.asarray(close, dtype=float)
+    n = len(a)
+    if n == 0 or start_idx >= n:
+        return np.asarray([], dtype=float)
+    start_idx = max(0, int(start_idx))
+    csum = np.concatenate([[0.0], np.cumsum(a)])
+    out = np.full(n - start_idx, np.nan, dtype=float)
+    for j, i in enumerate(range(start_idx, n)):
+        lo = max(0, i - int(window) + 1)
+        count = i - lo + 1
+        if count >= int(min_periods):
+            out[j] = (csum[i+1] - csum[lo]) / count
+    return out
+# === /PERF-OPT-V21 shared canonical daily cache ===
+
+def _live_daily_structure_map(conn: sqlite3.Connection, asof_date: str) -> dict[str, dict]:
+    """日足構造だけからSTEADY_UP用特徴量を計算。既存右肩判定は変更しない。
+
+    PERF-OPT-V6: closeは入口でfinite/positiveへ正規化済みなので、各銘柄ごとの
+    pandas rolling Series/コピーを作らず、既存式が最終的に参照する末尾窓だけNumPyで同値計算する。
+    """
+    start = (pd.Timestamp(asof_date) - pd.Timedelta(days=240)).strftime("%Y-%m-%d")
+    _live_daily_t0 = time.perf_counter()
+    _v25_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    _v25_daily_fp = ""
+    if _v25_fast_enabled() and _v25_mode in ("EOD", "PREOPEN"):
+        try:
+            _v25_daily_fp = _stage2_price_history_fingerprint(conn, str(asof_date), 240)
+            _obj = _stage2_json_read(_V25_LIVE_DAILY_CACHE_PATH)
+            if (
+                _v25_daily_fp and isinstance(_obj, dict)
+                and int(_obj.get("schema") or 0) == _V25_CACHE_SCHEMA
+                and str(_obj.get("asof") or "") == str(asof_date)
+                and str(_obj.get("history_fp") or "") == _v25_daily_fp
+                and isinstance(_obj.get("data"), dict)
+            ):
+                _hit = {str(k): dict(v) for k,v in _obj["data"].items() if isinstance(v, dict)}
+                print(f"[V25-LIVE-DAILY-CACHE] HIT asof={asof_date} codes={len(_hit)}", flush=True)
+                try: _perf_record_phase("live_context:daily_persistent_cache", time.perf_counter()-_live_daily_t0, "HIT")
+                except Exception: pass
+                return _hit
+            print(f"[V25-LIVE-DAILY-CACHE] MISS asof={asof_date}", flush=True)
+        except Exception as _e:
+            print(f"[V25-LIVE-DAILY-CACHE][WARN] lookup failed: {_e}", flush=True)
+
+    if _v25_fast_enabled():
+        ph = _v25_legacy_history_frame(conn, start, asof_date, tag="live_daily")
+    else:
+        ph = _perf_price_history_raw_range(conn, start, asof_date, tag="live_daily")
+    _live_daily_t_load = time.perf_counter()
     if ph.empty:
         return {}
-    # Candidate Exportは既存price_historyの確定日足だけを読む。
-    # ここでJPX祝日ライブラリへ新たな依存を増やさず、logical code×日付の最終rowだけ採用する。
-    ph["コード"] = ph["コード"].map(canonical_code_for_db)
-    ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce")
+    if not _v25_fast_enabled():
+        # V24 legacy exact path.
+        ph["コード"] = ph["コード"].map(canonical_code_for_db)
+        ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce")
+        for c in ("始値", "高値", "安値", "終値", "出来高"):
+            ph[c] = pd.to_numeric(ph[c], errors="coerce")
+    # V25 fastでもV24と同じ順序: code/date dropna -> date,rowid sort -> dedupe -> close dropna。
     ph = ph.dropna(subset=["コード", "日付"]).sort_values(["日付", "_rowid"], kind="stable")
     ph = ph.drop_duplicates(["コード", "日付"], keep="last")
-    for c in ("始値", "高値", "安値", "終値", "出来高"):
-        ph[c] = pd.to_numeric(ph[c], errors="coerce")
-    ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce")
     ph = ph.dropna(subset=["コード", "日付", "終値"])
     ph = ph[np.isfinite(ph["終値"]) & (ph["終値"] > 0)].copy()
+    _live_daily_t_prep = time.perf_counter()
+
     out = {}
     for code, g in ph.groupby("コード", sort=False):
-        g = g.sort_values(["日付", "_rowid"], kind="stable").drop_duplicates("日付", keep="last")
-        if len(g) < 30:
+        # phは直前で日付/_rowid順へstable sortし、code×日付をdedupe済み。
+        # groupbyは元行順を保持するため、旧版のgroup内再sort/drop_duplicatesは結果不変の重複処理。
+        n = len(g)
+        if n < 30:
             continue
-        close = g["終値"].astype(float)
-        high = g["高値"].astype(float)
-        low = g["安値"].astype(float)
-        ma5s = close.rolling(5, min_periods=5).mean()
-        ma25s = close.rolling(25, min_periods=25).mean()
-        ma75s = close.rolling(75, min_periods=75).mean()
-        cur = float(close.iloc[-1])
-        ma5 = _live_num(ma5s.iloc[-1]); ma25 = _live_num(ma25s.iloc[-1]); ma75 = _live_num(ma75s.iloc[-1])
+        close = g["終値"].to_numpy(dtype=float, copy=False)
+        high = g["高値"].to_numpy(dtype=float, copy=False)
+        low = g["安値"].to_numpy(dtype=float, copy=False)
+        cur = float(close[-1])
+
+        ma5 = float(np.mean(close[-5:])) if n >= 5 else None
+        ma25 = float(np.mean(close[-25:])) if n >= 25 else None
+        ma75 = float(np.mean(close[-75:])) if n >= 75 else None
+
         ma25_slope = None
-        if len(ma25s.dropna()) >= 21 and ma25 not in (None, 0):
-            old = _live_num(ma25s.iloc[-21])
-            if old not in (None, 0): ma25_slope = (ma25 / old - 1.0) * 100.0
+        # 旧 ma25s.iloc[-21] = 当該位置までの25本平均。valid 21本条件は n>=45 と同値。
+        if n >= 45 and ma25 not in (None, 0):
+            old = float(np.mean(close[-45:-20]))
+            if old not in (None, 0):
+                ma25_slope = (ma25 / old - 1.0) * 100.0
+
         ma75_slope = None
-        if len(ma75s.dropna()) >= 21 and ma75 not in (None, 0):
-            old = _live_num(ma75s.iloc[-21])
-            if old not in (None, 0): ma75_slope = (ma75 / old - 1.0) * 100.0
+        if n >= 95 and ma75 not in (None, 0):
+            old = float(np.mean(close[-95:-20]))
+            if old not in (None, 0):
+                ma75_slope = (ma75 / old - 1.0) * 100.0
+
         ma5_slope = None
-        if len(ma5s.dropna()) >= 6 and ma5 not in (None, 0):
-            old = _live_num(ma5s.iloc[-6])
-            if old not in (None, 0): ma5_slope = (ma5 / old - 1.0) * 100.0
-        recent20 = g.tail(20).copy()
-        ma25_recent = ma25s.loc[recent20.index]
-        valid_stay = ma25_recent.notna() & recent20["終値"].notna()
-        stay25 = float((recent20.loc[valid_stay, "終値"] > ma25_recent.loc[valid_stay]).mean()) if valid_stay.any() else None
-        lows = low.tail(25)
-        low_rise = (lows > lows.shift(5)).dropna()
-        low_rise_ratio = float(low_rise.mean()) if len(low_rise) else None
-        ret = close.pct_change()
-        up_days5 = int((ret.tail(5) > 0).sum())
-        prev20max = high.shift(1).rolling(20, min_periods=10).max()
-        high_updates5 = int((high.tail(5) > prev20max.tail(5)).fillna(False).sum())
-        c120 = close.tail(120)
-        dd = c120 / c120.cummax() - 1.0
-        max_dd120 = float(dd.min() * 100.0) if len(dd) else None
-        ret20 = (cur / float(close.iloc[-21]) - 1.0) * 100.0 if len(close) >= 21 and close.iloc[-21] > 0 else None
-        day_ret = (cur / float(close.iloc[-2]) - 1.0) * 100.0 if len(close) >= 2 and close.iloc[-2] > 0 else None
-        high90 = _live_num(high.tail(90).max())
+        if n >= 10 and ma5 not in (None, 0):
+            old = float(np.mean(close[-10:-5]))
+            if old not in (None, 0):
+                ma5_slope = (ma5 / old - 1.0) * 100.0
+
+        # 直近20日の「終値>同日時点MA25」。MA25が成立する日だけ旧valid_stay同様に母数へ入れる。
+        _stay_vals = [
+            bool(close[i] > float(np.mean(close[i-24:i+1])))
+            for i in range(max(24, n - 20), n)
+        ]
+        stay25 = float(np.mean(_stay_vals)) if _stay_vals else None
+
+        # 旧Series比較はshiftで空く先頭5本もFalseとしてmean母数に入るため、そのまま再現。
+        lows = low[-25:]
+        _low_rise = np.zeros(len(lows), dtype=bool)
+        if len(lows) > 5:
+            _low_rise[5:] = lows[5:] > lows[:-5]
+        low_rise_ratio = float(_low_rise.mean()) if len(_low_rise) else None
+
+        # n>=30なので直近5本のpct_changeは、6本のcloseだけで旧ret.tail(5)と同値。
+        _ret5 = close[-5:] / close[-6:-1] - 1.0
+        up_days5 = int(np.sum(_ret5 > 0))
+
+        # high.shift(1).rolling(20,min_periods=10).max() の直近5点だけを再現。
+        high_updates5 = 0
+        for i in range(n - 5, n):
+            _hist = high[max(0, i - 20):i]
+            _valid = _hist[np.isfinite(_hist)]
+            _prev = float(np.max(_valid)) if len(_valid) >= 10 else np.nan
+            if np.isfinite(high[i]) and np.isfinite(_prev) and high[i] > _prev:
+                high_updates5 += 1
+
+        c120 = close[-120:]
+        _cummax = np.maximum.accumulate(c120)
+        max_dd120 = float(np.min(c120 / _cummax - 1.0) * 100.0) if len(c120) else None
+        ret20 = (cur / float(close[-21]) - 1.0) * 100.0 if n >= 21 and close[-21] > 0 else None
+        day_ret = (cur / float(close[-2]) - 1.0) * 100.0 if n >= 2 and close[-2] > 0 else None
+
+        _h90 = high[-90:]
+        _h90_valid = _h90[np.isfinite(_h90)]
+        high90 = float(np.max(_h90_valid)) if len(_h90_valid) else None
         near90 = bool(high90 and cur >= high90 * 0.97)
+
         out[str(code)] = {
             "ma5": ma5, "ma25": ma25, "ma75": ma75,
             "ma25_slope20_pct": ma25_slope, "ma75_slope20_pct": ma75_slope,
@@ -1863,6 +2419,28 @@ def _live_daily_structure_map(conn: sqlite3.Connection, asof_date: str) -> dict[
             "high_updates5": high_updates5, "max_dd120_pct": max_dd120,
             "ret20_pct": ret20, "day_ret_pct": day_ret, "near_90d_high": near90,
         }
+    _live_daily_t_compute = time.perf_counter()
+    try:
+        _perf_record_phase("live_context:daily_load", _live_daily_t_load - _live_daily_t0)
+        _perf_record_phase("live_context:daily_prepare", _live_daily_t_prep - _live_daily_t_load)
+        _perf_record_phase("live_context:daily_compute", _live_daily_t_compute - _live_daily_t_prep)
+    except Exception:
+        pass
+    print(
+        f"[live-daily-perf] load={_live_daily_t_load-_live_daily_t0:.2f}s "
+        f"prep={_live_daily_t_prep-_live_daily_t_load:.2f}s "
+        f"compute={_live_daily_t_compute-_live_daily_t_prep:.2f}s codes={len(out)}",
+        flush=True,
+    )
+    if _v25_fast_enabled() and _v25_mode in ("EOD", "PREOPEN") and _v25_daily_fp:
+        try:
+            if _stage2_json_write(_V25_LIVE_DAILY_CACHE_PATH, {
+                "schema": _V25_CACHE_SCHEMA, "asof": str(asof_date), "history_fp": _v25_daily_fp,
+                "data": out, "saved_at": _now_jst().isoformat(timespec="seconds"),
+            }):
+                print(f"[V25-LIVE-DAILY-CACHE] STORE codes={len(out)}", flush=True)
+        except Exception as _e:
+            print(f"[V25-LIVE-DAILY-CACHE][WARN] store failed: {_e}", flush=True)
     return out
 
 
@@ -1926,6 +2504,4172 @@ def _live_steady_score(features: dict, intraday: dict, current_price, turnover_o
     return round(min(100.0, score), 1), gate, reasons
 
 
+# === LEADER-SIGNAL-SHADOW-V1 ==================================================
+def _leader_session_minute(ts) -> int | None:
+    try:
+        h, m = int(ts.hour), int(ts.minute)
+    except Exception:
+        return None
+    if (h, m) >= (9, 0) and (h, m) <= (11, 30):
+        return h * 60 + m - 540
+    if (h, m) >= (12, 30) and (h, m) <= (15, 30):
+        return 151 + (h * 60 + m - 750)
+    return None
+
+
+def _leader_pct(v, b):
+    vv = _live_num(v); bb = _live_num(b)
+    if vv is None or bb is None or bb == 0:
+        return None
+    return (float(vv) / float(bb) - 1.0) * 100.0
+
+
+def _leader_extract_1m(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """yfinance 7d/1mを研究V2と同じOHLCV/JST session形式へ正規化。"""
+    need = ["Open","High","Low","Close","Volume"]
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=need)
+    try:
+        if isinstance(raw.columns, pd.MultiIndex):
+            su = str(symbol).upper()
+            chosen = None
+            for lv in range(raw.columns.nlevels):
+                vals = {str(v).upper() for v in raw.columns.get_level_values(lv)}
+                if su in vals:
+                    chosen = lv
+                    break
+            if chosen is None:
+                return pd.DataFrame(columns=need)
+            # actual label casing may differ, find exact label from that level.
+            labels = list(raw.columns.get_level_values(chosen))
+            actual = next((v for v in labels if str(v).upper() == su), symbol)
+            x = raw.xs(actual, axis=1, level=chosen, drop_level=True).copy()
+            if isinstance(x.columns, pd.MultiIndex):
+                # 残った階層からOHLCVを含むlevelを採用。
+                price_lv = None
+                for lv in range(x.columns.nlevels):
+                    vals = {str(v) for v in x.columns.get_level_values(lv)}
+                    if set(need).issubset(vals):
+                        price_lv = lv; break
+                if price_lv is None:
+                    return pd.DataFrame(columns=need)
+                x.columns = x.columns.get_level_values(price_lv)
+        else:
+            x = raw.copy()
+        x.columns = [str(c) for c in x.columns]
+        if not set(need).issubset(x.columns):
+            return pd.DataFrame(columns=need)
+        x = x[need].apply(pd.to_numeric, errors="coerce").dropna(subset=["Close"])
+        idx = pd.DatetimeIndex(x.index)
+        # 研究コードと同じ規約: naiveはUTCとしてJSTへ。
+        idx = idx.tz_localize("UTC").tz_convert("Asia/Tokyo") if idx.tz is None else idx.tz_convert("Asia/Tokyo")
+        x.index = idx
+        mask = np.array([
+            (dt_time(9,0) <= t.time() <= dt_time(11,30)) or
+            (dt_time(12,30) <= t.time() <= dt_time(15,30))
+            for t in x.index
+        ])
+        return x.loc[mask].sort_index().copy()
+    except Exception as e:
+        print(f"[leader][WARN] 1m extract failed {symbol}: {e}")
+        return pd.DataFrame(columns=need)
+
+
+_LEADER_MINUTE_BASELINE_RUN: dict[str, dict] = {}
+_LEADER_MINUTE_BASELINE_SERIES_RUN: dict[str, pd.Series] = {}
+
+
+def _leader_minute_baseline_from_history(x: pd.DataFrame, trade_date: date, symbol: str = "") -> dict:
+    """従来7d/1mのprior部分から、当日判定に必要な不変baselineだけを縮約する。"""
+    out = {"symbol": str(symbol or ""), "prev_close": None, "minute_median": {}}
+    if x is None or x.empty:
+        return out
+    try:
+        idx_dates = np.array([z.date() for z in x.index], dtype=object)
+        prior = x[idx_dates < trade_date].copy()
+        if prior.empty:
+            return out
+        prev = _live_num(prior["Close"].iloc[-1])
+        if prev is not None and prev > 0:
+            out["prev_close"] = float(prev)
+        prior["sm"] = [_leader_session_minute(t) for t in prior.index]
+        med = prior.groupby("sm", sort=False)["Volume"].median()
+        mm = {}
+        for k, v in med.items():
+            kk = None
+            try: kk = int(k)
+            except Exception: pass
+            vv = _live_num(v)
+            if kk is not None and vv is not None and math.isfinite(float(vv)):
+                mm[kk] = float(vv)
+        out["minute_median"] = mm
+    except Exception as e:
+        print(f"[V32][leader-baseline][WARN] build failed symbol={symbol}: {e}", flush=True)
+    return out
+
+
+def _leader_minute_baseline_load(trade_date_s: str) -> dict[str, dict]:
+    if not LEADER_MINUTE_V32_FAST:
+        return {}
+    p = LEADER_MINUTE_BASELINE_CACHE_PATH
+    try:
+        if not p.exists():
+            return {}
+        with p.open("rb") as fh:
+            obj = pickle.load(fh)
+        if not isinstance(obj, dict):
+            return {}
+        if int(obj.get("schema") or 0) != LEADER_MINUTE_BASELINE_SCHEMA:
+            return {}
+        if str(obj.get("trade_date") or "") != str(trade_date_s):
+            return {}
+        items = obj.get("items")
+        if not isinstance(items, dict):
+            return {}
+        clean = {}
+        for code, val in items.items():
+            if not isinstance(val, dict):
+                continue
+            mm = val.get("minute_median")
+            if not isinstance(mm, dict):
+                mm = {}
+            clean[str(code)] = {
+                "symbol": str(val.get("symbol") or ""),
+                "prev_close": _live_num(val.get("prev_close")),
+                "minute_median": {int(k): float(v) for k, v in mm.items() if _live_num(v) is not None},
+            }
+        print(f"[V32][leader-baseline] HIT date={trade_date_s} codes={len(clean)}", flush=True)
+        return clean
+    except Exception as e:
+        print(f"[V32][leader-baseline][WARN] load failed -> 7d fallback: {e}", flush=True)
+        return {}
+
+
+def _leader_minute_baseline_save(trade_date_s: str, items: dict[str, dict]) -> None:
+    if not LEADER_MINUTE_V32_FAST:
+        return
+    p = LEADER_MINUTE_BASELINE_CACHE_PATH
+    tmp = None
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": LEADER_MINUTE_BASELINE_SCHEMA,
+            "trade_date": str(trade_date_s),
+            "updated_at": _now_jst().isoformat(timespec="seconds"),
+            "items": items,
+        }
+        fd, name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=str(p.parent))
+        os.close(fd); tmp = Path(name)
+        with tmp.open("wb") as fh:
+            pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, p)
+        print(f"[V32][leader-baseline] STORE date={trade_date_s} codes={len(items)} size_mb={p.stat().st_size/1048576:.2f}", flush=True)
+    except Exception as e:
+        print(f"[V32][leader-baseline][WARN] save failed (run continues): {e}", flush=True)
+        try:
+            if tmp is not None and tmp.exists(): tmp.unlink()
+        except Exception:
+            pass
+
+
+def _leader_download_1m_map(conn: sqlite3.Connection, codes: list[str]) -> dict[str, pd.DataFrame]:
+    """候補銘柄の1分足を取得。V32は候補数を変えず、同一営業日の再取得payloadだけ縮約する。
+
+    - baseline未保有/新規候補: 従来どおり7d/1m。
+    - baseline保有: 当日1d/1mのみ取得し、前日終値+minute-volume medianは永続baselineを利用。
+    - 1d欠損は当該銘柄だけ7d救済。critical benchmark救済も維持。
+    """
+    global _LEADER_MINUTE_BASELINE_RUN, _LEADER_MINUTE_BASELINE_SERIES_RUN
+    codes = list(dict.fromkeys(canonical_code_for_db(c) for c in (codes or []) if canonical_code_for_db(c)))
+    out: dict[str, pd.DataFrame] = {}
+    if yfinance is None:
+        print("[leader][WARN] yfinance unavailable -> minute signal skipped")
+        return out
+
+    trade_date_s = _expected_snapshot_date_for_run("MIDDAY").isoformat()
+    trade_date = date.fromisoformat(trade_date_s)
+    syms = resolve_yahoo_symbols_bulk(codes, conn) if codes else []
+    pairs: list[tuple[str, str]] = list(zip(codes, syms))
+    pairs.extend([("^TOPX", "^TOPX"), ("1306", "1306.T"), ("2516", "2516.T")])
+    # canonical codes側にbenchmark keyを混ぜるため重複だけ除去。
+    pairs = list(dict.fromkeys((str(c), str(sym)) for c, sym in pairs if c and sym))
+
+    baseline = _leader_minute_baseline_load(trade_date_s) if LEADER_MINUTE_V32_FAST else {}
+    # symbol mappingが変わったcodeは古いbaselineを使わない。
+    cached_pairs = []
+    history_pairs = []
+    for c, sym in pairs:
+        b = baseline.get(c)
+        if LEADER_MINUTE_V32_FAST and isinstance(b, dict) and str(b.get("symbol") or "") == str(sym):
+            cached_pairs.append((c, sym))
+        else:
+            history_pairs.append((c, sym))
+    _LEADER_MINUTE_BASELINE_RUN = baseline
+    _LEADER_MINUTE_BASELINE_SERIES_RUN = {
+        str(c): pd.Series(v.get("minute_median") or {}, dtype=float)
+        for c, v in baseline.items() if isinstance(v, dict) and (v.get("minute_median") or {})
+    }
+    print(
+        f"[V32][leader-1m] requested={len(pairs)} today_only={len(cached_pairs)} history7d={len(history_pairs)}",
+        flush=True,
+    )
+    print(
+        f"[V37][leader-1m] today_batch={LEADER_MINUTE_TODAY_BATCH} history_batch={LEADER_MINUTE_BATCH}",
+        flush=True,
+    )
+
+    baseline_dirty = False
+    _v60_state_lock = threading.Lock()
+
+    def _download_pairs(part: list[tuple[str, str]], batch_label: str, depth: int = 0, *,
+                        period: str = "7d", allow_missing_rescue: bool = True,
+                        missing_to_history: bool = False) -> list[tuple[str, str]]:
+        nonlocal baseline_dirty
+        if not part:
+            return []
+        spart = [s for _, s in part]
+        _bt = time.perf_counter()
+        missing: list[tuple[str, str]] = []
+        try:
+            raw = _yfinance_download_repaired(
+                spart, period=period, interval="1m", group_by="ticker",
+                auto_adjust=False, progress=False, prepost=False, threads=True,
+            )
+            _elapsed = time.perf_counter() - _bt
+            got_codes = []
+            for c, sym in part:
+                x = _leader_extract_1m(raw, sym)
+                if not x.empty:
+                    if period != "1d":
+                        b = _leader_minute_baseline_from_history(x, trade_date, sym)
+                        with _v60_state_lock:
+                            baseline[c] = b
+                            baseline_dirty = True
+                    else:
+                        b = baseline.get(c)
+                        if isinstance(b, dict):
+                            # DataFrame attrsにはcodeだけを保持。大きいbaselineはglobal run-cacheへ置く。
+                            x.attrs["leader_code_v32"] = str(c)
+                    with _v60_state_lock:
+                        out[c] = x
+                    got_codes.append(c)
+                else:
+                    missing.append((c, sym))
+            _cov = (len(got_codes) / len(part) * 100.0) if part else 100.0
+            print(
+                f"[leader][1m] batch={batch_label} period={period} codes={len(part)} got={len(got_codes)} "
+                f"coverage={_cov:.1f}% dt={_elapsed:.2f}s",
+                flush=True,
+            )
+            try:
+                _perf_record_phase(f"leader:1m_batch:{batch_label}", _elapsed)
+            except Exception:
+                pass
+
+            _rescue_threshold = max(4, int(len(part) * 0.05 + 0.999999))
+            if allow_missing_rescue and depth == 0 and len(missing) >= _rescue_threshold:
+                print(
+                    f"[leader][1m] batch={batch_label} missing={len(missing)} -> rescue chunks of 80",
+                    flush=True,
+                )
+                for _j in range(0, len(missing), 80):
+                    _download_pairs(
+                        missing[_j:_j + 80], f"{batch_label}r{_j // 80 + 1}", depth + 1,
+                        period=period, allow_missing_rescue=False,
+                        missing_to_history=missing_to_history,
+                    )
+                missing = [(c, sym) for c, sym in missing if c not in out]
+        except Exception as e:
+            _elapsed = time.perf_counter() - _bt
+            print(f"[leader][WARN] 1m download failed batch={batch_label} period={period} codes={len(part)} dt={_elapsed:.2f}s: {e}", flush=True)
+            try:
+                _perf_record_phase(f"leader:1m_batch_failed:{batch_label}", _elapsed, status="ERROR", error=e)
+            except Exception:
+                pass
+            if len(part) > 1 and depth < 3:
+                mid = len(part) // 2
+                _download_pairs(part[:mid], batch_label + "a", depth + 1, period=period, allow_missing_rescue=False, missing_to_history=missing_to_history)
+                _download_pairs(part[mid:], batch_label + "b", depth + 1, period=period, allow_missing_rescue=False, missing_to_history=missing_to_history)
+                missing = [(c, sym) for c, sym in part if c not in out]
+            else:
+                missing = list(part)
+
+        if missing_to_history and missing:
+            # baselineはあるが1d endpoint側だけ欠けた場合、安全側で当該銘柄だけ7dへ救済。
+            still = []
+            for _j in range(0, len(missing), 80):
+                chunk = missing[_j:_j + 80]
+                _download_pairs(chunk, f"{batch_label}h{_j // 80 + 1}", depth + 1,
+                                period="7d", allow_missing_rescue=False, missing_to_history=False)
+                still.extend([(c, sym) for c, sym in chunk if c not in out])
+            missing = still
+        return missing
+
+    # 同一営業日のbaseline保有銘柄は1dだけ。候補削減はしない。
+    # V37: 1dはpayloadが小さいため既定360件へ拡大し、HTTP round-trip数を削減。
+    # 例外時recursive split / 欠落時80件rescueは_download_pairs内の従来安全策をそのまま使う。
+    _today_parts=[(cached_pairs[i:i+LEADER_MINUTE_TODAY_BATCH],f"T{i//LEADER_MINUTE_TODAY_BATCH+1}") for i in range(0,len(cached_pairs),LEADER_MINUTE_TODAY_BATCH)]
+    if V60_LEADER_PARALLEL and len(_today_parts)>=2:
+        _pw=min(int(V60_LEADER_PARALLEL_WORKERS),len(_today_parts))
+        print(f"[V60-LEADER] parallel today batches={len(_today_parts)} workers={_pw}",flush=True)
+        with ThreadPoolExecutor(max_workers=_pw,thread_name_prefix="leader1m") as _pool:
+            _futs=[_pool.submit(_download_pairs,part,label,period="1d",missing_to_history=True) for part,label in _today_parts]
+            for _f in _futs: _f.result()
+    else:
+        for _part,_label in _today_parts:
+            _download_pairs(_part,_label,period="1d",missing_to_history=True)
+    # 初回/新規候補のみ従来7d。
+    for i in range(0, len(history_pairs), LEADER_MINUTE_BATCH):
+        _download_pairs(history_pairs[i:i + LEADER_MINUTE_BATCH], f"H{i // LEADER_MINUTE_BATCH + 1}", period="7d")
+
+    # 7d取得したDataFrameにもbaseline attrsを付けておく（旧経路自体はpriorを使うので意味論不変）。
+    for c, x in out.items():
+        b = baseline.get(c)
+        if isinstance(b, dict):
+            try:
+                x.attrs["leader_code_v32"] = str(c)
+                _mm = b.get("minute_median") if isinstance(b.get("minute_median"), dict) else {}
+                if _mm and c not in _LEADER_MINUTE_BASELINE_SERIES_RUN:
+                    _LEADER_MINUTE_BASELINE_SERIES_RUN[c] = pd.Series(_mm, dtype=float)
+            except Exception:
+                pass
+
+    # critical benchmarkは1件だけ欠損しても主役RS5全体へ波及するため、必ず単独救済する。
+    for _ckey, _csym, _clabel in (
+        ("^TOPX", "^TOPX", "critical_topx"),
+        ("1306", "1306.T", "critical_1306"),
+        ("2516", "2516.T", "critical_2516"),
+    ):
+        if _ckey not in out:
+            _period = "1d" if (_ckey in baseline and str(baseline[_ckey].get("symbol") or "") == _csym) else "7d"
+            print(f"[leader][1m] {_clabel} missing -> single-symbol rescue period={_period}", flush=True)
+            _download_pairs([(_ckey, _csym)], _clabel, depth=1, period=_period,
+                            allow_missing_rescue=False, missing_to_history=(_period == "1d"))
+
+    if baseline_dirty:
+        _leader_minute_baseline_save(trade_date_s, baseline)
+    _LEADER_MINUTE_BASELINE_RUN = baseline
+    _req = len(pairs)
+    _got = sum(1 for c, _ in pairs if c in out)
+    print(f"[leader][1m] total requested={_req} got={_got} coverage={((_got/_req*100.0) if _req else 100.0):.1f}%", flush=True)
+    return out
+
+
+def _leader_roll_sum_np_v38(a, window: int, min_periods: int = 1):
+    a = np.asarray(a, dtype=float)
+    n = len(a)
+    if n == 0:
+        return np.asarray([], dtype=float)
+    valid = np.isfinite(a)
+    z = np.where(valid, a, 0.0)
+    cs = np.concatenate(([0.0], np.cumsum(z)))
+    cc = np.concatenate(([0], np.cumsum(valid.astype(np.int64))))
+    pos = np.arange(n, dtype=np.int64)
+    lo = np.maximum(0, pos - int(window) + 1)
+    sums = cs[pos + 1] - cs[lo]
+    cnt = cc[pos + 1] - cc[lo]
+    return np.where(cnt >= int(min_periods), sums, np.nan)
+
+
+def _leader_roll_minmax_np_v38(a, window: int, min_periods: int, is_max: bool = False):
+    a = np.asarray(a, dtype=float)
+    n = len(a)
+    out = np.full(n, np.nan, dtype=float)
+    if n == 0:
+        return out
+    # prefixはwindow未満。min_periods=5のleader用途では通常NaNのまま。
+    prefix_end = min(max(0, int(window) - 1), n)
+    for i in range(prefix_end):
+        z = a[max(0, i - int(window) + 1):i + 1]
+        q = z[np.isfinite(z)]
+        if len(q) >= int(min_periods):
+            out[i] = float(np.max(q) if is_max else np.min(q))
+    if n >= int(window):
+        sw = np.lib.stride_tricks.sliding_window_view(a, int(window))
+        valid = np.isfinite(sw)
+        cnt = valid.sum(axis=1)
+        fill = -np.inf if is_max else np.inf
+        vals = np.where(valid, sw, fill)
+        res = vals.max(axis=1) if is_max else vals.min(axis=1)
+        res = res.astype(float, copy=False)
+        res[cnt < int(min_periods)] = np.nan
+        out[int(window) - 1:] = res
+    return out
+
+
+def _leader_cumsum_skipna_np_v38(a):
+    # pandas Series.cumsum(skipna=True) と同じく、NaN行自身はNaNだが次行へ累積は継続。
+    a = np.asarray(a, dtype=float)
+    valid = np.isfinite(a)
+    out = np.cumsum(np.where(valid, a, 0.0)).astype(float, copy=False)
+    out[~valid] = np.nan
+    return out
+
+
+def _leader_cummax_skipna_np_v38(a):
+    # pandas cummax(skipna=True) のNaN位置を保持。
+    a = np.asarray(a, dtype=float)
+    valid = np.isfinite(a)
+    out = np.maximum.accumulate(np.where(valid, a, -np.inf)).astype(float, copy=False)
+    out[~valid] = np.nan
+    out[np.isneginf(out)] = np.nan
+    return out
+
+
+def _leader_build_minute_features_today_v38(all1m: pd.DataFrame, trade_date: date):
+    """V32 baseline保有の1dデータ専用NumPy fastpath。戻りDataFrame/列意味論はV37と同じ。"""
+    if all1m is None or all1m.empty:
+        return None
+    try:
+        code = str(all1m.attrs.get("leader_code_v32") or "") if hasattr(all1m, "attrs") else ""
+        if not code:
+            return None
+        b = _LEADER_MINUTE_BASELINE_RUN.get(code)
+        med = _LEADER_MINUTE_BASELINE_SERIES_RUN.get(code)
+        if not isinstance(b, dict) or med is None or len(med) == 0:
+            return None
+        prev = _live_num(b.get("prev_close"))
+        if prev is None or prev <= 0:
+            return None
+
+        idx = pd.DatetimeIndex(all1m.index)
+        dates = np.asarray(idx.date, dtype=object)
+        mask = dates == trade_date
+        if not bool(mask.any()):
+            return (pd.DataFrame(), None)
+        # 1d baseline経路に過去日が混ざった場合は従来経路へ戻し、意味論を固定。
+        if bool((dates < trade_date).any()):
+            return None
+        day = all1m.loc[mask].copy()
+        if day.empty:
+            return (pd.DataFrame(), None)
+
+        di = pd.DatetimeIndex(day.index)
+        hh = di.hour.to_numpy(dtype=np.int64, copy=False)
+        mm = di.minute.to_numpy(dtype=np.int64, copy=False)
+        hm = hh * 60 + mm
+        morning = (hm >= 540) & (hm <= 690)
+        afternoon = (hm >= 750) & (hm <= 930)
+        sm = np.where(morning, hm - 540, np.where(afternoon, 151 + (hm - 750), -1)).astype(np.int64)
+        medv = med.reindex(sm).to_numpy(dtype=float)
+
+        high = pd.to_numeric(day["High"], errors="coerce").to_numpy(dtype=float, copy=False)
+        low = pd.to_numeric(day["Low"], errors="coerce").to_numpy(dtype=float, copy=False)
+        close = pd.to_numeric(day["Close"], errors="coerce").to_numpy(dtype=float, copy=False)
+        volume = pd.to_numeric(day["Volume"], errors="coerce").to_numpy(dtype=float, copy=False)
+
+        denom = np.where(medv == 0, np.nan, medv)
+        minute_rvol = volume / denom
+        tp = (high + low + close) / 3.0
+        vv = np.where(np.isfinite(volume), volume, 0.0)
+        cum_volume = np.cumsum(vv)
+        cum_turnover = np.cumsum(close * vv)
+        tpv_cum = _leader_cumsum_skipna_np_v38(tp * vv)
+        vwap = tpv_cum / np.where(cum_volume == 0, np.nan, cum_volume)
+        above_vwap = close >= vwap
+        vwap_gap = (close / vwap - 1.0) * 100.0
+        ret_prev = (close / float(prev) - 1.0) * 100.0
+
+        n = len(close)
+        ret5 = np.full(n, np.nan, dtype=float)
+        ret15 = np.full(n, np.nan, dtype=float)
+        if n > 5:
+            ret5[5:] = (close[5:] / close[:-5] - 1.0) * 100.0
+        if n > 15:
+            ret15[15:] = (close[15:] / close[:-15] - 1.0) * 100.0
+
+        vol5 = _leader_roll_sum_np_v38(volume, 5, 1)
+        vol_accel = np.full(n, np.nan, dtype=float)
+        if n > 5:
+            d = vol5[:-5].copy()
+            d[d == 0] = np.nan
+            vol_accel[5:] = vol5[5:] / d
+
+        low5 = _leader_roll_minmax_np_v38(low, 5, 5, False)
+        high5 = _leader_roll_minmax_np_v38(high, 5, 5, True)
+        higher_low = np.zeros(n, dtype=bool)
+        lower_high_low = np.zeros(n, dtype=bool)
+        if n > 5:
+            higher_low[5:] = low5[5:] > low5[:-5]
+            lower_high_low[5:] = (high5[5:] < high5[:-5]) & (low5[5:] < low5[:-5])
+
+        high_cum = _leader_cummax_skipna_np_v38(high)
+        prior_cum = np.concatenate(([np.nan], high_cum[:-1]))
+        new_high = high > prior_cum
+
+        score = np.zeros(n, dtype=float)
+        score += np.clip(np.nan_to_num(ret5, nan=0.0) * 11.0, 0, 22)
+        score += np.clip(np.nan_to_num(ret15, nan=0.0) * 6.0, 0, 18)
+        mr = np.where(np.isfinite(minute_rvol), minute_rvol, np.nan)
+        score += np.clip((np.nan_to_num(mr, nan=1.0) - 1.0) * 10.0, 0, 20)
+        score += np.where(above_vwap, 15, 0)
+        score += np.where(higher_low, 10, 0)
+        score += np.where(new_high, 10, 0)
+        score += np.clip((np.nan_to_num(vol_accel, nan=1.0) - 1.0) * 5.0, 0, 5)
+        score = np.clip(score, 0, 100)
+
+        for col, values in (
+            ("sm", sm),
+            ("minute_rvol", minute_rvol),
+            ("cum_volume", cum_volume),
+            ("cum_turnover_yen", cum_turnover),
+            ("VWAP", vwap),
+            ("above_vwap", above_vwap),
+            ("vwap_gap_pct", vwap_gap),
+            ("ret_prev_pct", ret_prev),
+            ("ret5_pct", ret5),
+            ("ret15_pct", ret15),
+            ("vol5", vol5),
+            ("vol_accel", vol_accel),
+            ("higher_low", higher_low),
+            ("new_high", new_high),
+            ("lower_high_low", lower_high_low),
+            ("leader_score", score),
+        ):
+            day[col] = values
+        return day, float(prev)
+    except Exception as e:
+        print(f"[V38][leader-features][WARN] NumPy fastpath failed -> pandas fallback code={getattr(all1m, 'attrs', {}).get('leader_code_v32', '')}: {e}", flush=True)
+        return None
+
+
+def _leader_build_minute_features(all1m: pd.DataFrame, trade_date: date) -> tuple[pd.DataFrame, float | None]:
+    """状態ベース主役化用1分特徴。V38はV32 baseline保有1d経路だけNumPy同値化。"""
+    if LEADER_FEATURES_V38_FAST and LEADER_MINUTE_V32_FAST:
+        _v38 = _leader_build_minute_features_today_v38(all1m, trade_date)
+        if _v38 is not None:
+            return _v38
+    need = ["Open","High","Low","Close","Volume"]
+    if all1m is None or all1m.empty:
+        return pd.DataFrame(), None
+    idx_dates = np.array([x.date() for x in all1m.index])
+    day = all1m[idx_dates == trade_date].copy()
+    prior = all1m[idx_dates < trade_date].copy()
+    if day.empty:
+        return pd.DataFrame(), None
+
+    prev = None
+    med = None
+    if not prior.empty:
+        prev = _live_num(prior["Close"].iloc[-1])
+        hist = prior.copy()
+        hist["sm"] = [_leader_session_minute(t) for t in hist.index]
+        med = hist.groupby("sm")["Volume"].median()
+    elif LEADER_MINUTE_V32_FAST:
+        _code = str(all1m.attrs.get("leader_code_v32") or "") if hasattr(all1m, "attrs") else ""
+        b = _LEADER_MINUTE_BASELINE_RUN.get(_code) if _code else None
+        if isinstance(b, dict):
+            prev = _live_num(b.get("prev_close"))
+            med = _LEADER_MINUTE_BASELINE_SERIES_RUN.get(_code)
+            if med is None:
+                mm = b.get("minute_median") if isinstance(b.get("minute_median"), dict) else {}
+                med = pd.Series(mm, dtype=float) if mm else None
+    if prev is None or prev <= 0 or med is None or len(med) == 0:
+        return pd.DataFrame(), None
+
+    day["sm"] = [_leader_session_minute(t) for t in day.index]
+    day["minute_rvol"] = day["Volume"] / day["sm"].map(med).replace(0, np.nan)
+    tp = (day["High"] + day["Low"] + day["Close"]) / 3.0
+    v = day["Volume"].fillna(0)
+    day["cum_volume"] = v.cumsum()
+    day["cum_turnover_yen"] = (day["Close"] * v).cumsum()
+    day["VWAP"] = (tp * v).cumsum() / day["cum_volume"].replace(0, np.nan)
+    day["above_vwap"] = day["Close"] >= day["VWAP"]
+    day["vwap_gap_pct"] = (day["Close"] / day["VWAP"] - 1.0) * 100.0
+    day["ret_prev_pct"] = (day["Close"] / float(prev) - 1.0) * 100.0
+    day["ret5_pct"] = (day["Close"] / day["Close"].shift(5) - 1.0) * 100.0
+    day["ret15_pct"] = (day["Close"] / day["Close"].shift(15) - 1.0) * 100.0
+    day["vol5"] = day["Volume"].rolling(5, min_periods=1).sum()
+    day["vol_accel"] = day["vol5"] / day["vol5"].shift(5).replace(0, np.nan)
+    low5 = day["Low"].rolling(5, min_periods=5).min()
+    high5 = day["High"].rolling(5, min_periods=5).max()
+    day["higher_low"] = low5 > low5.shift(5)
+    day["new_high"] = day["High"] > day["High"].cummax().shift(1)
+    day["lower_high_low"] = (high5 < high5.shift(5)) & (low5 < low5.shift(5))
+    sc = pd.Series(0.0, index=day.index)
+    sc += np.clip(day["ret5_pct"].fillna(0) * 11.0, 0, 22)
+    sc += np.clip(day["ret15_pct"].fillna(0) * 6.0, 0, 18)
+    sc += np.clip((day["minute_rvol"].replace([np.inf,-np.inf], np.nan).fillna(1) - 1.0) * 10.0, 0, 20)
+    sc += np.where(day["above_vwap"].fillna(False), 15, 0)
+    sc += np.where(day["higher_low"].fillna(False), 10, 0)
+    sc += np.where(day["new_high"].fillna(False), 10, 0)
+    sc += np.clip((day["vol_accel"].fillna(1) - 1.0) * 5.0, 0, 5)
+    day["leader_score"] = np.clip(sc, 0, 100)
+    return day, float(prev)
+
+
+def _leader_daily_close_map(conn: sqlite3.Connection, trade_date_s: str) -> dict[str, pd.DataFrame]:
+    start = (pd.Timestamp(trade_date_s) - pd.Timedelta(days=220)).strftime("%Y-%m-%d")
+    ph = _perf_price_history_raw_range(conn, start, trade_date_s, tag="leader_rs")
+    if ph.empty:
+        return {}
+    ph["コード"] = ph["コード"].map(canonical_code_for_db)
+    ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce").dt.date
+    ph["終値"] = pd.to_numeric(ph["終値"], errors="coerce")
+    ph = (ph.dropna(subset=["コード","日付","終値"])
+            .sort_values(["コード","日付","_rowid"], kind="stable")
+            .drop_duplicates(["コード","日付"], keep="last"))
+    return {str(c): g.sort_values("日付", kind="stable").reset_index(drop=True) for c, g in ph.groupby("コード", sort=False)}
+
+
+_LEADER_RS5_FAST_CACHE = {"key": None, "stocks": {}, "markets": {}}
+
+def _leader_rs5_at_signal(code: str, market: str, trade_date: date, signal_ts, signal_price,
+                          daily_map: dict[str, pd.DataFrame], minute_map: dict[str, pd.DataFrame]):
+    """5日RSをrun内cache/searchsortedで計算。
+
+    LEADER-RS5-TOPX-FALLBACK-V1 2026-08-31:
+    - Primeは ^TOPX を第一優先。
+    - ^TOPX のstock base日と同日のbenchmark日足、または当日1分足が欠損なら1306.Tの同期間returnをproxy利用。
+    - benchmarkの価格水準を混ぜず、base/currentは必ず同一sourceで計算する。
+    - staleなbenchmark日足を正常値として使わない。
+    - Growthは従来どおり2516.T。基準日不一致なら未判定とする。
+    - score/VWAP/RS5閾値自体は変更しない。
+    """
+    global _LEADER_RS5_FAST_CACHE
+    _key = (id(daily_map), id(minute_map), trade_date)
+    if _LEADER_RS5_FAST_CACHE.get("key") != _key:
+        _LEADER_RS5_FAST_CACHE = {
+            "key": _key,
+            "stocks": {},
+            "markets": {},
+            "fallback_logged": set(),
+        }
+    _stocks = _LEADER_RS5_FAST_CACHE.setdefault("stocks", {})
+    _markets = _LEADER_RS5_FAST_CACHE.setdefault("markets", {})
+    _fallback_logged = _LEADER_RS5_FAST_CACHE.setdefault("fallback_logged", set())
+
+    ckey = str(code)
+    if ckey not in _stocks:
+        g = daily_map.get(ckey)
+        if g is None or g.empty:
+            _stocks[ckey] = (None, None)
+        else:
+            _dates = np.asarray(g["日付"].to_numpy(copy=False), dtype=object)
+            _end = int(np.searchsorted(_dates, trade_date, side="left"))
+            if _end < 5:
+                _stocks[ckey] = (None, None)
+            else:
+                _stocks[ckey] = (_live_num(g["終値"].iloc[_end - 5]), _dates[_end - 5])
+
+    stock_base, base_date = _stocks.get(ckey, (None, None))
+    if stock_base is None or stock_base <= 0 or base_date is None:
+        return None
+
+    sm = str(market or "").upper()
+    is_growth = ("グロース" in sm or sm in {"東G","東証G","G","GRT","GROWTH"})
+    source_keys = [("2516", "GROWTH_2516")] if is_growth else [
+        ("^TOPX", "TOPX_EXACT"),
+        ("1306", "TOPX_1306_PROXY"),
+    ]
+
+    def _market_arrays(mkey: str):
+        if mkey not in _markets:
+            mg = daily_map.get(mkey)
+            mx = minute_map.get(mkey)
+            if mg is None or mg.empty or mx is None or mx.empty:
+                _markets[mkey] = None
+            else:
+                _mdates = np.asarray(mg["日付"].to_numpy(copy=False), dtype=object)
+                _mclose = pd.to_numeric(mg["終値"], errors="coerce").to_numpy(dtype=float, copy=False)
+                _midx = pd.DatetimeIndex(mx.index)
+                _day_mask = np.array([x.date() == trade_date for x in _midx], dtype=bool)
+                _today_idx = _midx[_day_mask]
+                _today_close = pd.to_numeric(mx.loc[_day_mask, "Close"], errors="coerce").to_numpy(dtype=float, copy=False)
+                if len(_today_idx) == 0:
+                    _markets[mkey] = None
+                else:
+                    _markets[mkey] = (_mdates, _mclose, _today_idx.asi8, _today_close)
+        return _markets.get(mkey)
+
+    _sig_ns = int(pd.Timestamp(signal_ts).value)
+    sp = _live_num(signal_price)
+    if sp is None:
+        return None
+
+    for mkey, source_label in source_keys:
+        _mdat = _market_arrays(mkey)
+        if _mdat is None:
+            continue
+
+        _mdates, _mclose, _mns, _m1close = _mdat
+
+        # stock側の5日基準日と同じbenchmark日付が必須。古い最終値を流用しない。
+        _mb_pos = int(np.searchsorted(_mdates, base_date, side="left"))
+        if _mb_pos < 0 or _mb_pos >= len(_mdates) or _mdates[_mb_pos] != base_date:
+            continue
+
+        market_base = _live_num(_mclose[_mb_pos])
+        if market_base is None or market_base <= 0:
+            continue
+
+        _now_pos = int(np.searchsorted(_mns, _sig_ns, side="right") - 1)
+        if _now_pos < 0:
+            continue
+
+        market_now = _live_num(_m1close[_now_pos])
+        if market_now is None or market_now <= 0:
+            continue
+
+        if source_label == "TOPX_1306_PROXY" and source_label not in _fallback_logged:
+            print(
+                f"[leader][RS5] ^TOPX exact unavailable/stale -> 1306.T return proxy "
+                f"(base_date={base_date})",
+                flush=True,
+            )
+            _fallback_logged.add(source_label)
+
+        return (sp / stock_base - 1.0) - (market_now / market_base - 1.0)
+
+    return None
+
+
+
+def _leader_ensure_schema(c: sqlite3.Connection) -> None:
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS leader_signal_state (
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            market TEXT,
+            signal_at TEXT NOT NULL,
+            signal_price REAL,
+            signal_score REAL,
+            signal_ret_prev_pct REAL,
+            signal_minute_rvol REAL,
+            signal_vwap_gap_pct REAL,
+            signal_rs5 REAL,
+            stage1_strong INTEGER DEFAULT 0,
+            initial_momentum REAL,
+            initial_momentum_score REAL,
+            stage TEXT NOT NULL,
+            stage1_notice_done INTEGER DEFAULT 0,
+            stage1_notified_at TEXT,
+            stage2_checked_at TEXT,
+            stage2_notice_done INTEGER DEFAULT 0,
+            stage2_notified_at TEXT,
+            risk_notice_done INTEGER DEFAULT 0,
+            risk_notified_at TEXT,
+            mfe10_pct REAL,
+            ret10_pct REAL,
+            reason TEXT,
+            research_version TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (trade_date, code)
+        )
+    """)
+    # LEADER-REIGNITE-V1: 既存DBにも安全に列追加する。
+    _leader_state_cols = {str(r[1]) for r in c.execute("PRAGMA table_info(leader_signal_state)").fetchall()}
+    _leader_state_add = {
+        "reignite_checked_at": "TEXT",
+        "reignite_notice_done": "INTEGER DEFAULT 0",
+        "reignite_notified_at": "TEXT",
+        "reignite_price": "REAL",
+        "reignite_postrisk_mfe_pct": "REAL",
+        "reignite_ret_signal_pct": "REAL",
+        "reignite_vwap_gap_pct": "REAL",
+        "episode_no": "INTEGER NOT NULL DEFAULT 1",
+        "episode_started_at": "TEXT",
+        "previous_terminal_stage": "TEXT",
+        "current_mfe_pct": "REAL",
+        "current_ret_signal_pct": "REAL",
+        "current_vwap_gap_pct": "REAL",
+        "current_rs5": "REAL",
+        "current_leader_score": "REAL",
+        "fire_at": "TEXT",
+        "fire_price": "REAL",
+        "fire_elapsed_min": "REAL",
+        "fire_expectancy_grade": "TEXT",
+        "fire_expectancy_score": "REAL",
+        "fire_expectancy_reason": "TEXT",
+        "ignition_progress": "TEXT",
+        "ignition_reason": "TEXT",
+    }
+    for _col, _ddl in _leader_state_add.items():
+        if _col not in _leader_state_cols:
+            c.execute(f'ALTER TABLE leader_signal_state ADD COLUMN "{_col}" {_ddl}')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_state_stage ON leader_signal_state(trade_date, stage)")
+    # LEADER-PRIORITY-TRACKING-V2: 本命通知の重複防止。episode単位で通知種別を一度だけ記録する。
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS leader_priority_notification_state (
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            episode_no INTEGER NOT NULL DEFAULT 1,
+            notice_type TEXT NOT NULL,
+            attempted_at TEXT,
+            sent INTEGER NOT NULL DEFAULT 0,
+            sent_at TEXT,
+            title TEXT,
+            message TEXT,
+            PRIMARY KEY (trade_date, code, episode_no, notice_type)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_priority_notice_date ON leader_priority_notification_state(trade_date, notice_type)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS leader_signal_history (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_key TEXT NOT NULL UNIQUE,
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            market TEXT,
+            event_at TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            stage_from TEXT,
+            stage_to TEXT NOT NULL,
+            signal_at TEXT,
+            signal_price REAL,
+            signal_score REAL,
+            signal_ret_prev_pct REAL,
+            signal_minute_rvol REAL,
+            signal_vwap_gap_pct REAL,
+            signal_rs5 REAL,
+            initial_momentum REAL,
+            initial_momentum_score REAL,
+            mfe10_pct REAL,
+            ret10_pct REAL,
+            notice_attempted INTEGER NOT NULL DEFAULT 0,
+            notice_sent INTEGER NOT NULL DEFAULT 0,
+            notice_at TEXT,
+            reason TEXT,
+            research_version TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_hist_date_time ON leader_signal_history(trade_date, event_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_hist_code_time ON leader_signal_history(code, event_at)")
+    _leader_hist_cols = {str(r[1]) for r in c.execute("PRAGMA table_info(leader_signal_history)").fetchall()}
+    _leader_hist_add = {
+        "event_price": "REAL",
+        "event_vwap_gap_pct": "REAL",
+        "elapsed_from_prev_min": "REAL",
+        "post_prev_mfe_pct": "REAL",
+        "event_ret_signal_pct": "REAL",
+        "episode_no": "INTEGER NOT NULL DEFAULT 1",
+    }
+    for _col, _ddl in _leader_hist_add.items():
+        if _col not in _leader_hist_cols:
+            c.execute(f'ALTER TABLE leader_signal_history ADD COLUMN "{_col}" {_ddl}')
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_hist_stage ON leader_signal_history(trade_date, stage_to)")
+
+    # LEADER-NEWS-EPISODE-ARCHIVE-V1:
+    # 記事と取得状態を主役episode単位で永続化する。既存DBはCREATE IF NOT EXISTSで無停止移行。
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS leader_news_episode_article (
+            episode_key TEXT NOT NULL,
+            code TEXT NOT NULL,
+            episode_trade_date TEXT NOT NULL,
+            episode_no INTEGER NOT NULL DEFAULT 1,
+            signal_at TEXT,
+            article_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            link TEXT,
+            pub_date TEXT,
+            kind TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (episode_key, article_key)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_news_article_code_pub ON leader_news_episode_article(code, pub_date)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_news_article_episode ON leader_news_episode_article(episode_key)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS leader_news_episode_fetch_state (
+            episode_key TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            episode_trade_date TEXT NOT NULL,
+            episode_no INTEGER NOT NULL DEFAULT 1,
+            signal_at TEXT,
+            last_live_fetch_at TEXT,
+            last_eod_fetch_date TEXT,
+            last_success_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_leader_news_fetch_code ON leader_news_episode_fetch_state(code, episode_trade_date)")
+    # RATE-LIMIT-GUARD-V2: 失敗時も公平に次銘柄へ回せるよう「計画した時刻」だけ記録する。
+    _leader_news_fetch_cols = {str(r[1]) for r in c.execute("PRAGMA table_info(leader_news_episode_fetch_state)").fetchall()}
+    if "last_plan_at" not in _leader_news_fetch_cols:
+        c.execute('ALTER TABLE leader_news_episode_fetch_state ADD COLUMN "last_plan_at" TEXT')
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS leader_news_provider_state (
+            provider TEXT PRIMARY KEY,
+            cooldown_until TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_status TEXT,
+            last_failure_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+
+def _leader_append_history(
+    c: sqlite3.Connection,
+    *,
+    trade_date: str,
+    code: str,
+    name: str = "",
+    market: str = "",
+    event_at: str,
+    event_type: str,
+    stage_from: str | None,
+    stage_to: str,
+    signal_at: str | None = None,
+    signal_price = None,
+    signal_score = None,
+    signal_ret_prev_pct = None,
+    signal_minute_rvol = None,
+    signal_vwap_gap_pct = None,
+    signal_rs5 = None,
+    initial_momentum = None,
+    initial_momentum_score = None,
+    mfe10_pct = None,
+    ret10_pct = None,
+    event_price = None,
+    event_vwap_gap_pct = None,
+    elapsed_from_prev_min = None,
+    post_prev_mfe_pct = None,
+    event_ret_signal_pct = None,
+    episode_no: int = 1,
+    notice_attempted: bool = False,
+    notice_sent: bool = False,
+    notice_at: str | None = None,
+    reason: str = "",
+    research_version: str = "",
+) -> bool:
+    """主役化の状態遷移をappend-onlyで保存する。再run時はevent_keyで重複排除。"""
+    td = str(trade_date or "")
+    cd = str(code or "").strip().upper()
+    sig = str(signal_at or "")
+    to_stage = str(stage_to or "")
+    # episodeを跨いでも履歴が衝突しないようepisode_noをevent keyへ含める。
+    try:
+        ep = max(1, int(episode_no or 1))
+    except Exception:
+        ep = 1
+    event_key = f"{td}|{cd}|E{ep}|{sig}|{to_stage}"
+    try:
+        cur = c.execute("""
+            INSERT OR IGNORE INTO leader_signal_history(
+                event_key,trade_date,code,name,market,event_at,event_type,stage_from,stage_to,
+                signal_at,signal_price,signal_score,signal_ret_prev_pct,signal_minute_rvol,
+                signal_vwap_gap_pct,signal_rs5,initial_momentum,initial_momentum_score,
+                mfe10_pct,ret10_pct,event_price,event_vwap_gap_pct,elapsed_from_prev_min,
+                post_prev_mfe_pct,event_ret_signal_pct,episode_no,notice_attempted,notice_sent,notice_at,reason,
+                research_version,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            event_key, td, cd, str(name or ""), str(market or ""), str(event_at),
+            str(event_type or ""), stage_from, to_stage, signal_at,
+            _live_num(signal_price), _live_num(signal_score), _live_num(signal_ret_prev_pct),
+            _live_num(signal_minute_rvol), _live_num(signal_vwap_gap_pct), _live_num(signal_rs5),
+            _live_num(initial_momentum), _live_num(initial_momentum_score),
+            _live_num(mfe10_pct), _live_num(ret10_pct),
+            _live_num(event_price), _live_num(event_vwap_gap_pct), _live_num(elapsed_from_prev_min),
+            _live_num(post_prev_mfe_pct), _live_num(event_ret_signal_pct), ep,
+            int(bool(notice_attempted)), int(bool(notice_sent)),
+            notice_at if notice_sent else None, str(reason or ""),
+            str(research_version or ""), str(event_at),
+        ))
+        return bool(cur.rowcount)
+    except Exception as e:
+        print(f"[leader-history][WARN] append failed code={cd} stage={to_stage}: {e}", flush=True)
+        return False
+
+
+
+
+def _leader_action_helper_source() -> str:
+    """Toast action用の軽量handler。stdlibだけで起動し、本体の重いimportを避ける。"""
+    dashboard = repr(str(LEADER_DASHBOARD_PATH))
+    lines = [
+        "# -*- coding: utf-8 -*-",
+        "import sys, subprocess, webbrowser, os",
+        "from pathlib import Path",
+        "from urllib.parse import urlparse, parse_qs, quote",
+        "DASHBOARD = Path(" + dashboard + ")",
+        "def _code(q):",
+        "    return (q.get('code') or [''])[0].strip().upper()",
+        "LOG = Path(__file__).with_name('leader_action_handler.log')",
+        "def _log(s):",
+        "    try:",
+        "        from datetime import datetime",
+        "        with LOG.open('a',encoding='utf-8') as f: f.write(datetime.now().isoformat(timespec='seconds')+' '+str(s)+'\\n')",
+        "    except Exception: pass",
+        "def _copy(s):",
+        "    if not s: return",
+        "    _log('copy requested code='+s)",
+        "    try:",
+        "        import ctypes",
+        "        from ctypes import wintypes",
+        "        CF_UNICODETEXT=13; GMEM_MOVEABLE=0x0002",
+        "        k32=ctypes.WinDLL('kernel32', use_last_error=True)",
+        "        u32=ctypes.WinDLL('user32', use_last_error=True)",
+        "        # 64bit WindowsではHANDLE/POINTERをc_intの既定値に任せると上位32bitが欠落する。",
+        "        k32.GlobalAlloc.argtypes=[wintypes.UINT, ctypes.c_size_t]",
+        "        k32.GlobalAlloc.restype=ctypes.c_void_p",
+        "        k32.GlobalLock.argtypes=[ctypes.c_void_p]",
+        "        k32.GlobalLock.restype=ctypes.c_void_p",
+        "        k32.GlobalUnlock.argtypes=[ctypes.c_void_p]",
+        "        k32.GlobalUnlock.restype=wintypes.BOOL",
+        "        k32.GlobalFree.argtypes=[ctypes.c_void_p]",
+        "        k32.GlobalFree.restype=ctypes.c_void_p",
+        "        u32.OpenClipboard.argtypes=[wintypes.HWND]",
+        "        u32.OpenClipboard.restype=wintypes.BOOL",
+        "        u32.EmptyClipboard.argtypes=[]",
+        "        u32.EmptyClipboard.restype=wintypes.BOOL",
+        "        u32.SetClipboardData.argtypes=[wintypes.UINT, ctypes.c_void_p]",
+        "        u32.SetClipboardData.restype=ctypes.c_void_p",
+        "        u32.CloseClipboard.argtypes=[]",
+        "        u32.CloseClipboard.restype=wintypes.BOOL",
+        "        data=(s+'\\x00').encode('utf-16-le')",
+        "        hmem=k32.GlobalAlloc(GMEM_MOVEABLE, len(data))",
+        "        if not hmem:",
+        "            raise ctypes.WinError(ctypes.get_last_error())",
+        "        transferred=False",
+        "        try:",
+        "            ptr=k32.GlobalLock(hmem)",
+        "            if not ptr:",
+        "                raise ctypes.WinError(ctypes.get_last_error())",
+        "            try:",
+        "                ctypes.memmove(ptr, data, len(data))",
+        "            finally:",
+        "                k32.GlobalUnlock(hmem)",
+        "            opened=False",
+        "            for _i in range(40):",
+        "                if u32.OpenClipboard(None): opened=True; break",
+        "                import time as _time; _time.sleep(0.05)",
+        "            if not opened:",
+        "                raise ctypes.WinError(ctypes.get_last_error())",
+        "            try:",
+        "                if not u32.EmptyClipboard():",
+        "                    raise ctypes.WinError(ctypes.get_last_error())",
+        "                if not u32.SetClipboardData(CF_UNICODETEXT,hmem):",
+        "                    raise ctypes.WinError(ctypes.get_last_error())",
+        "                transferred=True",
+        "            finally:",
+        "                u32.CloseClipboard()",
+        "        finally:",
+        "            # SetClipboardData成功後はWindowsがhmemを所有するので解放しない。",
+        "            if hmem and not transferred:",
+        "                try: k32.GlobalFree(hmem)",
+        "                except Exception: pass",
+        "        _log('copy success winapi64 code='+s); return",
+        "    except Exception as e:",
+        "        _log('copy winapi64 error='+repr(e))",
+        "def main():",
+        "    if len(sys.argv)<2: return",
+        "    u=urlparse(sys.argv[1]); action=(u.netloc or u.path.strip('/')).lower(); q=parse_qs(u.query); code=_code(q)",
+        "    if action=='copy': _copy(code); return",
+        "    if action=='dashboard':",
+        "        try:",
+        "            base=DASHBOARD.resolve().as_uri(); url=base + ('#code='+quote(code) if code else ''); os.startfile(url) if hasattr(os,'startfile') else webbrowser.open(url,new=2)",
+        "        except Exception: pass",
+        "        return",
+        "    if action=='yahoo' and code: webbrowser.open('https://finance.yahoo.co.jp/quote/'+quote(code)+'.T', new=2); return",
+        "    if action=='kabutan' and code: webbrowser.open('https://kabutan.jp/stock/?code='+quote(code), new=2); return",
+        "if __name__=='__main__': main()",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _leader_ensure_action_protocol() -> bool:
+    if os.name != "nt": return False
+    try:
+        import winreg
+        helper=Path(LEADER_ACTION_HANDLER_PATH); helper.parent.mkdir(parents=True, exist_ok=True)
+        src=_leader_action_helper_source(); old=helper.read_text(encoding="utf-8") if helper.exists() else None
+        if old != src:
+            tmp=helper.with_name(helper.name+f".tmp.{os.getpid()}"); tmp.write_text(src,encoding="utf-8"); os.replace(tmp,helper)
+        py=Path(sys.executable); pyw=py.with_name("pythonw.exe"); exe=pyw if pyw.exists() else py
+        root=fr"Software\Classes\{LEADER_ACTION_URI_SCHEME}"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,root) as k:
+            winreg.SetValueEx(k,None,0,winreg.REG_SZ,"URL:Kabu Leader Action"); winreg.SetValueEx(k,"URL Protocol",0,winreg.REG_SZ,"")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,root+r"\DefaultIcon") as k: winreg.SetValueEx(k,None,0,winreg.REG_SZ,str(exe))
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,root+r"\shell\open\command") as k:
+            winreg.SetValueEx(k,None,0,winreg.REG_SZ,f'"{exe}" "{helper}" "%1"')
+        return True
+    except Exception as e:
+        print(f"[leader-action][WARN] protocol registration failed: {e}"); return False
+
+
+def _leader_action_uri(action: str, code: str) -> str:
+    from urllib.parse import quote
+    c=str(code or "").strip().upper(); return f"{LEADER_ACTION_URI_SCHEME}://{action}?code={quote(c)}"
+
+
+def _leader_notify_windows_toast(
+    title: str,
+    message: str,
+    timeout_sec: int = 9,
+    *,
+    code: str = "",
+    ack: dict | None = None,
+    wait_for_result: bool = False,
+) -> bool:
+    """Windows 10/11 WinRT Toast.
+
+    NOTIFY-ACK-V2:
+    - production: main scanner queues a hidden Python worker and returns immediately.
+      The worker runs PowerShell synchronously in the logged-on user session, writes the
+      real Toast result to leader_notification_async.log, and only then ACKs sent=1.
+    - self test: wait_for_result=True runs the same PowerShell path synchronously so
+      SUCCESS means Show() actually returned successfully, not merely Popen() succeeded.
+
+    Do not use DETACHED_PROCESS for the Toast process. The previous async version
+    detached PowerShell itself and could report queue success while no Toast/log was
+    ever produced on the interactive desktop.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import base64, html, json as _json
+        c = str(code or "").strip().upper()
+        if c:
+            _leader_ensure_action_protocol()
+
+        title_x = html.escape(str(title), quote=True)
+        body_x = html.escape(str(message), quote=True)
+        launch_attr = ""
+        actions = ""
+        if c:
+            dash = html.escape(_leader_action_uri("dashboard", c), quote=True)
+            copyu = html.escape(_leader_action_uri("copy", c), quote=True)
+            yahoo = html.escape(_leader_action_uri("yahoo", c), quote=True)
+            kabutan = html.escape(_leader_action_uri("kabutan", c), quote=True)
+            launch_attr = f" launch='{dash}' activationType='protocol'"
+            actions = (
+                "<actions>"
+                + f"<action content='Yahoo' activationType='protocol' arguments='{yahoo}'/>"
+                + f"<action content='株探' activationType='protocol' arguments='{kabutan}'/>"
+                + f"<action content='コードコピー' activationType='protocol' arguments='{copyu}'/>"
+                + "</actions>"
+            )
+
+        xml_text = (
+            f"<toast duration='long'{launch_attr}><visual><binding template='ToastGeneric'>"
+            f"<text>{title_x}</text><text>{body_x}</text></binding></visual>{actions}</toast>"
+        )
+        xml_b64 = base64.b64encode(xml_text.encode("utf-8")).decode("ascii")
+
+        log_path = Path(SCREEN_RUNTIME_DIR) / "leader_notification_async.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        ps = (
+            "$ErrorActionPreference='Stop'; "
+            "try { "
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null; "
+            "[Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null; "
+            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] > $null; "
+            f"$xmlText=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{xml_b64}')); "
+            "$xml=New-Object Windows.Data.Xml.Dom.XmlDocument; $xml.LoadXml($xmlText); "
+            "$toast=[Windows.UI.Notifications.ToastNotification]::new($xml); "
+            "$aumids=@('Microsoft.Windows.Explorer','Windows.SystemToast.SecurityAndMaintenance'); "
+            "$shown=$false; $lastErr=''; "
+            "foreach($id in $aumids){ try { "
+            "$n=[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id); "
+            "$n.Show($toast); $shown=$true; break "
+            "} catch { $lastErr=$_.Exception.Message } }; "
+            "if(-not $shown){ throw ('Toast failed: '+$lastErr) }; "
+            "exit 0 "
+            "} catch { Write-Error $_.Exception.Message; exit 1 }"
+        )
+        encoded = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+
+        def _append_parent_log(ok: bool, detail: str = "") -> None:
+            try:
+                ts = _now_jst().isoformat(timespec="seconds")
+                status = "OK" if ok else "ERROR"
+                safe_title = str(title).replace("\r", " ").replace("\n", " ")
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(f"{ts} {status} title={safe_title} {detail}\n")
+            except Exception:
+                pass
+
+        # Explicit test means actual Toast Show() success/failure, not queue success.
+        if wait_for_result:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            cp = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-EncodedCommand", encoded],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+                timeout=max(3, int(timeout_sec)),
+            )
+            detail = ""
+            if cp.returncode != 0:
+                try:
+                    detail = (cp.stderr or cp.stdout or b"").decode("utf-8", errors="replace")[-1000:]
+                except Exception:
+                    detail = f"returncode={cp.returncode}"
+            _append_parent_log(cp.returncode == 0, detail.replace("\r", " ").replace("\n", " "))
+            return cp.returncode == 0
+
+        # Main scanner queues only a hidden Python worker. The worker waits for the
+        # actual Toast result and ACKs DB on success. No DETACHED_PROCESS is used.
+        py = Path(sys.executable)
+        pyw = py.with_name("pythonw.exe")
+        if pyw.exists():
+            py = pyw
+        ack_payload = dict(ack or {})
+        worker = r"""
+import datetime, json, sqlite3, subprocess, sys
+encoded, log_path, title, timeout_s, ack_json = sys.argv[1:6]
+ok=False; detail=''
+try:
+    flags=getattr(subprocess,'CREATE_NO_WINDOW',0)
+    cp=subprocess.run(
+        ['powershell.exe','-NoProfile','-EncodedCommand',encoded],
+        stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+        creationflags=flags,timeout=max(3,int(timeout_s))
+    )
+    ok=(cp.returncode==0)
+    if not ok:
+        raw=cp.stderr or cp.stdout or b''
+        detail=raw.decode('utf-8',errors='replace')[-1000:].replace('\\r',' ').replace('\\n',' ')
+except Exception as e:
+    detail=repr(e)
+try:
+    ts=datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+    safe_title=title.replace('\\r',' ').replace('\\n',' ')
+    with open(log_path,'a',encoding='utf-8') as f:
+        f.write(f"{ts} {'OK' if ok else 'ERROR'} title={safe_title} {detail}\\n")
+except Exception:
+    pass
+if ok:
+    try:
+        a=json.loads(ack_json or '{}')
+        db=a.get('db')
+        if db and a.get('trade_date') and a.get('code') and a.get('notice_type'):
+            con=sqlite3.connect(db,timeout=30.0)
+            try:
+                con.execute('PRAGMA busy_timeout=30000')
+                ts=datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+                con.execute(
+                    'UPDATE leader_priority_notification_state SET sent=1,sent_at=? '
+                    'WHERE trade_date=? AND code=? AND episode_no=? AND notice_type=?',
+                    (ts,str(a['trade_date']),str(a['code']),int(a.get('episode_no') or 1),str(a['notice_type']))
+                )
+                con.commit()
+            finally:
+                con.close()
+    except Exception as e:
+        try:
+            ts=datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+            safe_title=title.replace('\\r',' ').replace('\\n',' ')
+            with open(log_path,'a',encoding='utf-8') as f:
+                f.write(f"{ts} ACK_ERROR title={safe_title} err={e!r}\\n")
+        except Exception:
+            pass
+sys.exit(0 if ok else 1)
+"""
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            [str(py), "-c", worker, encoded, str(log_path), str(title), str(int(timeout_sec)), _json.dumps(ack_payload, ensure_ascii=False)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        print(f"[leader-notify] WinRT toast worker queued: {title} / actions={'ON' if c else 'OFF'}")
+        return True
+    except Exception as e:
+        print(f"[leader-notify][WARN] WinRT toast worker queue failed: {e}")
+        return False
+
+def _plyer_notify_async(title: str, message: str, timeout_sec: int = 9) -> bool:
+    """plyer通知も別Python processへ逃がし、本体を待たせない。"""
+    if not _PLYER_NOTIFICATION_AVAILABLE or notification is None:
+        return False
+    try:
+        py = Path(sys.executable)
+        if os.name == "nt":
+            pyw = py.with_name("pythonw.exe")
+            if pyw.exists():
+                py = pyw
+        helper = (
+            "import sys; "
+            "from plyer import notification; "
+            "notification.notify(title=sys.argv[1], message=sys.argv[2], timeout=int(sys.argv[3]))"
+        )
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = (
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        subprocess.Popen(
+            [str(py), "-c", helper, str(title), str(message), str(int(timeout_sec))],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        print(f"[notify] plyer queued async: {title}")
+        return True
+    except Exception as e:
+        print(f"[notify][WARN] plyer async queue failed: {e}")
+        return False
+
+
+def _leader_notify(
+    title: str,
+    message: str,
+    *,
+    allow: bool = True,
+    code: str = "",
+    ack: dict | None = None,
+    wait_for_result: bool = False,
+) -> bool:
+    if not allow or not LEADER_OS_NOTIFY:
+        return False
+    if os.name == "nt":
+        return _leader_notify_windows_toast(
+            title, message, timeout_sec=9, code=code, ack=ack, wait_for_result=wait_for_result
+        )
+    return _plyer_notify_async(title, message, timeout_sec=9)
+
+def _leader_priority_notice_sent(c: sqlite3.Connection, trade_date: str, code: str, episode_no: int, notice_types=None) -> bool:
+    """指定episodeで優先通知が送信済みか。notice_types=Noneなら何か1つでも送信済み。"""
+    try:
+        ep=max(1,int(episode_no or 1))
+        if notice_types:
+            nts=[str(x) for x in notice_types if str(x)]
+            if not nts: return False
+            ph=",".join("?" for _ in nts)
+            row=c.execute(
+                f"SELECT 1 FROM leader_priority_notification_state WHERE trade_date=? AND code=? AND episode_no=? AND sent=1 AND notice_type IN ({ph}) LIMIT 1",
+                [str(trade_date),str(code),ep,*nts],
+            ).fetchone()
+        else:
+            row=c.execute(
+                "SELECT 1 FROM leader_priority_notification_state WHERE trade_date=? AND code=? AND episode_no=? AND sent=1 LIMIT 1",
+                (str(trade_date),str(code),ep),
+            ).fetchone()
+        return row is not None
+    except Exception as e:
+        print(f"[leader-notify][WARN] priority notice lookup failed code={code}: {e}", flush=True)
+        return False
+
+
+def _leader_priority_notice_enabled(notice_type: str) -> bool:
+    """自動スクリーニングのOS通知プロファイル。
+
+    RAINBOW_ONLY: 新規の🌈S主役化だけ通知（既定）。
+    FULL:          従来の優先通知4種を通知。
+    OFF:           通知しない。
+
+    状態遷移・DB履歴・dashboard表示はこの設定に関係なく継続する。
+    """
+    nt = str(notice_type or "").strip().upper()
+    if not LEADER_OS_NOTIFY or LEADER_NOTIFY_PROFILE == "OFF":
+        return False
+    if LEADER_NOTIFY_PROFILE == "FULL":
+        return nt in {"RAINBOW_S", "S_UP", "FIRE_CORE", "CORE_WEAKENED"}
+    return nt == "RAINBOW_S"
+
+
+def _leader_priority_notify_once(
+    c: sqlite3.Connection, *, trade_date: str, code: str, episode_no: int, notice_type: str,
+    title: str, message: str, allow: bool = True
+) -> bool:
+    """Queue one priority notification; sent=1 is ACKed only after actual Toast Show() succeeds.
+
+    NOTIFY-ACK-V2 fixes the old async false-positive where Popen() success was stored as
+    sent=1 even when the detached Toast child never displayed anything.
+    """
+    ep=max(1,int(episode_no or 1)); nt=str(notice_type or "").strip()
+    if not nt: return False
+    try:
+        row=c.execute(
+            "SELECT sent FROM leader_priority_notification_state WHERE trade_date=? AND code=? AND episode_no=? AND notice_type=?",
+            (str(trade_date),str(code),ep,nt),
+        ).fetchone()
+        if row is not None and int(row[0] or 0)==1:
+            return False
+    except Exception as e:
+        print(f"[leader-notify][WARN] priority notice state read failed code={code} type={nt}: {e}", flush=True)
+
+    attempted=_now_jst().isoformat(timespec="seconds")
+    try:
+        with c:
+            c.execute(
+                """INSERT INTO leader_priority_notification_state(
+                    trade_date,code,episode_no,notice_type,attempted_at,sent,sent_at,title,message
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(trade_date,code,episode_no,notice_type) DO UPDATE SET
+                    attempted_at=excluded.attempted_at,
+                    sent=CASE WHEN leader_priority_notification_state.sent=1 THEN 1 ELSE 0 END,
+                    sent_at=CASE WHEN leader_priority_notification_state.sent=1 THEN leader_priority_notification_state.sent_at ELSE NULL END,
+                    title=excluded.title,message=excluded.message
+                """,
+                (str(trade_date),str(code),ep,nt,attempted,0,None,str(title),str(message)),
+            )
+    except Exception as e:
+        print(f"[leader-notify][WARN] priority notice attempt state write failed code={code} type={nt}: {e}", flush=True)
+
+    ack = {
+        "db": str(LIVE_SNAPSHOT_DB),
+        "trade_date": str(trade_date),
+        "code": str(code),
+        "episode_no": ep,
+        "notice_type": nt,
+    }
+    queued=bool(_leader_notify(str(title),str(message),allow=allow,code=str(code),ack=ack))
+
+    if queued and os.name != "nt":
+        try:
+            with c:
+                c.execute(
+                    "UPDATE leader_priority_notification_state SET sent=1,sent_at=? WHERE trade_date=? AND code=? AND episode_no=? AND notice_type=?",
+                    (attempted,str(trade_date),str(code),ep,nt),
+                )
+        except Exception as e:
+            print(f"[leader-notify][WARN] non-Windows notice ACK failed code={code} type={nt}: {e}", flush=True)
+    return queued
+
+def _leader_notification_popup_test() -> bool:
+    if os.name != "nt": return False
+    try:
+        creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0)
+        cp=subprocess.run(["msg.exe","*","主役化 通知セッション診断\nこの画面が見えればWindowsの対話セッションは有効です。"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=creationflags,timeout=10)
+        return cp.returncode==0
+    except Exception as e:
+        print(f"[leader-notify][WARN] popup diagnostic failed: {e}"); return False
+
+
+def _leader_notification_self_test() -> bool:
+    now=_now_jst()
+    return _leader_notify(
+        "✅ 主役化 Windows通知テスト 6340",
+        f"{now:%Y-%m-%d %H:%M:%S} / 4ボタンと通知本体クリックを確認してください",
+        code="6340",
+        wait_for_result=True,
+    )
+
+
+def _leader_export_state_json(c: sqlite3.Connection, trade_date_s: str, generated_at: str) -> None:
+    _leader_ensure_schema(c)
+    c.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM leader_signal_state WHERE trade_date=? ORDER BY signal_at, code", (trade_date_s,)
+        ).fetchall()]
+    finally:
+        c.row_factory = None
+    payload = {
+        "schema_version": 1,
+        "generated_at": generated_at,
+        "trade_date": trade_date_s,
+        "mode": "SHADOW",
+        "research_version": LEADER_RESEARCH_VERSION,
+        "validated_stage1_entry": "state-based: leader_score>=60 & close>=VWAP & VWAPgap>=0.8% & RS5>=0; clock/ret_prev are record-only",
+        "validated_stage2_confirm": "state-based: current MFE>=0.8% & price>signal & price>=VWAP & leader_score>=60 & RS5>=0",
+        "priority_notifications": "RAINBOW_S / S_UP / FIRE_CORE(S,A + ignition up) / CORE_WEAKENED only",
+        "risk_status": "PROVISIONAL structure weakness; general risk notifications suppressed",
+        "states": rows,
+    }
+    _atomic_write_text_file(LEADER_NOTIFICATION_PATH, json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+
+# === RE-LEADER-LIFECYCLE-V1.3 2026-08-29 ===
+# 本番監査修正:
+# - 再modifierを price_summary 後へ移動し、確定高値/安値が揃ってから live gate を判定。
+# - 既存履歴から first_repeat_date を point-in-time で backfill。
+# - first repeat はイベント日として1回だけ固定し、その後の同episode継続日は『再』identityを維持。
+# - 593A 8/24 DAY1→8/25 PERSIST の first repeat は8/27として復元し、8/28の🔥継続にも『再』を維持。
+# - 既存candidate/priority/LIVE50/今買えるランク/🌈🔥判定は不変。
+# Research basis: 主役化ライフサイクル全期間研究_v5_ポイントインタイム補正版
+# Production rule:
+#   1) completed daily data only -> DAY1 -> next-session PERSIST
+#   2) persist only compact recent state into LIVE_SNAPSHOT_DB
+#   3) during current MIDDAY, existing live leader state remains PRIMARY
+#   4) recent PERSIST + current live reignition gate => add "再" modifier only
+# This intentionally does NOT replace 🌈/🔥 logic, candidate priority, or 今買えるランク.
+LEADER_LIFECYCLE_VERSION = "LEADER_LIFECYCLE_PIT_V5_PROD3"
+LEADER_REPEAT_CALIBRATION_VERSION = "RELEADER_SCORE_CALIBRATION_PROD3_V2_20260829"
+
+
+def _leader_lifecycle_calibrated_strength(score) -> tuple[str, int]:
+    """Display-only calibration; it never changes the repeat score or ENTRY logic."""
+    s = _live_num(score)
+    if s is None:
+        return "", 0
+    if s >= 90.0:
+        grade = "S"
+    elif s >= 85.0:
+        grade = "A"
+    elif s >= 80.0:
+        grade = "B"
+    elif s >= 70.0:
+        grade = "C"
+    else:
+        grade = "D"
+    # 95+ is not a safer S+; it is a separate extreme-volatility/explosive flag.
+    return grade, int(s >= 95.0)
+
+LEADER_LIFECYCLE_LOOKBACK_CAL_DAYS = 100
+LEADER_LIFECYCLE_REPEAT_MAX_SESSIONS = 4
+LEADER_LIFECYCLE_RE_SCORE_REFERENCE = 90.0
+
+
+def _leader_lifecycle_pct_rank(s, higher: bool = True):
+    x = pd.to_numeric(s, errors="coerce")
+    if not higher:
+        x = -x
+    return x.rank(pct=True, method="average") * 100.0
+
+
+def _leader_lifecycle_winsor(s, lo: float = .01, hi: float = .99):
+    x = pd.to_numeric(s, errors="coerce")
+    if x.notna().sum() < 10:
+        return x
+    a, b = x.quantile(lo), x.quantile(hi)
+    return x.clip(a, b)
+
+
+def _leader_lifecycle_safe_div(a, b):
+    aa = pd.to_numeric(a, errors="coerce")
+    bb = pd.to_numeric(b, errors="coerce")
+    return aa / bb.replace(0, np.nan)
+
+
+def _leader_lifecycle_ensure_schema(c: sqlite3.Connection) -> None:
+    c.execute('''CREATE TABLE IF NOT EXISTS leader_lifecycle_state(
+        code TEXT PRIMARY KEY,
+        day1_date TEXT,
+        day1_score REAL,
+        persist_date TEXT,
+        persist_score REAL,
+        persist_ret1 REAL,
+        persist_vol_vs_prev REAL,
+        persist_turn_vs_prev REAL,
+        persist_range_pos REAL,
+        first_repeat_date TEXT,
+        source_finalized_date TEXT,
+        research_version TEXT,
+        updated_at TEXT
+    )''')
+    _lls_cols = {str(r[1]) for r in c.execute("PRAGMA table_info(leader_lifecycle_state)").fetchall()}
+    if "first_repeat_date" not in _lls_cols:
+        c.execute("ALTER TABLE leader_lifecycle_state ADD COLUMN first_repeat_date TEXT")
+    c.execute('''CREATE TABLE IF NOT EXISTS leader_lifecycle_runtime(
+        trade_date TEXT NOT NULL,
+        code TEXT NOT NULL,
+        repeat_active INTEGER NOT NULL DEFAULT 0,
+        elapsed_sessions INTEGER,
+        day1_date TEXT,
+        day1_score REAL,
+        persist_date TEXT,
+        persist_score REAL,
+        research_version TEXT,
+        updated_at TEXT,
+        PRIMARY KEY(trade_date,code)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS leader_lifecycle_meta(
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT
+    )''')
+    c.commit()
+
+
+def _leader_lifecycle_recent_daily(conn: sqlite3.Connection, trade_date_s: str) -> pd.DataFrame:
+    """Load bounded OHLCV and reuse the existing canonical/JPX-holiday dedupe contract."""
+    try:
+        td = date.fromisoformat(str(trade_date_s))
+    except Exception:
+        return pd.DataFrame()
+    start = (td - timedelta(days=LEADER_LIFECYCLE_LOOKBACK_CAL_DAYS)).isoformat()
+    sql = """
+        SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
+        FROM price_history
+        WHERE date(日付) >= date(?) AND date(日付) <= date(?)
+          AND 終値 IS NOT NULL AND CAST(終値 AS REAL) > 0
+    """
+    raw = pd.read_sql_query(sql, conn, params=[start, trade_date_s])
+    if raw.empty:
+        return pd.DataFrame()
+    # Existing system invariant: canonical alias selection + legacy weekend/holiday removal.
+    raw = _dedupe_price_history_df(raw)
+    if raw.empty:
+        return pd.DataFrame()
+    d = raw.rename(columns={
+        "コード":"code", "日付":"date", "始値":"open", "高値":"high",
+        "安値":"low", "終値":"close", "出来高":"volume",
+    }).copy()
+    d["code"] = d["code"].map(canonical_code_for_db)
+    d["date"] = pd.to_datetime(d["date"], errors="coerce").dt.normalize()
+    for c0 in ["open","high","low","close","volume"]:
+        d[c0] = pd.to_numeric(d[c0], errors="coerce")
+    d = d.dropna(subset=["code","date","close"]).sort_values(["code","date"]).reset_index(drop=True)
+    return d
+
+def _leader_lifecycle_build_completed(daily: pd.DataFrame, finalized_date_s: str):
+    """v5-style DAY1/PERSIST reconstruction for completed recent days."""
+    if daily.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    final_dt = pd.Timestamp(finalized_date_s).normalize()
+    d0 = daily[daily['date'] <= final_dt].copy()
+    if d0.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    feats=[]
+    for code,g in d0.groupby('code', sort=False):
+        g=g.sort_values('date').copy()
+        g['prev_close']=g['close'].shift(1)
+        g['ret1']=(g['close']/g['prev_close']-1.0)*100.0
+        g['vol_ma5_prev']=g['volume'].shift(1).rolling(5,min_periods=3).mean()
+        g['vol_ma20_prev']=g['volume'].shift(1).rolling(20,min_periods=8).mean()
+        g['vol_x5']=_leader_lifecycle_safe_div(g['volume'],g['vol_ma5_prev'])
+        g['vol_x20']=_leader_lifecycle_safe_div(g['volume'],g['vol_ma20_prev'])
+        g['turnover_est']=g['close']*g['volume']/1e8
+        g['turn_ma5_prev']=g['turnover_est'].shift(1).rolling(5,min_periods=3).mean()
+        g['turn_ma20_prev']=g['turnover_est'].shift(1).rolling(20,min_periods=8).mean()
+        g['turn_x5']=_leader_lifecycle_safe_div(g['turnover_est'],g['turn_ma5_prev'])
+        g['turn_x20']=_leader_lifecycle_safe_div(g['turnover_est'],g['turn_ma20_prev'])
+        g['range_pos']=_leader_lifecycle_safe_div(g['close']-g['low'],g['high']-g['low'])*100.0
+        g['intraday_ret_pct']=(g['close']/g['open']-1.0)*100.0
+        g['ret20_before']=(g['prev_close']/g['close'].shift(21)-1.0)*100.0
+        g['prev_volume']=g['volume'].shift(1)
+        g['prev_turnover']=g['turnover_est'].shift(1)
+        g['vol_vs_prev']=_leader_lifecycle_safe_div(g['volume'],g['prev_volume'])
+        g['turn_vs_prev']=_leader_lifecycle_safe_div(g['turnover_est'],g['prev_turnover'])
+        feats.append(g)
+    d=pd.concat(feats,ignore_index=True)
+    d['_turn']=d['turnover_est']
+
+    scored=[]
+    for dt,g in d.groupby('date',sort=False):
+        g=g.copy()
+        g['p_ret1']=_leader_lifecycle_pct_rank(g['ret1'])
+        g['p_volx']=_leader_lifecycle_pct_rank(_leader_lifecycle_winsor(g['vol_x5']))
+        g['p_turnx']=_leader_lifecycle_pct_rank(_leader_lifecycle_winsor(g['turn_x5']))
+        g['p_abs_turn']=_leader_lifecycle_pct_rank(_leader_lifecycle_winsor(g['_turn']))
+        g['p_range']=_leader_lifecycle_pct_rank(g['range_pos'])
+        g['p_intraday']=_leader_lifecycle_pct_rank(g['intraday_ret_pct'])
+        g['p_priorweak']=_leader_lifecycle_pct_rank(g['ret20_before'],higher=False)
+        weights={'p_abs_turn':25,'p_turnx':20,'p_volx':15,'p_range':15,'p_ret1':10,'p_intraday':10,'p_priorweak':5}
+        num=pd.Series(0.0,index=g.index); den=pd.Series(0.0,index=g.index)
+        for c0,w in weights.items():
+            ok=g[c0].notna(); num.loc[ok]+=g.loc[ok,c0]*w; den.loc[ok]+=w
+        g['day1_score']=num/den.replace(0,np.nan)
+        scored.append(g)
+    d=pd.concat(scored,ignore_index=True)
+    day1=d[(d['ret1']>=2.0)&(d['vol_x5']>=1.8)&(d['turn_x5']>=1.5)&(d['range_pos']>=65)&(d['_turn']>=0.8)].copy()
+    if day1.empty:
+        return d, day1, pd.DataFrame()
+
+    nxt=d.sort_values(['code','date']).copy()
+    nxt['prev_date']=nxt.groupby('code')['date'].shift(1)
+    p=nxt.merge(day1[['code','date','day1_score']].rename(columns={'date':'prev_date','day1_score':'day1_score_prev'}),on=['code','prev_date'],how='inner')
+    if p.empty:
+        return d, day1, p
+    p['persist_price_hold']=((p['ret1']>=-4.0)&(p['range_pos']>=40)).astype(int)
+    p['persist_volume_hold']=(p['vol_vs_prev']>=0.45).astype(int)
+    p['persist_turn_hold']=(p['turn_vs_prev']>=0.45).astype(int)
+    parts=[]
+    for dt,g in p.groupby('date',sort=False):
+        g=g.copy()
+        g['p_abs_turn_p']=_leader_lifecycle_pct_rank(g['_turn'])
+        g['p_turn_vs_prev']=_leader_lifecycle_pct_rank(g['turn_vs_prev'])
+        g['p_vol_vs_prev']=_leader_lifecycle_pct_rank(g['vol_vs_prev'])
+        g['p_range_p']=_leader_lifecycle_pct_rank(g['range_pos'])
+        g['p_ret_p']=_leader_lifecycle_pct_rank(g['ret1'])
+        fw=[('day1_score_prev',25),('p_abs_turn_p',20),('p_turn_vs_prev',20),('p_vol_vs_prev',15),('p_range_p',10),('p_ret_p',10)]
+        num=pd.Series(0.0,index=g.index); den=pd.Series(0.0,index=g.index)
+        for c0,w in fw:
+            ok=g[c0].notna(); num.loc[ok]+=g.loc[ok,c0]*w; den.loc[ok]+=w
+        g['persist_score']=num/den.replace(0,np.nan)
+        parts.append(g)
+    p=pd.concat(parts,ignore_index=True)
+    persist=p[(p['persist_price_hold']==1)&((p['persist_volume_hold']==1)|(p['persist_turn_hold']==1))].copy()
+    return d, day1, persist
+
+
+
+def _leader_lifecycle_backfill_first_repeat_map(
+    d: pd.DataFrame,
+    persist: pd.DataFrame,
+    finalized_date_s: str,
+) -> dict[tuple[str,str,str], str]:
+    """Backfill the first qualifying daily re-ignition for each DAY1->PERSIST episode.
+
+    This is event dating only.  It does not replace the current live 🌈/🔥 gate.
+    It prevents a system first installed on a later day from incorrectly treating
+    the second/third continuation day as the episode's "first" repeat.
+    """
+    if d is None or d.empty or persist is None or persist.empty:
+        return {}
+
+    x = d.copy()
+    x["date"] = pd.to_datetime(x["date"], errors="coerce").dt.normalize()
+    x = x[x["date"].notna()].sort_values(["code","date"]).copy()
+    if x.empty:
+        return {}
+
+    final_ts = pd.Timestamp(finalized_date_s).normalize()
+    sessions = sorted(pd.Timestamp(v).normalize() for v in x["date"].dropna().unique())
+    sess_ix = {ts: i for i, ts in enumerate(sessions)}
+    x["_sess"] = x["date"].map(sess_ix)
+
+    by_code = {
+        str(code): g.sort_values("date").copy()
+        for code, g in x.groupby("code", sort=False)
+    }
+
+    out = {}
+    for _, pr in persist.sort_values(["code","date"]).iterrows():
+        code = str(pr.get("code") or "")
+        if not code:
+            continue
+        try:
+            pdt = pd.Timestamp(pr.get("date")).normalize()
+            d1dt = pd.Timestamp(pr.get("prev_date")).normalize()
+        except Exception:
+            continue
+        psess = sess_ix.get(pdt)
+        if psess is None:
+            continue
+        g = by_code.get(code)
+        if g is None or g.empty:
+            continue
+
+        future = g[
+            (g["_sess"] > psess)
+            & (g["_sess"] <= psess + LEADER_LIFECYCLE_REPEAT_MAX_SESSIONS)
+            & (g["date"] <= final_ts)
+        ].copy()
+        if future.empty:
+            continue
+
+        # Daily-only PIT event gate used for historical dating.
+        # Live production still requires the current primary 🌈/🔥 state.
+        gate = (
+            (pd.to_numeric(future["ret1"], errors="coerce") >= 2.0)
+            & (pd.to_numeric(future["range_pos"], errors="coerce") >= 60.0)
+            & (
+                (pd.to_numeric(future["vol_x5"], errors="coerce") >= 1.5)
+                | (pd.to_numeric(future["turn_x5"], errors="coerce") >= 1.5)
+            )
+        )
+        hit = future.loc[gate].sort_values("date").head(1)
+        if hit.empty:
+            continue
+
+        hdt = pd.Timestamp(hit.iloc[0]["date"]).date().isoformat()
+        out[(code, d1dt.date().isoformat(), pdt.date().isoformat())] = hdt
+
+    return out
+
+
+def _leader_lifecycle_business_elapsed(start_s: str, end_s: str) -> int | None:
+    """Count JPX sessions from start day to end day; start=0, next business day=1."""
+    try:
+        a = date.fromisoformat(str(start_s))
+        b = date.fromisoformat(str(end_s))
+    except Exception:
+        return None
+    if b < a:
+        return None
+    extra = _load_extra_closed(EXTRA_CLOSED_PATH)
+    n = 0
+    cur = a
+    guard = 0
+    while cur < b and guard < 32:
+        cur = next_business_day_jp(cur, extra)
+        n += 1
+        guard += 1
+    return n if cur == b else None
+
+
+def _leader_lifecycle_refresh_recent(conn: sqlite3.Connection, trade_date_s: str) -> dict:
+    """Daily compact refresh. Heavy full-history research is never run here."""
+    lc = _live_snapshot_conn()
+    try:
+        _leader_lifecycle_ensure_schema(lc)
+
+        td = date.fromisoformat(str(trade_date_s))
+        run_mode = _auto_run_mode()
+        extra = _load_extra_closed(EXTRA_CLOSED_PATH)
+        finalized = (
+            prev_business_day_jp(td, extra).isoformat()
+            if run_mode == "MIDDAY"
+            else td.isoformat()
+        )
+
+        meta_date = lc.execute(
+            "SELECT value FROM leader_lifecycle_meta WHERE key='last_finalized_date'"
+        ).fetchone()
+        meta_ver = lc.execute(
+            "SELECT value FROM leader_lifecycle_meta WHERE key='research_version'"
+        ).fetchone()
+        last = str(meta_date[0] or "") if meta_date else ""
+        last_ver = str(meta_ver[0] or "") if meta_ver else ""
+        needs_rebuild = (last != finalized) or (last_ver != LEADER_LIFECYCLE_VERSION)
+
+        if needs_rebuild:
+            daily = _leader_lifecycle_recent_daily(conn, finalized)
+            dfeat, day1, persist_all = _leader_lifecycle_build_completed(daily, finalized)
+
+            # Reconstruct historical first-repeat event BEFORE compressing to the
+            # latest episode per symbol.
+            backfill_first = _leader_lifecycle_backfill_first_repeat_map(
+                dfeat, persist_all, finalized
+            )
+
+            # Preserve any previously observed live-only first-repeat event for the
+            # exact same DAY1/PERSIST episode.  This is deliberately version-agnostic:
+            # an already-observed event date is a fact, not a score-version result.
+            old_first = {}
+            for rr in lc.execute(
+                "SELECT code,day1_date,persist_date,first_repeat_date FROM leader_lifecycle_state"
+            ).fetchall():
+                if rr[3]:
+                    old_first[(str(rr[0]), str(rr[1] or ""), str(rr[2] or ""))] = str(rr[3])
+
+            persist = persist_all
+            if not persist.empty:
+                persist = (
+                    persist.sort_values(["code","date"])
+                    .groupby("code", as_index=False)
+                    .tail(1)
+                )
+
+            now = _now_jst().isoformat(timespec="seconds")
+            with lc:
+                lc.execute("DELETE FROM leader_lifecycle_state")
+                if not persist.empty:
+                    for _, r in persist.iterrows():
+                        code = str(r.get("code") or "")
+                        d1 = pd.Timestamp(r.get("prev_date")).date().isoformat()
+                        pd0 = pd.Timestamp(r.get("date")).date().isoformat()
+                        ep = (code, d1, pd0)
+
+                        # Prefer an actually observed prior live event.  Otherwise use
+                        # the point-in-time daily backfill event date.
+                        first_repeat = old_first.get(ep) or backfill_first.get(ep)
+
+                        lc.execute("""INSERT INTO leader_lifecycle_state(
+                            code,day1_date,day1_score,persist_date,persist_score,
+                            persist_ret1,persist_vol_vs_prev,persist_turn_vs_prev,persist_range_pos,
+                            first_repeat_date,source_finalized_date,research_version,updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                            code, d1, _live_num(r.get("day1_score_prev")),
+                            pd0, _live_num(r.get("persist_score")), _live_num(r.get("ret1")),
+                            _live_num(r.get("vol_vs_prev")), _live_num(r.get("turn_vs_prev")),
+                            _live_num(r.get("range_pos")), first_repeat,
+                            finalized, LEADER_LIFECYCLE_VERSION, now,
+                        ))
+
+                lc.execute(
+                    "INSERT INTO leader_lifecycle_meta(key,value,updated_at) VALUES('last_finalized_date',?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                    (finalized, now),
+                )
+                lc.execute(
+                    "INSERT INTO leader_lifecycle_meta(key,value,updated_at) VALUES('research_version',?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                    (LEADER_LIFECYCLE_VERSION, now),
+                )
+
+        states = lc.execute(
+            "SELECT code,day1_date,day1_score,persist_date,persist_score,first_repeat_date,research_version "
+            "FROM leader_lifecycle_state"
+        ).fetchall()
+
+        now = _now_jst().isoformat(timespec="seconds")
+        with lc:
+            lc.execute("DELETE FROM leader_lifecycle_runtime WHERE trade_date=?", (trade_date_s,))
+            active = 0
+            started = 0
+            waiting = 0
+
+            for code, d1, d1s, pd0, ps, first_repeat, state_ver in states:
+                if str(state_ver or "") != LEADER_LIFECYCLE_VERSION or not pd0:
+                    continue
+
+                elapsed = _leader_lifecycle_business_elapsed(str(pd0), trade_date_s)
+                if elapsed is None or not (1 <= elapsed <= LEADER_LIFECYCLE_REPEAT_MAX_SESSIONS):
+                    continue
+
+                # Keep the context through the full 1-4 session episode.
+                # first_repeat_date is the first event date, NOT an instruction to
+                # hide later continuation days from the "再" identity.
+                active += 1
+                if first_repeat:
+                    try:
+                        if date.fromisoformat(str(first_repeat)) <= date.fromisoformat(str(trade_date_s)):
+                            started += 1
+                        else:
+                            waiting += 1
+                    except Exception:
+                        waiting += 1
+                else:
+                    waiting += 1
+
+                lc.execute("""INSERT INTO leader_lifecycle_runtime(
+                    trade_date,code,repeat_active,elapsed_sessions,day1_date,day1_score,
+                    persist_date,persist_score,research_version,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""", (
+                    trade_date_s, str(code), 1, int(elapsed), str(d1 or ""),
+                    _live_num(d1s), str(pd0), _live_num(ps),
+                    LEADER_LIFECYCLE_VERSION, now,
+                ))
+
+        return {
+            "finalized_date": finalized,
+            "rebuilt": bool(needs_rebuild),
+            "repeat_active": active,
+            "repeat_started": started,
+            "repeat_waiting": waiting,
+            "version": LEADER_LIFECYCLE_VERSION,
+        }
+    finally:
+        lc.close()
+
+def _leader_lifecycle_repeat_map(trade_date_s: str) -> dict[str,dict]:
+    lc=_live_snapshot_conn()
+    try:
+        _leader_lifecycle_ensure_schema(lc)
+        lc.row_factory=sqlite3.Row
+        try:
+            return {str(r['code']):dict(r) for r in lc.execute("SELECT * FROM leader_lifecycle_runtime WHERE trade_date=? AND repeat_active=1 AND research_version=?",(trade_date_s,LEADER_LIFECYCLE_VERSION)).fetchall()}
+        finally:
+            lc.row_factory=None
+    finally:
+        lc.close()
+
+
+def _leader_lifecycle_apply_repeat_modifier(rows: list[dict]) -> None:
+    """Overlay cross-day '再' without replacing the existing live leader engine.
+
+    first_repeat_date = first event date for research/PIT counting.
+    再主役候補       = current row belongs to an already-started repeat episode
+                       OR becomes the first live repeat today.
+    """
+    if not rows:
+        return
+
+    td = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+    rmap = _leader_lifecycle_repeat_map(td)
+
+    # RE-LEADER-HISTORY-PERSIST-V1 2026-08-31
+    # Current repeat score/strength is intentionally limited to the active 1-4
+    # session window, but an actually observed/backfilled first_repeat_date is a
+    # historical fact and must remain visible after that window expires.
+    lc_hist = _live_snapshot_conn()
+    try:
+        _leader_lifecycle_ensure_schema(lc_hist)
+        history_map = {
+            str(x[0]): {
+                "day1_date": str(x[1] or ""),
+                "day1_score": x[2],
+                "persist_date": str(x[3] or ""),
+                "persist_score": x[4],
+                "first_repeat_date": str(x[5] or ""),
+            }
+            for x in lc_hist.execute(
+                "SELECT code,day1_date,day1_score,persist_date,persist_score,first_repeat_date "
+                "FROM leader_lifecycle_state WHERE research_version=?",
+                (LEADER_LIFECYCLE_VERSION,),
+            ).fetchall()
+        }
+    finally:
+        lc_hist.close()
+
+    # Stable output contract. Active score/grade still reset every run; historical
+    # DAY1/PERSIST/first-repeat identity is restored independently below.
+    for r in rows:
+        r["再主役候補"] = 0
+        r["再主役研究スコア"] = None
+        r["再主役強度"] = ""
+        r["再主役爆発級"] = 0
+        r["再主役校正版"] = LEADER_REPEAT_CALIBRATION_VERSION
+        r["再主役根拠"] = ""
+        r["再主役DAY1日"] = ""
+        r["再主役DAY1スコア"] = None
+        r["再主役継続確認日"] = ""
+        r["再主役継続スコア"] = None
+        r["再主役初回日"] = ""
+        r["再主役経過営業日"] = None
+
+        code = _live_stock_code(
+            _live_get(r,"コード","code"),
+            _live_get(r,"市場","market"),
+            _live_get(r,"銘柄名","name"),
+        )
+        hist = history_map.get(str(code or ""))
+        if hist and hist.get("first_repeat_date"):
+            r["再主役DAY1日"] = hist.get("day1_date", "")
+            r["再主役DAY1スコア"] = hist.get("day1_score")
+            r["再主役継続確認日"] = hist.get("persist_date", "")
+            r["再主役継続スコア"] = hist.get("persist_score")
+            r["再主役初回日"] = hist.get("first_repeat_date", "")
+            try:
+                r["再主役経過営業日"] = _leader_lifecycle_business_elapsed(
+                    hist.get("persist_date", ""), td
+                )
+            except Exception:
+                r["再主役経過営業日"] = None
+
+    if not rmap:
+        return
+
+    tmp = []
+    for i, r in enumerate(rows):
+        code = _live_stock_code(
+            _live_get(r,"コード","code"),
+            _live_get(r,"市場","market"),
+            _live_get(r,"銘柄名","name"),
+        )
+        cur = _live_num(_live_get(r,"現在値_raw","現在値","current_price"))
+        hi = _live_num(_live_get(r,"高値","day_high"))
+        lo = _live_num(_live_get(r,"安値","day_low"))
+        ret = _live_num(_live_get(r,"前日終値比率_raw","前日終値比率","day_return_pct"))
+        turn = _live_num(_live_get(r,"売買代金(億)","売買代金億","turnover_oku"))
+        rv = _live_num(_live_get(r,"RVOL代金","rvol_turnover"))
+        rs = _live_num(_live_get(r,"主役化現在RS5"))
+        ls = _live_num(_live_get(r,"主役化現在スコア"))
+
+        rp = None
+        if None not in (cur, hi, lo) and hi > lo:
+            rp = (cur - lo) / (hi - lo) * 100.0
+
+        tmp.append({
+            "i":i, "code":code, "ret":ret, "turn":turn,
+            "rvol":rv, "range":rp, "rs5":rs, "leader":ls,
+        })
+
+    t = pd.DataFrame(tmp)
+    for c0 in ["ret","turn","rvol","range","rs5","leader"]:
+        t["p_"+c0] = _leader_lifecycle_pct_rank(t[c0])
+
+    lc = _live_snapshot_conn()
+    try:
+        _leader_lifecycle_ensure_schema(lc)
+        first_map = {
+            str(x[0]): str(x[1] or "")
+            for x in lc.execute(
+                "SELECT code,first_repeat_date FROM leader_lifecycle_state WHERE research_version=?",
+                (LEADER_LIFECYCLE_VERSION,),
+            ).fetchall()
+        }
+
+        for _, z in t.iterrows():
+            r = rows[int(z["i"])]
+            code = str(z.get("code") or "")
+            ctx = rmap.get(code)
+            if not ctx:
+                continue
+
+            state = str(_live_get(r,"主役化状態") or "").strip()
+            is_positive = state.startswith("🌈") or state.startswith("🔥")
+            is_weakened = state.startswith("⚠")
+
+            ret = _live_num(z.get("ret"))
+            rp = _live_num(z.get("range"))
+            rv = _live_num(z.get("rvol"))
+            rs = _live_num(z.get("rs5"))
+
+            live_gate = bool(
+                is_positive
+                and ret is not None and ret >= 2.0
+                and rp is not None and rp >= 60.0
+                and (
+                    (rv is not None and rv >= 1.5)
+                    or (rs is not None and rs >= 0.0)
+                )
+            )
+
+            feats = [
+                (_live_num(ctx.get("persist_score")),25),
+                (_live_num(z.get("p_turn")),20),
+                (_live_num(z.get("p_ret")),15),
+                (_live_num(z.get("p_rvol")),20),
+                (_live_num(z.get("p_range")),10),
+                (_live_num(z.get("p_rs5")),5),
+                (_live_num(z.get("p_leader")),5),
+            ]
+            num = den = 0.0
+            for val, w in feats:
+                if val is not None:
+                    num += float(val) * w
+                    den += w
+            score = (num / den) if den > 0 else None
+
+            r["再主役研究スコア"] = score
+            _repeat_grade, _repeat_explosive = _leader_lifecycle_calibrated_strength(score)
+            r["再主役強度"] = _repeat_grade
+            r["再主役爆発級"] = _repeat_explosive
+            r["再主役校正版"] = LEADER_REPEAT_CALIBRATION_VERSION
+            r["再主役DAY1日"] = str(ctx.get("day1_date") or "")
+            r["再主役DAY1スコア"] = ctx.get("day1_score")
+            r["再主役継続確認日"] = str(ctx.get("persist_date") or "")
+            r["再主役継続スコア"] = ctx.get("persist_score")
+            r["再主役経過営業日"] = ctx.get("elapsed_sessions")
+
+            first_date = str(first_map.get(code) or "")
+            repeat_started = False
+            if first_date:
+                try:
+                    repeat_started = date.fromisoformat(first_date) <= date.fromisoformat(td)
+                except Exception:
+                    repeat_started = False
+
+            # No historical first event yet: today's live state may become it.
+            if not repeat_started and live_gate:
+                with lc:
+                    lc.execute(
+                        "UPDATE leader_lifecycle_state SET first_repeat_date=?,updated_at=? "
+                        "WHERE code=? AND research_version=? "
+                        "AND (first_repeat_date IS NULL OR first_repeat_date='')",
+                        (td, _now_jst().isoformat(timespec="seconds"), code, LEADER_LIFECYCLE_VERSION),
+                    )
+                first_map[code] = td
+                first_date = td
+                repeat_started = True
+
+            r["再主役初回日"] = first_date
+
+            # If the repeat episode has already started, the current primary leader
+            # state carries the '再' identity on later continuation days too.
+            # Before it starts, only the live_gate can start it.
+            carry_repeat = bool(
+                repeat_started
+                and (is_positive or is_weakened)
+            )
+
+            if not carry_repeat:
+                continue
+
+            r["再主役候補"] = 1
+            if score is not None:
+                _phase = "本日初回再点火" if first_date == td else f"初回再点火 {first_date} から継続"
+                r["再主役根拠"] = (
+                    f"DAY1 {r['再主役DAY1日']}({(_live_num(ctx.get('day1_score')) or 0):.1f}) → "
+                    f"継続 {r['再主役継続確認日']}({(_live_num(ctx.get('persist_score')) or 0):.1f}) → "
+                    f"{_phase} / 現在{int(ctx.get('elapsed_sessions') or 0)}営業日後 / score{score:.1f}"
+                    + (f" / 強度{_repeat_grade}" if _repeat_grade else "")
+                    + (" / ⚡爆発級" if _repeat_explosive else "")
+                )
+            else:
+                r["再主役根拠"] = (
+                    f"過去DAY1→継続確認→再点火episode継続"
+                    + (f" / 初回{first_date}" if first_date else "")
+                )
+
+            # Preserve existing intraday episode suffix (#2/#3) by transforming
+            # the current label in place.
+            if state.startswith("🌈🌈") or state.startswith("🔥🔥") or state.startswith("⚠⚠"):
+                pass
+            elif state.startswith("🌈"):
+                r["主役化状態"] = "🌈🌈再" + state[1:].lstrip().removeprefix("再")
+            elif state.startswith("🔥"):
+                r["主役化状態"] = "🔥🔥再" + state[1:].lstrip().removeprefix("再")
+            elif state.startswith("⚠"):
+                r["主役化状態"] = "⚠⚠再" + state[1:].lstrip().removeprefix("再")
+    finally:
+        lc.close()
+
+
+# === /RE-LEADER-LIFECYCLE-V1 ==========================================
+
+def _leader_capture_gap_minutes(newer_s, older_s):
+    """同一営業日のcapture文字列2点の実時間差(分)。解釈不能/逆転はNone。"""
+    try:
+        newer = pd.Timestamp(newer_s)
+        older = pd.Timestamp(older_s)
+        gap = (newer - older).total_seconds() / 60.0
+        if not math.isfinite(gap) or gap <= 0:
+            return None
+        return float(gap)
+    except Exception:
+        return None
+
+
+def _leader_pick_capture_by_gap(times, *, target_min, min_gap_min=0.0, max_gap_min=None):
+    """latest captureからの実時間差が指定窓内でtargetに最も近い過去captureを返す。"""
+    if not times or len(times) < 2:
+        return None, None
+    latest_s = str(times[0])
+    best = None
+    for ts in times[1:]:
+        gap = _leader_capture_gap_minutes(latest_s, str(ts))
+        if gap is None or gap < float(min_gap_min):
+            continue
+        if max_gap_min is not None and gap > float(max_gap_min):
+            continue
+        key = (abs(gap - float(target_min)), gap)
+        if best is None or key < best[0]:
+            best = (key, str(ts), gap)
+    if best is None:
+        return None, None
+    return best[1], float(best[2])
+
+
+def _leader_candidate_universe(conn: sqlite3.Connection, trade_date_s: str, pending_codes: set[str]) -> pd.DataFrame:
+    """1分足取得対象の軽量prefilter。前日比は使わず、DIFF相当の短期状態を使う。
+    これは🌈成立条件ではない。既存leader stateは必ず監視継続する。
+
+    RESILIENCE-V1:
+    - short/30mはcaptureの「何個前」ではなくcaptured_at実時間差を検証する。
+    - snapshot欠損/遅延/取り逃し時でも、当日安値→現在値・高値圏・RVOLの
+      現在状態だけで1分足取得へ救済できる。
+    """
+    sc_cols = {r[1] for r in conn.execute("PRAGMA table_info(screener)").fetchall()}
+    wanted = ["コード","銘柄名","市場","現在値","前日終値","高値","安値","RVOL代金",
+              "INITIAL_MOMENTUM","INITIAL_MOMENTUM_SCORE","信用倍率","信用買い残増減率_20d","需給OH"]
+    sel = [f'"{c}"' if c in sc_cols else f'NULL AS "{c}"' for c in wanted]
+    sc = pd.read_sql_query("SELECT rowid AS _srowid," + ",".join(sel) + " FROM screener", conn)
+    if sc.empty:
+        return sc
+    sc["_code"] = sc["コード"].map(canonical_code_for_db)
+    sc = sc[sc["_code"].map(lambda x: bool(re.fullmatch(r"(?:\d{4}|\d{3}[A-Z])", str(x or ""))))].copy()
+    sc = sc.sort_values("_srowid").drop_duplicates("_code", keep="first")
+    watch = set(str(x) for x in (pending_codes or set()))
+    # LEADER-PREFILTER-REASON-AUDIT-V1: 選定ロジックは変えず理由別集合だけ記録する。
+    _pf_existing = set(watch)
+    _pf_diff_near_moving = set()
+    _pf_diff_moving_liquid = set()
+    _pf_diff_watch_state = set()
+    _pf_rescue = set()
+    _pf_initial = set()
+
+    # DIFFルート: snapshotの実時間差が妥当な参照だけを短期変化判定に使う。
+    try:
+        dc = _intraday_diff_conn()
+        try:
+            # INTRADAY-STABILITY-V1: 指数4行だけ等のpartial captureをleader prefilterのbaselineにしない。
+            times = _intraday_diff_good_capture_times(dc, trade_date_s, limit=12)
+            if times:
+                latest_age = _leader_capture_gap_minutes(_now_jst().isoformat(), str(times[0]))
+                latest_ok = bool(latest_age is not None and latest_age <= LEADER_PREFILTER_LATEST_MAX_AGE_MIN)
+                latest = pd.read_sql_query(
+                    "SELECT * FROM intraday_diff_snapshot WHERE trade_date=? AND captured_at=?", dc, params=[trade_date_s,times[0]]
+                ) if latest_ok else pd.DataFrame()
+                short_ts, short_gap = _leader_pick_capture_by_gap(
+                    times,
+                    target_min=LEADER_PREFILTER_SHORT_TARGET_MIN,
+                    min_gap_min=LEADER_PREFILTER_SHORT_MIN_GAP_MIN,
+                    max_gap_min=LEADER_PREFILTER_SHORT_MAX_GAP_MIN,
+                )
+                m30_ts, m30_gap = _leader_pick_capture_by_gap(
+                    times,
+                    target_min=LEADER_PREFILTER_30M_TARGET_MIN,
+                    min_gap_min=LEADER_PREFILTER_30M_MIN_GAP_MIN,
+                    max_gap_min=LEADER_PREFILTER_30M_MAX_GAP_MIN,
+                )
+                prev = pd.read_sql_query(
+                    "SELECT * FROM intraday_diff_snapshot WHERE trade_date=? AND captured_at=?", dc, params=[trade_date_s,short_ts]
+                ) if short_ts else pd.DataFrame()
+                old30 = pd.read_sql_query(
+                    "SELECT * FROM intraday_diff_snapshot WHERE trade_date=? AND captured_at=?", dc, params=[trade_date_s,m30_ts]
+                ) if m30_ts else pd.DataFrame()
+                pmap = dict(zip(prev.code.astype(str), pd.to_numeric(prev.current_price,errors="coerce"))) if not prev.empty else {}
+                m30map = dict(zip(old30.code.astype(str), pd.to_numeric(old30.current_price,errors="coerce"))) if not old30.empty else {}
+                if (not latest_ok) or short_ts is None or m30_ts is None:
+                    print(
+                        "[leader][prefilter] snapshot timing degraded: "
+                        f"captures={len(times)} latest_age={latest_age} short_gap={short_gap} m30_gap={m30_gap}; "
+                        "stale/invalid motion leg is ignored and today-strong rescue remains active",
+                        flush=True,
+                    )
+                for _, rr in latest.iterrows():
+                    code=str(rr.get("code") or "")
+                    px=_live_num(rr.get("current_price")); hi=_live_num(rr.get("day_high")); rv=_live_num(rr.get("rvol_turnover"))
+                    pp=_live_num(pmap.get(code)); p30=_live_num(m30map.get(code))
+                    short=_leader_pct(px,pp) if px is not None and pp is not None else None
+                    m30=_leader_pct(px,p30) if px is not None and p30 is not None else None
+                    near=bool(px is not None and hi not in (None,0) and px >= hi*LEADER_PREFILTER_NEAR_HIGH_RATIO)
+                    moving=bool((short is not None and short>=LEADER_PREFILTER_SHORT_PCT) or (m30 is not None and m30>=LEADER_PREFILTER_30M_PCT))
+                    liquid=bool(rv is not None and rv>=LEADER_PREFILTER_RVOL_MIN)
+                    watch_state=str(rr.get("watch_state") or "").upper()
+                    _c_near_moving = bool(near and moving)
+                    _c_moving_liquid = bool(moving and liquid)
+                    _c_watch_state = bool(watch_state in {"START","READY"})
+                    if _c_near_moving:
+                        _pf_diff_near_moving.add(code)
+                    if _c_moving_liquid:
+                        _pf_diff_moving_liquid.add(code)
+                    if _c_watch_state:
+                        _pf_diff_watch_state.add(code)
+                    if _c_near_moving or _c_moving_liquid or _c_watch_state:
+                        watch.add(code)
+        finally:
+            dc.close()
+    except Exception as e:
+        print(f"[leader][WARN] DIFF prefilter unavailable: {e}; today-strong rescue remains active")
+
+    # RESILIENCE-V1 fallback: DIFF snapshotに一切依存しない現在状態の救済。
+    # 安値から十分上昇し、現在も高値圏、かつRVOLが伴う銘柄だけ1分足取得対象へ追加する。
+    rescue_added = []
+    for _, rr in sc.iterrows():
+        code = str(rr.get("_code") or "")
+        if not code or code in watch:
+            continue
+        px = _live_num(rr.get("現在値"))
+        hi = _live_num(rr.get("高値"))
+        lo = _live_num(rr.get("安値"))
+        rv = _live_num(rr.get("RVOL代金"))
+        low_to_now = _leader_pct(px, lo) if px is not None and lo not in (None, 0) else None
+        near = bool(px is not None and hi not in (None, 0) and px >= hi * LEADER_PREFILTER_NEAR_HIGH_RATIO)
+        liquid = bool(rv is not None and rv >= LEADER_PREFILTER_RVOL_MIN)
+        today_strong = bool(
+            low_to_now is not None
+            and low_to_now >= LEADER_PREFILTER_RESCUE_LOW_TO_NOW_PCT
+            and near
+            and liquid
+        )
+        if today_strong:
+            watch.add(code)
+            _pf_rescue.add(code)
+            rescue_added.append(code)
+    if rescue_added:
+        print(
+            f"[leader][prefilter] today-strong rescue added={len(rescue_added)} "
+            f"sample={','.join(rescue_added[:12])}",
+            flush=True,
+        )
+
+    # 初回導入時の保険: 既存INITIAL_MOMENTUMだけは拾う。前日比条件ではない。
+    if "INITIAL_MOMENTUM" in sc.columns:
+        _pf_initial = set(sc.loc[pd.to_numeric(sc["INITIAL_MOMENTUM"],errors="coerce").fillna(0)>0,"_code"].astype(str))
+        watch.update(_pf_initial)
+
+    _pf_reason_union = (
+        _pf_existing | _pf_diff_near_moving | _pf_diff_moving_liquid |
+        _pf_diff_watch_state | _pf_rescue | _pf_initial
+    )
+    _pf_reason_sum = sum(map(len, (
+        _pf_existing, _pf_diff_near_moving, _pf_diff_moving_liquid,
+        _pf_diff_watch_state, _pf_rescue, _pf_initial
+    )))
+    print(
+        "[leader][prefilter-reasons] "
+        f"existing_state={len(_pf_existing)} "
+        f"diff_near_moving={len(_pf_diff_near_moving)} "
+        f"diff_moving_rvol={len(_pf_diff_moving_liquid)} "
+        f"diff_start_ready={len(_pf_diff_watch_state)} "
+        f"today_rescue={len(_pf_rescue)} "
+        f"initial_momentum={len(_pf_initial)} "
+        f"unique_total={len(_pf_reason_union)} overlaps={max(0, _pf_reason_sum-len(_pf_reason_union))}",
+        flush=True,
+    )
+    return sc[sc["_code"].astype(str).isin(watch)].copy()
+
+
+def _leader_find_reentry_signal(
+    day: pd.DataFrame,
+    *,
+    old: dict,
+    now,
+) -> pd.Timestamp | None:
+    """弱化/失敗後の「独立した再主役化」を探す。
+
+    同じ上昇波を何度も数えないため、
+    1) 前episodeの10分判定後にcooldown
+    2) その後いったん VWAP下 または旧signalから-0.5%以上へreset
+    3) reset後に base event を新しく再成立
+    を必須にする。
+    """
+    if day is None or day.empty or not LEADER_REENTRY_ENABLED:
+        return None
+    try:
+        ep = max(1, int(old.get("episode_no") or 1))
+    except Exception:
+        ep = 1
+    if ep >= LEADER_MAX_EPISODES_PER_DAY:
+        return None
+
+    try:
+        checked = pd.Timestamp(old.get("stage2_checked_at") or old.get("updated_at") or old.get("signal_at"))
+        if checked.tzinfo is None:
+            checked = checked.tz_localize("Asia/Tokyo")
+        else:
+            checked = checked.tz_convert("Asia/Tokyo")
+    except Exception:
+        return None
+
+    old_sp = _live_num(old.get("signal_price"))
+    if old_sp is None or old_sp <= 0:
+        return None
+
+    start_ts = checked + pd.Timedelta(minutes=LEADER_REENTRY_COOLDOWN_MIN)
+    z = day[(day.index >= start_ts) & (day.index <= pd.Timestamp(now))]
+    if z.empty:
+        return None
+
+    reset_price = old_sp * (1.0 - LEADER_REENTRY_RESET_BELOW_SIGNAL_PCT / 100.0)
+    close_num = pd.to_numeric(z["Close"], errors="coerce")
+    vwap_num = pd.to_numeric(z["VWAP"], errors="coerce")
+    reset_mask = (close_num < vwap_num) | (close_num <= reset_price)
+    if not bool(reset_mask.fillna(False).any()):
+        return None
+
+    reset_ts = z.index[int(np.flatnonzero(reset_mask.fillna(False).to_numpy())[0])]
+    after = z[z.index > reset_ts]
+    if after.empty:
+        return None
+
+    base = (
+        (after["leader_score"] >= LEADER_BASE_SCORE)
+        & after["above_vwap"].fillna(False)
+        & (after["ret_prev_pct"] >= LEADER_BASE_MIN_RET_PCT)
+    )
+    if not bool(base.any()):
+        return None
+
+    # 「false→true」の新しい立ち上がりを優先する。
+    b = base.fillna(False)
+    prev_b = b.shift(1, fill_value=False)
+    rising = b & (~prev_b)
+    arr = rising.to_numpy()
+    if bool(rising.any()):
+        return after.index[int(np.flatnonzero(arr)[0])]
+    return after.index[int(np.flatnonzero(b.to_numpy())[0])]
+
+
+
+
+# === LEADER-RESEARCH-LIGHT-LOG-V1 2026-08-30 ===
+LEADER_RESEARCH_LOG_DIR = Path(OUTPUT_DIR) / "leader_research_log"
+
+# === LEADER-RESEARCH-SNAPSHOT-LOG-V2 2026-08-30 ===
+# EVENTログとは別に、各run終了時点の現在🌈/🔥銘柄を時系列保存する。
+# 同日ファイルへ「run時刻×コード」で追記/upsertし、過去runのsnapshotは消さない。
+LEADER_RESEARCH_SNAPSHOT_DIR = LEADER_RESEARCH_LOG_DIR
+
+_LEADER_RESEARCH_SNAPSHOT_COLUMNS = [
+    "取引日","run時刻","コード","銘柄名","市場",
+    "主役化状態","主役化回数","主役化シグナル時刻","主役化シグナル価格",
+    "現在値","前日比_pct","売買代金_億","RVOL代金",
+    "主役化前日比_pct","主役化VWAP乖離_pct","主役化RS5",
+    "主役化現在MFE_pct","主役化現在比_pct","主役化現在VWAP乖離_pct",
+    "主役化現在RS5","主役化現在スコア","主役化から🔥まで分",
+    "点火進行","🔥基礎期待度","🔥期待度スコア",
+    "今買えるランク","再主役研究スコア","再主役強度","再主役爆発級",
+    "再主役初回日","再主役経過日",
+    "研究対象理由","初回🌈日","ニュース窓開始日","🌈経過営業日",
+    "追跡基準🌈日","追跡基準🌈時刻","追跡基準価格",
+    "🌈追跡現在比_pct","🌈追跡MFE_pct","🌈追跡MAE_pct","🌈追跡経過分","🌈追跡品質",
+    "🔥到達フラグ","🔥到達時刻","🔥到達経過分",
+    "🌈ニュース状態","🌈ニュース記事数","🌈材料記事数","🌈決算記事数",
+    "🌈値動き記事数","🌈一般記事数","株探ニュース判定用"
+]
+
+# === PERF-V42 LEADER RESEARCH SNAPSHOT STATE FAST ===
+def _v42_leader_snapshot_fast_enabled():
+    return str(os.environ.get("KABU_SCREEN_V42_FAST", "1")).strip().lower() not in {"0", "false", "off", "no"}
+
+def _leader_research_snapshot_path(trade_date_s):
+    LEADER_RESEARCH_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    return LEADER_RESEARCH_SNAPSHOT_DIR / f"{trade_date_s}_snapshots.csv"
+
+def _leader_research_snapshot_state_path(trade_date_s):
+    LEADER_RESEARCH_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    return LEADER_RESEARCH_SNAPSHOT_DIR / f"{trade_date_s}_snapshot_state_v42.json"
+
+def _leader_research_snapshot_file_sig(path):
+    try:
+        st = path.stat()
+        return {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+    except Exception:
+        return None
+
+def _leader_research_snapshot_state_load(trade_date_s, csv_path):
+    """V42: full CSV再読込を避けるための小型sidecar。
+
+    CSVのsize+mtimeが一致する場合だけ採用。外部編集/欠落/破損時はNoneを返し、
+    V41までのCSV全読込へ安全fallbackする。
+    """
+    if not _v42_leader_snapshot_fast_enabled() or not csv_path.exists():
+        return None
+    sp = _leader_research_snapshot_state_path(trade_date_s)
+    try:
+        obj = json.loads(sp.read_text(encoding="utf-8"))
+        if int(obj.get("schema") or 0) != 42:
+            return None
+        sig = _leader_research_snapshot_file_sig(csv_path)
+        if not sig:
+            return None
+        if int(obj.get("csv_size") or -1) != sig["size"] or int(obj.get("csv_mtime_ns") or -1) != sig["mtime_ns"]:
+            return None
+        return obj
+    except Exception:
+        return None
+
+def _leader_research_snapshot_state_save(trade_date_s, csv_path, *, row_count, run_times, track_code, track_code_date):
+    if not _v42_leader_snapshot_fast_enabled() or not csv_path.exists():
+        return
+    sp = _leader_research_snapshot_state_path(trade_date_s)
+    tmp = sp.with_suffix(sp.suffix + ".tmp")
+    sig = _leader_research_snapshot_file_sig(csv_path) or {"size": 0, "mtime_ns": 0}
+    def _pair(v):
+        try:
+            a, b = v
+        except Exception:
+            a, b = None, None
+        return [None if a is None else float(a), None if b is None else float(b)]
+    obj = {
+        "schema": 42,
+        "trade_date": str(trade_date_s),
+        "csv_size": int(sig["size"]),
+        "csv_mtime_ns": int(sig["mtime_ns"]),
+        "row_count": int(row_count or 0),
+        "run_times": sorted({str(x) for x in (run_times or []) if str(x)}),
+        "track_code": {str(k): _pair(v) for k, v in (track_code or {}).items()},
+        "track_code_date": {str(k): _pair(v) for k, v in (track_code_date or {}).items()},
+        "saved_at": datetime.now(JST).isoformat(timespec="seconds"),
+    }
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, sp)
+
+def _leader_research_snapshot_maps_from_old(old):
+    track_code = {}
+    track_code_date = {}
+    if old is None or getattr(old, "empty", True):
+        return track_code, track_code_date
+    x = old.copy()
+    x["_code4_perf_v42"] = x["コード"].astype(str).map(canonical_code_for_db)
+    mfe = pd.to_numeric(x.get("🌈追跡MFE_pct"), errors="coerce")
+    mae = pd.to_numeric(x.get("🌈追跡MAE_pct"), errors="coerce")
+    sigday = x.get("追跡基準🌈日", pd.Series("", index=x.index)).astype(str)
+    tmp = pd.DataFrame({"code": x["_code4_perf_v42"], "sigday": sigday, "mfe": mfe, "mae": mae})
+    for cc, gg in tmp.groupby("code", sort=False, dropna=True):
+        track_code[str(cc)] = (_live_num(gg["mfe"].max(skipna=True)), _live_num(gg["mae"].min(skipna=True)))
+    for (cc, sd), gg in tmp.groupby(["code", "sigday"], sort=False, dropna=True):
+        track_code_date[(str(cc), str(sd))] = (_live_num(gg["mfe"].max(skipna=True)), _live_num(gg["mae"].min(skipna=True)))
+    return track_code, track_code_date
+
+def _leader_research_snapshot_state_update_maps(track_code, track_code_date, newdf):
+    if newdf is None or getattr(newdf, "empty", True):
+        return
+    for _, r in newdf.iterrows():
+        cc = canonical_code_for_db(r.get("コード"))
+        if not cc:
+            continue
+        sd = str(r.get("追跡基準🌈日") or "")
+        mfe = _live_num(r.get("🌈追跡MFE_pct"))
+        mae = _live_num(r.get("🌈追跡MAE_pct"))
+        def merge_pair(old_pair):
+            omfe, omae = old_pair if old_pair else (None, None)
+            nmfe = max([x for x in (omfe, mfe) if x is not None], default=None)
+            nmae = min([x for x in (omae, mae) if x is not None], default=None)
+            return (nmfe, nmae)
+        track_code[cc] = merge_pair(track_code.get(cc))
+        if sd:
+            track_code_date[(cc, sd)] = merge_pair(track_code_date.get((cc, sd)))
+
+def _leader_research_write_snapshot(df_cand, episode_map_override=None):
+    """主役episode研究snapshot。
+
+    V4:
+    - writer呼出し時点ではdashboard行へleader stateがまだattachされていないため、
+      leader_signal_state/historyを直接参照して同日stateを補完する。
+    - 現在🌈/🔥でなくなったNEWS_EPISODE_HISTORYも、初回RAINBOW_DETECTEDを基準に
+      現在比/MFE/MAEをrun間で追跡する。
+    - 売買判定・通知条件は一切変更しない。研究ログ専用。
+    """
+    try:
+        if df_cand is None or getattr(df_cand, "empty", True) or "コード" not in df_cand.columns:
+            return
+
+        run_mode = str(globals().get("_RUN_MODE_LOCKED") or "EOD").upper()
+        td = _expected_snapshot_date_for_run(run_mode).isoformat()
+        run_at = datetime.now(JST).isoformat(timespec="seconds")
+
+        def _get(rr, *names):
+            for n in names:
+                try:
+                    if n in rr.index:
+                        v = rr.get(n)
+                        if v is not None:
+                            try:
+                                if pd.isna(v):
+                                    continue
+                            except Exception:
+                                pass
+                            return v
+                except Exception:
+                    pass
+            return ""
+
+        def _num(v):
+            try:
+                if v is None or v == "":
+                    return None
+                x = float(str(v).replace(",", "").replace("%", ""))
+                if np.isnan(x):
+                    return None
+                return x
+            except Exception:
+                return None
+
+        def _fmt_hm(v):
+            if not v:
+                return ""
+            try:
+                return pd.Timestamp(v).strftime("%H:%M")
+            except Exception:
+                return str(v)
+
+        episode_map = episode_map_override if isinstance(episode_map_override, dict) else _leader_rainbow_news_episode_map()
+        target_codes = set(episode_map.keys())
+
+        # 現在stateのcodeも研究対象に加える。writerはdashboard attach前なのでDBを直接読む。
+        state_today = {}
+        first_rainbow = {}
+        fire_after_first = {}  # backward local name; actual association is per-row below
+        fire_history_by_code = {}
+        lc = _live_snapshot_conn()
+        try:
+            _leader_ensure_schema(lc)
+            lc.row_factory = sqlite3.Row
+
+            # 当日state: 現在の🌈/🔥や現在MFE/score/FIRE期待度の正本。
+            for rec in lc.execute(
+                "SELECT * FROM leader_signal_state WHERE trade_date=?",
+                (td,),
+            ).fetchall():
+                d = dict(rec)
+                cc = canonical_code_for_db(d.get("code"))
+                if cc:
+                    state_today[cc] = d
+                    target_codes.add(cc)
+
+            # 初回RAINBOW_DETECTEDをepisode追跡の基準にする。
+            # leader_signal_stateのMIN(trade_date)だけでは同日multi-episodeのsignal priceを復元しにくいためhistoryを正本化。
+            if target_codes:
+                qmarks = ",".join("?" for _ in target_codes)
+                params = list(sorted(target_codes))
+                hist = lc.execute(
+                    f"""SELECT * FROM leader_signal_history
+                        WHERE code IN ({qmarks})
+                          AND event_type='RAINBOW_DETECTED'
+                        ORDER BY code, event_at, event_id""",
+                    params,
+                ).fetchall()
+                for rec in hist:
+                    d = dict(rec)
+                    cc = canonical_code_for_db(d.get("code"))
+                    if cc and cc not in first_rainbow:
+                        first_rainbow[cc] = d
+
+                # FIRE履歴は全件保持し、各rowで「今回episodeのsignal_at以後」に限定して紐付ける。
+                # 旧V4は最古RAINBOW以後のFIREを拾っていたため、過去episodeのFIREを
+                # 今日のepisodeへ誤帰属する可能性があった。
+                fire_history_by_code = {}
+                fh = lc.execute(
+                    f"""SELECT * FROM leader_signal_history
+                        WHERE code IN ({qmarks})
+                          AND event_type='FIRE_CONFIRMED'
+                        ORDER BY code, event_at, event_id""",
+                    params,
+                ).fetchall()
+                for rec in fh:
+                    d = dict(rec)
+                    cc = canonical_code_for_db(d.get("code"))
+                    if cc:
+                        fire_history_by_code.setdefault(cc, []).append(d)
+        finally:
+            try:
+                lc.row_factory = None
+            except Exception:
+                pass
+            lc.close()
+
+        label_map = {
+            "RAINBOW_PENDING": "🌈主役化",
+            "FIRE_CONFIRMED": "🔥継続期待",
+            "FIRE_REIGNITED": "🔥再点火",
+            "RISK_PROVISIONAL": "⚠主役性弱化(暫定)",
+            "STAGE2_FAILED": "旧10分確認不成立",
+        }
+
+        # 既存snapshotからtracking MFE/MAEを継承。V42は小型sidecarがCSVと一致する限り
+        # 巨大な当日snapshot CSV全読込/groupbyを省略する。sidecar不整合時はV41経路へfallback。
+        p = _leader_research_snapshot_path(td)
+        _v42_state_t0 = time.perf_counter()
+        _v42_state = _leader_research_snapshot_state_load(td, p)
+        _v42_state_hit = bool(_v42_state)
+        try:
+            _perf_record_phase("export-detail:leader_snapshot_state_load", time.perf_counter()-_v42_state_t0, "HIT" if _v42_state_hit else "MISS")
+        except Exception:
+            pass
+        _old_read_ok = True
+        _old_schema_ok = True
+        old = pd.DataFrame()
+        _old_track_code = {}
+        _old_track_code_date = {}
+        _old_row_count = 0
+        _old_run_times = set()
+        if _v42_state_hit:
+            _old_row_count = int(_v42_state.get("row_count") or 0)
+            _old_run_times = {str(x) for x in (_v42_state.get("run_times") or [])}
+            for k, v in (_v42_state.get("track_code") or {}).items():
+                try: _old_track_code[str(k)] = (_live_num(v[0]), _live_num(v[1]))
+                except Exception: pass
+            for k, v in (_v42_state.get("track_code_date") or {}).items():
+                try:
+                    cc, sd = str(k).split("|", 1)
+                    _old_track_code_date[(cc, sd)] = (_live_num(v[0]), _live_num(v[1]))
+                except Exception: pass
+            print(f"[leader-research-snapshot][V42] state HIT rows={_old_row_count} code_keys={len(_old_track_code)} episode_keys={len(_old_track_code_date)}", flush=True)
+        else:
+            _old_t0 = time.perf_counter()
+            try:
+                old = pd.read_csv(p, dtype={"コード": str}, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+            except Exception:
+                old = pd.DataFrame()
+                _old_read_ok = False
+            _old_schema_ok = bool(old.empty or set(_LEADER_RESEARCH_SNAPSHOT_COLUMNS).issubset(old.columns))
+            for c in _LEADER_RESEARCH_SNAPSHOT_COLUMNS:
+                if c not in old.columns:
+                    old[c] = ""
+            _old_row_count = len(old)
+            if not old.empty:
+                _old_run_times = set(old["run時刻"].astype(str))
+                _old_track_code, _old_track_code_date = _leader_research_snapshot_maps_from_old(old)
+                print(f"[leader-research-snapshot][V42] fallback prior-track-map rows={len(old)} code_keys={len(_old_track_code)} episode_keys={len(_old_track_code_date)}", flush=True)
+            try:
+                _perf_record_phase("export-detail:leader_snapshot_old_csv_fallback", time.perf_counter()-_old_t0, "OK")
+            except Exception:
+                pass
+
+        rows = []
+        _active_rows = 0
+        _episode_rows = 0
+        _tracking_fallback_rows = 0
+
+        # PERF-V9: 研究snapshot対象はepisode/current leaderだけ。
+        _research_code4 = df_cand["コード"].map(canonical_code_for_db)
+        _research_scan = df_cand.loc[_research_code4.isin(target_codes)]
+
+        for _, rr in _research_scan.iterrows():
+            code = canonical_code_for_db(_get(rr, "コード"))
+            if not code:
+                continue
+
+            s = state_today.get(code) or {}
+            ep = episode_map.get(code) or {}
+            base = first_rainbow.get(code) or {}
+            fire = {}
+
+            state = str(_get(rr, "主役化状態") or "").strip()
+            if not state and s:
+                state = label_map.get(str(s.get("stage") or ""), "")
+
+            is_active = ("🌈" in state) or ("🔥" in state) or bool(s)
+            is_episode = bool(ep) or bool(base)
+            if not is_active and not is_episode:
+                continue
+
+            if is_active:
+                _active_rows += 1
+            elif is_episode:
+                _episode_rows += 1
+
+            reason = (
+                "CURRENT_LEADER+NEWS_EPISODE" if (is_active and is_episode)
+                else "CURRENT_LEADER" if is_active
+                else "NEWS_EPISODE_HISTORY"
+            )
+
+            # signal metadata: 同日stateを最優先し、無ければ初回RAINBOW history。
+            signal_at = s.get("signal_at") or base.get("signal_at") or base.get("event_at") or ""
+            signal_price = _num(s.get("signal_price"))
+            if signal_price is None:
+                signal_price = _num(base.get("signal_price"))
+            signal_date = ""
+            try:
+                signal_date = pd.Timestamp(signal_at).date().isoformat() if signal_at else str(ep.get("first_rainbow_date") or "")
+            except Exception:
+                signal_date = str(ep.get("first_rainbow_date") or "")
+
+            # FIREは「今回episodeのsignal_at以後」の最初のFIREだけを採用。
+            # current stateが当日episodeなら同日以前のFIREは絶対に混入させない。
+            if signal_at:
+                try:
+                    sig_ts_for_fire = pd.Timestamp(signal_at)
+                    for fd in fire_history_by_code.get(code, []):
+                        fat = fd.get("event_at")
+                        if not fat:
+                            continue
+                        fts = pd.Timestamp(fat)
+                        if fts >= sig_ts_for_fire:
+                            fire = fd
+                            break
+                except Exception:
+                    fire = {}
+            elif base:
+                # signal_atが取れない古いepisodeだけ、base event_at以後をfallback。
+                try:
+                    bts = pd.Timestamp(base.get("event_at"))
+                    for fd in fire_history_by_code.get(code, []):
+                        fat = fd.get("event_at")
+                        if fat and pd.Timestamp(fat) >= bts:
+                            fire = fd
+                            break
+                except Exception:
+                    fire = {}
+
+            current_price = _num(_get(rr, "現在値_raw", "現在値"))
+            current_ret = None
+            if signal_price is not None and signal_price > 0 and current_price is not None:
+                current_ret = (current_price / signal_price - 1.0) * 100.0
+
+            # 前runからtracking MFE/MAEを引き継ぐ。
+            prev_mfe = prev_mae = None
+            if code:
+                _prev_pair = (
+                    _old_track_code_date.get((code, str(signal_date)))
+                    if signal_date else _old_track_code.get(code)
+                )
+                if _prev_pair:
+                    prev_mfe, prev_mae = _prev_pair
+
+            # 同日のsignal後高安はminute trackerのstate値があればそれを正本として使う。
+            state_mfe = _num(s.get("current_mfe_pct"))
+            state_ret = _num(s.get("current_ret_signal_pct"))
+            track_ret = state_ret if state_ret is not None else current_ret
+
+            candidates_hi = [x for x in (prev_mfe, state_mfe, track_ret) if x is not None]
+            track_mfe = max(candidates_hi) if candidates_hi else None
+
+            # MAEはstate schemaに未保存なのでrun snapshotから保守的に蓄積。
+            # signal日より後なら当日安値はすべてsignal後なので利用可能。
+            day_low = _num(_get(rr, "安値"))
+            day_high = _num(_get(rr, "高値"))
+            daily_low_ret = daily_high_ret = None
+            if signal_price is not None and signal_price > 0 and signal_date and td > signal_date:
+                if day_low is not None:
+                    daily_low_ret = (day_low / signal_price - 1.0) * 100.0
+                if day_high is not None:
+                    daily_high_ret = (day_high / signal_price - 1.0) * 100.0
+            if daily_high_ret is not None:
+                track_mfe = max([x for x in (track_mfe, daily_high_ret) if x is not None])
+
+            candidates_lo = [x for x in (prev_mae, track_ret, daily_low_ret) if x is not None]
+            track_mae = min(candidates_lo) if candidates_lo else None
+
+            elapsed_min = None
+            if signal_at:
+                try:
+                    sig_ts = pd.Timestamp(signal_at)
+                    run_ts = pd.Timestamp(run_at)
+                    if sig_ts.date() == run_ts.date():
+                        elapsed_min = max(0.0, (run_ts - sig_ts).total_seconds() / 60.0)
+                except Exception:
+                    pass
+
+            quality = ""
+            if s and state_mfe is not None:
+                quality = "STATE_MINUTE_MFE"
+            elif signal_date and td > signal_date:
+                quality = "CROSSDAY_DAILY+SNAPSHOT"
+            elif signal_price is not None:
+                quality = "SAME_DAY_SNAPSHOT_APPROX"
+
+            if not s and signal_price is not None:
+                _tracking_fallback_rows += 1
+
+            fire_flag = 1 if fire else (1 if str(s.get("stage") or "") in {"FIRE_CONFIRMED", "FIRE_REIGNITED"} else 0)
+            fire_at = fire.get("event_at") or s.get("fire_at") or ""
+            fire_elapsed = _num(fire.get("elapsed_from_prev_min"))
+            if fire_elapsed is None:
+                fire_elapsed = _num(s.get("fire_elapsed_min"))
+            if fire_elapsed is None and fire_at and signal_at:
+                try:
+                    fire_elapsed = max(0.0, (pd.Timestamp(fire_at) - pd.Timestamp(signal_at)).total_seconds() / 60.0)
+                except Exception:
+                    pass
+
+            # Existing fields are backfilled from state/history, so research CSV no longer loses them merely
+            # because snapshot writer runs before dashboard state attachment.
+            row = {
+                "取引日": td, "run時刻": run_at, "コード": code,
+                "銘柄名": _get(rr, "銘柄名") or s.get("name") or base.get("name"),
+                "市場": _get(rr, "市場") or s.get("market") or base.get("market"),
+                "主役化状態": state,
+                "主役化回数": s.get("episode_no") or base.get("episode_no") or _get(rr, "主役化回数"),
+                "主役化シグナル時刻": _fmt_hm(signal_at),
+                "主役化シグナル価格": signal_price,
+                "現在値": current_price,
+                "前日比_pct": _get(rr, "前日終値比率_raw", "前日終値比率"),
+                "売買代金_億": _get(rr, "売買代金(億)", "売買代金億"),
+                "RVOL代金": _get(rr, "RVOL代金"),
+                "主役化前日比_pct": s.get("signal_ret_prev_pct") if s else base.get("signal_ret_prev_pct"),
+                "主役化VWAP乖離_pct": s.get("signal_vwap_gap_pct") if s else base.get("signal_vwap_gap_pct"),
+                "主役化RS5": s.get("signal_rs5") if s else base.get("signal_rs5"),
+                "主役化現在MFE_pct": state_mfe if state_mfe is not None else track_mfe,
+                "主役化現在比_pct": state_ret if state_ret is not None else track_ret,
+                "主役化現在VWAP乖離_pct": s.get("current_vwap_gap_pct") if s else "",
+                "主役化現在RS5": s.get("current_rs5") if s else "",
+                "主役化現在スコア": s.get("current_leader_score") if s else "",
+                "主役化から🔥まで分": fire_elapsed,
+                "点火進行": s.get("ignition_progress") if s else _get(rr, "点火進行"),
+                "🔥基礎期待度": s.get("fire_expectancy_grade") if s else _get(rr, "🔥基礎期待度"),
+                "🔥期待度スコア": s.get("fire_expectancy_score") if s else _get(rr, "🔥期待度スコア"),
+                "今買えるランク": _get(rr, "今買えるランク"),
+                "再主役研究スコア": _get(rr, "再主役研究スコア"),
+                "再主役強度": _get(rr, "再主役強度"),
+                "再主役爆発級": _get(rr, "再主役爆発級"),
+                "再主役初回日": _get(rr, "再主役初回日"),
+                "再主役経過日": _get(rr, "再主役経過日"),
+                "研究対象理由": reason,
+                "初回🌈日": ep.get("first_rainbow_date", signal_date),
+                "ニュース窓開始日": ep.get("window_start", ""),
+                "🌈経過営業日": ep.get("elapsed_business_days", ""),
+                "追跡基準🌈日": signal_date,
+                "追跡基準🌈時刻": _fmt_hm(signal_at),
+                "追跡基準価格": signal_price,
+                "🌈追跡現在比_pct": track_ret,
+                "🌈追跡MFE_pct": track_mfe,
+                "🌈追跡MAE_pct": track_mae,
+                "🌈追跡経過分": elapsed_min,
+                "🌈追跡品質": quality,
+                "🔥到達フラグ": fire_flag,
+                "🔥到達時刻": fire_at,
+                "🔥到達経過分": fire_elapsed,
+                "🌈ニュース状態": _get(rr, "🌈ニュース状態"),
+                "🌈ニュース記事数": _get(rr, "🌈ニュース記事数"),
+                "🌈材料記事数": _get(rr, "🌈材料記事数"),
+                "🌈決算記事数": _get(rr, "🌈決算記事数"),
+                "🌈値動き記事数": _get(rr, "🌈値動き記事数"),
+                "🌈一般記事数": _get(rr, "🌈一般記事数"),
+                "株探ニュース判定用": _get(rr, "株探ニュース判定用"),
+            }
+            rows.append({c: _leader_research_safe(row.get(c, "")) for c in _LEADER_RESEARCH_SNAPSHOT_COLUMNS})
+
+        if not rows:
+            print(
+                f"[leader-research-snapshot] saved=0 date={td} "
+                f"active_current=0 news_episode_targets={len(episode_map)}. "
+                "現在🌈/🔥もニュース追跡中episodeも無いため保存対象なし。",
+                flush=True,
+            )
+            return
+
+        newdf = pd.DataFrame(rows, columns=_LEADER_RESEARCH_SNAPSHOT_COLUMNS)
+
+        # 同一run時刻が既存ならexact rewriteへfallback。通常runは新時刻なので、
+        # V42 sidecar HIT時はCSV全読込なしでatomic append-copyできる。
+        new_keys = set(zip(newdf["run時刻"].astype(str), newdf["コード"].astype(str)))
+        _has_duplicate_run = str(run_at) in _old_run_times
+        if _has_duplicate_run and _v42_state_hit:
+            # exact duplicate除去には行単位確認が必要。稀な経路だけ旧CSV読込へ戻す。
+            _dup_t0 = time.perf_counter()
+            try:
+                old = pd.read_csv(p, dtype={"コード": str}, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+                for c in _LEADER_RESEARCH_SNAPSHOT_COLUMNS:
+                    if c not in old.columns: old[c] = ""
+                _old_read_ok = True
+                _old_schema_ok = bool(old.empty or set(_LEADER_RESEARCH_SNAPSHOT_COLUMNS).issubset(old.columns))
+            except Exception:
+                old = pd.DataFrame()
+                _old_read_ok = False
+                _old_schema_ok = False
+            try:
+                _perf_record_phase("export-detail:leader_snapshot_duplicate_fallback", time.perf_counter()-_dup_t0, "OK")
+            except Exception:
+                pass
+
+        tmp = p.with_suffix(".csv.tmp")
+        _fast_append_ok = bool(p.exists() and _old_read_ok and _old_schema_ok and not _has_duplicate_run)
+        _write_t0 = time.perf_counter()
+        if _fast_append_ok:
+            shutil.copyfile(p, tmp)
+            try:
+                if tmp.stat().st_size > 0:
+                    with tmp.open("rb") as _rf:
+                        _rf.seek(-1, os.SEEK_END)
+                        _last_b = _rf.read(1)
+                    if _last_b not in (b"\n", b"\r"):
+                        with tmp.open("ab") as _af:
+                            _af.write(b"\n")
+                with tmp.open("a", encoding="utf-8", newline="") as _af:
+                    newdf.to_csv(_af, index=False, header=False, lineterminator="\n")
+                os.replace(tmp, p)
+                _total_rows_v22 = int(_old_row_count) + len(newdf)
+                print(f"[leader-research-snapshot][V42] atomic append-copy old={_old_row_count} new={len(newdf)} state_hit={int(_v42_state_hit)}", flush=True)
+            except Exception:
+                try:
+                    if tmp.exists(): tmp.unlink()
+                except Exception:
+                    pass
+                raise
+        else:
+            if _v42_state_hit and old.empty and p.exists():
+                old = pd.read_csv(p, dtype={"コード": str}, encoding="utf-8-sig")
+                for c in _LEADER_RESEARCH_SNAPSHOT_COLUMNS:
+                    if c not in old.columns: old[c] = ""
+            if not old.empty and _has_duplicate_run:
+                keep = [
+                    (str(a), canonical_code_for_db(b)) not in new_keys
+                    for a, b in zip(old["run時刻"].astype(str), old["コード"].astype(str))
+                ]
+                old = old.loc[keep]
+            out = pd.concat([old[_LEADER_RESEARCH_SNAPSHOT_COLUMNS], newdf], ignore_index=True)
+            out.to_csv(tmp, index=False, encoding="utf-8-sig")
+            os.replace(tmp, p)
+            _total_rows_v22 = len(out)
+        try:
+            _perf_record_phase("export-detail:leader_snapshot_file_write", time.perf_counter()-_write_t0, "OK")
+        except Exception:
+            pass
+
+        # 小型stateを更新。失敗してもCSV正本は完成済みで、次runはV41 full-readへ戻るだけ。
+        _state_save_t0 = time.perf_counter()
+        try:
+            if not _v42_state_hit and not old.empty:
+                _old_track_code, _old_track_code_date = _leader_research_snapshot_maps_from_old(old)
+                _old_run_times = set(old["run時刻"].astype(str))
+            _leader_research_snapshot_state_update_maps(_old_track_code, _old_track_code_date, newdf)
+            _old_run_times.add(str(run_at))
+            _state_code_date_json = {f"{cc}|{sd}": pair for (cc, sd), pair in _old_track_code_date.items()}
+            _leader_research_snapshot_state_save(
+                td, p, row_count=_total_rows_v22, run_times=_old_run_times,
+                track_code=_old_track_code, track_code_date=_state_code_date_json,
+            )
+            _state_status = "OK"
+        except Exception as _state_e:
+            _state_status = "WARN"
+            print(f"[leader-research-snapshot][V42][WARN] sidecar save failed: {_state_e}", flush=True)
+        try:
+            _perf_record_phase("export-detail:leader_snapshot_state_save", time.perf_counter()-_state_save_t0, _state_status)
+        except Exception:
+            pass
+
+        tracked = int(pd.to_numeric(newdf["🌈追跡現在比_pct"], errors="coerce").notna().sum())
+        print(
+            f"[leader-research-snapshot] appended={len(newdf)} total={_total_rows_v22} "
+            f"active_current={_active_rows} episode_history_only={_episode_rows} "
+            f"episode_targets={len(episode_map)} tracked={tracked} "
+            f"history_fallback={_tracking_fallback_rows} run_mode={run_mode} date={td} path={p}",
+            flush=True
+        )
+        if _episode_rows:
+            print(
+                "[leader-research-snapshot][INFO] NEWS_EPISODE_HISTORYも初回🌈価格を基準に"
+                " 現在比/MFE/MAEを追跡します。SAME_DAY_SNAPSHOT_APPROXのMAEはrun間近似、"
+                " CROSSDAY_DAILY+SNAPSHOTは翌営業日以降の当日高安も反映します。",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"[leader-research-snapshot][WARN] write failed: {e}", flush=True)
+
+# === /LEADER-RESEARCH-SNAPSHOT-LOG-V2 ===
+_LEADER_RESEARCH_LOG_COLUMNS = [
+    "取引日","event","コード","銘柄名","市場","episode_no",
+    "イベント時刻","🌈シグナル時刻","シグナル価格","イベント価格",
+    "leader_score","minute_RVOL","VWAP乖離_pct","RS5","前日比_pct",
+    "5日前比_pct","20日前比_pct","60日前比_pct",
+    "20日安値比_pct","60日安値比_pct","120日安値比_pct",
+    "20日60日出来高比","直近高値まで_pct","上値出来高比_5pct_60d",
+    "信用買い残増減率_20d","信用倍率","需給OH",
+    "初動出来高倍率20","初動代金倍率20","初動事前5日騰落率","初動事前20日騰落率",
+    "今買えるランク","主役化状態","再主役研究スコア","再主役強度","再主役爆発級",
+    "MFE_pct","シグナル比_pct","点火進行","FIRE期待度","FIRE期待score",
+    "🌈ニュース状態","🌈ニュース記事数","🌈材料記事数","🌈決算記事数","🌈値動き記事数","🌈一般記事数",
+    "株探ニュース判定用","記録更新時刻"
+]
+
+def _leader_research_log_path(trade_date_s):
+    LEADER_RESEARCH_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    return LEADER_RESEARCH_LOG_DIR / f"{trade_date_s}.csv"
+
+def _leader_research_safe(v):
+    try:
+        if v is None or pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    if isinstance(v, np.integer): return int(v)
+    if isinstance(v, np.floating): return float(v)
+    return v
+
+def _leader_research_upsert(row):
+    try:
+        td = str(row.get("取引日") or "").strip()
+        code = canonical_code_for_db(row.get("コード"))
+        event = str(row.get("event") or "").strip()
+        ep = int(_live_num(row.get("episode_no")) or 1)
+        if not td or not code or not event:
+            return
+        p = _leader_research_log_path(td)
+        nr = {c:_leader_research_safe(row.get(c,"")) for c in _LEADER_RESEARCH_LOG_COLUMNS}
+        nr["コード"], nr["episode_no"] = code, ep
+        nr["記録更新時刻"] = datetime.now(JST).isoformat(timespec="seconds")
+        try:
+            old = pd.read_csv(p, dtype={"コード":str}, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+        except Exception:
+            old = pd.DataFrame()
+        for c in _LEADER_RESEARCH_LOG_COLUMNS:
+            if c not in old.columns: old[c] = ""
+        if not old.empty:
+            mask = (
+                old["コード"].astype(str).map(canonical_code_for_db).eq(code)
+                & old["event"].astype(str).eq(event)
+                & pd.to_numeric(old["episode_no"],errors="coerce").fillna(1).astype(int).eq(ep)
+            )
+        else:
+            mask = pd.Series(False,index=old.index)
+        if bool(mask.any()):
+            ix=old.index[mask][0]
+            for c,v in nr.items():
+                if v not in ("",None): old.at[ix,c]=v
+        else:
+            old=pd.concat([old,pd.DataFrame([nr])],ignore_index=True)
+        tmp=p.with_suffix(".csv.tmp")
+        old[_LEADER_RESEARCH_LOG_COLUMNS].to_csv(tmp,index=False,encoding="utf-8-sig")
+        os.replace(tmp,p)
+    except Exception as e:
+        print(f"[leader-research-log][WARN] upsert failed: {e}",flush=True)
+
+def _leader_research_event_row(*,trade_date_s,event,code,name,market,episode_no,event_at,
+                               signal_at,signal_price,event_price=None,signal_score=None,
+                               signal_rvol=None,signal_gap=None,signal_rs5=None,signal_retprev=None,
+                               features=None,sr=None,mfe=None,ret_signal=None,ignition_progress=None,
+                               fire_grade=None,fire_score=None):
+    f=dict(features or {})
+    def g(k):
+        try: return sr.get(k) if sr is not None else None
+        except Exception: return None
+    return {
+        "取引日":trade_date_s,"event":event,"コード":code,"銘柄名":name,"市場":market,"episode_no":episode_no,
+        "イベント時刻":event_at,"🌈シグナル時刻":signal_at,"シグナル価格":signal_price,"イベント価格":event_price,
+        "leader_score":signal_score,"minute_RVOL":signal_rvol,"VWAP乖離_pct":signal_gap,"RS5":signal_rs5,"前日比_pct":signal_retprev,
+        "5日前比_pct":f.get("prior_ret_5d_pct"),"20日前比_pct":f.get("prior_ret_20d_pct"),"60日前比_pct":f.get("prior_ret_60d_pct"),
+        "20日安値比_pct":f.get("signal_vs_20d_low_pct"),"60日安値比_pct":f.get("signal_vs_60d_low_pct"),"120日安値比_pct":f.get("signal_vs_120d_low_pct"),
+        "20日60日出来高比":f.get("volume_dormancy_ratio_20v60"),"直近高値まで_pct":f.get("nearest_prior_high_room_pct"),
+        "上値出来高比_5pct_60d":f.get("overhead_volume_ratio_5pct_60d"),
+        "信用買い残増減率_20d":f.get("credit_buy_change_20d_pct"),"信用倍率":f.get("credit_ratio"),"需給OH":f.get("credit_buy_over_avg20vol_days"),
+        "初動出来高倍率20":g("初動出来高倍率20"),"初動代金倍率20":g("初動代金倍率20"),
+        "初動事前5日騰落率":g("初動事前5日騰落率"),"初動事前20日騰落率":g("初動事前20日騰落率"),
+        "今買えるランク":g("今買えるランク"),"主役化状態":g("主役化状態"),
+        "再主役研究スコア":g("再主役研究スコア"),"再主役強度":g("再主役強度"),"再主役爆発級":g("再主役爆発級"),
+        "MFE_pct":mfe,"シグナル比_pct":ret_signal,"点火進行":ignition_progress,"FIRE期待度":fire_grade,"FIRE期待score":fire_score,
+    }
+
+def _leader_research_enrich_news(df_cand):
+    try:
+        if df_cand is None or getattr(df_cand,"empty",True) or "コード" not in df_cand.columns:
+            return
+        td=_expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+        p=_leader_research_log_path(td)
+        if not p.exists(): return
+        logdf=pd.read_csv(p,dtype={"コード":str},encoding="utf-8-sig")
+        if logdf.empty: return
+        _log_code4=logdf["コード"].astype(str).map(canonical_code_for_db)
+        codes=set(_log_code4)
+        _df_code4=df_cand["コード"].map(canonical_code_for_db)
+        x=df_cand[_df_code4.isin(codes)]
+        if x.empty: return
+        for _,rr in x.iterrows():
+            code=canonical_code_for_db(rr.get("コード"))
+            mask=_log_code4.eq(code)
+            vals={
+                "🌈ニュース状態":rr.get("🌈ニュース状態"),"🌈ニュース記事数":rr.get("🌈ニュース記事数"),
+                "🌈材料記事数":rr.get("🌈材料記事数"),"🌈決算記事数":rr.get("🌈決算記事数"),
+                "🌈値動き記事数":rr.get("🌈値動き記事数"),"🌈一般記事数":rr.get("🌈一般記事数"),
+                "株探ニュース判定用":rr.get("株探ニュース判定用"),"今買えるランク":rr.get("今買えるランク"),
+                "主役化状態":rr.get("主役化状態"),"再主役研究スコア":rr.get("再主役研究スコア"),
+                "再主役強度":rr.get("再主役強度"),"再主役爆発級":rr.get("再主役爆発級"),
+            }
+            for c,v in vals.items():
+                if c not in logdf.columns: logdf[c]=""
+                if v is not None:
+                    try:
+                        if pd.isna(v): continue
+                    except Exception: pass
+                    logdf.loc[mask,c]=v
+            logdf.loc[mask,"記録更新時刻"]=datetime.now(JST).isoformat(timespec="seconds")
+        for c in _LEADER_RESEARCH_LOG_COLUMNS:
+            if c not in logdf.columns: logdf[c]=""
+        tmp=p.with_suffix(".csv.tmp")
+        logdf[_LEADER_RESEARCH_LOG_COLUMNS].to_csv(tmp,index=False,encoding="utf-8-sig")
+        os.replace(tmp,p)
+        print(f"[leader-research-log] news enriched rows={len(logdf)} path={p}",flush=True)
+    except Exception as e:
+        print(f"[leader-research-log][WARN] news enrich failed: {e}",flush=True)
+# === /LEADER-RESEARCH-LIGHT-LOG-V1 ===
+
+
+_FIRE_EXPECTANCY_CACHE = None
+
+def _leader_load_expectancy_model():
+    global _FIRE_EXPECTANCY_CACHE
+    if _FIRE_EXPECTANCY_CACHE is not None:
+        return _FIRE_EXPECTANCY_CACHE
+    try:
+        with open(LEADER_EXPECTANCY_MODEL_PATH, "r", encoding="utf-8") as f:
+            d=json.load(f)
+        # coefficients -> (feature,bin)->coef
+        d["_coef_map"]={(str(x.get("feature")),int(x.get("bin_id"))):float(x.get("coefficient") or 0.0) for x in d.get("coefficients",[])}
+        _FIRE_EXPECTANCY_CACHE=d
+        return d
+    except Exception as e:
+        print(f"[leader][WARN] FIRE expectancy model unavailable: {e}")
+        _FIRE_EXPECTANCY_CACHE={}
+        return _FIRE_EXPECTANCY_CACHE
+
+def _leader_hist_num_series(g, col):
+    return pd.to_numeric(g[col], errors="coerce") if g is not None and not g.empty and col in g.columns else pd.Series(dtype=float)
+
+def _leader_expectancy_features(code, signal_price, signal_score, signal_rvol, signal_gap, signal_rs5, trade_date, daily_map, sr):
+    f={"signal_score":signal_score,"signal_minute_rvol":signal_rvol,"signal_vwap_gap_pct":signal_gap,"signal_rs5":signal_rs5}
+    g=daily_map.get(str(code))
+    if g is None or g.empty:
+        return f
+    h=g[g["日付"] < trade_date].tail(140).copy()
+    if h.empty: return f
+    close=_leader_hist_num_series(h,"終値"); high=_leader_hist_num_series(h,"高値"); low=_leader_hist_num_series(h,"安値"); vol=_leader_hist_num_series(h,"出来高")
+    last=_live_num(close.iloc[-1]) if len(close) else None
+    for n in (5,20,60):
+        base=_live_num(close.iloc[-n-1]) if len(close)>=n+1 else None
+        f[f"prior_ret_{n}d_pct"]=_leader_pct(last,base) if last is not None and base not in (None,0) else None
+    for n in (20,60,120):
+        w=h.tail(n); ll=_live_num(pd.to_numeric(w.get("安値"),errors="coerce").min()) if "安値" in w else None
+        f[f"signal_vs_{n}d_low_pct"]=_leader_pct(signal_price,ll) if ll not in (None,0) else None
+    v20=_live_num(vol.tail(20).mean()) if len(vol) else None; v60=_live_num(vol.tail(60).mean()) if len(vol) else None
+    f["volume_dormancy_ratio_20v60"]=(v20/v60) if v20 is not None and v60 not in (None,0) else None
+    if len(h)>=21 and "高値" in h:
+        hh=pd.to_numeric(h["高値"],errors="coerce"); roll=hh.rolling(20,min_periods=10).max().shift(1)
+        f["new_high_events_20d"]=int((hh.tail(20)>roll.tail(20)).sum())
+    else: f["new_high_events_20d"]=None
+    if all(c in h.columns for c in ("高値","安値","終値","出来高")):
+        typ=(pd.to_numeric(h["高値"],errors="coerce")+pd.to_numeric(h["安値"],errors="coerce")+pd.to_numeric(h["終値"],errors="coerce"))/3.0
+        w=h.tail(60); t=typ.loc[w.index]; vv=pd.to_numeric(w["出来高"],errors="coerce").fillna(0.0)
+        mask=(t>=signal_price)&(t<=signal_price*1.05); total=float(vv.sum())
+        f["overhead_volume_ratio_5pct_60d"]=float(vv[mask].sum())/total if total>0 else None
+        av=_live_num(vv.tail(min(20,len(vv))).mean())
+        f["overhead_heavy_volume_days_5pct_60d"]=int((mask & (vv >= (av*1.5 if av else np.inf))).sum())
+        highs=pd.to_numeric(h.tail(120)["高値"],errors="coerce").dropna(); above=highs[highs>signal_price]
+        nearest=_live_num(above.min()) if len(above) else None
+        f["nearest_prior_high_room_pct"]=_leader_pct(nearest,signal_price) if nearest else None
+        ge=h[pd.to_numeric(h["終値"],errors="coerce")>=signal_price]
+        if not ge.empty:
+            try: f["days_since_close_at_or_above_signal"]=(pd.Timestamp(h.iloc[-1]["日付"])-pd.Timestamp(ge.iloc[-1]["日付"])).days
+            except Exception: f["days_since_close_at_or_above_signal"]=None
+        else: f["days_since_close_at_or_above_signal"]=None
+    f["credit_ratio"]=_live_num(sr.get("信用倍率")) if sr is not None else None
+    f["credit_buy_change_20d_pct"]=_live_num(sr.get("信用買い残増減率_20d")) if sr is not None else None
+    f["credit_buy_over_avg20vol_days"]=_live_num(sr.get("需給OH")) if sr is not None else None
+    return f
+
+def _leader_expectancy_grade(features):
+    m=_leader_load_expectancy_model()
+    if not m: return "",None,"モデル未読込"
+    score=float(m.get("intercept") or 0.0); parts=[]
+    for feat in m.get("features",[]):
+        v=_live_num(features.get(feat)); edges=m.get("bin_edges",{}).get(feat,[])
+        if v is None: bid=-1
+        else:
+            bid=0
+            while bid < len(edges) and v > float(edges[bid]): bid+=1
+        coef=float(m.get("_coef_map",{}).get((feat,bid),0.0)); score+=coef
+        if abs(coef)>=0.10: parts.append((abs(coef),coef,m.get("feature_labels",{}).get(feat,feat)))
+    prob=1.0/(1.0+math.exp(-max(-30,min(30,score))))
+    th=m.get("grade_thresholds",{})
+    # training artifact thresholds are probability cutoffs
+    s=float(th.get("S",0.55) if isinstance(th,dict) else 0.55); a=float(th.get("A",0.41) if isinstance(th,dict) else 0.41); b=float(th.get("B",0.25) if isinstance(th,dict) else 0.25)
+    grade="S" if prob>=s else "A" if prob>=a else "B" if prob>=b else "C"
+    pos=[x[2] for x in sorted([p for p in parts if p[1]>0],reverse=True)[:3]]
+    neg=[x[2] for x in sorted([p for p in parts if p[1]<0],reverse=True)[:2]]
+    reason=("強: "+" / ".join(pos) if pos else "") + ((" | 注意: "+" / ".join(neg)) if neg else "")
+    return grade,prob,reason.strip(" |")
+
+def _leader_ignition_progress(signal_score, signal_gap, signal_rs5, current_score, current_gap, current_rs5, current_ret, current_mfe):
+    up=[]; down=[]
+    if current_score is not None and signal_score is not None and current_score>=signal_score+5: up.append("主役S改善")
+    if current_gap is not None and signal_gap is not None and current_gap>=signal_gap+0.30: up.append("VWAP乖離拡大")
+    if current_rs5 is not None and signal_rs5 is not None and current_rs5>=signal_rs5+0.02: up.append("RS改善")
+    if current_mfe is not None and current_mfe>=0.50: up.append("高値進展")
+    if current_score is not None and current_score<40: down.append("主役S低下")
+    if current_gap is not None and current_gap<0: down.append("VWAP割れ")
+    if current_rs5 is not None and current_rs5<0: down.append("RS逆転")
+    if current_ret is not None and current_ret<=-1.0: down.append("主役価格割れ")
+    if len(down)>=2: return "⬇", " / ".join(down[:3])
+    if len(up)>=2: return "⬆", " / ".join(up[:3])
+    return "→", " / ".join((up or down)[:2]) or "状態維持"
+
+def phase_leader_signal_shadow(conn: sqlite3.Connection):
+    # 状態ベース🌈/🔥/⚠ + FIRE基礎期待度。MIDDAYのみ更新、時間は判定条件に使わない。
+    if _auto_run_mode() != "MIDDAY":
+        return {"skipped":"not_midday"}
+    now=_now_jst(); trade_date_s=_expected_snapshot_date_for_run("MIDDAY").isoformat(); trade_date=date.fromisoformat(trade_date_s)
+    lc=_live_snapshot_conn()
+    try:
+        _leader_ensure_schema(lc)
+        cutoff=(trade_date-timedelta(days=45)).isoformat()
+        with lc:
+            lc.execute("DELETE FROM leader_signal_state WHERE trade_date < ?",(cutoff,))
+        lc.row_factory=sqlite3.Row
+        try: existing={str(r["code"]):dict(r) for r in lc.execute("SELECT * FROM leader_signal_state WHERE trade_date=?",(trade_date_s,)).fetchall()}
+        finally: lc.row_factory=None
+        forced=set(existing.keys())
+        _lp0=time.perf_counter()
+        uni=_leader_candidate_universe(conn,trade_date_s,forced)
+        _lp_pref=time.perf_counter()-_lp0
+        try: _perf_record_phase("leader:prefilter", _lp_pref)
+        except Exception: pass
+        if uni.empty and not forced:
+            _leader_export_state_json(lc,trade_date_s,now.isoformat(timespec="seconds")); return {"prefilter":0}
+        row_map={str(r["_code"]):r for _,r in uni.iterrows()}
+        codes=list(dict.fromkeys(list(row_map.keys())+sorted(forced)))
+        t0=time.perf_counter()
+        _ld0=time.perf_counter(); minute_map=_leader_download_1m_map(conn,codes); _ld=time.perf_counter()-_ld0
+        try: _perf_record_phase("leader:minute_download_total", _ld)
+        except Exception: pass
+        _dd0=time.perf_counter(); daily_map=_leader_daily_close_map(conn,trade_date_s); _dd=time.perf_counter()-_dd0
+        try: _perf_record_phase("leader:daily_map", _dd)
+        except Exception: pass
+        _eval0=time.perf_counter()
+        rainbow_new=fire_new=risk_new=recover_new=0
+        priority_notice_new=priority_notice_fire=priority_notice_up=priority_notice_risk=0
+        _v38_feature_total = 0.0
+        for code in codes:
+            x=minute_map.get(code)
+            if x is None or x.empty: continue
+            _v38_ft0 = time.perf_counter()
+            day,_=_leader_build_minute_features(x,trade_date)
+            _v38_feature_total += time.perf_counter() - _v38_ft0
+            if day.empty: continue
+            sr=row_map.get(code); old=existing.get(code)
+            new_rainbow_this_run=False
+            market=str((sr.get("市場") if sr is not None else None) or (old or {}).get("market") or "")
+            name=str((sr.get("銘柄名") if sr is not None else None) or (old or {}).get("name") or "")
+            # 新規🌈: score/VWAP/VWAPgapを満たす全時刻を順にRS確認。前日比・時計は条件外。
+            if not old:
+                prelim=day[(pd.to_numeric(day["leader_score"],errors="coerce")>=LEADER_BASE_SCORE) & day["above_vwap"].fillna(False) & (pd.to_numeric(day["vwap_gap_pct"],errors="coerce")>=LEADER_STAGE1_MIN_VWAP_GAP_PCT)]
+                signal_ts=signal_rs=None
+                for ts,sig in prelim.iterrows():
+                    px=_live_num(sig.get("Close"));
+                    if px is None: continue
+                    rs=_leader_rs5_at_signal(code,market,trade_date,pd.Timestamp(ts),px,daily_map,minute_map)
+                    if rs is not None and rs>=LEADER_STAGE1_MIN_RS5: signal_ts=pd.Timestamp(ts); signal_rs=float(rs); break
+                if signal_ts is None: continue
+                sig=day.loc[signal_ts]; sp=_live_num(sig.get("Close")); score=_live_num(sig.get("leader_score")); gap=_live_num(sig.get("vwap_gap_pct")); rvol=_live_num(sig.get("minute_rvol")); retprev=_live_num(sig.get("ret_prev_pct"))
+                feats=_leader_expectancy_features(code,sp,score,rvol,gap,signal_rs,trade_date,daily_map,sr)
+                grade,prob,exp_reason=_leader_expectancy_grade(feats)
+                reason=f"状態ベース主役化 score={score:.1f} / VWAP乖離={gap:+.2f}% / RS5={signal_rs:+.4f} / 前日比={retprev:+.2f}%（記録のみ） / 時刻条件なし"
+                ns=now.isoformat(timespec="seconds")
+                with lc:
+                    lc.execute('''INSERT OR REPLACE INTO leader_signal_state(
+                        trade_date,code,name,market,signal_at,signal_price,signal_score,signal_ret_prev_pct,signal_minute_rvol,signal_vwap_gap_pct,signal_rs5,
+                        stage1_strong,initial_momentum,initial_momentum_score,stage,stage1_notice_done,stage1_notified_at,episode_no,episode_started_at,
+                        reason,research_version,updated_at,fire_expectancy_grade,fire_expectancy_score,fire_expectancy_reason,ignition_progress,ignition_reason,
+                        current_mfe_pct,current_ret_signal_pct,current_vwap_gap_pct,current_rs5,current_leader_score
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,NULL,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(
+                        trade_date_s,code,name,market,signal_ts.isoformat(),sp,score,retprev,rvol,gap,signal_rs,
+                        int(bool(rvol is not None and rvol>=5 and signal_rs>=0.05)),_live_num(sr.get("INITIAL_MOMENTUM")) if sr is not None else None,
+                        _live_num(sr.get("INITIAL_MOMENTUM_SCORE")) if sr is not None else None,"RAINBOW_PENDING",signal_ts.isoformat(),reason,
+                        "STATE_BASED_LEADER_V2+FIRE_EXPECTANCY_V1",ns,grade,prob,exp_reason,"→","初期状態",0.0,0.0,gap,signal_rs,score))
+                    _leader_append_history(lc,trade_date=trade_date_s,code=code,name=name,market=market,event_at=ns,event_type="RAINBOW_DETECTED",stage_from=None,stage_to="RAINBOW_PENDING",signal_at=signal_ts.isoformat(),signal_price=sp,signal_score=score,signal_ret_prev_pct=retprev,signal_minute_rvol=rvol,signal_vwap_gap_pct=gap,signal_rs5=signal_rs,reason=reason,research_version="STATE_BASED_LEADER_V2+FIRE_EXPECTANCY_V1")
+                _leader_research_upsert(_leader_research_event_row(
+                    trade_date_s=trade_date_s,event="RAINBOW",code=code,name=name,market=market,episode_no=1,
+                    event_at=ns,signal_at=signal_ts.isoformat(),signal_price=sp,signal_score=score,signal_rvol=rvol,
+                    signal_gap=gap,signal_rs5=signal_rs,signal_retprev=retprev,features=feats,sr=sr,
+                    ignition_progress="→",fire_grade=grade,fire_score=prob))
+                # 通知は後段で現在点火状態まで見て、同runでは最重要の1種類だけ送る。
+                rainbow_new+=1; new_rainbow_this_run=True
+                old={"signal_at":signal_ts.isoformat(),"signal_price":sp,"signal_score":score,"signal_vwap_gap_pct":gap,"signal_rs5":signal_rs,"stage":"RAINBOW_PENDING","name":name,"market":market,"fire_expectancy_grade":grade,"fire_expectancy_score":prob,"ignition_progress":"→","episode_no":1}
+                existing[code]=old
+            if not old: continue
+            try:
+                sts=pd.Timestamp(old.get("signal_at")); sts=sts.tz_localize("Asia/Tokyo") if sts.tzinfo is None else sts.tz_convert("Asia/Tokyo")
+            except Exception: continue
+            sp=_live_num(old.get("signal_price"));
+            if sp is None or sp<=0: continue
+            post=day[day.index>=sts]
+            if post.empty: continue
+            maxhi=_live_num(pd.to_numeric(post["High"],errors="coerce").max()); cur=post.iloc[-1]; px=_live_num(cur.get("Close")); vwap=_live_num(cur.get("VWAP")); score=_live_num(cur.get("leader_score")); gap=_live_num(cur.get("vwap_gap_pct"))
+            if None in (px,vwap,score): continue
+            mfe=_leader_pct(maxhi,sp) if maxhi is not None else None; ret=_leader_pct(px,sp)
+            # RSは状態遷移候補または表示更新時に現在時刻で再計算
+            rs=_leader_rs5_at_signal(code,market,trade_date,pd.Timestamp(cur.name),px,daily_map,minute_map)
+            progress,prog_reason=_leader_ignition_progress(_live_num(old.get("signal_score")),_live_num(old.get("signal_vwap_gap_pct")),_live_num(old.get("signal_rs5")),score,gap,rs,ret,mfe)
+            stage=str(old.get("stage") or "RAINBOW_PENDING"); ns=now.isoformat(timespec="seconds")
+            grade=str(old.get("fire_expectancy_grade") or "").strip().upper()
+            prev_progress=str(old.get("ignition_progress") or "").strip()
+            try: episode_no=max(1,int(old.get("episode_no") or 1))
+            except Exception: episode_no=1
+            fire_ok=bool(mfe is not None and mfe>=LEADER_FIRE_MIN_MFE_PCT and px>sp and px>=vwap and score>=LEADER_BASE_SCORE and rs is not None and rs>=0)
+            risk_ok=bool(px<vwap and score<LEADER_RISK_SCORE_MAX and rs is not None and rs<0 and (bool(cur.get("lower_high_low")) or (ret is not None and ret<=LEADER_RISK_DRAWDOWN_PCT)))
+            recover_ok=bool(stage=="RISK_PROVISIONAL" and px>=vwap and gap is not None and gap>=LEADER_STAGE1_MIN_VWAP_GAP_PCT and score>=LEADER_BASE_SCORE and rs is not None and rs>=0)
+            is_fire_stage=stage in {"FIRE_CONFIRMED","FIRE_REIGNITED"}
+            newstage=stage; reason=str(old.get("reason") or "")
+            fire_transition=False; risk_transition=False
+            # FIRE後もstageは維持したままcurrent指標/点火進行を毎run更新する。
+            if not is_fire_stage:
+                if fire_ok:
+                    newstage="FIRE_CONFIRMED"; fire_transition=True; elapsed=(pd.Timestamp(cur.name)-sts).total_seconds()/60.0
+                    reason=f"状態ベース継続期待 MFE={mfe:+.2f}% / 主役比={ret:+.2f}% / score={score:.1f} / VWAP上 / RS5={rs:+.4f} / 経過{elapsed:.0f}分（経過時間は条件外）"
+                    fire_new+=1
+                    with lc: _leader_append_history(lc,trade_date=trade_date_s,code=code,name=name,market=market,event_at=ns,event_type="FIRE_CONFIRMED",stage_from=stage,stage_to=newstage,signal_at=str(old.get("signal_at")),signal_price=sp,event_price=px,event_vwap_gap_pct=gap,post_prev_mfe_pct=mfe,event_ret_signal_pct=ret,elapsed_from_prev_min=elapsed,reason=reason,research_version="STATE_BASED_LEADER_V2+FIRE_EXPECTANCY_V1")
+                    _fire_feats=_leader_expectancy_features(code,sp,_live_num(old.get("signal_score")),_live_num(old.get("signal_minute_rvol")),_live_num(old.get("signal_vwap_gap_pct")),_live_num(old.get("signal_rs5")),trade_date,daily_map,sr)
+                    _leader_research_upsert(_leader_research_event_row(
+                        trade_date_s=trade_date_s,event="FIRE",code=code,name=name,market=market,episode_no=episode_no,
+                        event_at=ns,signal_at=str(old.get("signal_at")),signal_price=sp,event_price=px,
+                        signal_score=_live_num(old.get("signal_score")),signal_rvol=_live_num(old.get("signal_minute_rvol")),
+                        signal_gap=_live_num(old.get("signal_vwap_gap_pct")),signal_rs5=_live_num(old.get("signal_rs5")),
+                        signal_retprev=_live_num(old.get("signal_ret_prev_pct")),features=_fire_feats,sr=sr,mfe=mfe,ret_signal=ret,
+                        ignition_progress=progress,fire_grade=grade,fire_score=_live_num(old.get("fire_expectancy_score"))))
+                elif stage=="RAINBOW_PENDING" and risk_ok:
+                    newstage="RISK_PROVISIONAL"; risk_transition=True; reason=f"主役性弱化 VWAP割れ / RS5={rs:+.4f} / score={score:.1f} / 主役比={ret:+.2f}% / 構造崩れ（時間条件なし）"; risk_new+=1
+                    with lc: _leader_append_history(lc,trade_date=trade_date_s,code=code,name=name,market=market,event_at=ns,event_type="RISK_PROVISIONAL",stage_from=stage,stage_to=newstage,signal_at=str(old.get("signal_at")),signal_price=sp,event_price=px,event_vwap_gap_pct=gap,post_prev_mfe_pct=mfe,event_ret_signal_pct=ret,reason=reason,research_version="STATE_BASED_LEADER_V2+FIRE_EXPECTANCY_V1")
+                elif recover_ok:
+                    newstage="RAINBOW_PENDING"; reason=f"主役性回復 score={score:.1f} / VWAP乖離={gap:+.2f}% / RS5={rs:+.4f}（時間条件なし）"; recover_new+=1
+                    with lc: _leader_append_history(lc,trade_date=trade_date_s,code=code,name=name,market=market,event_at=ns,event_type="RAINBOW_RECOVERED",stage_from=stage,stage_to=newstage,signal_at=str(old.get("signal_at")),signal_price=sp,event_price=px,event_vwap_gap_pct=gap,post_prev_mfe_pct=mfe,event_ret_signal_pct=ret,reason=reason,research_version="STATE_BASED_LEADER_V2+FIRE_EXPECTANCY_V1")
+
+            # 本命通知は同run内で優先順位を付けて1種類。
+            # 1) 🔥S/Aかつ⬆  2) Sが⬆へ遷移  3) 新規🌈S
+            _mfe_txt=f"{mfe:+.1f}%" if mfe is not None else "-"
+            _ret_txt=f"{ret:+.1f}%" if ret is not None else "-"
+            _gap_txt=f"{gap:+.1f}%" if gap is not None else "-"
+            _rs_txt=f"{rs:+.3f}" if rs is not None else "-"
+            _priority_sent_this_run=False
+            if fire_transition and grade in {"S","A"} and progress=="⬆" and _leader_priority_notice_enabled("FIRE_CORE"):
+                _label="S本命" if grade=="S" else "A本命"
+                _priority_sent_this_run=_leader_priority_notify_once(
+                    lc,trade_date=trade_date_s,code=code,episode_no=episode_no,notice_type="FIRE_CORE",
+                    title=f"🔥 {_label} 継続確認 {code} {name}".strip(),
+                    message=f"{grade} / ⬆ / MFE{_mfe_txt} / 主役比{_ret_txt} / VWAP{_gap_txt} / RS5{_rs_txt}",
+                )
+                if _priority_sent_this_run: priority_notice_fire+=1
+            elif grade=="S" and progress=="⬆" and prev_progress!="⬆" and _leader_priority_notice_enabled("S_UP"):
+                _priority_sent_this_run=_leader_priority_notify_once(
+                    lc,trade_date=trade_date_s,code=code,episode_no=episode_no,notice_type="S_UP",
+                    title=f"🚀 S主役・点火加速 {code} {name}".strip(),
+                    message=f"S / ⬆ / 主役比{_ret_txt} / MFE{_mfe_txt} / VWAP{_gap_txt} / RS5{_rs_txt}",
+                )
+                if _priority_sent_this_run: priority_notice_up+=1
+            elif new_rainbow_this_run and grade=="S" and _leader_priority_notice_enabled("RAINBOW_S"):
+                _priority_sent_this_run=_leader_priority_notify_once(
+                    lc,trade_date=trade_date_s,code=code,episode_no=episode_no,notice_type="RAINBOW_S",
+                    title=f"🌈 S主役化 {code} {name}".strip(),
+                    message=f"S / score{_live_num(old.get('signal_score')) or 0:.0f} / VWAP{_live_num(old.get('signal_vwap_gap_pct')) or 0:+.1f}% / RS5{_live_num(old.get('signal_rs5')) or 0:+.3f}",
+                )
+                if _priority_sent_this_run: priority_notice_new+=1
+
+            # 以前に本命通知した銘柄だけ、⬇遷移/構造弱化を一度警告。一般の⚠は鳴らさない。
+            _lost_priority=bool((progress=="⬇" and prev_progress!="⬇") or risk_transition)
+            if _lost_priority and LEADER_RISK_NOTIFY and _leader_priority_notice_enabled("CORE_WEAKENED") and _leader_priority_notice_sent(
+                lc,trade_date_s,code,episode_no,["RAINBOW_S","S_UP","FIRE_CORE"]
+            ):
+                if _leader_priority_notify_once(
+                    lc,trade_date=trade_date_s,code=code,episode_no=episode_no,notice_type="CORE_WEAKENED",
+                    title=f"⚠ 本命失速 {code} {name}".strip(),
+                    message=f"{grade or '-'} / 点火{progress} / 主役比{_ret_txt} / VWAP{_gap_txt} / RS5{_rs_txt} / score{score:.0f}",
+                    allow=True,
+                ): priority_notice_risk+=1
+
+            fire_at=ns if newstage=="FIRE_CONFIRMED" and stage!="FIRE_CONFIRMED" else old.get("fire_at")
+            fire_price=px if newstage=="FIRE_CONFIRMED" and stage!="FIRE_CONFIRMED" else old.get("fire_price")
+            fire_elapsed=((pd.Timestamp(cur.name)-sts).total_seconds()/60.0) if newstage=="FIRE_CONFIRMED" else old.get("fire_elapsed_min")
+            with lc:
+                lc.execute('''UPDATE leader_signal_state SET stage=?,current_mfe_pct=?,current_ret_signal_pct=?,current_vwap_gap_pct=?,current_rs5=?,current_leader_score=?,fire_at=?,fire_price=?,fire_elapsed_min=?,ignition_progress=?,ignition_reason=?,reason=?,research_version=?,updated_at=? WHERE trade_date=? AND code=?''',
+                           (newstage,mfe,ret,gap,rs,score,fire_at,fire_price,fire_elapsed,progress,prog_reason,reason,"STATE_BASED_LEADER_V2+FIRE_EXPECTANCY_V1",ns,trade_date_s,code))
+        _eval_elapsed=time.perf_counter()-_eval0
+        try: _perf_record_phase("leader:feature_build_total", _v38_feature_total)
+        except Exception: pass
+        try: _perf_record_phase("leader:evaluate_and_persist", _eval_elapsed)
+        except Exception: pass
+        _leader_export_state_json(lc,trade_date_s,now.isoformat(timespec="seconds"))
+        counts=dict(lc.execute("SELECT stage,COUNT(*) FROM leader_signal_state WHERE trade_date=? GROUP BY stage",(trade_date_s,)).fetchall())
+        print(f"[leader] prefilter={len(uni)} minute_ok={sum(c in minute_map for c in codes)} rainbow_new={rainbow_new} fire_new={fire_new} risk_new={risk_new} recover_new={recover_new} notify_profile={LEADER_NOTIFY_PROFILE} priority_notice[S={priority_notice_new},S↑={priority_notice_up},FIRE={priority_notice_fire},WEAK={priority_notice_risk}] states={counts} dt={time.perf_counter()-t0:.2f}s",flush=True)
+        return {"prefilter":len(uni),"rainbow_new":rainbow_new,"fire_new":fire_new,"risk_new":risk_new,"recover_new":recover_new,"priority_notice_s":priority_notice_new,"priority_notice_s_up":priority_notice_up,"priority_notice_fire":priority_notice_fire,"priority_notice_risk":priority_notice_risk,"states":counts}
+    finally:
+        lc.close()
+
+
+def _leader_rainbow_news_pre_days(run_mode=None) -> int:
+    """run mode別の🌈ニュース事前取得日数。
+
+    MIDDAY(場中) / PREOPEN: 5日
+    EOD: 10日
+    その他: episode_pre_days fallback
+    """
+    try:
+        mode = str(run_mode or _auto_run_mode() or "").upper()
+    except Exception:
+        mode = str(run_mode or "").upper()
+    if mode == "MIDDAY":
+        return max(0, int(_KABUNEWS_CONF.get("episode_pre_days_live", 5)))
+    if mode == "PREOPEN":
+        return max(0, int(_KABUNEWS_CONF.get("episode_pre_days_preopen", 5)))
+    if mode == "EOD":
+        return max(0, int(_KABUNEWS_CONF.get("episode_pre_days", 10)))
+    return max(0, int(_KABUNEWS_CONF.get("episode_pre_days", 10)))
+
+
+def _leader_news_episode_key(code: str, trade_date_s: str, episode_no=1, signal_at: str = "") -> str:
+    cc = canonical_code_for_db(code) or str(code or "").strip().upper()
+    try:
+        ep = max(1, int(episode_no or 1))
+    except Exception:
+        ep = 1
+    return f"{cc}|{str(trade_date_s or '')}|E{ep}|{str(signal_at or '')}"
+
+
+_LEADER_NEWS_EPISODE_MAP_RUN_CACHE = {}
+
+def _leader_rainbow_news_episode_map() -> dict[str, dict]:
+    """追跡中のRAINBOW_DETECTEDをepisode単位で返す。
+
+    戻り値はdashboard互換のためcode keyedのままにし、各code配下へ ``episodes`` を保持する。
+    RSSはcodeごとに一括照会できる一方、保存・20営業日満了・取得状態はepisodeごとに管理する。
+    """
+    _mode = str(_auto_run_mode() or "").upper()
+    td = _expected_snapshot_date_for_run(_mode).isoformat()
+    _cache_key = (_mode, td, int(_KABUNEWS_CONF.get("episode_max_business_days", 20)), _leader_rainbow_news_pre_days(_mode))
+    _cached = _LEADER_NEWS_EPISODE_MAP_RUN_CACHE.get(_cache_key)
+    if isinstance(_cached, dict):
+        return _cached
+
+    c = _live_snapshot_conn()
+    try:
+        _leader_ensure_schema(c)
+        max_bd = max(1, int(_KABUNEWS_CONF.get("episode_max_business_days", 20)))
+        pre_days = _leader_rainbow_news_pre_days()
+        start_cal = (date.fromisoformat(td) - timedelta(days=max_bd * 2 + pre_days + 7)).isoformat()
+
+        # historyを正本にする。episode_no/signal_atが揃うため同日再主役も独立追跡できる。
+        rows = c.execute(
+            """SELECT trade_date,code,episode_no,signal_at,event_at,name,market
+               FROM leader_signal_history
+               WHERE trade_date>=? AND trade_date<=? AND event_type='RAINBOW_DETECTED'
+               ORDER BY trade_date,event_at,event_id""",
+            (start_cal, td),
+        ).fetchall()
+
+        episode_rows = []
+        seen = set()
+        for rr in rows:
+            trade_s = str(rr[0] or "")
+            cc = canonical_code_for_db(rr[1])
+            try:
+                ep_no = max(1, int(rr[2] or 1))
+            except Exception:
+                ep_no = 1
+            signal_at = str(rr[3] or rr[4] or "")
+            if not cc or not trade_s:
+                continue
+            key = _leader_news_episode_key(cc, trade_s, ep_no, signal_at)
+            if key in seen:
+                continue
+            seen.add(key)
+            episode_rows.append((trade_s, cc, ep_no, signal_at, str(rr[5] or ""), str(rr[6] or ""), key))
+
+        # legacy/部分移行の保険。history欠損episodeだけstateから補う。
+        state_rows = c.execute(
+            """SELECT trade_date,code,episode_no,signal_at,name,market
+               FROM leader_signal_state
+               WHERE trade_date>=? AND trade_date<=? AND signal_at IS NOT NULL
+               ORDER BY trade_date,code""",
+            (start_cal, td),
+        ).fetchall()
+        for rr in state_rows:
+            trade_s = str(rr[0] or "")
+            cc = canonical_code_for_db(rr[1])
+            try:
+                ep_no = max(1, int(rr[2] or 1))
+            except Exception:
+                ep_no = 1
+            signal_at = str(rr[3] or "")
+            if not cc or not trade_s:
+                continue
+            key = _leader_news_episode_key(cc, trade_s, ep_no, signal_at)
+            if key in seen:
+                continue
+            seen.add(key)
+            episode_rows.append((trade_s, cc, ep_no, signal_at, str(rr[4] or ""), str(rr[5] or ""), key))
+
+        out = {}
+        for trade_s, cc, ep_no, signal_at, name, market, key in episode_rows:
+            elapsed = _leader_lifecycle_business_elapsed(trade_s, td)
+            if elapsed is None or elapsed < 0 or elapsed > max_bd:
+                continue
+            first_d = date.fromisoformat(trade_s)
+            epd = {
+                "episode_key": key,
+                "trade_date": trade_s,
+                "first_rainbow_date": trade_s,
+                "episode_no": ep_no,
+                "signal_at": signal_at,
+                "name": name,
+                "market": market,
+                "window_start": (first_d - timedelta(days=pre_days)).isoformat(),
+                "asof_date": td,
+                "elapsed_business_days": int(elapsed),
+            }
+            info = out.setdefault(cc, {"episodes": []})
+            info["episodes"].append(epd)
+
+        # 既存caller互換の集約フィールド。実管理はepisodes配列が正本。
+        for cc, info in out.items():
+            eps = sorted(info.get("episodes") or [], key=lambda e: (e.get("trade_date", ""), e.get("signal_at", ""), int(e.get("episode_no") or 1)))
+            info["episodes"] = eps
+            if not eps:
+                continue
+            first = eps[0]
+            latest = eps[-1]
+            info.update({
+                "first_rainbow_date": first.get("trade_date", ""),
+                "window_start": min((e.get("window_start") or first.get("window_start", "")) for e in eps),
+                "asof_date": td,
+                "elapsed_business_days": first.get("elapsed_business_days"),
+                "latest_episode_date": latest.get("trade_date", ""),
+                "latest_episode_no": latest.get("episode_no", 1),
+                "latest_signal_at": latest.get("signal_at", ""),
+            })
+        _LEADER_NEWS_EPISODE_MAP_RUN_CACHE[_cache_key] = out
+        return out
+    except Exception as e:
+        print(f"[news][WARN] 🌈ニュースepisode対象取得失敗: {e}", flush=True)
+        return {}
+    finally:
+        c.close()
+
+
+def _leader_rainbow_news_target_codes() -> set[str]:
+    return set(_leader_rainbow_news_episode_map().keys())
+
+
+def _leader_news_subset_info(info: dict, episodes: list[dict]) -> dict:
+    eps = list(episodes or [])
+    if not eps:
+        return {}
+    eps = sorted(eps, key=lambda e: (e.get("trade_date", ""), e.get("signal_at", ""), int(e.get("episode_no") or 1)))
+    first, latest = eps[0], eps[-1]
+    return {
+        "episodes": eps,
+        "first_rainbow_date": first.get("trade_date", ""),
+        "window_start": min((e.get("window_start") or first.get("window_start", "")) for e in eps),
+        "asof_date": (info or {}).get("asof_date") or latest.get("asof_date", ""),
+        "elapsed_business_days": first.get("elapsed_business_days"),
+        "latest_episode_date": latest.get("trade_date", ""),
+        "latest_episode_no": latest.get("episode_no", 1),
+        "latest_signal_at": latest.get("signal_at", ""),
+    }
+
+
+def _leader_news_parse_pub_date(pub) -> date | None:
+    s = str(pub or "").strip()
+    if not s:
+        return None
+    try:
+        d = _pdt(s)
+        if d is not None:
+            # NEWS-PUBDATE-JST-V1: RSSのaware日時はJSTへ変換してから暦日化。
+            # naive日時/日付文字列は従来どおりその日付を維持する。
+            return d.astimezone(JST).date() if d.tzinfo is not None else d.date()
+    except Exception:
+        pass
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return d.astimezone(JST).date() if d.tzinfo is not None else d.date()
+    except Exception:
+        pass
+    if len(s) >= 10:
+        try:
+            return datetime.strptime(s[:10].replace("/", "-"), "%Y-%m-%d").date()
+        except Exception:
+            pass
+    return None
+
+
+def _leader_news_article_key(title: str, link: str, pub: str) -> str:
+    basis = str(link or "").strip() or f"{str(title or '').strip()}|{str(pub or '').strip()}"
+    return hashlib.sha1(basis.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _leader_news_provider_circuit_status(provider: str = "google_news_rss") -> dict:
+    """provider circuit breakerの現在状態。cooldown切れは自動的に閉じる。"""
+    now = datetime.now(JST)
+    c = _live_snapshot_conn()
+    try:
+        _leader_ensure_schema(c)
+        row = c.execute(
+            "SELECT cooldown_until,consecutive_failures,last_status,last_failure_at FROM leader_news_provider_state WHERE provider=?",
+            (provider,),
+        ).fetchone()
+        if not row:
+            return {"open": False, "cooldown_until": "", "failures": 0, "status": ""}
+        cooldown_s = str(row[0] or "")
+        open_now = False
+        if cooldown_s:
+            try:
+                cd = pd.Timestamp(cooldown_s)
+                if cd.tzinfo is None:
+                    cd = cd.tz_localize("Asia/Tokyo")
+                else:
+                    cd = cd.tz_convert("Asia/Tokyo")
+                open_now = pd.Timestamp(now) < cd
+            except Exception:
+                open_now = False
+        if not open_now and cooldown_s:
+            with c:
+                c.execute(
+                    "UPDATE leader_news_provider_state SET cooldown_until=NULL,consecutive_failures=0,last_status='COOLDOWN_EXPIRED',updated_at=? WHERE provider=?",
+                    (now.isoformat(timespec="seconds"), provider),
+                )
+        return {
+            "open": bool(open_now),
+            "cooldown_until": cooldown_s if open_now else "",
+            "failures": int(row[1] or 0),
+            "status": str(row[2] or ""),
+            "last_failure_at": str(row[3] or ""),
+        }
+    finally:
+        c.close()
+
+
+def _leader_news_provider_circuit_trip(reason: str, failures: int, provider: str = "google_news_rss") -> str:
+    now = datetime.now(JST)
+    cool_min = max(1, int(_KABUNEWS_CONF.get("leader_news_breaker_cooldown_minutes", 30)))
+    until = now + timedelta(minutes=cool_min)
+    now_s = now.isoformat(timespec="seconds")
+    until_s = until.isoformat(timespec="seconds")
+    c = _live_snapshot_conn()
+    try:
+        _leader_ensure_schema(c)
+        with c:
+            c.execute(
+                """INSERT INTO leader_news_provider_state(provider,cooldown_until,consecutive_failures,last_status,last_failure_at,updated_at)
+                   VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(provider) DO UPDATE SET
+                       cooldown_until=excluded.cooldown_until,
+                       consecutive_failures=excluded.consecutive_failures,
+                       last_status=excluded.last_status,
+                       last_failure_at=excluded.last_failure_at,
+                       updated_at=excluded.updated_at""",
+                (provider, until_s, int(failures), str(reason or "FETCH_FAILURE"), now_s, now_s),
+            )
+        return until_s
+    finally:
+        c.close()
+
+
+def _leader_news_provider_circuit_success(provider: str = "google_news_rss") -> None:
+    now_s = datetime.now(JST).isoformat(timespec="seconds")
+    c = _live_snapshot_conn()
+    try:
+        _leader_ensure_schema(c)
+        with c:
+            c.execute(
+                """INSERT INTO leader_news_provider_state(provider,cooldown_until,consecutive_failures,last_status,last_failure_at,updated_at)
+                   VALUES(?,NULL,0,'OK',NULL,?)
+                   ON CONFLICT(provider) DO UPDATE SET
+                       cooldown_until=NULL,consecutive_failures=0,last_status='OK',updated_at=excluded.updated_at""",
+                (provider, now_s),
+            )
+    finally:
+        c.close()
+
+
+def _leader_news_signal_age_minutes(signal_at, now) -> float | None:
+    try:
+        ts = pd.Timestamp(str(signal_at or ""))
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("Asia/Tokyo")
+        else:
+            ts = ts.tz_convert("Asia/Tokyo")
+        return max(0.0, (pd.Timestamp(now) - ts).total_seconds() / 60.0)
+    except Exception:
+        return None
+
+
+def _leader_news_fetch_episode_map(episode_map: dict[str, dict], run_mode=None) -> dict[str, dict]:
+    """今回ネット取得すべきepisodeだけ返す。
+
+    MIDDAY:
+      - 発生直後の新規🌈は上限外で即時取得。
+      - 既存active/当日未取得backlogは30分TTLを維持しつつ1run最大48銘柄。
+      - last_plan_atが古い/未計画の銘柄から回し、失敗しても同じ銘柄へ張り付かない。
+    PREOPEN: ネット取得しない。
+    EOD: 追跡中の全episodeを1日1回。ただしprovider circuit breakerは共通で効く。
+    """
+    mode = str(run_mode or _auto_run_mode() or "").upper()
+    if not episode_map or mode == "PREOPEN":
+        return {}
+
+    circuit = _leader_news_provider_circuit_status()
+    if circuit.get("open"):
+        print(
+            f"[kabunews][circuit] provider cooldown active until={circuit.get('cooldown_until')} "
+            f"failures={circuit.get('failures')} status={circuit.get('status')}; network skipped",
+            flush=True,
+        )
+        return {}
+
+    td = _expected_snapshot_date_for_run(mode).isoformat()
+    now = datetime.now(JST)
+    live_ttl = max(1.0, float(_KABUNEWS_CONF.get("leader_live_refresh_minutes", 30)))
+    live_cap = max(1, int(_KABUNEWS_CONF.get("leader_live_refresh_max_codes_per_run", 48)))
+    immediate_min = max(1.0, float(_KABUNEWS_CONF.get("leader_new_immediate_minutes", 20)))
+    c = _live_snapshot_conn()
+    try:
+        _leader_ensure_schema(c)
+        fetch_state = {
+            str(r[0]): {
+                "last_live_fetch_at": r[1],
+                "last_eod_fetch_date": r[2],
+                "last_plan_at": r[3],
+            }
+            for r in c.execute(
+                "SELECT episode_key,last_live_fetch_at,last_eod_fetch_date,last_plan_at FROM leader_news_episode_fetch_state"
+            ).fetchall()
+        }
+        active = {}
+        if mode == "MIDDAY":
+            for r in c.execute(
+                """SELECT code,episode_no,signal_at,stage FROM leader_signal_state
+                   WHERE trade_date=? AND stage IN ('RAINBOW_PENDING','FIRE_CONFIRMED','FIRE_REIGNITED')""",
+                (td,),
+            ).fetchall():
+                cc = canonical_code_for_db(r[0])
+                if not cc:
+                    continue
+                try:
+                    ep_no = max(1, int(r[1] or 1))
+                except Exception:
+                    ep_no = 1
+                active[cc] = {"episode_no": ep_no, "signal_at": str(r[2] or ""), "stage": str(r[3] or "")}
+
+        # EODは従来どおり全episodeを対象化。circuit breakerが通信時間の上限を守る。
+        if mode == "EOD":
+            out = {}
+            for cc, info in episode_map.items():
+                selected = []
+                for ep in info.get("episodes") or []:
+                    st = fetch_state.get(str(ep.get("episode_key") or ""), {})
+                    if str(st.get("last_eod_fetch_date") or "") != td:
+                        selected.append(ep)
+                if selected:
+                    out[cc] = _leader_news_subset_info(info, selected)
+            print(f"[kabunews][plan] mode=EOD due_codes={len(out)} circuit=closed", flush=True)
+            return out
+
+        if mode != "MIDDAY":
+            return {}
+
+        immediate = {}
+        backlog = []  # (sort_key, code, selected_episodes)
+        due_codes = 0
+        for cc, info in episode_map.items():
+            immediate_eps = []
+            backlog_eps = []
+            best_plan = None
+            is_active_code = cc in active
+            for ep in info.get("episodes") or []:
+                key = str(ep.get("episode_key") or "")
+                st = fetch_state.get(key, {})
+                is_today = str(ep.get("trade_date") or "") == td
+                if not is_today:
+                    continue
+                last_live = str(st.get("last_live_fetch_at") or "")
+                last_plan = str(st.get("last_plan_at") or "")
+                if last_plan and (best_plan is None or last_plan < best_plan):
+                    best_plan = last_plan
+
+                # 本当に発生直後の新規episodeだけを上限外で即時取得する。
+                if not last_live:
+                    age = _leader_news_signal_age_minutes(ep.get("signal_at"), now)
+                    if age is not None and age <= immediate_min:
+                        immediate_eps.append(ep)
+                    else:
+                        backlog_eps.append(ep)
+                    continue
+
+                a = active.get(cc)
+                if not a or int(ep.get("episode_no") or 1) != int(a.get("episode_no") or 1):
+                    continue
+                try:
+                    last_dt = pd.Timestamp(last_live)
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.tz_localize("Asia/Tokyo")
+                    else:
+                        last_dt = last_dt.tz_convert("Asia/Tokyo")
+                    age_min = (pd.Timestamp(now) - last_dt).total_seconds() / 60.0
+                except Exception:
+                    age_min = live_ttl + 1.0
+                if age_min >= live_ttl:
+                    backlog_eps.append(ep)
+
+            if immediate_eps:
+                immediate[cc] = _leader_news_subset_info(info, immediate_eps)
+            if backlog_eps:
+                due_codes += 1
+                # 未計画を最優先。その後はlast_plan_atが古い順。activeを同順位なら先に回す。
+                sort_key = (0 if not best_plan else 1, best_plan or "", 0 if is_active_code else 1, str(cc))
+                backlog.append((sort_key, cc, backlog_eps, info))
+
+        backlog.sort(key=lambda x: x[0])
+        selected_refresh = backlog[:live_cap]
+        out = dict(immediate)
+        for _key, cc, eps, info in selected_refresh:
+            if cc in out:
+                merged = list((out[cc].get("episodes") or [])) + list(eps)
+                ded = {}
+                for ep in merged:
+                    ded[str(ep.get("episode_key") or "")] = ep
+                out[cc] = _leader_news_subset_info(info, list(ded.values()))
+            else:
+                out[cc] = _leader_news_subset_info(info, eps)
+
+        # 成否とは別の「計画時刻」。これだけを進めてbacklogを公平にローテーションする。
+        plan_at = now.isoformat(timespec="seconds")
+        with c:
+            for cc, info in out.items():
+                for ep in info.get("episodes") or []:
+                    key = str(ep.get("episode_key") or "")
+                    if not key:
+                        continue
+                    c.execute(
+                        """INSERT INTO leader_news_episode_fetch_state(
+                               episode_key,code,episode_trade_date,episode_no,signal_at,
+                               last_live_fetch_at,last_eod_fetch_date,last_success_at,updated_at,last_plan_at
+                           ) VALUES(?,?,?,?,?,NULL,NULL,NULL,?,?)
+                           ON CONFLICT(episode_key) DO UPDATE SET
+                               code=excluded.code,episode_trade_date=excluded.episode_trade_date,
+                               episode_no=excluded.episode_no,signal_at=excluded.signal_at,
+                               last_plan_at=excluded.last_plan_at,updated_at=excluded.updated_at""",
+                        (
+                            key, cc, str(ep.get("trade_date") or ""), int(ep.get("episode_no") or 1),
+                            str(ep.get("signal_at") or ""), plan_at, plan_at,
+                        ),
+                    )
+
+        print(
+            f"[kabunews][plan] mode=MIDDAY immediate_new={len(immediate)} "
+            f"refresh_due={due_codes} refresh_selected={len(selected_refresh)} "
+            f"refresh_cap={live_cap} total_network_codes={len(out)} backlog_left={max(0, len(backlog)-len(selected_refresh))}",
+            flush=True,
+        )
+        return out
+    finally:
+        c.close()
+
+
+def _leader_news_archive_fetched(fetch_episode_map: dict[str, dict], fetched_map: dict, successful_codes: set[str], run_mode=None) -> dict:
+    """成功したRSS結果だけepisode archiveへupsertし、成功時刻を進める。"""
+    if not fetch_episode_map or not successful_codes:
+        return {"episodes": 0, "articles": 0}
+    mode = str(run_mode or _auto_run_mode() or "").upper()
+    td = _expected_snapshot_date_for_run(mode).isoformat()
+    now_s = datetime.now(JST).isoformat(timespec="seconds")
+    c = _live_snapshot_conn()
+    episodes_done = 0
+    articles_upserted = 0
+    try:
+        _leader_ensure_schema(c)
+        with c:
+            for raw_code in sorted(successful_codes):
+                cc = canonical_code_for_db(raw_code)
+                info = fetch_episode_map.get(cc) or {}
+                if not cc or not info:
+                    continue
+                items = list((fetched_map or {}).get(cc) or [])
+                for ep in info.get("episodes") or []:
+                    key = str(ep.get("episode_key") or "")
+                    if not key:
+                        continue
+                    window_start = None
+                    try:
+                        window_start = date.fromisoformat(str(ep.get("window_start") or ""))
+                    except Exception:
+                        window_start = None
+                    for title, link, pub in items:
+                        title = str(title or "").strip()
+                        link = str(link or "").strip()
+                        pub = str(pub or "").strip()
+                        if not title:
+                            continue
+                        pd_pub = _leader_news_parse_pub_date(pub)
+                        if pd_pub is not None and window_start is not None and pd_pub < window_start:
+                            continue
+                        article_key = _leader_news_article_key(title, link, pub)
+                        c.execute(
+                            """INSERT INTO leader_news_episode_article(
+                                   episode_key,code,episode_trade_date,episode_no,signal_at,
+                                   article_key,title,link,pub_date,kind,first_seen_at,last_seen_at
+                               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                               ON CONFLICT(episode_key,article_key) DO UPDATE SET
+                                   title=excluded.title,link=excluded.link,pub_date=excluded.pub_date,
+                                   kind=excluded.kind,last_seen_at=excluded.last_seen_at""",
+                            (
+                                key, cc, str(ep.get("trade_date") or ""), int(ep.get("episode_no") or 1),
+                                str(ep.get("signal_at") or ""), article_key, title, link, pub,
+                                _kabutan_news_kind(title), now_s, now_s,
+                            ),
+                        )
+                        articles_upserted += 1
+                    prev = c.execute(
+                        "SELECT last_live_fetch_at,last_eod_fetch_date FROM leader_news_episode_fetch_state WHERE episode_key=?",
+                        (key,),
+                    ).fetchone()
+                    last_live = prev[0] if prev else None
+                    last_eod = prev[1] if prev else None
+                    if mode == "MIDDAY":
+                        last_live = now_s
+                    if mode == "EOD":
+                        last_eod = td
+                    c.execute(
+                        """INSERT INTO leader_news_episode_fetch_state(
+                               episode_key,code,episode_trade_date,episode_no,signal_at,
+                               last_live_fetch_at,last_eod_fetch_date,last_success_at,updated_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(episode_key) DO UPDATE SET
+                               code=excluded.code,episode_trade_date=excluded.episode_trade_date,
+                               episode_no=excluded.episode_no,signal_at=excluded.signal_at,
+                               last_live_fetch_at=excluded.last_live_fetch_at,
+                               last_eod_fetch_date=excluded.last_eod_fetch_date,
+                               last_success_at=excluded.last_success_at,updated_at=excluded.updated_at""",
+                        (
+                            key, cc, str(ep.get("trade_date") or ""), int(ep.get("episode_no") or 1),
+                            str(ep.get("signal_at") or ""), last_live, last_eod, now_s, now_s,
+                        ),
+                    )
+                    episodes_done += 1
+        return {"episodes": episodes_done, "articles": articles_upserted}
+    finally:
+        c.close()
+
+
+def _leader_news_load_archive(episode_map: dict[str, dict], codes=None, per_symbol=None) -> dict:
+    """現在追跡中episodeの保存済み記事をcode単位へ集約して返す。ネット通信はしない。"""
+    wanted_codes = {canonical_code_for_db(c) for c in (codes or episode_map.keys())}
+    wanted_codes.discard(None)
+    episode_keys = []
+    key_to_code = {}
+    key_to_start = {}
+    for cc, info in (episode_map or {}).items():
+        if cc not in wanted_codes:
+            continue
+        for ep in info.get("episodes") or []:
+            key = str(ep.get("episode_key") or "")
+            if key:
+                episode_keys.append(key)
+                key_to_code[key] = cc
+                try:
+                    key_to_start[key] = date.fromisoformat(str(ep.get("window_start") or ""))
+                except Exception:
+                    key_to_start[key] = None
+    out = {cc: [] for cc in wanted_codes}
+    if not episode_keys:
+        return out
+    c = _live_snapshot_conn()
+    try:
+        _leader_ensure_schema(c)
+        rows = []
+        for i in range(0, len(episode_keys), 400):
+            chunk = episode_keys[i:i+400]
+            ph = ",".join("?" for _ in chunk)
+            rows.extend(c.execute(
+                f"""SELECT episode_key,article_key,title,link,pub_date
+                    FROM leader_news_episode_article
+                    WHERE episode_key IN ({ph})""",
+                chunk,
+            ).fetchall())
+    finally:
+        c.close()
+
+    seen = {cc: set() for cc in wanted_codes}
+    for episode_key, article_key, title, link, pub in rows:
+        episode_key = str(episode_key)
+        cc = key_to_code.get(episode_key)
+        if not cc or article_key in seen.setdefault(cc, set()):
+            continue
+        _pub_d = _leader_news_parse_pub_date(pub)
+        _start_d = key_to_start.get(episode_key)
+        if _pub_d is not None and _start_d is not None and _pub_d < _start_d:
+            continue
+        seen[cc].add(article_key)
+        out.setdefault(cc, []).append((str(title or ""), str(link or ""), str(pub or "")))
+
+    def _sort_key(tpl):
+        d = _leader_news_parse_pub_date(tpl[2])
+        return d.toordinal() if d is not None else -1
+    limit = max(1, int(per_symbol or _KABUNEWS_CONF.get("max_items_per_symbol", 20)))
+    for cc in out:
+        out[cc] = sorted(out[cc], key=_sort_key, reverse=True)[:limit]
+    return out
+
+
+def _leader_attach_state_to_rows(rows: list[dict]) -> None:
+    """leader stateをdashboard JSON行へ付与。表示列追加はtemplate側と独立。"""
+    if not rows:
+        return
+    c = _live_snapshot_conn()
+    try:
+        _leader_ensure_schema(c)
+        # PREOPEN/休場時も価格snapshotと同じ営業日の主役化stateを表示する。
+        td = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+        c.row_factory = sqlite3.Row
+        try:
+            smap = {str(r["code"]): dict(r) for r in c.execute(
+                "SELECT * FROM leader_signal_state WHERE trade_date=?", (td,)
+            ).fetchall()}
+        finally:
+            c.row_factory = None
+    finally:
+        c.close()
+    label_map = {
+        "RAINBOW_PENDING":"🌈主役化",
+        "FIRE_CONFIRMED":"🔥継続期待",
+        "FIRE_REIGNITED":"🔥再点火",
+        "RISK_PROVISIONAL":"⚠主役性弱化(暫定)",
+        "STAGE2_FAILED":"旧10分確認不成立",
+    }
+    for r in rows:
+        code = _live_stock_code(_live_get(r,"コード","code"), _live_get(r,"市場","market"), _live_get(r,"銘柄名","name"))
+        s = smap.get(code, {}) if code else {}
+        _leader_label = label_map.get(str(s.get("stage") or ""), "")
+        try:
+            _leader_ep = max(1, int(s.get("episode_no") or 1))
+        except Exception:
+            _leader_ep = 1
+        # LEADER-MULTI-EPISODE-V1: 当日内の独立episode表示は既存仕様を維持。
+        # Cross-dayの「再」modifierはこの後 _leader_lifecycle_apply_repeat_modifier() が重ねる。
+        if _leader_label and _leader_ep > 1:
+            if str(s.get("stage") or "") == "RAINBOW_PENDING":
+                _leader_label = f"🌈再主役化#{_leader_ep}"
+            else:
+                _leader_label = f"{_leader_label}#{_leader_ep}"
+        r["主役化状態"] = _leader_label
+        r["主役化回数"] = _leader_ep if s else None
+        try:
+            r["主役化シグナル時刻"] = pd.Timestamp(s.get("signal_at")).strftime("%H:%M") if s.get("signal_at") else ""
+        except Exception:
+            r["主役化シグナル時刻"] = ""
+        r["主役化シグナル価格"] = s.get("signal_price")
+        r["主役化前日比_pct"] = s.get("signal_ret_prev_pct")
+        r["主役化VWAP乖離_pct"] = s.get("signal_vwap_gap_pct")
+        r["主役化RS5"] = s.get("signal_rs5")
+        r["主役化10分MFE_pct"] = s.get("mfe10_pct")
+        r["主役化10分後_pct"] = s.get("ret10_pct")
+        r["主役化再点火時刻"] = s.get("reignite_checked_at") or ""
+        r["主役化再点火価格"] = s.get("reignite_price")
+        r["主役化再点火後MFE_pct"] = s.get("reignite_postrisk_mfe_pct")
+        r["主役化再点火時_pct"] = s.get("reignite_ret_signal_pct")
+        r["主役化再点火VWAP乖離_pct"] = s.get("reignite_vwap_gap_pct")
+        r["主役化現在MFE_pct"] = s.get("current_mfe_pct")
+        r["主役化現在比_pct"] = s.get("current_ret_signal_pct")
+        r["主役化現在VWAP乖離_pct"] = s.get("current_vwap_gap_pct")
+        r["主役化現在RS5"] = s.get("current_rs5")
+        r["主役化現在スコア"] = s.get("current_leader_score")
+        r["主役化から🔥まで分"] = s.get("fire_elapsed_min")
+        r["🔥基礎期待度"] = s.get("fire_expectancy_grade") or ""
+        r["🔥期待度スコア"] = s.get("fire_expectancy_score")
+        r["🔥期待度理由"] = s.get("fire_expectancy_reason") or ""
+        r["点火進行"] = s.get("ignition_progress") or ""
+        r["点火進行理由"] = s.get("ignition_reason") or ""
+        r["主役化理由"] = s.get("reason") or ""
+        r["主役化研究版"] = LEADER_RESEARCH_VERSION if s else ""
+# === /LEADER-SIGNAL-SHADOW-V1 ================================================
+
 def _live_snapshot_conn() -> sqlite3.Connection:
     LIVE_SNAPSHOT_DB.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(LIVE_SNAPSHOT_DB), timeout=30.0)
@@ -1955,8 +6699,495 @@ def _live_snapshot_conn() -> sqlite3.Connection:
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_intraday_snapshot_code_time ON intraday_scanner_snapshot(code, captured_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_intraday_snapshot_trade_date ON intraday_scanner_snapshot(trade_date, code)")
+    # ROTATION-FLOW-HISTORY-V1: 現在ランキングと初回復元を同一schemaへ保存する。
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sector_rotation_history (
+            captured_at TEXT NOT NULL, trade_date TEXT NOT NULL, sector TEXT NOT NULL, rank INTEGER,
+            total_turnover REAL, active_stocks INTEGER, avg_return REAL, turnover_delta REAL,
+            elapsed_minutes REAL, flow_speed REAL, source TEXT NOT NULL DEFAULT 'live_exact',
+            quality TEXT, rank_basis TEXT, PRIMARY KEY (captured_at, sector)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_sector_rotation_date_time ON sector_rotation_history(trade_date, captured_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_sector_rotation_name_time ON sector_rotation_history(sector, captured_at)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS theme_rotation_history (
+            captured_at TEXT NOT NULL, trade_date TEXT NOT NULL, theme TEXT NOT NULL, rank INTEGER,
+            total_turnover REAL, median_turnover REAL, active_stocks INTEGER, signaled_count INTEGER,
+            signal_density REAL, avg_return REAL, true_flow_score REAL, turnover_delta REAL,
+            elapsed_minutes REAL, flow_speed REAL, source TEXT NOT NULL DEFAULT 'live_exact',
+            quality TEXT, rank_basis TEXT, PRIMARY KEY (captured_at, theme)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_theme_rotation_date_time ON theme_rotation_history(trade_date, captured_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_theme_rotation_name_time ON theme_rotation_history(theme, captured_at)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rotation_history_meta (
+            key TEXT PRIMARY KEY, value TEXT, updated_at TEXT NOT NULL
+        )
+    """)
+    # MARKET-BREADTH-RESTORE-V11:
+    # 旧実装のtable名/schemaと衝突させず、今後分は専用v11 tableへ保存する。
+    # UIへ渡す際は残存する旧 market_breadth* table も読み取り互換で救済する。
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS market_breadth_history_v11 (
+            captured_at TEXT PRIMARY KEY,
+            trade_date TEXT NOT NULL,
+            active_count INTEGER NOT NULL,
+            prev_active_count INTEGER,
+            peak_count INTEGER NOT NULL,
+            count_retention_pct REAL,
+            peak_survivor_count INTEGER,
+            peak_survival_pct REAL,
+            rotation_prev_pct REAL,
+            entrants_prev INTEGER,
+            dropouts_prev INTEGER,
+            entrants_since_peak INTEGER,
+            dropouts_since_peak INTEGER,
+            peak_captured_at TEXT,
+            active_codes_json TEXT NOT NULL,
+            peak_codes_json TEXT NOT NULL,
+            regime_code TEXT,
+            regime_label TEXT,
+            warning TEXT,
+            source TEXT NOT NULL DEFAULT 'DIFF_REAL_STRENGTH'
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_market_breadth_v11_date_time ON market_breadth_history_v11(trade_date, captured_at)")
     return c
 
+
+
+def _rotation_parse_dt(value):
+    try:
+        dt = datetime.fromisoformat(str(value))
+        if dt.tzinfo is None and ZoneInfo:
+            dt = dt.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+        return dt
+    except Exception:
+        return None
+
+
+def _rotation_prev_metric(c: sqlite3.Connection, table: str, name_col: str, name: str, trade_date: str, captured_at: str):
+    # 同一営業日の直前snapshot。累積売買代金の差分算出専用。
+    if table not in {"sector_rotation_history", "theme_rotation_history"}:
+        raise ValueError("unexpected rotation table")
+    if name_col not in {"sector", "theme"}:
+        raise ValueError("unexpected rotation name column")
+    return c.execute(
+        f'''SELECT captured_at,total_turnover FROM {table}
+            WHERE trade_date=? AND {name_col}=? AND captured_at<?
+            ORDER BY captured_at DESC LIMIT 1''',
+        (trade_date, name, captured_at),
+    ).fetchone()
+
+
+def _rotation_delta_speed(prev_row, captured_at: str, total_turnover):
+    cur = _live_num(total_turnover)
+    if prev_row is None or cur is None:
+        return None, None, None, "no_previous_snapshot"
+    prev_at, prev_turn = prev_row
+    prev = _live_num(prev_turn)
+    dt_cur = _rotation_parse_dt(captured_at)
+    dt_prev = _rotation_parse_dt(prev_at)
+    if prev is None or dt_cur is None or dt_prev is None:
+        return None, None, None, "previous_snapshot_invalid"
+    elapsed = (dt_cur - dt_prev).total_seconds() / 60.0
+    if elapsed <= 0:
+        return None, None, None, "elapsed_nonpositive"
+    delta = cur - prev
+    # 売買代金は日中累積値。減少は資金流出と解釈せずcoverage/reset品質警告にする。
+    if delta < -1e-9:
+        return round(delta, 6), round(elapsed, 4), None, "cumulative_turnover_reset"
+    return round(delta, 6), round(elapsed, 4), round(delta / elapsed, 6), "exact"
+
+
+def _rotation_prune_history(c: sqlite3.Connection, keep_trade_days: int = ROTATION_HISTORY_KEEP_TRADE_DAYS) -> dict:
+    out = {}
+    for table in ("sector_rotation_history", "theme_rotation_history"):
+        dates = [r[0] for r in c.execute(f"SELECT DISTINCT trade_date FROM {table} ORDER BY trade_date DESC").fetchall()]
+        if len(dates) <= keep_trade_days:
+            out[table] = 0
+            continue
+        keep = set(dates[:keep_trade_days])
+        placeholders = ','.join('?' for _ in keep)
+        before = c.total_changes
+        c.execute(f"DELETE FROM {table} WHERE trade_date NOT IN ({placeholders})", tuple(sorted(keep)))
+        out[table] = c.total_changes - before
+    return out
+
+
+def _rotation_capture_rankings(sector_rows, theme_rows, captured_at: str | None, trade_date: str | None, snapshot_rows: int | None = None) -> dict:
+    # 今回runのランキングを正式履歴へ保存。場中snapshotを書けたrunだけ進める。
+    if not captured_at or not trade_date or int(snapshot_rows or 0) <= 0:
+        return {"status": "skipped", "reason": "no_market_snapshot", "sector_rows": 0, "theme_rows": 0}
+    c = _live_snapshot_conn()
+    sec_vals, th_vals = [], []
+    try:
+        for idx, s in enumerate(list(sector_rows or []), start=1):
+            name = str(s.get("セクター") or s.get("sector") or "").strip()
+            if not name:
+                continue
+            total = _live_num(s.get("total_turnover"))
+            prev = _rotation_prev_metric(c, "sector_rotation_history", "sector", name, trade_date, captured_at)
+            delta, elapsed, speed, dq = _rotation_delta_speed(prev, captured_at, total)
+            sec_vals.append((captured_at, trade_date, name, idx, total,
+                int(_live_num(s.get("active_stocks")) or 0), _live_num(s.get("avg_return")),
+                delta, elapsed, speed, "live_exact", dq, "total_turnover"))
+        for idx, t in enumerate(list(theme_rows or []), start=1):
+            name = str(t.get("テーマ") or t.get("theme") or "").strip()
+            if not name:
+                continue
+            total = _live_num(t.get("total_turnover"))
+            prev = _rotation_prev_metric(c, "theme_rotation_history", "theme", name, trade_date, captured_at)
+            delta, elapsed, speed, dq = _rotation_delta_speed(prev, captured_at, total)
+            sc = _live_num(t.get("signaled_count"))
+            th_vals.append((captured_at, trade_date, name, idx, total, _live_num(t.get("median_turnover")),
+                int(_live_num(t.get("active_stocks")) or 0), None if sc is None else int(sc),
+                _live_num(t.get("signal_density")), _live_num(t.get("avg_return")), _live_num(t.get("true_flow_score")),
+                delta, elapsed, speed, "live_exact", dq, str(t.get("rank_basis") or "true_flow_score")))
+        with c:
+            if sec_vals:
+                c.executemany('''INSERT OR REPLACE INTO sector_rotation_history(
+                    captured_at,trade_date,sector,rank,total_turnover,active_stocks,avg_return,
+                    turnover_delta,elapsed_minutes,flow_speed,source,quality,rank_basis
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', sec_vals)
+            if th_vals:
+                c.executemany('''INSERT OR REPLACE INTO theme_rotation_history(
+                    captured_at,trade_date,theme,rank,total_turnover,median_turnover,active_stocks,
+                    signaled_count,signal_density,avg_return,true_flow_score,turnover_delta,elapsed_minutes,
+                    flow_speed,source,quality,rank_basis
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', th_vals)
+            pruned = _rotation_prune_history(c)
+            c.execute("INSERT OR REPLACE INTO rotation_history_meta(key,value,updated_at) VALUES(?,?,?)",
+                      ("last_live_capture", captured_at, _now_jst().isoformat(timespec="seconds")))
+        return {"status": "ok", "sector_rows": len(sec_vals), "theme_rows": len(th_vals), "pruned": pruned}
+    finally:
+        c.close()
+
+
+def _rotation_dashboard_history_payload(trade_days: int = ROTATION_DASHBOARD_TRADE_DAYS) -> dict:
+    # DB正本は長期保持、HTMLには直近N営業日だけcompact配列で埋め込む。
+    c = _live_snapshot_conn()
+    try:
+        all_dates = sorted({r[0] for r in c.execute("SELECT DISTINCT trade_date FROM sector_rotation_history").fetchall()} |
+                           {r[0] for r in c.execute("SELECT DISTINCT trade_date FROM theme_rotation_history").fetchall()}, reverse=True)
+        dates = sorted(all_dates[:max(1, int(trade_days))])
+        if not dates:
+            return {"version": 1, "trade_dates": [], "sector": {"fields": [], "rows": []}, "theme": {"fields": [], "rows": []},
+                    "notes": {"theme_backfill": "テーマ復元は当時signal_densityを完全再現できないためproxy rankを含みます。今後分はlive_exact。"}}
+        ph = ','.join('?' for _ in dates)
+        sec_fields = ["captured_at","trade_date","name","rank","total_turnover","active_stocks","avg_return","turnover_delta","elapsed_minutes","flow_speed","source","quality","rank_basis"]
+        sec = c.execute(f'''SELECT captured_at,trade_date,sector,rank,total_turnover,active_stocks,avg_return,
+                   turnover_delta,elapsed_minutes,flow_speed,source,quality,rank_basis
+            FROM sector_rotation_history WHERE trade_date IN ({ph}) ORDER BY captured_at,rank,sector''', tuple(dates)).fetchall()
+        th_fields = ["captured_at","trade_date","name","rank","total_turnover","median_turnover","active_stocks","signaled_count","signal_density","avg_return","true_flow_score","turnover_delta","elapsed_minutes","flow_speed","source","quality","rank_basis"]
+        th = c.execute(f'''SELECT captured_at,trade_date,theme,rank,total_turnover,median_turnover,active_stocks,
+                   signaled_count,signal_density,avg_return,true_flow_score,turnover_delta,elapsed_minutes,
+                   flow_speed,source,quality,rank_basis
+            FROM theme_rotation_history WHERE trade_date IN ({ph}) ORDER BY captured_at,rank,theme''', tuple(dates)).fetchall()
+        meta_rows = c.execute("SELECT key,value,updated_at FROM rotation_history_meta").fetchall()
+        return {"version": 1, "trade_dates": dates, "dashboard_trade_days": int(trade_days),
+            "sector": {"fields": sec_fields, "rows": [list(r) for r in sec]},
+            "theme": {"fields": th_fields, "rows": [list(r) for r in th]},
+            "meta": {str(k): {"value": v, "updated_at": u} for k,v,u in meta_rows},
+            "notes": {
+                "flow_speed": "同一営業日の前snapshotから増えた売買代金÷経過分。売買代金は方向を示さないため平均騰落率・順位と併用。",
+                "sector_backfill": "既存intraday snapshotと銘柄→33業種対応から復元。",
+                "theme_backfill": "既存intraday snapshotと当時利用可能なテーマ紐付けから復元。過去signal_densityは保存されていないため復元行のrankはmedian_turnover proxy。今後分はlive_exact。",
+            }}
+    finally:
+        c.close()
+
+
+# ==============================================================================
+# 2026-08-31 MARKET-BREADTH-RESTORE-V11
+# 「今日実際に強化中」= 既存 DIFF_REAL_STRENGTH=1 の集合をそのまま使用する。
+# この履歴は表示/研究専用。候補選定・priority・TODAY_BUY・LIVE50・売買判定へ逆流させない。
+# ==============================================================================
+
+_MARKET_BREADTH_FIELDS = [
+    "trade_date", "captured_at",
+    "active_count", "prev_active_count", "peak_count", "count_retention_pct",
+    "peak_survivor_count", "peak_survival_pct", "rotation_prev_pct",
+    "entrants_prev", "dropouts_prev", "entrants_since_peak", "dropouts_since_peak",
+    "peak_captured_at", "regime_code", "regime_label", "warning", "source",
+]
+
+
+def _market_breadth_codes_from_json(value) -> set[str]:
+    try:
+        raw = json.loads(str(value or "[]"))
+    except Exception:
+        return set()
+    if not isinstance(raw, list):
+        return set()
+    out = set()
+    for x in raw:
+        c = str(canonical_code_for_db(x) or "").strip().upper()
+        if c and _is_jp_stock_snapshot_code(c):
+            out.add(c)
+    return out
+
+
+def _market_breadth_active_codes(rows: list[dict]) -> set[str]:
+    """既存の『今日実際に強化中』集合だけを抽出。判定条件はここで再定義しない。"""
+    out = set()
+    for r in rows or []:
+        try:
+            flag = int(_live_num(_live_get(r, "DIFF_REAL_STRENGTH", "diff_real_strength")) or 0)
+        except Exception:
+            flag = 0
+        if flag != 1:
+            continue
+        c = str(canonical_code_for_db(_live_get(r, "コード", "code")) or "").strip().upper()
+        if c and _is_jp_stock_snapshot_code(c):
+            out.add(c)
+    return out
+
+
+def _market_breadth_regime(prev_exists: bool, active_count: int, peak_count: int,
+                           count_retention_pct, peak_survival_pct, rotation_prev_pct):
+    # UIの30/50/70%補助線と整合する表示専用の状態ラベル。
+    if not prev_exists or peak_count <= 0:
+        return "DATA", "履歴形成中", ""
+    vals = [x for x in (_live_num(count_retention_pct), _live_num(peak_survival_pct)) if x is not None]
+    core = min(vals) if vals else None
+    if core is None:
+        code, label = "DATA", "履歴形成中"
+    elif core >= 70.0:
+        code, label = "GREEN", "持続優勢"
+    elif core >= 50.0:
+        code, label = "YELLOW", "選別継続"
+    elif core >= 30.0:
+        code, label = "ORANGE", "失速警戒"
+    else:
+        code, label = "RED", "持続崩れ"
+
+    warning = ""
+    rot = _live_num(rotation_prev_pct)
+    if active_count <= 0 and peak_count > 0:
+        warning = "強化中0件"
+    elif rot is not None and rot >= 60.0:
+        warning = "直前runから入替大"
+    return code, label, warning
+
+
+def _market_breadth_prune(c: sqlite3.Connection, keep_trade_days: int = MARKET_BREADTH_HISTORY_KEEP_TRADE_DAYS) -> int:
+    dates = [str(r[0]) for r in c.execute(
+        "SELECT DISTINCT trade_date FROM market_breadth_history_v11 ORDER BY trade_date DESC"
+    ).fetchall() if r and r[0]]
+    if len(dates) <= int(keep_trade_days):
+        return 0
+    keep = set(dates[:int(keep_trade_days)])
+    ph = ",".join("?" for _ in keep)
+    before = c.total_changes
+    c.execute(f"DELETE FROM market_breadth_history_v11 WHERE trade_date NOT IN ({ph})", tuple(sorted(keep)))
+    return c.total_changes - before
+
+
+def _market_breadth_capture_on_conn(c: sqlite3.Connection, rows: list[dict],
+                                    captured_at: str, trade_date: str) -> dict:
+    """有効MIDDAY snapshotで呼ばれる1点保存。DIFF_REAL_STRENGTHの集合以外は見ない。"""
+    active = _market_breadth_active_codes(rows)
+    active_count = len(active)
+
+    prev = c.execute(
+        """SELECT captured_at,active_count,peak_count,peak_captured_at,
+                  active_codes_json,peak_codes_json
+           FROM market_breadth_history_v11
+           WHERE trade_date=? AND captured_at<?
+           ORDER BY captured_at DESC LIMIT 1""",
+        (trade_date, captured_at),
+    ).fetchone()
+
+    prev_exists = prev is not None
+    prev_active = _market_breadth_codes_from_json(prev[4]) if prev else set()
+    prev_active_count = int(prev[1] or 0) if prev else None
+    prior_peak_count = int(prev[2] or 0) if prev else 0
+    prior_peak_at = str(prev[3] or "") if prev else ""
+    prior_peak_codes = _market_breadth_codes_from_json(prev[5]) if prev else set()
+
+    # 当日ピークは「強化中件数」の最大値。新高値ならそのrunの集合を新しいpeak集合にする。
+    if (not prev_exists) or active_count > prior_peak_count:
+        peak_count = active_count
+        peak_at = captured_at
+        peak_codes = set(active)
+    else:
+        peak_count = prior_peak_count
+        peak_at = prior_peak_at or captured_at
+        peak_codes = set(prior_peak_codes)
+        # legacy/異常行でpeak集合だけ欠けていた場合は、現在集合で捏造せず前run集合を補助に使う。
+        if peak_count > 0 and not peak_codes and prev_active:
+            peak_codes = set(prev_active)
+
+    count_retention = round(active_count * 100.0 / peak_count, 1) if peak_count > 0 else None
+    peak_survivors = len(active & peak_codes) if peak_count > 0 else 0
+    peak_survival = round(peak_survivors * 100.0 / peak_count, 1) if peak_count > 0 else None
+
+    if prev_exists:
+        entrants_prev = len(active - prev_active)
+        dropouts_prev = len(prev_active - active)
+        union_n = len(active | prev_active)
+        rotation_prev = round(len(active ^ prev_active) * 100.0 / union_n, 1) if union_n > 0 else 0.0
+    else:
+        entrants_prev = None
+        dropouts_prev = None
+        rotation_prev = None
+
+    entrants_peak = len(active - peak_codes) if peak_count > 0 else 0
+    dropouts_peak = len(peak_codes - active) if peak_count > 0 else 0
+    regime_code, regime_label, warning = _market_breadth_regime(
+        prev_exists, active_count, peak_count, count_retention, peak_survival, rotation_prev
+    )
+
+    vals = (
+        captured_at, trade_date, active_count, prev_active_count, peak_count, count_retention,
+        peak_survivors, peak_survival, rotation_prev, entrants_prev, dropouts_prev,
+        entrants_peak, dropouts_peak, peak_at,
+        json.dumps(sorted(active), ensure_ascii=False, separators=(",", ":")),
+        json.dumps(sorted(peak_codes), ensure_ascii=False, separators=(",", ":")),
+        regime_code, regime_label, warning, "DIFF_REAL_STRENGTH",
+    )
+
+    # 同一captured_at再実行だけ置換。旧legacy tableには書き込まない。
+    c.execute(
+        """INSERT OR REPLACE INTO market_breadth_history_v11(
+             captured_at,trade_date,active_count,prev_active_count,peak_count,count_retention_pct,
+             peak_survivor_count,peak_survival_pct,rotation_prev_pct,entrants_prev,dropouts_prev,
+             entrants_since_peak,dropouts_since_peak,peak_captured_at,active_codes_json,peak_codes_json,
+             regime_code,regime_label,warning,source
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        vals,
+    )
+    pruned = _market_breadth_prune(c)
+    return {
+        "status": "ok",
+        "captured_at": captured_at,
+        "trade_date": trade_date,
+        "active_count": active_count,
+        "peak_count": peak_count,
+        "count_retention_pct": count_retention,
+        "peak_survival_pct": peak_survival,
+        "rotation_prev_pct": rotation_prev,
+        "pruned": pruned,
+        "source": "DIFF_REAL_STRENGTH",
+    }
+
+
+def _market_breadth_legacy_rows(c: sqlite3.Connection, trade_dates: list[str]) -> list[dict]:
+    """残存旧tableを読み取り救済。UI必須の核だけあれば不足列はNoneで埋め、旧table自体は変更しない。"""
+    if not trade_dates:
+        return []
+    core_required = {"trade_date", "captured_at", "active_count", "peak_count"}
+    out = []
+    try:
+        names = [str(r[0]) for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'market_breadth%'"
+        ).fetchall()]
+    except Exception:
+        return []
+
+    for table in names:
+        if table == "market_breadth_history_v11":
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_]+", table):
+            continue
+        try:
+            cols = {str(r[1]) for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+            if not core_required.issubset(cols):
+                continue
+            available = [k for k in _MARKET_BREADTH_FIELDS if k in cols]
+            ph = ",".join("?" for _ in trade_dates)
+            selected = ",".join(available)
+            for rr in c.execute(
+                f"SELECT {selected} FROM {table} WHERE trade_date IN ({ph}) ORDER BY captured_at",
+                tuple(trade_dates),
+            ).fetchall():
+                d = {k: None for k in _MARKET_BREADTH_FIELDS}
+                d.update(dict(zip(available, rr)))
+                if not d.get("source"):
+                    d["source"] = f"legacy:{table}"
+                if not d.get("regime_code"):
+                    d["regime_code"] = "DATA"
+                if not d.get("regime_label"):
+                    d["regime_label"] = "旧履歴"
+                out.append(d)
+        except Exception as e:
+            print(f"[market-breadth][WARN] legacy table skipped {table}: {e}", flush=True)
+    return out
+
+
+def _market_breadth_dashboard_history_payload(trade_days: int = MARKET_BREADTH_DASHBOARD_TRADE_DAYS) -> dict:
+    """直近N営業日のcompact履歴を既存UI schemaへ戻す。"""
+    c = _live_snapshot_conn()
+    try:
+        # v11 + 読めるlegacy tableの営業日を合わせて取得。
+        dates = [str(r[0]) for r in c.execute(
+            "SELECT DISTINCT trade_date FROM market_breadth_history_v11 ORDER BY trade_date DESC"
+        ).fetchall() if r and r[0]]
+
+        # legacy側の日付も、schemaが読めるものだけ収集。
+        try:
+            names = [str(r[0]) for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'market_breadth%'"
+            ).fetchall()]
+            for table in names:
+                if table == "market_breadth_history_v11" or not re.fullmatch(r"[A-Za-z0-9_]+", table):
+                    continue
+                cols = {str(r[1]) for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+                if {"trade_date", "captured_at"}.issubset(cols):
+                    dates.extend(str(r[0]) for r in c.execute(
+                        f"SELECT DISTINCT trade_date FROM {table} ORDER BY trade_date DESC LIMIT ?",
+                        (max(1, int(trade_days)),),
+                    ).fetchall() if r and r[0])
+        except Exception:
+            pass
+
+        trade_dates = sorted(set(dates), reverse=True)[:max(1, int(trade_days))]
+        trade_dates = sorted(trade_dates)
+
+        rows = []
+        if trade_dates:
+            ph = ",".join("?" for _ in trade_dates)
+            selected = ",".join(_MARKET_BREADTH_FIELDS)
+            # legacyを先に、v11を後に積む。同一captured_atならv11を正本として上書きする。
+            rows.extend(_market_breadth_legacy_rows(c, trade_dates))
+            rows.extend(dict(zip(_MARKET_BREADTH_FIELDS, rr)) for rr in c.execute(
+                f"""SELECT {selected}
+                    FROM market_breadth_history_v11
+                    WHERE trade_date IN ({ph})
+                    ORDER BY captured_at""",
+                tuple(trade_dates),
+            ).fetchall())
+
+        by_ts = {}
+        for r in rows:
+            ts = str(r.get("captured_at") or "")
+            if not ts:
+                continue
+            by_ts[ts] = r
+        merged = sorted(by_ts.values(), key=lambda r: str(r.get("captured_at") or ""))
+
+        compact = [[r.get(k) for k in _MARKET_BREADTH_FIELDS] for r in merged]
+        current = merged[-1] if merged else None
+        return {
+            "schema_version": 1,
+            "trade_dates": sorted({str(r.get("trade_date") or "") for r in merged if r.get("trade_date")}),
+            "fields": list(_MARKET_BREADTH_FIELDS),
+            "rows": compact,
+            "current": current,
+            "source": "scanner_snapshots.sqlite3/market_breadth_history_v11",
+            "notes": {
+                "retention": "市場継続率=現在の『今日実際に強化中』件数÷当日ピーク件数。",
+                "peak_survival": "ピーク生存率=ピーク時の強化中銘柄のうち現在も残っている割合。",
+                "rotation": "直前run入替率=直前runと現在runの銘柄集合の対称差÷和集合。100%ほど総入替。",
+                "timing": "MIDDAYかつ市場時間内で、全銘柄snapshot品質gateを通過した実runだけ保存。",
+                "gate": "集合の正本は既存DIFF_REAL_STRENGTH=1。表示/研究専用で売買判定へ逆流させない。",
+            },
+        }
+    finally:
+        c.close()
 
 def _live_prune_snapshot_trade_days(c: sqlite3.Connection) -> int:
     dates=[r[0] for r in c.execute("SELECT DISTINCT trade_date FROM intraday_scanner_snapshot ORDER BY trade_date DESC").fetchall()]
@@ -1984,15 +7215,120 @@ def _live_is_market_snapshot_time(now=None) -> bool:
     return (9 * 60 <= minute <= 11 * 60 + 30) or (12 * 60 + 30 <= minute <= 15 * 60 + 30)
 
 
+def _is_jp_stock_snapshot_code(code) -> bool:
+    c = str(canonical_code_for_db(code) or "").strip().upper()
+    return bool(re.fullmatch(r"(?:\d{4}|\d{3}[A-Z])", c))
+
+
+def _snapshot_stock_quality(rows: list[dict]) -> dict:
+    """現在rowsの日本株coverageを判定。指数だけ/数銘柄だけのpartial runを正式snapshotにしない。"""
+    expected = set()
+    valid = set()
+    for r in rows or []:
+        code = _live_stock_code(
+            _live_get(r, "コード", "code"),
+            _live_get(r, "市場", "market"),
+            _live_get(r, "銘柄名", "name"),
+        )
+        if not code:
+            continue
+        expected.add(str(code))
+        px = _live_num(_live_get(r, "現在値_raw", "現在値", "current_price"))
+        if px is not None and px > 0:
+            valid.add(str(code))
+    expected_n = len(expected)
+    valid_n = len(valid)
+    coverage = (valid_n / expected_n) if expected_n else 0.0
+    min_rows = 1 if TEST_MODE else int(INTRADAY_SNAPSHOT_MIN_STOCK_ROWS)
+    ok = bool(expected_n >= min_rows and valid_n >= min_rows and coverage >= INTRADAY_SNAPSHOT_MIN_COVERAGE)
+    return {
+        "ok": ok,
+        "expected_stock_rows": expected_n,
+        "valid_stock_rows": valid_n,
+        "coverage": coverage,
+        "min_rows": min_rows,
+        "min_coverage": INTRADAY_SNAPSHOT_MIN_COVERAGE,
+    }
+
+
+def _intraday_diff_good_capture_times(c: sqlite3.Connection, trade_date: str, limit: int = 12) -> list[str]:
+    """DIFF履歴から日本株coverageが十分なcaptureだけを新しい順で返す。"""
+    rows = c.execute(
+        """
+        SELECT captured_at,
+               SUM(CASE
+                     WHEN code GLOB '[0-9][0-9][0-9][0-9]'
+                       OR code GLOB '[0-9][0-9][0-9][A-Za-z]'
+                     THEN 1 ELSE 0 END) AS stock_rows
+        FROM intraday_diff_snapshot
+        WHERE trade_date=?
+        GROUP BY captured_at
+        ORDER BY captured_at DESC
+        """,
+        (trade_date,),
+    ).fetchall()
+    if not rows:
+        return []
+    counts = [(str(ts), int(n or 0)) for ts, n in rows]
+    max_count = max((n for _, n in counts), default=0)
+    abs_min = 1 if TEST_MODE else int(INTRADAY_SNAPSHOT_MIN_STOCK_ROWS)
+    required = max(abs_min, int(max_count * INTRADAY_SNAPSHOT_MIN_COVERAGE + 0.999999))
+    good = [ts for ts, n in counts if n >= required]
+    return good[:max(1, int(limit))]
+
+
+def _intraday_diff_filter_good_history(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """既存DB内に残った指数だけ/partial captureをDIFF baselineから除外する。"""
+    if df is None or df.empty:
+        return df, {"captures_total": 0, "captures_good": 0, "required_stock_rows": None}
+    z = df.copy()
+    stock_mask = z["code"].map(_is_jp_stock_snapshot_code)
+    counts = z.loc[stock_mask].groupby("captured_at")["code"].nunique()
+    if counts.empty:
+        return z.iloc[0:0].copy(), {"captures_total": int(z["captured_at"].nunique()), "captures_good": 0, "required_stock_rows": None}
+    max_count = int(counts.max())
+    abs_min = 1 if TEST_MODE else int(INTRADAY_SNAPSHOT_MIN_STOCK_ROWS)
+    required = max(abs_min, int(max_count * INTRADAY_SNAPSHOT_MIN_COVERAGE + 0.999999))
+    good = set(counts[counts >= required].index.astype(str))
+    out = z[z["captured_at"].astype(str).isin(good)].copy()
+    return out, {
+        "captures_total": int(z["captured_at"].nunique()),
+        "captures_good": len(good),
+        "max_stock_rows": max_count,
+        "required_stock_rows": required,
+    }
+
+
 def _live_capture_snapshots(rows: list[dict], daily_map: dict[str, dict]) -> tuple[str, str, int]:
     now = _now_jst()
     captured = now.isoformat(timespec="microseconds")
     trade_date = now.date().isoformat()
+    run_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+
+    # INTRADAY-STABILITY-V1: run開始時モードを優先。
+    # 8:59 PREOPEN開始runが処理中に9:00を跨いでも、前営業日ベースの値を場中snapshotへ保存しない。
+    if run_mode != "MIDDAY":
+        print(f"[live-feed] intraday snapshot write skipped run_mode={run_mode}: {captured}")
+        globals()["_LIVE_SNAPSHOT_CURRENT_QUALITY"] = {"ok": False, "reason": f"run_mode={run_mode}", "captured": captured}
+        return captured, trade_date, 0
 
     # P4-LIVE SAFE: 場中継続性を測るDBへ時間外の静止価格を入れない。
-    # EODでは書込みをskipし、同日の最後の場中snapshot履歴を後段で読む。
     if not _live_is_market_snapshot_time(now):
         print(f"[live-feed] intraday snapshot write skipped outside market hours: {captured}")
+        globals()["_LIVE_SNAPSHOT_CURRENT_QUALITY"] = {"ok": False, "reason": "outside_market_hours", "captured": captured}
+        return captured, trade_date, 0
+
+    _quality = _snapshot_stock_quality(rows)
+    _quality.update({"captured": captured, "trade_date": trade_date, "run_mode": run_mode})
+    globals()["_LIVE_SNAPSHOT_CURRENT_QUALITY"] = _quality
+    if not _quality.get("ok"):
+        print(
+            "[live-feed][PARTIAL] snapshot write skipped "
+            f"stocks={_quality.get('valid_stock_rows')}/{_quality.get('expected_stock_rows')} "
+            f"coverage={float(_quality.get('coverage') or 0.0)*100:.1f}% "
+            f"required_rows>={_quality.get('min_rows')} required_cov>={float(_quality.get('min_coverage') or 0.0)*100:.0f}%",
+            flush=True,
+        )
         return captured, trade_date, 0
 
     vals=[]
@@ -2078,6 +7414,11 @@ def _confirmed_daily_outcome_cutoff(asof_value) -> str:
     extra = _load_extra_closed(EXTRA_CLOSED_PATH)
     return prev_business_day_jp(asof_d, extra).isoformat()
 
+
+_ENTRY_OUTCOME_V40_FAST = str(os.environ.get("KABU_SCREEN_V40_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+
+def _v40_entry_fast_enabled() -> bool:
+    return bool(_ENTRY_OUTCOME_V40_FAST)
 
 def _entry_signal_ensure_schema(c: sqlite3.Connection) -> None:
     c.execute("""
@@ -2187,11 +7528,43 @@ def _entry_signal_refresh_intraday_outcomes(trade_date: str | None = None) -> in
         if ev.empty:
             return 0
         dates = sorted(set(ev["trade_date"].astype(str)))
-        ph = ",".join("?" for _ in dates)
-        snaps = pd.read_sql_query(
-            f"SELECT captured_at,trade_date,code,current_price FROM intraday_scanner_snapshot WHERE trade_date IN ({ph}) ORDER BY captured_at,code",
-            c, params=dates,
-        )
+        snaps = None
+        if _v40_entry_fast_enabled():
+            _v40_t0 = time.perf_counter()
+            try:
+                event_codes = sorted(set(ev["code"].astype(str)))
+                if dates and event_codes:
+                    date_q = ",".join("?" for _ in dates)
+                    parts = []
+                    # SQLite parameter上限とquery plannerの安定性を優先してcodeを分割。
+                    for _i in range(0, len(event_codes), 400):
+                        _codes = event_codes[_i:_i+400]
+                        code_q = ",".join("?" for _ in _codes)
+                        parts.append(pd.read_sql_query(
+                            f"SELECT captured_at,trade_date,code,current_price FROM intraday_scanner_snapshot "
+                            f"WHERE trade_date IN ({date_q}) AND code IN ({code_q}) ORDER BY captured_at,code",
+                            c, params=[*dates, *_codes],
+                        ))
+                    snaps = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+                    if not snaps.empty:
+                        snaps = snaps.sort_values(["captured_at","code"], kind="stable").reset_index(drop=True)
+                    _perf_record_phase(
+                        "backend-detail:entry_intraday_snapshot_filter",
+                        time.perf_counter()-_v40_t0, "OK"
+                    )
+                    print(
+                        f"[V40][entry-intraday] snapshot-filter codes={len(event_codes)} dates={len(dates)} rows={len(snaps)}",
+                        flush=True,
+                    )
+            except Exception as _v40_e:
+                snaps = None
+                print(f"[V40][entry-intraday][WARN] filtered load failed -> legacy: {_v40_e}", flush=True)
+        if snaps is None:
+            ph = ",".join("?" for _ in dates)
+            snaps = pd.read_sql_query(
+                f"SELECT captured_at,trade_date,code,current_price FROM intraday_scanner_snapshot WHERE trade_date IN ({ph}) ORDER BY captured_at,code",
+                c, params=dates,
+            )
         if snaps.empty:
             return 0
         snaps["_dt"] = pd.to_datetime(snaps["captured_at"], errors="coerce", utc=True).dt.tz_convert("Asia/Tokyo")
@@ -2246,69 +7619,197 @@ def _entry_signal_refresh_daily_outcomes(conn: sqlite3.Connection) -> int:
     c = _live_snapshot_conn()
     try:
         _entry_signal_ensure_schema(c)
+        _v45_t = time.perf_counter()
         ev = pd.read_sql_query("SELECT * FROM intraday_buy_signal_event ORDER BY trade_date,code", c)
+        _perf_record_phase("backend-detail:entry_daily_event_load", time.perf_counter()-_v45_t, "OK")
         if ev.empty:
             return 0
         codes=sorted(set(ev["code"].astype(str)))
         min_day=str(ev["trade_date"].astype(str).min())
-        chunks=[]
-        for i in range(0,len(codes),500):
-            ch=codes[i:i+500]
-            variants=[]
-            for _code in ch:
-                variants.extend(code_query_variants(_code))
-            variants=list(dict.fromkeys(str(v) for v in variants if str(v)))
-            q=",".join("?" for _ in variants)
-            part=pd.read_sql_query(
-                f"SELECT rowid AS _rowid,コード,日付,終値 FROM price_history WHERE date(日付)>=date(?) AND CAST(コード AS TEXT) IN ({q}) ORDER BY 日付,_rowid",
-                conn, params=[min_day]+variants,
+        event_codes=set(codes)
+
+        # PERF-OPT-V40: event codeのraw aliasだけを既存code/date expression indexで取得。
+        # 取得後のcanonical filter/dedupe/休日除外/営業日位置計算は従来処理をそのまま通す。
+        ph = None
+        if _v40_entry_fast_enabled():
+            _v40_t0 = time.perf_counter()
+            try:
+                variants = expand_code_query_variants(codes)
+                if variants:
+                    parts = []
+                    for _i in range(0, len(variants), 400):
+                        _part = variants[_i:_i+400]
+                        _qm = ",".join("?" for _ in _part)
+                        parts.append(pd.read_sql_query(
+                            "SELECT rowid AS _rowid,コード,日付,終値 FROM price_history "
+                            "INDEXED BY idx_price_history_perf_code_text_date "
+                            f"WHERE CAST(コード AS TEXT) IN ({_qm}) AND date(日付)>=date(?) "
+                            "ORDER BY 日付,_rowid",
+                            conn, params=[*_part, min_day],
+                        ))
+                    ph = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+                    if not ph.empty:
+                        ph = ph.sort_values(["日付","_rowid"], kind="stable").reset_index(drop=True)
+                    _perf_record_phase(
+                        "backend-detail:entry_daily_history_filter",
+                        time.perf_counter()-_v40_t0, "OK"
+                    )
+                    print(
+                        f"[V40][entry-daily] history-filter event_codes={len(codes)} variants={len(variants)} rows={len(ph)}",
+                        flush=True,
+                    )
+            except Exception as _v40_e:
+                ph = None
+                print(f"[V40][entry-daily][WARN] filtered load failed -> legacy: {_v40_e}", flush=True)
+        if ph is None:
+            # Legacy exact fallback.
+            ph=pd.read_sql_query(
+                "SELECT rowid AS _rowid,コード,日付,終値 FROM price_history "
+                "WHERE date(日付)>=date(?) ORDER BY 日付,_rowid",
+                conn, params=[min_day],
             )
-            chunks.append(part)
-        if not chunks:
+        if ph.empty:
             return 0
-        ph=pd.concat(chunks,ignore_index=True)
+        _v45_t = time.perf_counter()
+        ph["_entry_code_key"] = ph["コード"].map(canonical_code_for_db)
+        ph = ph[ph["_entry_code_key"].isin(event_codes)].drop(
+            columns=["_entry_code_key"], errors="ignore"
+        ).copy()
+        _perf_record_phase("backend-detail:entry_daily_canonical_filter", time.perf_counter()-_v45_t, "OK")
         if ph.empty:
             return 0
         # alias重複とlegacy休場日足を除き、「3行後」=3営業日後を守る。
+        _v45_t = time.perf_counter()
         ph = _dedupe_price_history_df(ph)
+        _perf_record_phase("backend-detail:entry_daily_dedupe", time.perf_counter()-_v45_t, "OK")
+        _v45_t = time.perf_counter()
         ph["日付"]=pd.to_datetime(ph["日付"],errors="coerce").dt.strftime("%Y-%m-%d")
         ph["終値"]=pd.to_numeric(ph["終値"],errors="coerce")
         ph=ph.dropna(subset=["コード","日付","終値"])
-        by_code={str(code):g.sort_values("日付",kind="stable").reset_index(drop=True) for code,g in ph.groupby("コード",sort=False)}
+        _perf_record_phase("backend-detail:entry_daily_normalize", time.perf_counter()-_v45_t, "OK")
         updates=[]
         now=_now_jst()
         today=now.date().isoformat()
 
-        def _slot(g, pos):
-            if pos >= len(g):
-                return None, None, False, False
-            target_day=str(g.iloc[pos]["日付"])
-            confirmed=_daily_close_is_confirmed(target_day, now)
-            value=_live_num(g.iloc[pos]["終値"]) if confirmed else None
-            # 今日の未確定足だけは、旧版が保存した場中値を明示的に消す。
-            clear_unconfirmed=(target_day == today and not confirmed)
-            return target_day, value, confirmed, clear_unconfirmed
-
-        for _,row in ev.iterrows():
-            code=str(row["code"]); day=str(row["trade_date"]); g=by_code.get(code)
-            if g is None or g.empty:
-                continue
-            dates=g["日付"].astype(str).tolist()
+        # PERF-OPT-V46: V45で約2秒を占めていたeventごとのiterrows + 3回iloc +
+        # pd.Timestamp確認を、code内営業日positionへのvectorized joinへ置換する。
+        # phは直前の_dedupe_price_history_dfでcanonical code / JPX営業日 / 日付順が確定済み。
+        # close / +1営業日 / +3営業日の意味論と、当日15:30前の旧汚染値NULL化は不変。
+        _v46_fast = str(os.environ.get("KABU_SCREEN_V46_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+        _v46_done = False
+        if _v46_fast:
+            _v46_t0 = time.perf_counter()
             try:
-                idx=dates.index(day)
-            except ValueError:
-                continue
-            _, close, close_ok, close_clear = _slot(g, idx)
-            _, n1, n1_ok, n1_clear = _slot(g, idx+1)
-            _, n3, n3_ok, n3_clear = _slot(g, idx+3)
-            updates.append((
-                int(close_ok), close, int(close_clear),
-                int(n1_ok), n1, int(n1_clear),
-                int(n3_ok), n3, int(n3_clear),
-                now.isoformat(timespec="seconds"), day, code,
-            ))
+                _v46_ph = ph[["コード","日付","終値"]].copy()
+                _v46_ph["コード"] = _v46_ph["コード"].astype(str)
+                _v46_ph["_entry_pos"] = _v46_ph.groupby("コード", sort=False).cumcount().astype("int64")
+
+                _v46_base = ev[["trade_date","code"]].copy()
+                _v46_base["trade_date"] = _v46_base["trade_date"].astype(str)
+                _v46_base["code"] = _v46_base["code"].astype(str)
+                _v46_base["_event_ord"] = np.arange(len(_v46_base), dtype=np.int64)
+
+                _v46_pos = _v46_ph[["コード","日付","_entry_pos"]].rename(
+                    columns={"コード":"code","日付":"trade_date"}
+                )
+                _v46_base = _v46_base.merge(
+                    _v46_pos, on=["code","trade_date"], how="left", sort=False, validate="many_to_one"
+                )
+                _v46_base = _v46_base[_v46_base["_entry_pos"].notna()].copy()
+                if not _v46_base.empty:
+                    _v46_base["_entry_pos"] = _v46_base["_entry_pos"].astype("int64")
+                    _v46_target = _v46_ph.rename(columns={"コード":"code"})[["code","_entry_pos","日付","終値"]]
+                    _v46_today_confirmed = (now.hour, now.minute, now.second) >= (15, 30, 0)
+
+                    for _v46_off, _v46_prefix in ((0,"close"),(1,"n1"),(3,"n3")):
+                        _v46_key = f"_target_pos_{_v46_prefix}"
+                        _v46_base[_v46_key] = _v46_base["_entry_pos"] + int(_v46_off)
+                        _v46_r = _v46_target.rename(columns={
+                            "_entry_pos": _v46_key,
+                            "日付": f"_{_v46_prefix}_day",
+                            "終値": f"_{_v46_prefix}_value",
+                        })
+                        _v46_base = _v46_base.merge(
+                            _v46_r, on=["code", _v46_key], how="left", sort=False, validate="many_to_one"
+                        )
+                        _v46_day = _v46_base[f"_{_v46_prefix}_day"]
+                        _v46_exists = _v46_day.notna()
+                        _v46_past = _v46_exists & (_v46_day < today)
+                        _v46_is_today = _v46_exists & (_v46_day == today)
+                        _v46_ok = _v46_past | (_v46_is_today & bool(_v46_today_confirmed))
+                        _v46_clear = _v46_is_today & (not bool(_v46_today_confirmed))
+                        _v46_base[f"_{_v46_prefix}_ok"] = _v46_ok.astype("int8")
+                        _v46_base[f"_{_v46_prefix}_clear"] = _v46_clear.astype("int8")
+                        _v46_base[f"_{_v46_prefix}_out"] = _v46_base[f"_{_v46_prefix}_value"].where(_v46_ok)
+
+                    _v46_base = _v46_base.sort_values("_event_ord", kind="stable")
+                    _v46_updated_at = now.isoformat(timespec="seconds")
+                    _v46_cols = [
+                        "_close_ok","_close_out","_close_clear",
+                        "_n1_ok","_n1_out","_n1_clear",
+                        "_n3_ok","_n3_out","_n3_clear",
+                        "trade_date","code",
+                    ]
+                    for _v46_vals in _v46_base[_v46_cols].to_numpy(dtype=object):
+                        _cok,_cv,_cclr,_n1ok,_n1v,_n1clr,_n3ok,_n3v,_n3clr,_day,_code = _v46_vals
+                        updates.append((
+                            int(_cok), None if pd.isna(_cv) else float(_cv), int(_cclr),
+                            int(_n1ok), None if pd.isna(_n1v) else float(_n1v), int(_n1clr),
+                            int(_n3ok), None if pd.isna(_n3v) else float(_n3v), int(_n3clr),
+                            _v46_updated_at, str(_day), str(_code),
+                        ))
+                _v46_done = True
+                _v46_dt = time.perf_counter()-_v46_t0
+                _perf_record_phase("backend-detail:entry_daily_group_build", _v46_dt, "FAST-V46")
+                _perf_record_phase("backend-detail:entry_daily_outcome_loop", _v46_dt, "FAST-V46")
+                _perf_record_phase("backend-detail:entry_daily_vector_outcome", _v46_dt, "OK")
+                print(f"[V46][entry-daily] vector-outcome events={len(ev)} updates={len(updates)} dt={_v46_dt:.3f}s", flush=True)
+            except Exception as _v46_e:
+                updates=[]
+                print(f"[V46][entry-daily][WARN] vector outcome failed -> V45 legacy: {_v46_e}", flush=True)
+
+        if not _v46_done:
+            _v45_t = time.perf_counter()
+            by_code={}
+            pos_by_code={}
+            for code,g in ph.groupby("コード",sort=False):
+                gg=g.sort_values("日付",kind="stable").reset_index(drop=True)
+                ck=str(code)
+                by_code[ck]=gg
+                pos_by_code[ck]={str(_d): int(_i) for _i,_d in enumerate(gg["日付"].astype(str).tolist())}
+            _perf_record_phase("backend-detail:entry_daily_group_build", time.perf_counter()-_v45_t, "OK")
+
+            def _slot(g, pos):
+                if pos >= len(g):
+                    return None, None, False, False
+                target_day=str(g.iloc[pos]["日付"])
+                confirmed=_daily_close_is_confirmed(target_day, now)
+                value=_live_num(g.iloc[pos]["終値"]) if confirmed else None
+                # 今日の未確定足だけは、旧版が保存した場中値を明示的に消す。
+                clear_unconfirmed=(target_day == today and not confirmed)
+                return target_day, value, confirmed, clear_unconfirmed
+
+            _v45_t = time.perf_counter()
+            for _,row in ev.iterrows():
+                code=str(row["code"]); day=str(row["trade_date"]); g=by_code.get(code)
+                if g is None or g.empty:
+                    continue
+                idx=pos_by_code.get(code,{}).get(day)
+                if idx is None:
+                    continue
+                _, close, close_ok, close_clear = _slot(g, idx)
+                _, n1, n1_ok, n1_clear = _slot(g, idx+1)
+                _, n3, n3_ok, n3_clear = _slot(g, idx+3)
+                updates.append((
+                    int(close_ok), close, int(close_clear),
+                    int(n1_ok), n1, int(n1_clear),
+                    int(n3_ok), n3, int(n3_clear),
+                    now.isoformat(timespec="seconds"), day, code,
+                ))
+            _perf_record_phase("backend-detail:entry_daily_outcome_loop", time.perf_counter()-_v45_t, "OK")
         if not updates:
             return 0
+        _v45_t = time.perf_counter()
         with c:
             c.executemany("""
                 UPDATE intraday_buy_signal_event
@@ -2318,37 +7819,75 @@ def _entry_signal_refresh_daily_outcomes(conn: sqlite3.Connection) -> int:
                        updated_at=?
                  WHERE trade_date=? AND code=?
             """, updates)
+        _perf_record_phase("backend-detail:entry_daily_db_update", time.perf_counter()-_v45_t, "OK")
         return len(updates)
     finally:
         c.close()
 
 
-def _entry_signal_metric_summary(setup_bucket: str | None = None) -> dict:
-    """実際の『今買える？=○』初回signalの事後成績を集計する。"""
-    c=_live_snapshot_conn()
+_ENTRY_SIGNAL_EVENT_DF_RUN_CACHE = None
+_ENTRY_SIGNAL_SUMMARY_RUN_CACHE = {}
+
+def _entry_signal_event_df_for_summary() -> pd.DataFrame:
+    """V22: intraday_buy_signal_eventを同一runで1回だけ読込・派生列化する。"""
+    global _ENTRY_SIGNAL_EVENT_DF_RUN_CACHE
+    if isinstance(_ENTRY_SIGNAL_EVENT_DF_RUN_CACHE, pd.DataFrame):
+        return _ENTRY_SIGNAL_EVENT_DF_RUN_CACHE
+    c = _live_snapshot_conn()
     try:
         _entry_signal_ensure_schema(c)
-        if setup_bucket:
-            df=pd.read_sql_query("SELECT * FROM intraday_buy_signal_event WHERE setup_bucket=? ORDER BY trade_date,signal_at",c,params=[str(setup_bucket)])
-        else:
-            df=pd.read_sql_query("SELECT * FROM intraday_buy_signal_event ORDER BY trade_date,signal_at",c)
+        df = pd.read_sql_query(
+            "SELECT * FROM intraday_buy_signal_event ORDER BY trade_date,signal_at",
+            c,
+        )
     finally:
         c.close()
-    empty={"score":None,"qualified":False,"event_count":0,"metrics":{},"recent_days":0,"baseline_days":0}
-    if df.empty: return empty
-    for col in ("entry_price","p10m","p30m","p60m","close_price","next1d_close","next3d_close","mfe60","mae60"):
-        df[col]=pd.to_numeric(df[col],errors="coerce")
-    ep=df["entry_price"].replace(0,np.nan)
-    df["ret_10m"]=df["p10m"]/ep-1.0
-    df["ret_30m"]=df["p30m"]/ep-1.0
-    df["ret_60m"]=df["p60m"]/ep-1.0
-    df["ret_close"]=df["close_price"]/ep-1.0
-    df["ret_1d"]=df["next1d_close"]/ep-1.0
-    df["ret_3d"]=df["next3d_close"]/ep-1.0
-    df["hit1_60m"]=np.where(df["mfe60"].notna(),(df["mfe60"]>=0.01).astype(float),np.nan)
-    dates=sorted(df["trade_date"].astype(str).unique().tolist())
-    recent_dates=dates[-ENTRY_SIGNAL_RECENT_TRADE_DAYS:]
-    base_dates=dates[-(ENTRY_SIGNAL_RECENT_TRADE_DAYS+ENTRY_SIGNAL_BASELINE_TRADE_DAYS):-ENTRY_SIGNAL_RECENT_TRADE_DAYS] if len(dates)>ENTRY_SIGNAL_RECENT_TRADE_DAYS else []
+    if not df.empty:
+        for col in ("entry_price","p10m","p30m","p60m","close_price","next1d_close","next3d_close","mfe60","mae60"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        ep = df["entry_price"].replace(0, np.nan)
+        df["ret_10m"] = df["p10m"] / ep - 1.0
+        df["ret_30m"] = df["p30m"] / ep - 1.0
+        df["ret_60m"] = df["p60m"] / ep - 1.0
+        df["ret_close"] = df["close_price"] / ep - 1.0
+        df["ret_1d"] = df["next1d_close"] / ep - 1.0
+        df["ret_3d"] = df["next3d_close"] / ep - 1.0
+        df["hit1_60m"] = np.where(df["mfe60"].notna(), (df["mfe60"] >= 0.01).astype(float), np.nan)
+        df["_trade_date_str_v22"] = df["trade_date"].astype(str)
+        if "setup_bucket" in df.columns:
+            df["_setup_bucket_str_v22"] = df["setup_bucket"].fillna("").astype(str)
+        else:
+            df["_setup_bucket_str_v22"] = ""
+    _ENTRY_SIGNAL_EVENT_DF_RUN_CACHE = df
+    print(f"[ENTRY-V22] signal-event shared rows={len(df)}", flush=True)
+    return df
+
+
+def _entry_signal_metric_summary(setup_bucket: str | None = None) -> dict:
+    """実際の『今買える？=○』初回signalの事後成績を集計する。V22は読込/派生列をrun共有。"""
+    _key = "__ALL__" if not setup_bucket else str(setup_bucket)
+    _hit = _ENTRY_SIGNAL_SUMMARY_RUN_CACHE.get(_key)
+    if isinstance(_hit, dict):
+        return _hit
+
+    all_df = _entry_signal_event_df_for_summary()
+    empty = {"score":None,"qualified":False,"event_count":0,"metrics":{},"recent_days":0,"baseline_days":0}
+    if all_df.empty:
+        _ENTRY_SIGNAL_SUMMARY_RUN_CACHE[_key] = empty
+        return empty
+    if setup_bucket:
+        df = all_df.loc[all_df["_setup_bucket_str_v22"].eq(str(setup_bucket))]
+    else:
+        df = all_df
+    if df.empty:
+        _ENTRY_SIGNAL_SUMMARY_RUN_CACHE[_key] = empty
+        return empty
+
+    dates = sorted(df["_trade_date_str_v22"].unique().tolist())
+    recent_dates = dates[-ENTRY_SIGNAL_RECENT_TRADE_DAYS:]
+    base_dates = dates[-(ENTRY_SIGNAL_RECENT_TRADE_DAYS+ENTRY_SIGNAL_BASELINE_TRADE_DAYS):-ENTRY_SIGNAL_RECENT_TRADE_DAYS] if len(dates)>ENTRY_SIGNAL_RECENT_TRADE_DAYS else []
+    _recent_mask = df["_trade_date_str_v22"].isin(recent_dates)
+    _base_mask = df["_trade_date_str_v22"].isin(base_dates)
     specs={
         "plus_10m":("ret_10m","positive"),"plus_30m":("ret_30m","positive"),"plus_60m":("ret_60m","positive"),
         "plus_close":("ret_close","positive"),"plus_1d":("ret_1d","positive"),"plus_3d":("ret_3d","positive"),
@@ -2362,13 +7901,14 @@ def _entry_signal_metric_summary(setup_bucket: str | None = None) -> dict:
         return float(z.median()*100.0)
     metrics={}
     for key,(col,kind) in specs.items():
-        rv=df[df["trade_date"].astype(str).isin(recent_dates)][col]
-        bv=df[df["trade_date"].astype(str).isin(base_dates)][col]
+        rv=df.loc[_recent_mask,col]
+        bv=df.loc[_base_mask,col]
         _nr=int(pd.to_numeric(rv,errors="coerce").notna().sum())
         _nb=int(pd.to_numeric(bv,errors="coerce").notna().sum())
+        _ra = agg(rv,kind); _ba = agg(bv,kind)
         metrics[key]={
-            "recent":None if agg(rv,kind) is None else round(agg(rv,kind),2),
-            "baseline":None if agg(bv,kind) is None else round(agg(bv,kind),2),
+            "recent":None if _ra is None else round(_ra,2),
+            "baseline":None if _ba is None else round(_ba,2),
             "n_recent":_nr,
             "n_baseline":_nb,
             "score_eligible_recent":bool(_nr >= ENTRY_SIGNAL_MIN_OBS),
@@ -2407,24 +7947,82 @@ def _entry_signal_metric_summary(setup_bucket: str | None = None) -> dict:
     elif delta_score is None: score=abs_score
     else: score=abs_score*0.70+delta_score*0.30
     score=None if score is None else round(float(_entry_env_clamp(score)),1)
-    return {"score":score,"absolute_score":None if abs_score is None else round(float(abs_score),1),"delta_score":None if delta_score is None else round(float(delta_score),1),"qualified":qualified,"event_count":int(len(df)),"metrics":metrics,"recent_days":len(recent_dates),"baseline_days":len(base_dates),"min_obs":ENTRY_SIGNAL_MIN_OBS}
+    result={"score":score,"absolute_score":None if abs_score is None else round(float(abs_score),1),"delta_score":None if delta_score is None else round(float(delta_score),1),"qualified":qualified,"event_count":int(len(df)),"metrics":metrics,"recent_days":len(recent_dates),"baseline_days":len(base_dates),"min_obs":ENTRY_SIGNAL_MIN_OBS}
+    _ENTRY_SIGNAL_SUMMARY_RUN_CACHE[_key] = result
+    return result
 
 def _live_intraday_feature_map(trade_date: str, current_codes: set[str]) -> dict[str, dict]:
+    """場中snapshotから5/10/20/30/60分特徴を作る。
+
+    PERF-OPT-V5: 各銘柄×各horizonでDataFrame boolean filterを繰り返さず、
+    ソート済み時刻配列へnp.searchsortedして同じ「target以前の最後のsnapshot」を参照する。
+    """
     if not current_codes:
         return {}
+    _v25_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    _v25_intraday_fp = ""
+    _v25_codes_fp = ""
+    if _v25_fast_enabled() and _v25_mode == "EOD":
+        try:
+            _v25_intraday_fp = _v25_intraday_source_fingerprint(trade_date)
+            _v25_codes_fp = _stage2_codes_hash(current_codes)
+            _obj = _stage2_json_read(_V25_INTRADAY_CACHE_PATH)
+            if (
+                _v25_intraday_fp and isinstance(_obj, dict)
+                and int(_obj.get("schema") or 0) == _V25_CACHE_SCHEMA
+                and str(_obj.get("trade_date") or "") == str(trade_date)
+                and str(_obj.get("source_fp") or "") == _v25_intraday_fp
+                and str(_obj.get("codes_fp") or "") == _v25_codes_fp
+            ):
+                _hit = _v25_records_json_map(_obj.get("records"))
+                print(f"[V25-INTRADAY-CACHE] HIT trade_date={trade_date} codes={len(_hit)}", flush=True)
+                return _hit
+            print(f"[V25-INTRADAY-CACHE] MISS trade_date={trade_date}", flush=True)
+        except Exception as _e:
+            print(f"[V25-INTRADAY-CACHE][WARN] lookup failed: {_e}", flush=True)
     c=_live_snapshot_conn()
     try:
-        df=pd.read_sql_query(
-            "SELECT * FROM intraday_scanner_snapshot WHERE trade_date=? ORDER BY captured_at, code",
-            c, params=[trade_date],
-        )
+        # V60: 最大horizonは60分。直近window + window以前の各code最新1行(anchor)だけで
+        # searchsortedの「target以前の最後のsnapshot」を完全に再現できる。
+        if V60_INTRADAY_WINDOW_FAST and str(_auto_run_mode() or RUN_SESSION or "").upper()=="MIDDAY":
+            _max_cap = c.execute("SELECT MAX(captured_at) FROM intraday_scanner_snapshot WHERE trade_date=?", (trade_date,)).fetchone()
+            _max_cap = _max_cap[0] if _max_cap else None
+            _max_dt = pd.to_datetime(_max_cap, errors="coerce", utc=True) if _max_cap else pd.NaT
+            if pd.notna(_max_dt):
+                _cut_dt = _max_dt - pd.Timedelta(minutes=int(V60_INTRADAY_RECENT_MINUTES))
+                _cut_iso = _cut_dt.isoformat()
+                df=pd.read_sql_query(
+                    """WITH anchor AS (
+                           SELECT captured_at,trade_date,code,current_price,day_low
+                           FROM (
+                             SELECT captured_at,trade_date,code,current_price,day_low,
+                                    ROW_NUMBER() OVER (PARTITION BY code ORDER BY captured_at DESC) AS rn
+                             FROM intraday_scanner_snapshot
+                             WHERE trade_date=? AND captured_at<?
+                           ) WHERE rn=1
+                         )
+                         SELECT captured_at,trade_date,code,current_price,day_low
+                         FROM intraday_scanner_snapshot
+                         WHERE trade_date=? AND captured_at>=?
+                         UNION ALL
+                         SELECT captured_at,trade_date,code,current_price,day_low FROM anchor
+                         ORDER BY captured_at, code""",
+                    c, params=[trade_date,_cut_iso,trade_date,_cut_iso],
+                )
+                print(f"[V60-INTRADAY] window={V60_INTRADAY_RECENT_MINUTES}m rows={len(df)} max={_max_cap}",flush=True)
+            else:
+                df=pd.read_sql_query("SELECT captured_at,trade_date,code,current_price,day_low FROM intraday_scanner_snapshot WHERE trade_date=? ORDER BY captured_at, code",c,params=[trade_date])
+        else:
+            df=pd.read_sql_query(
+                "SELECT captured_at,trade_date,code,current_price,day_low FROM intraday_scanner_snapshot WHERE trade_date=? ORDER BY captured_at, code",
+                c, params=[trade_date],
+            )
     finally:
         c.close()
     if df.empty: return {}
     df=df[df["code"].astype(str).isin(current_codes)].copy()
 
     # P4-LIVE SAFE: 過去runですでに保存された時間外snapshotも計算時に除外する。
-    # captured_atはJST offset付きISOで保存されるため、一度UTCとしてparseしてJSTへ戻す。
     df["_dt"]=pd.to_datetime(df["captured_at"], errors="coerce", utc=True).dt.tz_convert("Asia/Tokyo")
     _minute = df["_dt"].dt.hour * 60 + df["_dt"].dt.minute
     _market_mask = (
@@ -2439,48 +8037,82 @@ def _live_intraday_feature_map(trade_date: str, current_codes: set[str]) -> dict
     if df.empty:
         return {}
 
-    for col in ("current_price","day_low","day_high","support_today"):
+    for col in ("current_price","day_low"):
         df[col]=pd.to_numeric(df[col], errors="coerce")
     out={}
     horizons=(5,10,20,30,60)
+    _minute_ns = int(pd.Timedelta(minutes=1).value)
+
     for code,g in df.groupby("code", sort=False):
-        g=g.dropna(subset=["_dt","current_price"]).sort_values("_dt", kind="stable")
+        # SQL ORDER BY captured_at,codeにより各code内も時刻昇順。group内再sortを省略。
+        g=g.dropna(subset=["_dt","current_price"])
         if g.empty: continue
-        cur=g.iloc[-1]; curp=_live_num(cur["current_price"]); nowdt=cur["_dt"]
+
+        _dt_arr = g["_dt"].astype("int64").to_numpy(copy=False)
+        _price_arr = pd.to_numeric(g["current_price"], errors="coerce").to_numpy(dtype=float, copy=False)
+        _low_arr = pd.to_numeric(g["day_low"], errors="coerce").to_numpy(dtype=float, copy=False)
+        cur=g.iloc[-1]
+        curp=_live_num(cur["current_price"]); nowdt=cur["_dt"]
+        _now_ns = int(_dt_arr[-1])
         feat={}
+
         for mins in horizons:
-            target=nowdt-pd.Timedelta(minutes=mins)
-            prev=g[g["_dt"]<=target]
-            p0=_live_num(prev.iloc[-1]["current_price"]) if not prev.empty else None
+            _target_ns = _now_ns - int(mins) * _minute_ns
+            _pos = int(np.searchsorted(_dt_arr, _target_ns, side="right") - 1)
+            p0 = _live_num(_price_arr[_pos]) if _pos >= 0 else None
             feat[f"ret_{mins}m"] = round((curp/p0-1.0)*100.0,4) if curp is not None and p0 not in (None,0) else None
+
         low=_live_num(cur["day_low"])
         feat["low_rebound_pct"] = round((curp/low-1.0)*100.0,4) if curp is not None and low not in (None,0) else None
-        win=g[g["_dt"]>=nowdt-pd.Timedelta(minutes=60)].copy()
-        prices=win["current_price"].astype(float)
-        diffs=prices.diff().dropna()
-        feat["up_snapshot_ratio"] = round(float((diffs>0).mean()),4) if len(diffs) else None
-        if len(prices):
-            draw=(prices/prices.cummax()-1.0)*100.0
-            feat["max_pullback_pct"] = round(float(draw.min()),4)
-        else: feat["max_pullback_pct"]=None
-        lows=win["day_low"].dropna()
-        last_low_change_dt=None
-        if len(lows):
-            last_val=None
-            for idx,val in lows.items():
-                if last_val is None or float(val) < float(last_val)-1e-12:
-                    last_low_change_dt=win.loc[idx,"_dt"]
-                    last_val=float(val)
-        _mins_since_low = round(float((nowdt-last_low_change_dt).total_seconds()/60.0),2) if last_low_change_dt is not None else None
+
+        _start60_ns = _now_ns - 60 * _minute_ns
+        _w0 = int(np.searchsorted(_dt_arr, _start60_ns, side="left"))
+        _prices = _price_arr[_w0:]
+        _valid_prices = _prices[np.isfinite(_prices)]
+        if len(_valid_prices) >= 2:
+            _diffs = np.diff(_valid_prices)
+            feat["up_snapshot_ratio"] = round(float(np.mean(_diffs > 0)),4)
+        else:
+            feat["up_snapshot_ratio"] = None
+        if len(_valid_prices):
+            _cummax = np.maximum.accumulate(_valid_prices)
+            _draw = (_valid_prices / _cummax - 1.0) * 100.0
+            feat["max_pullback_pct"] = round(float(np.min(_draw)),4)
+        else:
+            feat["max_pullback_pct"] = None
+
+        # 旧実装と同じく、60分窓内でday_lowがそれまでの最小値を更新した最後の時刻。
+        _last_low_change_pos = None
+        _last_val = None
+        for _rel, _val in enumerate(_low_arr[_w0:]):
+            if not np.isfinite(_val):
+                continue
+            if _last_val is None or float(_val) < float(_last_val) - 1e-12:
+                _last_low_change_pos = _w0 + _rel
+                _last_val = float(_val)
+        if _last_low_change_pos is not None:
+            last_low_change_dt = g["_dt"].iloc[_last_low_change_pos]
+            _mins_since_low = round(float((nowdt-last_low_change_dt).total_seconds()/60.0),2)
+        else:
+            last_low_change_dt = None
+            _mins_since_low = None
         feat["low_seen_at"] = last_low_change_dt.isoformat() if last_low_change_dt is not None else None
         feat["minutes_since_low"] = _mins_since_low
         feat["no_new_low_minutes"] = _mins_since_low
-        # backward-compatible alias
         feat["minutes_since_low_update"] = _mins_since_low
         feat["low_update_stopped"] = bool(_mins_since_low is not None and _mins_since_low >= 20.0)
         out[str(code)]=feat
+    if _v25_fast_enabled() and _v25_mode == "EOD" and _v25_intraday_fp and _v25_codes_fp:
+        try:
+            if _stage2_json_write(_V25_INTRADAY_CACHE_PATH, {
+                "schema": _V25_CACHE_SCHEMA, "trade_date": str(trade_date),
+                "source_fp": _v25_intraday_fp, "codes_fp": _v25_codes_fp,
+                "records": _v25_json_map_records(out), "saved_at": _now_jst().isoformat(timespec="seconds"),
+            }):
+                print(f"[V25-INTRADAY-CACHE] STORE codes={len(out)}", flush=True)
+        except Exception as _e:
+            print(f"[V25-INTRADAY-CACHE][WARN] store failed: {_e}", flush=True)
     return out
-
 
 def _live_bottom_score(intraday: dict, current_price, support_today=None) -> tuple[float,bool,list[str]]:
     x=intraday or {}; score=0.0; reasons=[]
@@ -2502,21 +8134,34 @@ def _live_bottom_score(intraday: dict, current_price, support_today=None) -> tup
 
 
 def _live_build_context(conn: sqlite3.Connection, rows: list[dict]) -> dict:
-    """Dashboard/LIVE feedで同一runのSTEADY計算コンテキストを共有する。
-
-    場中は現在runのsnapshotを1回だけ保存し、そのsnapshotを含む履歴から
-    10/20/30/60分特徴量を作る。候補選定ロジック自体は変更しない。
-    """
+    """Dashboard/LIVE feedで同一runのSTEADY計算コンテキストを共有する。"""
+    _t0 = time.perf_counter()
     snapshot = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
     asof = _expected_snapshot_date_for_run(snapshot).isoformat()
+
     daily = _live_daily_structure_map(conn, asof)
+    _t_daily = time.perf_counter()
+    try: _perf_record_phase("live_context:daily", _t_daily - _t0)
+    except Exception: pass
     captured, trade_date, snapshot_rows = _live_capture_snapshots(rows, daily)
+    _t_capture = time.perf_counter()
+    try: _perf_record_phase("live_context:capture", _t_capture - _t_daily)
+    except Exception: pass
     codes = {
         _live_stock_code(_live_get(r, "コード"), _live_get(r, "市場"), _live_get(r, "銘柄名"))
         for r in rows
     }
     codes.discard("")
     intraday_map = _live_intraday_feature_map(trade_date, codes)
+    _t_intraday = time.perf_counter()
+    try: _perf_record_phase("live_context:intraday", _t_intraday - _t_capture)
+    except Exception: pass
+    print(
+        f"[live-context-perf] daily={_t_daily-_t0:.2f}s capture={_t_capture-_t_daily:.2f}s "
+        f"intraday={_t_intraday-_t_capture:.2f}s total={_t_intraday-_t0:.2f}s "
+        f"daily_codes={len(daily)} intraday_codes={len(intraday_map)}",
+        flush=True,
+    )
     return {
         "snapshot": snapshot,
         "asof": asof,
@@ -2524,10 +8169,10 @@ def _live_build_context(conn: sqlite3.Connection, rows: list[dict]) -> dict:
         "captured": captured,
         "trade_date": trade_date,
         "snapshot_rows": snapshot_rows,
+        "snapshot_quality": dict(globals().get("_LIVE_SNAPSHOT_CURRENT_QUALITY") or {}),
         "codes": codes,
         "intraday_map": intraday_map,
     }
-
 
 def _absorption_episode_stats(w_low: pd.Series, w_close: pd.Series, prior20_low: float) -> tuple[int, int, float | None]:
     """支持帯での連続タッチ日を1つの吸収episodeとして数える。
@@ -2579,7 +8224,7 @@ def _absorption_episode_stats(w_low: pd.Series, w_close: pd.Series, prior20_low:
     return episode_count, hit_days, undercut_pct
 
 
-def _dashboard_research_signal_map(conn: sqlite3.Connection, rows: list[dict], asof_date: str) -> dict[str, dict]:
+def _dashboard_research_signal_map_legacy_v50(conn: sqlite3.Connection, rows: list[dict], asof_date: str) -> dict[str, dict]:
     """A/B/C研究シグナルをdashboard表示用に再現する。
 
     これは表示・研究補助用で、LIVE Candidate Contractのgate/priorityへは混ぜない。
@@ -2595,28 +8240,54 @@ def _dashboard_research_signal_map(conn: sqlite3.Connection, rows: list[dict], a
 
     asof_ts = pd.Timestamp(asof_date).normalize()
     start = (asof_ts - pd.Timedelta(days=130)).strftime("%Y-%m-%d")
-    ph = pd.read_sql_query(
-        """
-        SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
-          FROM price_history
-         WHERE date(日付) >= date(?) AND date(日付) <= date(?)
-         ORDER BY 日付, rowid
-        """,
-        conn, params=[start, asof_date],
-    )
-    if ph.empty:
-        return {}
-    ph["コード"] = ph["コード"].map(canonical_code_for_db)
+    _research_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    _v25_research_hist_fp = ""
+    _v25_research_rows_fp = ""
+    if _v25_fast_enabled() and _research_mode in ("EOD", "PREOPEN"):
+        try:
+            _v25_research_hist_fp = _stage2_price_history_fingerprint(conn, str(asof_date), 240)
+            _v25_research_rows_fp = _v25_rows_hash(rows, ("現在値", "現在値_raw", "始値", "高値", "安値", "出来高", "決算発表予定日"))
+            _obj = _stage2_json_read(_V25_RESEARCH_CACHE_PATH)
+            if (
+                _v25_research_hist_fp and isinstance(_obj, dict)
+                and int(_obj.get("schema") or 0) == _V25_CACHE_SCHEMA
+                and str(_obj.get("asof") or "") == str(asof_date)
+                and str(_obj.get("history_fp") or "") == _v25_research_hist_fp
+                and str(_obj.get("rows_fp") or "") == _v25_research_rows_fp
+            ):
+                _hit = _v25_records_json_map(_obj.get("records"))
+                print(f"[V25-RESEARCH-CACHE] HIT asof={asof_date} codes={len(_hit)}", flush=True)
+                return _hit
+            print(f"[V25-RESEARCH-CACHE] MISS asof={asof_date}", flush=True)
+        except Exception as _e:
+            print(f"[V25-RESEARCH-CACHE][WARN] lookup failed: {_e}", flush=True)
+
+    if _v25_fast_enabled():
+        ph = _v25_legacy_history_frame(conn, start, asof_date, tag="dashboard_research")
+        if ph.empty:
+            return {}
+    else:
+        ph = _perf_price_history_raw_range(conn, start, asof_date, tag="dashboard_research")
+        if ph.empty:
+            return {}
+        ph["コード"] = ph["コード"].map(canonical_code_for_db)
+        ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce").dt.normalize()
+        for c in ("始値", "高値", "安値", "終値", "出来高"):
+            ph[c] = pd.to_numeric(ph[c], errors="coerce")
+    # V25 fastでもV24 researchと同じ順序: code filter -> close欠損除外 -> sort/dedupe。
     ph = ph[ph["コード"].isin(row_by_code)].copy()
-    ph["日付"] = pd.to_datetime(ph["日付"], errors="coerce").dt.normalize()
-    for c in ("始値", "高値", "安値", "終値", "出来高"):
-        ph[c] = pd.to_numeric(ph[c], errors="coerce")
     ph = ph.dropna(subset=["コード", "日付", "終値"]).sort_values(["コード", "日付", "_rowid"], kind="stable")
     ph = ph.drop_duplicates(["コード", "日付"], keep="last")
 
+    ph_groups = {
+        str(_code): _g.sort_values("日付", kind="stable").reset_index(drop=True)
+        for _code, _g in ph.groupby("コード", sort=False)
+    }
+
     out = {}
     for code, r in row_by_code.items():
-        g = ph[ph["コード"] == code].copy().sort_values("日付", kind="stable")
+        _g0 = ph_groups.get(str(code))
+        g = _g0.copy() if _g0 is not None else pd.DataFrame(columns=ph.columns)
         cur = _live_num(_live_get(r, "現在値_raw", "現在値"))
         if cur is None or cur <= 0:
             continue
@@ -2629,7 +8300,6 @@ def _dashboard_research_signal_map(conn: sqlite3.Connection, rows: list[dict], a
         # A/B/C研究シグナルは過去replayと本番で同じ足を使う。
         # MIDDAYだけ当日足が未確定なのでrows側のlive OHLCVをoverlayする。
         # EOD/PREOPEN/休場日実行ではprice_historyの確定asof足を正本にする。
-        _research_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
         _use_live_bar = (_research_mode == "MIDDAY")
 
         if not g.empty and pd.Timestamp(g.iloc[-1]["日付"]).normalize() == asof_ts:
@@ -2735,8 +8405,236 @@ def _dashboard_research_signal_map(conn: sqlite3.Connection, rows: list[dict], a
             "b_score": b_score, "b_label": b_label,
             "b_turn_ratio": turn_ratio, "b_clv": clv, "b_dry_ratio": dry_ratio,
         }
+    if _v25_fast_enabled() and _research_mode in ("EOD", "PREOPEN") and _v25_research_hist_fp and _v25_research_rows_fp:
+        try:
+            if _stage2_json_write(_V25_RESEARCH_CACHE_PATH, {
+                "schema": _V25_CACHE_SCHEMA, "asof": str(asof_date),
+                "history_fp": _v25_research_hist_fp, "rows_fp": _v25_research_rows_fp,
+                "records": _v25_json_map_records(out), "saved_at": _now_jst().isoformat(timespec="seconds"),
+            }):
+                print(f"[V25-RESEARCH-CACHE] STORE codes={len(out)}", flush=True)
+        except Exception as _e:
+            print(f"[V25-RESEARCH-CACHE][WARN] store failed: {_e}", flush=True)
     return out
 
+
+
+# === PERF-OPT-V50 / MIDDAY-ABC-BASELINE-CACHE 2026-09-03 ===
+# MIDDAY dashboard A/B/C research keeps the exact research definitions but avoids rebuilding
+# ~130 days of per-symbol pandas frames every run. Previous-day scalar baselines are persisted;
+# only today's live OHLCV is applied each run. First cache creation is audited against the
+# legacy implementation; a mismatch fails closed to legacy. Disable with KABU_SCREEN_V50_FAST=0.
+_V50_ABC_CACHE_SCHEMA = 1
+_V50_ABC_CACHE_PATH = Path(SCREEN_RUNTIME_DIR) / "dashboard_research_midday_baseline_v50.pkl"
+
+def _v50_abc_enabled() -> bool:
+    return str(os.environ.get("KABU_SCREEN_V50_FAST", "1") or "1").strip().lower() not in {"0","false","no","off"}
+
+def _v50_num_or_none(v):
+    try:
+        if v is None: return None
+        x=float(v)
+        return x if np.isfinite(x) else None
+    except Exception:
+        return None
+
+def _v50_nan_stat(a, kind: str):
+    x=np.asarray(a,dtype=float)
+    x=x[np.isfinite(x)]
+    if x.size==0: return None
+    if kind=="min": return float(np.min(x))
+    if kind=="max": return float(np.max(x))
+    if kind=="median": return float(np.median(x))
+    raise ValueError(kind)
+
+def _v50_abc_history_fp(conn: sqlite3.Connection, asof_date: str) -> tuple[str,str]:
+    # Only history strictly before the live as-of day belongs to the persisted baseline.
+    row=conn.execute("SELECT MAX(date(日付)) FROM price_history WHERE date(日付) < date(?)", (str(asof_date),)).fetchone()
+    prev=str((row or [""])[0] or "")
+    if not prev:
+        return "", ""
+    try:
+        fp=_stage2_price_history_fingerprint(conn, prev, 180)
+    except Exception:
+        fp=""
+    return prev, str(fp or "")
+
+def _v50_abc_build_baseline(conn: sqlite3.Connection, rows: list[dict], asof_date: str) -> dict:
+    row_codes={
+        _live_stock_code(_live_get(r,"コード"),_live_get(r,"市場"),_live_get(r,"銘柄名"))
+        for r in (rows or [])
+    }
+    row_codes.discard("")
+    if not row_codes:
+        return {}
+    asof_ts=pd.Timestamp(asof_date).normalize()
+    start=(asof_ts-pd.Timedelta(days=130)).strftime("%Y-%m-%d")
+    # Reuse the same V25 raw-normalize semantics used by the legacy A/B/C path.
+    if _v25_fast_enabled():
+        ph=_v25_legacy_history_frame(conn,start,asof_date,tag="dashboard_research_v50_baseline")
+    else:
+        ph=_perf_price_history_raw_range(conn,start,asof_date,tag="dashboard_research_v50_baseline")
+        if not ph.empty:
+            ph["コード"]=ph["コード"].map(canonical_code_for_db)
+            ph["日付"]=pd.to_datetime(ph["日付"],errors="coerce").dt.normalize()
+            for c in ("始値","高値","安値","終値","出来高"):
+                ph[c]=pd.to_numeric(ph[c],errors="coerce")
+    if ph.empty:
+        return {}
+    ph=ph[ph["コード"].isin(row_codes)].copy()
+    ph=ph.dropna(subset=["コード","日付","終値"]).sort_values(["コード","日付","_rowid"],kind="stable")
+    ph=ph.drop_duplicates(["コード","日付"],keep="last")
+    out={}
+    for code,g in ph.groupby("コード",sort=False):
+        # The legacy MIDDAY path replaces today's stored bar with live OHLCV. For a stable
+        # baseline, remove today's row entirely and keep only observations before asof.
+        h=g[pd.to_datetime(g["日付"],errors="coerce").dt.normalize() < asof_ts]
+        if len(h)<21:
+            continue
+        close=pd.to_numeric(h["終値"],errors="coerce").to_numpy(dtype=float)
+        high=pd.to_numeric(h["高値"],errors="coerce").to_numpy(dtype=float)
+        low=pd.to_numeric(h["安値"],errors="coerce").to_numpy(dtype=float)
+        vol=pd.to_numeric(h["出来高"],errors="coerce").to_numpy(dtype=float)
+        p20=slice(max(0,len(h)-20),len(h)); p5=slice(max(0,len(h)-5),len(h))
+        turn=close[p20]*vol[p20]
+        out[str(code)]={
+            "history_n":int(len(h)),
+            "prior20_low":_v50_nan_stat(low[p20],"min"),
+            "prior20_high":_v50_nan_stat(high[p20],"max"),
+            "vol20":_v50_nan_stat(vol[p20],"median"),
+            "vol5":_v50_nan_stat(vol[p5],"median") if len(h)>=4 else None,
+            "turn20":_v50_nan_stat(turn,"median"),
+            "prev_close":_v50_num_or_none(close[-1]),
+            "prev_vol":_v50_num_or_none(vol[-1]),
+            "prev19_lows":[_v50_num_or_none(x) for x in low[-19:]],
+            "prev9_lows":[_v50_num_or_none(x) for x in low[-9:]],
+            "prev9_closes":[_v50_num_or_none(x) for x in close[-9:]],
+        }
+    return out
+
+def _v50_abc_fast_from_baseline(rows: list[dict], asof_date: str, base: dict) -> dict[str,dict]:
+    asof_ts=pd.Timestamp(asof_date).normalize(); out={}
+    for r in (rows or []):
+        code=_live_stock_code(_live_get(r,"コード"),_live_get(r,"市場"),_live_get(r,"銘柄名"))
+        b=base.get(code)
+        if not code or not isinstance(b,dict) or int(b.get("history_n") or 0)<21:
+            continue
+        cur=_live_num(_live_get(r,"現在値_raw","現在値"))
+        if cur is None or cur<=0: continue
+        opn=_live_num(_live_get(r,"始値","day_open")) or cur
+        hi=_live_num(_live_get(r,"高値","day_high")) or cur
+        lo=_live_num(_live_get(r,"安値","day_low")) or cur
+        vol=_live_num(_live_get(r,"出来高","volume"))
+        cur_low=float(min(lo,cur)); cur_high=float(max(hi,cur)); cur_close=float(cur); cur_vol=_v50_num_or_none(vol)
+        prior20_low=_v50_num_or_none(b.get("prior20_low")); prior20_high=_v50_num_or_none(b.get("prior20_high"))
+        vol20=_v50_num_or_none(b.get("vol20")); vol5=_v50_num_or_none(b.get("vol5")); turn20=_v50_num_or_none(b.get("turn20"))
+        prev_close=_v50_num_or_none(b.get("prev_close")); prev_vol=_v50_num_or_none(b.get("prev_vol"))
+        ret1=(cur_close/prev_close-1.0) if prev_close not in (None,0) else None
+        vol_ratio_prev=(cur_vol/prev_vol) if cur_vol is not None and prev_vol not in (None,0) else None
+        dry_ratio=(vol5/vol20) if vol5 is not None and vol20 not in (None,0) else None
+        cur_turn=(cur_close*cur_vol) if cur_vol is not None else None
+        turn_ratio=(cur_turn/turn20) if cur_turn is not None and turn20 not in (None,0) else None
+        clv=((cur_close-cur_low)/(cur_high-cur_low)) if cur_high>cur_low else None
+        a2=bool(None not in (prior20_low,prior20_high,cur_low,cur_close,dry_ratio) and cur_low<=prior20_low and (cur_low/prior20_high-1.0)<=-0.08 and dry_ratio<=0.80 and cur_close>prior20_low)
+        absorb_count=0; absorb_hit_days=0; undercut_pct=None
+        if a2 and prior20_low not in (None,0):
+            lows=list(b.get("prev9_lows") or [])+[cur_low]
+            closes=list(b.get("prev9_closes") or [])+[cur_close]
+            absorb_count,absorb_hit_days,undercut_pct=_absorption_episode_stats(pd.Series(lows,dtype=float),pd.Series(closes,dtype=float),float(prior20_low))
+        if a2 and absorb_count>=2 and undercut_pct is not None and -3.0<=undercut_pct<=-0.5:
+            a_score,a_label=3,f"◎ {absorb_count}回吸収episode+下抜け奪回"
+        elif a2 and absorb_count>=2:
+            a_score,a_label=2,f"○ {absorb_count}回吸収episode"
+        elif a2:
+            a_score,a_label=1,"△ A2奪回"
+        else:
+            a_score,a_label=0,"-"
+        c_on=bool(ret1 is not None and vol_ratio_prev is not None and ret1>=0.029 and vol_ratio_prev>=2.80)
+        c_score=1 if c_on else 0; c_label=f"🔥 {vol_ratio_prev:.2f}x/{ret1*100:+.1f}%" if c_on else "-"
+        lows20=[x for x in (list(b.get("prev19_lows") or [])+[cur_low]) if x is not None]
+        low20_inc=min(lows20) if lows20 else None
+        dist_low20=(cur_close/low20_inc-1.0) if low20_inc not in (None,0) else None
+        earnings_near=False
+        try:
+            ed=pd.Timestamp(_live_get(r,"決算発表予定日")).normalize()
+            if not pd.isna(ed): earnings_near=asof_ts<=ed<=asof_ts+pd.Timedelta(days=15)
+        except Exception:
+            earnings_near=False
+        b_on=bool(not earnings_near and dist_low20 is not None and dist_low20<=0.10 and ret1 is not None and 0<ret1<=0.10 and dry_ratio is not None and dry_ratio<=0.80 and turn_ratio is not None and turn_ratio>=1.50 and clv is not None and clv>=0.75)
+        out[code]={
+            "a_score":a_score,"a_label":a_label,"a_absorb_count":absorb_count,"a_absorb_hit_days":absorb_hit_days,"a_undercut_pct":undercut_pct,
+            "c_score":c_score,"c_label":c_label,"c_vol_ratio_prev":vol_ratio_prev,"c_ret1_pct":ret1*100.0 if ret1 is not None else None,
+            "b_score":1 if b_on else 0,"b_label":"👀 監視" if b_on else "-","b_turn_ratio":turn_ratio,"b_clv":clv,"b_dry_ratio":dry_ratio,
+        }
+    return out
+
+def _v50_abc_maps_equal(a: dict,b: dict) -> tuple[bool,list]:
+    diffs=[]; keys=set(a)|set(b)
+    fields=("a_score","a_label","a_absorb_count","a_absorb_hit_days","a_undercut_pct","c_score","c_label","c_vol_ratio_prev","c_ret1_pct","b_score","b_label","b_turn_ratio","b_clv","b_dry_ratio")
+    for k in sorted(keys):
+        x=a.get(k); y=b.get(k)
+        if x is None or y is None:
+            if x!=y: diffs.append((k,"presence",x,y))
+            if len(diffs)>=10: break
+            continue
+        for f in fields:
+            xv=x.get(f); yv=y.get(f)
+            if isinstance(xv,(int,float,np.integer,np.floating)) or isinstance(yv,(int,float,np.integer,np.floating)):
+                xn=_v50_num_or_none(xv); yn=_v50_num_or_none(yv)
+                ok=(xn is None and yn is None) or (xn is not None and yn is not None and abs(xn-yn)<=1e-9*max(1.0,abs(xn),abs(yn)))
+            else:
+                ok=(xv==yv)
+            if not ok:
+                diffs.append((k,f,xv,yv)); break
+        if len(diffs)>=10: break
+    return (len(diffs)==0),diffs
+
+def _dashboard_research_signal_map(conn: sqlite3.Connection, rows: list[dict], asof_date: str) -> dict[str, dict]:
+    mode=str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    if mode!="MIDDAY" or not _v50_abc_enabled():
+        return _dashboard_research_signal_map_legacy_v50(conn,rows,asof_date)
+    t0=time.perf_counter()
+    try:
+        prev,fp=_v50_abc_history_fp(conn,asof_date)
+        if not prev or not fp:
+            raise RuntimeError("previous-history fingerprint unavailable")
+        cache=None
+        try:
+            with _V50_ABC_CACHE_PATH.open("rb") as f: cache=pickle.load(f)
+        except Exception:
+            cache=None
+        hit=bool(isinstance(cache,dict) and int(cache.get("schema") or 0)==_V50_ABC_CACHE_SCHEMA and str(cache.get("asof") or "")==str(asof_date) and str(cache.get("prev") or "")==prev and str(cache.get("history_fp") or "")==fp and bool(cache.get("audit_ok")) and isinstance(cache.get("base"),dict))
+        if hit:
+            base=cache["base"]
+            out=_v50_abc_fast_from_baseline(rows,asof_date,base)
+            dt=time.perf_counter()-t0; _perf_record_phase("export-detail:abc_v50_cache_hit",dt,"HIT")
+            print(f"[V50-ABC] HIT asof={asof_date} base={len(base)} out={len(out)} dt={dt:.2f}s",flush=True)
+            return out
+        # First valid run for this day/history revision: build baseline and audit against exact legacy output.
+        b0=time.perf_counter(); base=_v50_abc_build_baseline(conn,rows,asof_date); bdt=time.perf_counter()-b0
+        fast=_v50_abc_fast_from_baseline(rows,asof_date,base)
+        l0=time.perf_counter(); legacy=_dashboard_research_signal_map_legacy_v50(conn,rows,asof_date); ldt=time.perf_counter()-l0
+        ok,diffs=_v50_abc_maps_equal(fast,legacy)
+        _perf_record_phase("export-detail:abc_v50_baseline_build",bdt,"OK")
+        _perf_record_phase("export-detail:abc_v50_legacy_audit",ldt,"OK" if ok else "ERROR",None if ok else str(diffs[:3]))
+        if not ok:
+            print(f"[V50-ABC][AUDIT-FAIL] diffs={diffs[:5]} -> legacy",flush=True)
+            return legacy
+        obj={"schema":_V50_ABC_CACHE_SCHEMA,"asof":str(asof_date),"prev":prev,"history_fp":fp,"audit_ok":True,"base":base,"saved_at":_now_jst().isoformat(timespec="seconds")}
+        try:
+            _V50_ABC_CACHE_PATH.parent.mkdir(parents=True,exist_ok=True)
+            tmp=_V50_ABC_CACHE_PATH.with_suffix(_V50_ABC_CACHE_PATH.suffix+f".{os.getpid()}.tmp")
+            with tmp.open("wb") as f: pickle.dump(obj,f,protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp,_V50_ABC_CACHE_PATH)
+        except Exception as e:
+            print(f"[V50-ABC][WARN] cache store failed: {e}",flush=True)
+        dt=time.perf_counter()-t0; _perf_record_phase("export-detail:abc_v50_first_audited",dt,"OK")
+        print(f"[V50-ABC] AUDIT-PASS base={len(base)} out={len(fast)} build={bdt:.2f}s legacy={ldt:.2f}s total={dt:.2f}s",flush=True)
+        return fast
+    except Exception as e:
+        print(f"[V50-ABC][WARN] fastpath failed -> legacy: {e}",flush=True)
+        return _dashboard_research_signal_map_legacy_v50(conn,rows,asof_date)
+# === /PERF-OPT-V50 / MIDDAY-ABC-BASELINE-CACHE ===
 
 def _dashboard_apply_strategy_columns(conn: sqlite3.Connection, rows: list[dict], live_context: dict | None) -> None:
     """売買目的別の6列をrowsへ付加する。既存候補選定には影響しない。"""
@@ -3082,15 +8980,7 @@ def _entry_env_build_outcomes(conn: sqlite3.Connection, rows: list[dict], asof: 
     if str(outcome_asof) != str(asof):
         print(f"[entry-env] confirmed outcome cutoff: requested={asof} -> {outcome_asof}")
     start = (pd.Timestamp(outcome_asof) - pd.Timedelta(days=ENTRY_ENV_HISTORY_CALENDAR_DAYS)).strftime("%Y-%m-%d")
-    ph = pd.read_sql_query(
-        """
-        SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
-          FROM price_history
-         WHERE date(日付) >= date(?) AND date(日付) <= date(?)
-         ORDER BY 日付, rowid
-        """,
-        conn, params=[start, outcome_asof],
-    )
+    ph = _perf_price_history_raw_range(conn, start, outcome_asof, tag="entry_env")
     if ph.empty:
         return pd.DataFrame(), stock_codes
     # P4-DASH8: 全銘柄地合いoutcomeも共通の論理価格履歴を使い、休日legacy足を除外。
@@ -3226,6 +9116,83 @@ def _entry_env_build_outcomes(conn: sqlite3.Connection, rows: list[dict], asof: 
     return pd.concat(parts, ignore_index=True), stock_codes
 
 
+def _stage2_entry_history_pack(conn: sqlite3.Connection, rows: list[dict], asof: str):
+    """Return historical global/setup packs. V22: PREOPEN/MIDDAY/EOD may reuse a fingerprint-matched persistent summary."""
+    t0 = time.perf_counter()
+    stock_codes = set()
+    for r in rows or []:
+        c = _live_stock_code(_live_get(r, "コード"), _live_get(r, "市場"), _live_get(r, "銘柄名"))
+        if c:
+            stock_codes.add(c)
+    mode = str(_auto_run_mode() or "").upper()
+    outcome_asof = _confirmed_daily_outcome_cutoff(asof)
+    cache_key = None
+    if mode in ("PREOPEN", "MIDDAY", "EOD") and stock_codes:
+        hist_fp = _stage2_price_history_fingerprint(conn, outcome_asof, 240)
+        codes_fp = _stage2_codes_hash(stock_codes)
+        cache_key = {
+            "schema": _STAGE2_CACHE_SCHEMA,
+            "logic_token": _V67_ENTRY_CACHE_LOGIC_TOKEN,
+            "outcome_asof": str(outcome_asof),
+            "history_fp": hist_fp,
+            "codes_fp": codes_fp,
+            "recent_days": int(ENTRY_ENV_RECENT_TRADE_DAYS),
+            "baseline_days": int(ENTRY_ENV_BASELINE_TRADE_DAYS),
+            "history_days": int(ENTRY_ENV_HISTORY_CALENDAR_DAYS),
+            "min_obs": int(ENTRY_ENV_MIN_OBS),
+        }
+        old = _stage2_json_read(_STAGE2_ENTRY_CACHE_PATH)
+        _v67_entry_logic_ok, _v67_entry_needs_migration = _v67_cache_logic_compatible(
+            old, _V67_ENTRY_CACHE_LOGIC_TOKEN
+        )
+        _v67_entry_base_match = bool(
+            hist_fp and isinstance(old, dict) and _v67_entry_logic_ok
+            and all(old.get(k) == v for k, v in cache_key.items() if k != "logic_token")
+        )
+        if _v67_entry_base_match:
+            gp = old.get("global_pack")
+            ss = old.get("setup_scores")
+            if isinstance(gp, dict) and isinstance(ss, dict) and all(k in ss for k in ("MOMENTUM", "STEADY", "PULLBACK", "REVERSAL")):
+                if _v67_entry_needs_migration:
+                    _v67_migrate_cache_token(
+                        _STAGE2_ENTRY_CACHE_PATH, old, _V67_ENTRY_CACHE_LOGIC_TOKEN, "ENTRY"
+                    )
+                dt = time.perf_counter() - t0
+                print(f"[ENTRY-V22-CACHE] HIT asof={outcome_asof} universe={len(stock_codes)} dt={dt:.2f}s", flush=True)
+                return gp, ss, stock_codes, {"status": "hit", "outcomes_seconds": dt, "hist_seconds": 0.0}
+
+    calc0 = time.perf_counter()
+    outcomes, stock_codes = _entry_env_build_outcomes(conn, rows, asof)
+    calc1 = time.perf_counter()
+    global_pack = _entry_env_metric_summary(outcomes)
+    setup_scores = {}
+    for bucket in ("MOMENTUM", "STEADY", "PULLBACK", "REVERSAL"):
+        sub = outcomes[outcomes["setup"].eq(bucket)] if not outcomes.empty else pd.DataFrame()
+        pack = _entry_env_metric_summary(sub)
+        setup_scores[bucket] = {
+            "score": pack.get("score"),
+            "metrics": pack.get("metrics") or {},
+            "n": int(len(sub)),
+        }
+    calc2 = time.perf_counter()
+    if mode in ("PREOPEN", "MIDDAY", "EOD") and cache_key and stock_codes:
+        obj = {
+            **cache_key,
+            "build_token": str(_daily_build_token()),
+            "global_pack": global_pack,
+            "setup_scores": setup_scores,
+            "universe_count": int(len(stock_codes)),
+            "saved_at": _now_jst().isoformat(timespec="seconds"),
+        }
+        if _stage2_json_write(_STAGE2_ENTRY_CACHE_PATH, obj):
+            print(f"[ENTRY-V22-CACHE] STORE asof={outcome_asof} universe={len(stock_codes)}", flush=True)
+    return global_pack, setup_scores, stock_codes, {
+        "status": "miss",
+        "outcomes_seconds": calc1 - calc0,
+        "hist_seconds": calc2 - calc1,
+    }
+
+
 def _dashboard_apply_entry_environment(conn: sqlite3.Connection, rows: list[dict], asof: str) -> dict:
     """全個別株の実績環境を背景に、各銘柄へ相場耐性/地合い込み一次判定を付ける。"""
     meta = {
@@ -3247,23 +9214,16 @@ def _dashboard_apply_entry_environment(conn: sqlite3.Connection, rows: list[dict
         "note": "全個別株の日次統計をfallbackにし、導入後に実際の『今買える？=○』初回signal実績が十分たまればそちらを主役にする。",
     }
     try:
-        outcomes, stock_codes = _entry_env_build_outcomes(conn, rows, asof)
+        _env_t0 = time.perf_counter()
+        global_pack, setup_scores, stock_codes, _entry_hist_perf = _stage2_entry_history_pack(conn, rows, asof)
+        _env_t_hist = time.perf_counter()
         meta["universe_count"] = int(len(stock_codes))
-        global_pack = _entry_env_metric_summary(outcomes)
         hist_score = _live_num(global_pack.get("score"))
         meta["historical_score"] = hist_score
         meta["metrics"] = global_pack.get("metrics") or {}
-
-        setup_scores = {}
-        for bucket in ("MOMENTUM", "STEADY", "PULLBACK", "REVERSAL"):
-            sub = outcomes[outcomes["setup"].eq(bucket)] if not outcomes.empty else pd.DataFrame()
-            pack = _entry_env_metric_summary(sub)
-            setup_scores[bucket] = {
-                "score": pack.get("score"),
-                "metrics": pack.get("metrics") or {},
-                "n": int(len(sub)),
-            }
         meta["setup_scores"] = setup_scores
+        _entry_hist_outcomes_sec = float((_entry_hist_perf or {}).get("outcomes_seconds") or 0.0)
+        _entry_hist_summary_sec = float((_entry_hist_perf or {}).get("hist_seconds") or 0.0)
 
         # P4-DASH7: 過去runで実際に『今買える？=○』になった最初の時点を追跡。
         signal_env = _entry_signal_metric_summary()
@@ -3272,6 +9232,7 @@ def _dashboard_apply_entry_environment(conn: sqlite3.Connection, rows: list[dict
             signal_setup_scores[bucket] = _entry_signal_metric_summary(bucket)
         meta["signal_environment"] = signal_env
         meta["signal_setup_scores"] = signal_setup_scores
+        _env_t_signal = time.perf_counter()
 
         # 今日の全個別株breadthは補助。実signalが十分ならsignal実績を主役にする。
         stock_rows = []
@@ -3397,6 +9358,14 @@ def _dashboard_apply_entry_environment(conn: sqlite3.Connection, rows: list[dict
                 f"MFE5={_fmt(mfe5.get('recent'),'%')} / MAE5={_fmt(mae5.get('recent'),'%')}"
             )
 
+        _env_t_done = time.perf_counter()
+        print(
+            f"[entry-env-perf] outcomes={_entry_hist_outcomes_sec:.2f}s "
+            f"hist_summary={_entry_hist_summary_sec:.2f}s "
+            f"signal_stats={_env_t_signal-_env_t_hist:.2f}s "
+            f"attach_breadth={_env_t_done-_env_t_signal:.2f}s total={_env_t_done-_env_t0:.2f}s",
+            flush=True,
+        )
         return meta
     except Exception as e:
         print(f"[entry-env][WARN] 個別買い環境の計算に失敗: {e}")
@@ -3412,6 +9381,11 @@ def _dashboard_apply_entry_environment(conn: sqlite3.Connection, rows: list[dict
             r["地合い込み一次判定"] = "⚪ 環境統計不足"
             r["地合い込み理由"] = f"個別買い環境の計算失敗: {e}"
         meta["error"] = str(e)
+        try:
+            _env_t_done = time.perf_counter()
+            print(f"[entry-env-perf][ERROR] elapsed={_env_t_done-_env_t0:.2f}s", flush=True)
+        except Exception:
+            pass
         return meta
 
 
@@ -3484,6 +9458,8 @@ def _dashboard_attach_ui_sort_contract(rows: list[dict]) -> None:
         r["_UI_SORT_AI_JUDGE"] = _ai_judge_rank(r.get("AI判定"))
         # AI目標値_raw は後方互換名だが、producerの正式意味はAI到達確率(AIスコア)のソート値。
         r["_UI_SORT_AI_TARGET"] = _live_num(r.get("AIスコア"))
+        # 信用倍率はdashboard上で「売り残0」と表示する場合があるため、sort用の生数値を分離。
+        r["_UI_SORT_CREDIT_RATIO"] = _live_num(r.get("信用倍率"))
         r["仕込み目安価格"] = _live_num(r.get("shikomi_txt"))
         r["利確目安価格"] = _live_num(r.get("rikaku_txt"))
         r["損切目安価格"] = _live_num(r.get("songiri_txt"))
@@ -3498,6 +9474,38 @@ def _dashboard_attach_ui_sort_contract(rows: list[dict]) -> None:
         r["_UI_SORT_MA"] = _ma_rank.get(str(r.get("移動平均") or "").strip())
 
 
+def _dashboard_display_semantics(rows: list[dict]) -> list[dict]:
+    """VALUE-SEMANTICS-V1: dashboard表示だけを分かりやすくする。
+
+    raw rows / DB / monitor / LLM / LIVE Candidate Contract は変更しない。
+    """
+    out = []
+    for _src in rows or []:
+        r = dict(_src)
+
+        # 信用倍率:
+        # 内部999.9は「売り残0・買い残あり」の計算用sentinelとして維持。
+        # dashboardだけ「売り残0」と表示し、欠損は「-」にする。
+        _mr = _live_num(r.get("信用倍率"))
+        _sell = _live_num(r.get("売り残"))
+        _buy = _live_num(r.get("買い残"))
+        if _sell is not None and abs(_sell) < 1e-12 and _buy is not None and _buy > 0:
+            r["信用倍率"] = "売り残0"
+        elif _mr is None:
+            r["信用倍率"] = "-"
+
+        # 機関空売り:
+        # 過去履歴があっても「今回取得未成功 / current不明」なら現在残高を0株に見せない。
+        _acq = str(r.get("機関空売り取得状態") or "").strip()
+        _cur = str(r.get("機関空売り現在状態") or "不明").strip()
+        if _acq != "成功" or _cur not in {"あり", "なし"}:
+            r["機関空売り合計株数"] = "-"
+            r["本日の増減合計株数"] = "-"
+
+        out.append(r)
+    return out
+
+
 def _live_priority_sort_key(c: dict):
     """Existing scanner priority order. Keep this single definition authoritative."""
     return (
@@ -3510,71 +9518,324 @@ def _live_priority_sort_key(c: dict):
 
 def _live_select_execution_candidates(all_candidates: list[dict]) -> list[dict]:
     """
-    Build the LIVE execution shortlist from the full pre-300 pool without changing
-    candidate gates, strategy scores, priority formula, or the legacy top-300 list.
+    Build LIVE50 from the existing priority ranking while dynamically rescuing
+    genuinely strong INITIAL_MOMENTUM candidates.
 
-    Admission policy (defaults):
-      1) INITIAL_MOMENTUM source_rank top 15
-      2) STEADY_UP source_rank top 10, excluding already-selected codes
-      3) fill remaining slots to 50 by the existing priority order
+    INITIAL rescue:
+      Tier 1) source_rank <= configured rank cap AND
+              priority >= normal LIVE cutoff - 2
+      Tier 2) source_rank <= 8 AND market_score >= 95 AND
+              priority >= normal LIVE cutoff - 10
 
-    BOTTOM_REVERSAL has no reserved quota because the existing priority order already
-    selects it strongly. A multi-source name consumes one slot only. Final display
-    order is the existing priority order, not quota/bucket order.
+    Existing priority TOP50 is the base.
+    Base names with market_score >= 95 are protected from displacement.
+    STEADY_UP keeps the existing top-N reservation policy for now.
     """
-    limit=max(1,int(LIVE_EXECUTION_MAX))
-    selected: dict[str, tuple[dict,str]]={}
+    limit = max(1, int(LIVE_EXECUTION_MAX))
+    ranked = sorted(all_candidates, key=_live_priority_sort_key, reverse=True)
 
-    def _reserve(source: str, quota: int, bucket: str) -> None:
-        if quota <= 0 or len(selected) >= limit:
-            return
-        pool=[c for c in all_candidates if source in (c.get("sources") or [])]
-        pool.sort(key=lambda c:(
-            int((c.get("source_rank") or {}).get(source) or 10**9),
-            -float(c.get("priority") or 0.0),
-            -float((c.get("scores") or {}).get("market_score") or 0.0),
+    if not ranked:
+        return []
+
+    base = ranked[:limit]
+
+    def _priority(c):
+        return float(c.get("priority") or 0.0)
+
+    def _market(c):
+        return float((c.get("scores") or {}).get("market_score") or 0.0)
+
+    def _source_rank(c, source):
+        v = (c.get("source_rank") or {}).get(source)
+        try:
+            return int(v) if v is not None else None
+        except Exception:
+            return None
+
+    def _source_sorted(source):
+        pool = [
+            c for c in all_candidates
+            if source in (c.get("sources") or [])
+        ]
+        pool.sort(key=lambda c: (
+            _source_rank(c, source) or 10**9,
+            -_priority(c),
+            -_market(c),
             -float(c.get("turnover_oku") or 0.0),
             str(c.get("code") or ""),
         ))
-        added=0
-        for c in pool:
-            code=str(c.get("code") or "")
-            if not code or code in selected:
+        return pool
+
+    cutoff = _priority(base[-1])
+    base_codes = {
+        str(c.get("code") or "")
+        for c in base
+        if str(c.get("code") or "")
+    }
+
+    selected = {}
+
+    for c in base:
+        code = str(c.get("code") or "")
+        if code:
+            selected[code] = (c, "PRIORITY_FILL")
+
+    # ----- INITIAL dynamic rescue -----
+    initial_rank_cap = max(0, int(LIVE_EXECUTION_INITIAL_RESERVED))
+    strong_rank_cap = min(10, initial_rank_cap)
+
+    initial_eligible = []
+
+    if initial_rank_cap > 0:
+        for c in _source_sorted("INITIAL_MOMENTUM"):
+            r = _source_rank(c, "INITIAL_MOMENTUM")
+
+            if r is None or r > initial_rank_cap:
                 continue
-            selected[code]=(c,bucket)
-            added+=1
-            if added >= quota or len(selected) >= limit:
-                break
 
-    _reserve("INITIAL_MOMENTUM", LIVE_EXECUTION_INITIAL_RESERVED, "INITIAL_RESERVED")
-    _reserve("STEADY_UP", LIVE_EXECUTION_STEADY_RESERVED, "STEADY_RESERVED")
+            # Tier 1: ordinary rescue near the normal LIVE50 cutoff.
+            near_cutoff = (
+                _priority(c) >= cutoff - 2.0
+            )
 
-    ranked=sorted(all_candidates,key=_live_priority_sort_key,reverse=True)
-    for c in ranked:
-        if len(selected) >= limit:
+            # Tier 2: exceptional INITIAL rescue.
+            # Allow a larger priority gap only when the INITIAL rank and
+            # current market state are both exceptionally strong.
+            exceptional_initial = (
+                r <= min(8, initial_rank_cap)
+                and _market(c) >= 95.0
+                and _priority(c) >= cutoff - 10.0
+            )
+
+            if near_cutoff or exceptional_initial:
+                initial_eligible.append(c)
+
+    initial_codes = set()
+    initial_promotions = []
+
+    for c in initial_eligible:
+        code = str(c.get("code") or "")
+
+        if not code:
+            continue
+
+        initial_codes.add(code)
+
+        if code in selected:
+            selected[code] = (selected[code][0], "INITIAL_RESERVED")
+        else:
+            initial_promotions.append((c, "INITIAL_RESERVED"))
+
+    # ----- STEADY existing reservation -----
+    steady_quota = max(0, int(LIVE_EXECUTION_STEADY_RESERVED))
+    steady_promotions = []
+    steady_added = 0
+
+    for c in _source_sorted("STEADY_UP"):
+        if steady_added >= steady_quota:
             break
-        code=str(c.get("code") or "")
+
+        code = str(c.get("code") or "")
+
+        if not code or code in initial_codes:
+            continue
+
+        steady_added += 1
+
+        if code in selected:
+            selected[code] = (selected[code][0], "STEADY_RESERVED")
+        else:
+            steady_promotions.append((c, "STEADY_RESERVED"))
+
+    # ----- Protect strong base candidates -----
+    protected_codes = set()
+
+    for code, (c, bucket) in selected.items():
+        if (
+            _market(c) >= 95.0
+            or bucket in ("INITIAL_RESERVED", "STEADY_RESERVED")
+        ):
+            protected_codes.add(code)
+
+    evictable = [
+        c for c in base
+        if str(c.get("code") or "") not in protected_codes
+    ]
+
+    # weakest normal candidates first
+    evictable.sort(key=lambda c: (
+        _priority(c),
+        _market(c),
+        float(c.get("turnover_oku") or 0.0),
+        -int(c.get("priority_rank") or 0),
+        str(c.get("code") or ""),
+    ))
+
+    promotions = initial_promotions + steady_promotions
+
+    for c, bucket in promotions:
+        code = str(c.get("code") or "")
+
         if not code or code in selected:
             continue
-        selected[code]=(c,"PRIORITY_FILL")
 
-    # Preserve the legacy priority order inside the admitted LIVE set.
-    admitted=sorted((v for v in selected.values()),key=lambda x:_live_priority_sort_key(x[0]),reverse=True)
-    out=[]
-    for live_rank,(c,bucket) in enumerate(admitted,start=1):
-        cc=dict(c)
-        cc["live_rank"]=live_rank
-        cc["live_selection_bucket"]=bucket
+        if len(selected) >= limit:
+            if not evictable:
+                break
+
+            victim = evictable.pop(0)
+            victim_code = str(victim.get("code") or "")
+            selected.pop(victim_code, None)
+
+        selected[code] = (c, bucket)
+
+    admitted = sorted(
+        selected.values(),
+        key=lambda x: _live_priority_sort_key(x[0]),
+        reverse=True,
+    )[:limit]
+
+    out = []
+
+    for live_rank, (c, bucket) in enumerate(admitted, start=1):
+        cc = dict(c)
+        cc["live_rank"] = live_rank
+        cc["live_selection_bucket"] = bucket
+
         if bucket == "INITIAL_RESERVED":
-            sr=(cc.get("source_rank") or {}).get("INITIAL_MOMENTUM")
-            cc["live_selection_reason"]=f"INITIAL_MOMENTUM reserved / source_rank={sr}"
+            sr = (cc.get("source_rank") or {}).get("INITIAL_MOMENTUM")
+            cc["live_selection_reason"] = (
+                f"INITIAL_MOMENTUM dynamic reserve / source_rank={sr}"
+            )
+
         elif bucket == "STEADY_RESERVED":
-            sr=(cc.get("source_rank") or {}).get("STEADY_UP")
-            cc["live_selection_reason"]=f"STEADY_UP reserved / source_rank={sr}"
+            sr = (cc.get("source_rank") or {}).get("STEADY_UP")
+            cc["live_selection_reason"] = (
+                f"STEADY_UP reserved / source_rank={sr}"
+            )
+
         else:
-            cc["live_selection_reason"]="existing priority fill"
+            cc["live_selection_reason"] = "existing priority fill"
+
         out.append(cc)
+
     return out
+
+
+def _build_day_elite_focus_lane(rows: list[dict], limit: int | None = None) -> list[dict]:
+    """LIVE-FOCUS-NOTIFY-V1: DAY ELITEへ渡す高密度候補レーン。
+
+    OR条件:
+      - 現在の主役化状態が 🌈主役化 / 🌈再主役化
+      - 現在の主役化状態が 🔥継続期待 / 🔥再点火
+      - DIFF_REAL_STRENGTH=1（今日実際に強化中）
+
+    既存 candidate / broker_watch の選定は変更しない。LIVE側が明示的にこの
+    laneを採用した時だけDAY ELITEの入口が切り替わる。
+    """
+    cap = max(1, int(limit or LIVE_EXECUTION_MAX))
+    out = []
+    seen = set()
+
+    grade_rank = {"S": 4, "A": 3, "B": 2, "C": 1}
+    ignition_rank = {"⬆": 2, "→": 1, "⬇": 0}
+
+    for r in rows or []:
+        code = _live_stock_code(
+            _live_get(r, "コード", "code"),
+            _live_get(r, "市場", "market"),
+            _live_get(r, "銘柄名", "name"),
+        )
+        if not code or code in seen:
+            continue
+
+        leader_state = str(_live_get(r, "主役化状態") or "").strip()
+        is_rainbow = leader_state.startswith("🌈")
+        is_fire = leader_state.startswith("🔥")
+        is_diff = int(_live_num(_live_get(r, "DIFF_REAL_STRENGTH")) or 0) == 1
+        if not (is_rainbow or is_fire or is_diff):
+            continue
+
+        focus_sources = []
+        if is_fire:
+            focus_sources.append("LEADER_CONTINUATION")
+        if is_rainbow:
+            focus_sources.append("LEADER_MAIN")
+        if is_diff:
+            focus_sources.append("DIFF_REAL_STRENGTH")
+        is_repeat = int(_live_num(_live_get(r, "再主役候補")) or 0) == 1
+        if is_repeat:
+            focus_sources.append("LEADER_REIGNITION_HISTORY")
+
+        grade = str(_live_get(r, "🔥基礎期待度") or "").strip().upper()
+        ignition = str(_live_get(r, "点火進行") or "").strip()
+        leader_score = _live_num(_live_get(r, "主役化現在スコア"))
+        diff_score = _live_num(_live_get(r, "DIFF_SCORE"))
+        diff_rank = _live_num(_live_get(r, "DIFF_RANK"))
+        turn = _live_num(_live_get(r, "売買代金(億)", "売買代金億"))
+        current = _live_num(_live_get(r, "現在値_raw", "現在値", "current_price"))
+        day_ret = _live_num(_live_get(r, "前日終値比率_raw", "前日終値比率", "day_return_pct"))
+
+        item = {
+            "code": str(code),
+            "name": str(_live_get(r, "銘柄名", "name") or ""),
+            "market": str(_live_get(r, "市場", "market") or ""),
+            "current_price": current,
+            "day_return_pct": day_ret,
+            "turnover_oku": turn,
+            "rvol_turnover": _live_num(_live_get(r, "RVOL代金")),
+            "focus_sources": focus_sources,
+            "leader_state": leader_state,
+            "fire_expectancy_grade": grade,
+            "ignition_progress": ignition,
+            "leader_current_score": leader_score,
+            "leader_current_mfe_pct": _live_num(_live_get(r, "主役化現在MFE_pct")),
+            "leader_current_return_pct": _live_num(_live_get(r, "主役化現在比_pct")),
+            "leader_current_vwap_gap_pct": _live_num(_live_get(r, "主役化現在VWAP乖離_pct")),
+            "leader_signal_time": str(_live_get(r, "主役化シグナル時刻") or ""),
+            "repeat_leader": bool(is_repeat),
+            "repeat_leader_score": _live_num(_live_get(r, "再主役研究スコア")),
+            "repeat_strength_grade": str(_live_get(r, "再主役強度") or ""),
+            "repeat_explosive": bool(int(_live_num(_live_get(r, "再主役爆発級")) or 0)),
+            "repeat_calibration_version": str(_live_get(r, "再主役校正版") or ""),
+            "repeat_day1_date": str(_live_get(r, "再主役DAY1日") or ""),
+            "repeat_persist_date": str(_live_get(r, "再主役継続確認日") or ""),
+            "repeat_first_date": str(_live_get(r, "再主役初回日") or ""),
+            "repeat_elapsed_sessions": int(_live_num(_live_get(r, "再主役経過営業日")) or 0) if is_repeat else None,
+            "repeat_reason": str(_live_get(r, "再主役根拠") or "")[:500],
+            "diff_real_strength": bool(is_diff),
+            "diff_score": diff_score,
+            "diff_rank": int(diff_rank) if diff_rank is not None else None,
+            "diff_state": str(_live_get(r, "DIFF_STATE") or ""),
+            "diff_reason": str(_live_get(r, "DIFF_REASON") or "")[:500],
+            "today_buy": bool(int(_live_num(_live_get(r, "TODAY_BUY")) or 0) == 1),
+            "today_score": _live_num(_live_get(r, "TODAY_SCORE")),
+            "watch_state": str(_live_get(r, "WATCH_STATE") or ""),
+            "invalidation_price": _live_num(_live_get(r, "EXIT_INVALIDATION_PRICE")),
+            "entry_permission": "LIVE_CONFIRMATION_REQUIRED",
+            "direct_order_allowed": False,
+            "_sort_key": (
+                1 if is_fire else 0,
+                1 if is_rainbow else 0,
+                grade_rank.get(grade, 0),
+                ignition_rank.get(ignition, 0),
+                1 if is_diff else 0,
+                float(leader_score if leader_score is not None else -999.0),
+                float(diff_score if diff_score is not None else -999.0),
+                float(turn if turn is not None else 0.0),
+            ),
+        }
+        out.append(item)
+        seen.add(code)
+
+    out.sort(key=lambda x: x["_sort_key"], reverse=True)
+    out = out[:cap]
+    for rank, item in enumerate(out, start=1):
+        item.pop("_sort_key", None)
+        item["focus_rank"] = rank
+        item["focus_reason"] = " OR ".join(item.get("focus_sources") or [])
+    return out
+
 
 def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict], context: dict | None = None) -> dict:
     """
@@ -3689,6 +9950,16 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict], context:
             },
             "tags":tags,
             "reason":" / ".join(dict.fromkeys(x for x in reasons if x))[:400],
+            # WHY-TODAY-V1 metadata only. legacy candidate gate/priorityには不使用。
+            "today_buy":bool(int(_live_num(_live_get(r,"TODAY_BUY")) or 0)==1),
+            "today_score":_live_num(_live_get(r,"TODAY_SCORE")),
+            "why_today":str(_live_get(r,"WHY_TODAY") or "")[:500],
+            "today_waiting_for":str(_live_get(r,"TODAY_WAITING_FOR") or "")[:400],
+            "today_blockers":str(_live_get(r,"TODAY_BLOCKERS") or "")[:400],
+            "today_confirmation_needed":[x for x in str(_live_get(r,"TODAY_CONFIRMATION_NEEDED") or "").split(",") if x],
+            "invalidation_price":_live_num(_live_get(r,"EXIT_INVALIDATION_PRICE")),
+            "risk_pct":_live_num(_live_get(r,"EXIT_RISK_PCT")),
+            "risk_100_shares_yen":_live_num(_live_get(r,"EXIT_RISK_100_SHARES_YEN")),
         }
         candidates.append(candidate)
 
@@ -3754,6 +10025,18 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict], context:
 
     # REPRICING-DISCOVERY-V1: 既存候補/LIVE50を変えない別レーン。
     discovery_candidates, discovery_stats=_build_repricing_discovery_feed(rows, LIVE_CANDIDATE_MAX)
+    # LIVE-ENTRY-FUNNEL-V3: 「何を買うか」と「いつ買えるか」を分離。
+    # legacy live_candidatesは移行監査用に維持し、Kabuのリアルタイム登録正本は
+    # broker_watch_candidates = TODAY_BUY + 安全gate済みTODAY_WATCH(READY/START) とする。
+    today_buy_candidates=_build_today_buy_lane(rows, min(100, LIVE_CANDIDATE_MAX))
+    today_watch_candidates=_build_today_watch_lane(rows, min(50, LIVE_CANDIDATE_MAX))
+    broker_watch_candidates,broker_watch_stats=_build_broker_watch_lane(
+        today_buy_candidates,today_watch_candidates,LIVE_EXECUTION_MAX
+    )
+    timing_near_candidates=_build_timing_near_lane(rows, min(120, LIVE_CANDIDATE_MAX))
+    fundamental_watch_candidates=_build_fundamental_watch_lane(rows, min(300, LIVE_CANDIDATE_MAX))
+    # LIVE-FOCUS-NOTIFY-V1: DAY専用の高密度候補。現行broker_watchはまだ置換しない。
+    day_elite_focus_candidates=_build_day_elite_focus_lane(rows, LIVE_EXECUTION_MAX)
 
     return {
         "schema_version":LIVE_CANDIDATE_SCHEMA_VERSION,
@@ -3766,6 +10049,47 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict], context:
         "valid_for_seconds":LIVE_CANDIDATE_VALID_SECONDS,
         "candidate_count":len(candidates),
         "candidates":candidates,
+        "lane_contract_version":3,
+        "broker_watch_version":1,
+        "broker_watch_count":len(broker_watch_candidates),
+        "broker_watch_candidates":broker_watch_candidates,
+        "broker_watch_policy":{
+            "authoritative_for_realtime_registration":True,
+            "max_candidates":LIVE_EXECUTION_MAX,
+            "source_lanes":["TODAY_BUY","TODAY_WATCH"],
+            "priority_order":["TODAY_BUY","READY","START"],
+            "context_only_lane":"TIMING_NEAR",
+            "entry_permission":"LIVE_CONFIRMATION_REQUIRED",
+            "direct_order_allowed":False,
+            "dedupe":"code",
+            "fill_policy":"do_not_force_fill",
+        },
+        "broker_watch_stats":broker_watch_stats,
+        "day_elite_focus_version":2,
+        "day_elite_focus_count":len(day_elite_focus_candidates),
+        "day_elite_focus_candidates":day_elite_focus_candidates,
+        "day_elite_focus_policy":{
+            "purpose":"DAY_ELITE_INPUT_AFTER_LIVE_SIDE_MIGRATION",
+            "match":"OR",
+            "sources":["LEADER_MAIN","LEADER_CONTINUATION","DIFF_REAL_STRENGTH"],
+            "leader_states":["🌈主役化/再主役化","🔥継続期待/再点火"],
+            "diff_condition":"DIFF_REAL_STRENGTH=1",
+            "max_candidates":LIVE_EXECUTION_MAX,
+            "entry_permission":"LIVE_CONFIRMATION_REQUIRED",
+            "direct_order_allowed":False,
+            "authoritative_for_realtime_registration":False,
+            "note":"LIVE側を改修するまで現行broker_watch_candidatesを正本として維持",
+        },
+        "today_buy_version":1,
+        "today_buy_count":len(today_buy_candidates),
+        "today_buy_candidates":today_buy_candidates,
+        "today_watch_version":1,
+        "today_watch_count":len(today_watch_candidates),
+        "today_watch_candidates":today_watch_candidates,
+        "timing_near_count":len(timing_near_candidates),
+        "timing_near_candidates":timing_near_candidates,
+        "fundamental_watch_count":len(fundamental_watch_candidates),
+        "fundamental_watch_candidates":fundamental_watch_candidates,
         "discovery_version":1,
         "discovery_candidate_count":len(discovery_candidates),
         "discovery_total_count":int(discovery_stats.get("total_count", len(discovery_candidates))),
@@ -3777,6 +10101,12 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict], context:
         "live_selection_policy":{
             "max_candidates":LIVE_EXECUTION_MAX,
             "initial_reserved":LIVE_EXECUTION_INITIAL_RESERVED,
+            "initial_reserved_mode":"dynamic",
+            "initial_near_cutoff_gap":2.0,
+            "initial_exceptional_rank_max":min(8,LIVE_EXECUTION_INITIAL_RESERVED),
+            "initial_exceptional_market_min":95.0,
+            "initial_exceptional_cutoff_gap":10.0,
+            "market_score_protect":95.0,
             "steady_reserved":LIVE_EXECUTION_STEADY_RESERVED,
             "bottom_reserved":0,
             "fill":"existing_priority",
@@ -3796,6 +10126,7 @@ def _live_candidate_payload(conn: sqlite3.Connection, rows: list[dict], context:
             "live_initial_reserved_count":_live_bucket_counts["INITIAL_RESERVED"],
             "live_steady_reserved_count":_live_bucket_counts["STEADY_RESERVED"],
             "live_priority_fill_count":_live_bucket_counts["PRIORITY_FILL"],
+            "day_elite_focus_count":len(day_elite_focus_candidates),
             "snapshot_db":str(LIVE_SNAPSHOT_DB), "captured_at":captured,
         },
     }
@@ -3831,6 +10162,48 @@ def export_live_candidate_feed(conn: sqlite3.Connection, rows_or_df, context: di
             _dr=[x.get("discovery_feed_rank") for x in check["discovery_candidates"]]
             if _dr != list(range(1,len(check["discovery_candidates"])+1)):
                 raise RuntimeError("discovery_feed_rank must be contiguous and ordered")
+        if "broker_watch_candidates" in check:
+            if not isinstance(check.get("broker_watch_candidates"),list):
+                raise RuntimeError("broker_watch_candidates must be list")
+            if int(check.get("broker_watch_count",-1)) != len(check["broker_watch_candidates"]):
+                raise RuntimeError("broker_watch_count mismatch")
+            if len(check["broker_watch_candidates"]) > LIVE_EXECUTION_MAX:
+                raise RuntimeError("broker_watch_candidates exceeds LIVE_EXECUTION_MAX")
+            _br=[x.get("broker_watch_rank") for x in check["broker_watch_candidates"]]
+            if _br != list(range(1,len(check["broker_watch_candidates"])+1)):
+                raise RuntimeError("broker_watch_rank must be contiguous and ordered")
+            _bc=[x.get("code") for x in check["broker_watch_candidates"]]
+            if len(_bc) != len(set(_bc)):
+                raise RuntimeError("broker_watch_candidates must be deduped by code")
+            if any(bool(x.get("direct_order_allowed")) for x in check["broker_watch_candidates"]):
+                raise RuntimeError("broker_watch_candidates must not allow direct order")
+            if any(str(x.get("entry_permission") or "") != "LIVE_CONFIRMATION_REQUIRED" for x in check["broker_watch_candidates"]):
+                raise RuntimeError("broker_watch_candidates entry_permission mismatch")
+            if any(
+                str(x.get("broker_source_lane") or "") == "TODAY_WATCH"
+                and str(x.get("watch_state") or "") not in {"READY","START"}
+                for x in check["broker_watch_candidates"]
+            ):
+                raise RuntimeError("broker TODAY_WATCH must be READY/START only")
+        if "day_elite_focus_candidates" in check:
+            if not isinstance(check.get("day_elite_focus_candidates"), list):
+                raise RuntimeError("day_elite_focus_candidates must be list")
+            if int(check.get("day_elite_focus_count", -1)) != len(check["day_elite_focus_candidates"]):
+                raise RuntimeError("day_elite_focus_count mismatch")
+            if len(check["day_elite_focus_candidates"]) > LIVE_EXECUTION_MAX:
+                raise RuntimeError("day_elite_focus_candidates exceeds LIVE_EXECUTION_MAX")
+            _fr=[x.get("focus_rank") for x in check["day_elite_focus_candidates"]]
+            if _fr != list(range(1,len(check["day_elite_focus_candidates"])+1)):
+                raise RuntimeError("day_elite_focus focus_rank must be contiguous and ordered")
+            _fc=[x.get("code") for x in check["day_elite_focus_candidates"]]
+            if len(_fc) != len(set(_fc)):
+                raise RuntimeError("day_elite_focus_candidates must be deduped by code")
+            if any(bool(x.get("direct_order_allowed")) for x in check["day_elite_focus_candidates"]):
+                raise RuntimeError("day_elite_focus_candidates must not allow direct order")
+            if any(str(x.get("entry_permission") or "") != "LIVE_CONFIRMATION_REQUIRED" for x in check["day_elite_focus_candidates"]):
+                raise RuntimeError("day_elite_focus entry_permission mismatch")
+            if any(not (x.get("focus_sources") or []) for x in check["day_elite_focus_candidates"]):
+                raise RuntimeError("day_elite_focus candidate without focus source")
         if "live_candidates" in check:
             if not isinstance(check.get("live_candidates"),list):
                 raise RuntimeError("live_candidates must be list")
@@ -3852,6 +10225,10 @@ def export_live_candidate_feed(conn: sqlite3.Connection, rows_or_df, context: di
             f"LIVE50={st.get('live_exported_count',0)} "
             f"LIVE_INITIAL={st.get('live_initial_count',0)} LIVE_STEADY={st.get('live_steady_count',0)} "
             f"LIVE_BOTTOM={st.get('live_bottom_count',0)} "
+            f"BROKER_WATCH={check.get('broker_watch_count',0)} "
+            f"(BUY={check.get('broker_watch_stats',{}).get('selected_today_buy',0)} "
+            f"READY={check.get('broker_watch_stats',{}).get('selected_ready',0)} "
+            f"START={check.get('broker_watch_stats',{}).get('selected_start',0)}) "
             f"DISCOVERY={check.get('discovery_candidate_count',0)}/{check.get('discovery_total_count', check.get('discovery_candidate_count',0))} "
             f"snapshot_rows_written={st.get('snapshot_rows_written',0)} path={LIVE_CANDIDATE_FEED_PATH}"
         )
@@ -4012,14 +10389,20 @@ def _latest_finance_notes_by_canonical(df: pd.DataFrame, key_col: str = "_key") 
     # P1-607: key_col="コード" の呼出しではcanonical keyを書き戻す前にraw表記を保存する。
     # 先に上書きすると7203.0も7203になり、canonical表記tie-breakが全行1へ潰れる。
     _raw = x["コード"].astype(str).str.strip().str.upper()
-    x[key_col] = x["コード"].map(canonical_code_for_db)
+    if globals().get("_v44_finance_stale_fast_enabled", lambda: False)():
+        x[key_col] = _v24_unique_canonical_series(x["コード"])
+    else:
+        x[key_col] = x["コード"].map(canonical_code_for_db)
     x = x[x[key_col].astype(str).str.len() > 0].copy()
     _raw = _raw.loc[x.index]
     if x.empty:
         return x
     if "updated_at" in x.columns:
         # P1-650: legacy naive ISO と現行offset付きISOが混在しても比較可能なJST-naiveへ統一。
-        x["_fn_updated_sort"] = x["updated_at"].map(_p1_608_jst_naive_ts)
+        if globals().get("_v44_finance_stale_fast_enabled", lambda: False)():
+            x["_fn_updated_sort"] = _v44_unique_jst_naive_series(x["updated_at"])
+        else:
+            x["_fn_updated_sort"] = x["updated_at"].map(_p1_608_jst_naive_ts)
     else:
         x["_fn_updated_sort"] = pd.NaT
     x["_fn_canon_match"] = (_raw == x[key_col].astype(str).str.upper()).astype(int)
@@ -4046,7 +10429,31 @@ def _p1_608_jst_naive_ts(value):
         return pd.NaT
 
 
-def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[str]:
+
+
+# === V44 FINANCE STALE TRANSFORM FAST ===
+def _v44_finance_stale_fast_enabled() -> bool:
+    return str(os.environ.get("KABU_SCREEN_V44_FAST", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
+
+def _v44_unique_jst_naive_series(series: pd.Series) -> pd.Series:
+    """V44: scalar P1-608 semanticsを保ったまま、同じraw timestampのparseを1回に縮約する。"""
+    if series is None:
+        return pd.Series(dtype="datetime64[ns]")
+    s = pd.Series(series, copy=False)
+    if s.empty:
+        return pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    # factorizeはNaN/None/NaTを -1 に集約。非欠損uniqueだけscalar helperを1回ずつ呼ぶ。
+    codes, uniques = pd.factorize(s, sort=False)
+    parsed = [_p1_608_jst_naive_ts(v) for v in uniques.tolist()]
+    vals = np.empty(len(s), dtype="datetime64[ns]")
+    vals[:] = np.datetime64("NaT")
+    if parsed:
+        parr = np.asarray(parsed, dtype="datetime64[ns]")
+        mask = codes >= 0
+        vals[mask] = parr[codes[mask]]
+    return pd.Series(vals, index=s.index)
+
+def _finance_codes_stale_after_latest_earnings_uncached(conn: sqlite3.Connection) -> set[str]:
     """P1-608: finance_notes更新後に新しい決算イベントが来た銘柄を返す。
 
     fetch_allは各runでearnings_eventsを更新する一方、株探ファンダ全件更新は日次1回。
@@ -4054,6 +10461,8 @@ def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[
     旧score/進捗/forecastをcurrent入力として再利用しないための鮮度ゲート。
     """
     try:
+        # V43: profile-only instrumentation. Freshness semantics are unchanged.
+        _v43_seg_t0 = time.perf_counter()
         _tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
@@ -4078,14 +10487,28 @@ def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[
             _event_ts_expr = "NULLIF(TRIM(発表日時),'')"
         else:
             _event_ts_expr = "NULLIF(TRIM(提出時刻),'')"
+        try:
+            _perf_record_phase("backend-detail:finance_stale_schema", time.perf_counter() - _v43_seg_t0, "OK")
+        except Exception:
+            pass
+        _v43_seg_t0 = time.perf_counter()
         _ev = pd.read_sql_query(
             f"SELECT rowid AS _rowid, コード, {_event_ts_expr} AS _event_time, {_title_expr} FROM earnings_events "
             f"WHERE {_event_ts_expr} IS NOT NULL", conn
         )
+        try:
+            _perf_record_phase("backend-detail:finance_stale_earnings_load", time.perf_counter() - _v43_seg_t0, "OK")
+        except Exception:
+            pass
+        _v43_seg_t0 = time.perf_counter()
         if _ev.empty:
             return set()
-        _ev["_key"] = _ev["コード"].map(canonical_code_for_db)
-        _ev["_event_ts"] = _ev["_event_time"].map(_p1_608_jst_naive_ts)
+        if _v44_finance_stale_fast_enabled():
+            _ev["_key"] = _v24_unique_canonical_series(_ev["コード"])
+            _ev["_event_ts"] = _v44_unique_jst_naive_series(_ev["_event_time"])
+        else:
+            _ev["_key"] = _ev["コード"].map(canonical_code_for_db)
+            _ev["_event_ts"] = _ev["_event_time"].map(_p1_608_jst_naive_ts)
         _ev = _ev[
             _ev["_key"].astype(str).str.len().gt(0) & _ev["_event_ts"].notna()
         ].copy()
@@ -4096,14 +10519,29 @@ def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[
         # 後者が前者を隠し、四半期実績のsemantic freshness gateを回避できる。
         # P1-615: 「決算」という部分一致だけでは「決算期変更」等まで実績決算扱いする。
         # semantic gateはTDnetの実績本体を強く示す「決算短信」に限定する。
-        _ev["_is_actual_result"] = _ev["タイトル"].map(
-            lambda _x: "決算短信" in str(_x or "")
-        )
+        if _v44_finance_stale_fast_enabled():
+            _ev["_is_actual_result"] = _ev["タイトル"].fillna("").astype(str).str.contains("決算短信", regex=False)
+        else:
+            _ev["_is_actual_result"] = _ev["タイトル"].map(
+                lambda _x: "決算短信" in str(_x or "")
+            )
         _ev_sorted = _ev.sort_values(["_key", "_event_ts", "_rowid"], kind="stable")
         _ev_latest = _ev_sorted.drop_duplicates("_key", keep="last")
-        _event_map = {r["_key"]: r["_event_ts"] for _, r in _ev_latest.iterrows()}
+        if _v44_finance_stale_fast_enabled():
+            _event_map = dict(zip(_ev_latest["_key"].tolist(), _ev_latest["_event_ts"].tolist()))
+        else:
+            _event_map = {r["_key"]: r["_event_ts"] for _, r in _ev_latest.iterrows()}
         _ev_actual = _ev_sorted[_ev_sorted["_is_actual_result"]].drop_duplicates("_key", keep="last")
-        _actual_event_map = {r["_key"]: r["_event_ts"] for _, r in _ev_actual.iterrows()}
+        if _v44_finance_stale_fast_enabled():
+            _actual_event_map = dict(zip(_ev_actual["_key"].tolist(), _ev_actual["_event_ts"].tolist()))
+        else:
+            _actual_event_map = {r["_key"]: r["_event_ts"] for _, r in _ev_actual.iterrows()}
+
+        try:
+            _perf_record_phase("backend-detail:finance_stale_earnings_transform", time.perf_counter() - _v43_seg_t0, "OK")
+        except Exception:
+            pass
+        _v43_seg_t0 = time.perf_counter()
 
         # current producer（株探ファンダv14+）が保存する実績四半期履歴。
         # テーブルが存在する環境だけsemantic freshness gateを有効化し、旧DB互換は維持する。
@@ -4119,18 +10557,35 @@ def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[
                 _qh_fk_expr = "fiscal_key" if "fiscal_key" in _qcols else "NULL AS fiscal_key"
                 _qh_qn_expr = "quarter_no" if "quarter_no" in _qcols else "NULL AS quarter_no"
                 _qh_up_expr = "updated_at" if "updated_at" in _qcols else "NULL AS updated_at"
+                # V43: split quarterly DB load from pandas semantic transform.
+                try:
+                    _perf_record_phase("backend-detail:finance_stale_pre_quarterly", time.perf_counter() - _v43_seg_t0, "OK")
+                except Exception:
+                    pass
+                _v43_seg_t0 = time.perf_counter()
                 _qh = pd.read_sql_query(
                     f"SELECT rowid AS _rowid, コード, announcement_date, "
                     f"{_qh_fk_expr}, {_qh_qn_expr}, {_qh_up_expr} "
                     "FROM quarterly_actual_history", conn
                 )
+                try:
+                    _perf_record_phase("backend-detail:finance_stale_quarterly_load", time.perf_counter() - _v43_seg_t0, "OK")
+                except Exception:
+                    pass
+                _v43_seg_t0 = time.perf_counter()
                 if not _qh.empty:
                     _qh["_raw_code"] = _qh["コード"].astype(str).str.strip()
-                    _qh["_key"] = _qh["コード"].map(canonical_code_for_db)
-                    _qh["_announce_ts"] = _qh["announcement_date"].map(_p1_608_jst_naive_ts)
-                    # P1-651: P1-650のauthoritative時刻統一をfinance freshness gateにも適用。
-                    # quarterly_actual_history.updated_atのaware/naive混在で正しいsnapshotをFATALにしない。
-                    _qh["_updated_ts"] = _qh.get("updated_at").map(_p1_608_jst_naive_ts)
+                    if _v44_finance_stale_fast_enabled():
+                        _qh["_key"] = _v24_unique_canonical_series(_qh["コード"])
+                        _qh["_announce_ts"] = _v44_unique_jst_naive_series(_qh["announcement_date"])
+                        # P1-651 semantics: scalar helperと同じJST-naive変換をunique値単位で実行。
+                        _qh["_updated_ts"] = _v44_unique_jst_naive_series(_qh.get("updated_at"))
+                    else:
+                        _qh["_key"] = _qh["コード"].map(canonical_code_for_db)
+                        _qh["_announce_ts"] = _qh["announcement_date"].map(_p1_608_jst_naive_ts)
+                        # P1-651: P1-650のauthoritative時刻統一をfinance freshness gateにも適用。
+                        # quarterly_actual_history.updated_atのaware/naive混在で正しいsnapshotをFATALにしない。
+                        _qh["_updated_ts"] = _qh.get("updated_at").map(_p1_608_jst_naive_ts)
                     _qh["_canon_match"] = (
                         _qh["_raw_code"].str.upper() == _qh["_key"].astype(str).str.upper()
                     ).astype(int)
@@ -4167,20 +10622,42 @@ def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[
                                 )
                                 .drop_duplicates("_key", keep="last")
                             )
-                            _actual_announce = {
-                                r["_key"]: r["_announce_ts"] for _, r in _qh.iterrows()
-                            }
+                            if _v44_finance_stale_fast_enabled():
+                                _actual_announce = dict(zip(_qh["_key"].tolist(), _qh["_announce_ts"].tolist()))
+                            else:
+                                _actual_announce = {
+                                    r["_key"]: r["_announce_ts"] for _, r in _qh.iterrows()
+                                }
 
+        try:
+            _perf_record_phase("backend-detail:finance_stale_quarterly_transform", time.perf_counter() - _v43_seg_t0, "OK")
+        except Exception:
+            pass
+        _v43_seg_t0 = time.perf_counter()
         _updated_expr = "updated_at" if "updated_at" in _fcols else "NULL AS updated_at"
         _fn = pd.read_sql_query(
             f"SELECT rowid AS _rowid, コード, {_updated_expr} FROM finance_notes", conn
         )
+        try:
+            _perf_record_phase("backend-detail:finance_stale_finance_load", time.perf_counter() - _v43_seg_t0, "OK")
+        except Exception:
+            pass
+        _v43_seg_t0 = time.perf_counter()
         _fin_updated = {}
         if not _fn.empty:
             _fn = _latest_finance_notes_by_canonical(_fn, "_key")
-            for _, _r in _fn.iterrows():
-                _fin_updated[_r["_key"]] = _p1_608_jst_naive_ts(_r.get("updated_at"))
+            if _v44_finance_stale_fast_enabled():
+                _fin_ts_series = _v44_unique_jst_naive_series(_fn["updated_at"])
+                _fin_updated = dict(zip(_fn["_key"].tolist(), _fin_ts_series.tolist()))
+            else:
+                for _, _r in _fn.iterrows():
+                    _fin_updated[_r["_key"]] = _p1_608_jst_naive_ts(_r.get("updated_at"))
 
+        try:
+            _perf_record_phase("backend-detail:finance_stale_finance_transform", time.perf_counter() - _v43_seg_t0, "OK")
+        except Exception:
+            pass
+        _v43_seg_t0 = time.perf_counter()
         _stale = set()
         for _key, _event_ts in _event_map.items():
             _fin_ts = _fin_updated.get(_key, pd.NaT)
@@ -4195,6 +10672,10 @@ def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[
                 _ann_ts = _actual_announce.get(_key, pd.NaT)
                 if pd.isna(_ann_ts) or pd.Timestamp(_ann_ts).date() < pd.Timestamp(_actual_event_ts).date():
                     _stale.add(_key)
+        try:
+            _perf_record_phase("backend-detail:finance_stale_compare", time.perf_counter() - _v43_seg_t0, "OK")
+        except Exception:
+            pass
         return _stale
     except Exception as _e:
         # P1-613: 鮮度判定不能を「stale 0件」として続行すると、そのrunだけ旧財務を
@@ -4202,6 +10683,31 @@ def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[
         # ここへ来るDB読込/parse障害はfail-closedで上位へ返す。
         print(f"[finance-fresh][ERROR] latest earnings freshness check failed: {_e}", flush=True)
         raise RuntimeError("finance freshness check failed; refusing to treat cached finance as current") from _e
+
+
+
+_PERF_FINANCE_STALE_RUN_CACHE = {}
+
+def _finance_codes_stale_after_latest_earnings(conn: sqlite3.Connection) -> set[str]:
+    """PERF-OPT-V17: same-run freshness result cache; semantic calculation remains in uncached function."""
+    _key = id(conn)
+    if _key in _PERF_FINANCE_STALE_RUN_CACHE:
+        return set(_PERF_FINANCE_STALE_RUN_CACHE[_key])
+    _t0 = time.perf_counter()
+    _res = set(_finance_codes_stale_after_latest_earnings_uncached(conn))
+    _PERF_FINANCE_STALE_RUN_CACHE[_key] = set(_res)
+    try:
+        _perf_record_phase(
+            "backend-detail:finance_stale_first_compute",
+            time.perf_counter() - _t0, "OK"
+        )
+    except Exception:
+        pass
+    print(
+        f"[finance-stale-cache] mode=compute codes={len(_res)} dt={time.perf_counter()-_t0:.2f}s",
+        flush=True,
+    )
+    return set(_res)
 
 
 def _dedupe_price_history_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -4218,7 +10724,7 @@ def _dedupe_price_history_df(df: pd.DataFrame) -> pd.DataFrame:
     if 'コード' not in df.columns or '日付' not in df.columns:
         return df.copy()
     x = df.copy()
-    x['_code_key'] = x['コード'].map(canonical_code_for_db)
+    x['_code_key'] = (_v24_unique_canonical_series(x['コード']) if _v24_fast_enabled() else x['コード'].map(canonical_code_for_db))
     x['_date_key'] = pd.to_datetime(x['日付'], errors='coerce').dt.normalize()
     x = x[x['_code_key'].astype(str).str.len().gt(0) & x['_date_key'].notna()].copy()
     # P1-454: P1-158以前に残った土日/祝日足も論理履歴から除外する。
@@ -4800,11 +11306,38 @@ def _ensure_latest_prices_index_rows(conn):
         cur.close()
 
 def setup_database_indexes(conn: sqlite3.Connection) -> None:
-    """テーブル構築後、または初期化フェーズで明示的に呼び出すインデックス作成関数"""
-    try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_code_date ON signals_log(コード, 日時);")
-    except sqlite3.OperationalError as e:
-        print(f"[DB Setup] インデックス作成をスキップしました: {e}")
+    """テーブル構築後、または初期化フェーズで明示的に呼び出すインデックス作成関数。
+
+    PERF-OPT-V2: price_historyの主要な既存SQLは date(日付) と
+    CAST(コード AS TEXT) を使うため、その式と完全一致するexpression indexを張る。
+    初回だけindex buildコストが掛かるが、2回目以降はIF NOT EXISTSで即時。
+    """
+    _defs = [
+        (
+            "idx_signals_code_date",
+            "CREATE INDEX IF NOT EXISTS idx_signals_code_date ON signals_log(コード, 日時);",
+        ),
+        (
+            "idx_price_history_perf_date_expr",
+            "CREATE INDEX IF NOT EXISTS idx_price_history_perf_date_expr ON price_history(date(日付));",
+        ),
+        (
+            "idx_price_history_perf_code_text_date",
+            "CREATE INDEX IF NOT EXISTS idx_price_history_perf_code_text_date "
+            "ON price_history(CAST(コード AS TEXT), 日付);",
+        ),
+    ]
+    for _name, _sql in _defs:
+        _t0 = time.perf_counter()
+        try:
+            conn.execute(_sql)
+            _dt = time.perf_counter() - _t0
+            if _dt >= 0.05:
+                print(f"[DB Setup][index] {_name}: {_dt:.2f}s", flush=True)
+        except sqlite3.OperationalError as e:
+            print(f"[DB Setup] インデックス作成をスキップしました: {_name}: {e}")
+    # startup schema phaseなのでここで確定し、後続の長いread transactionへ持ち越さない。
+    conn.commit()
 
 def ensure_runlog_schema(conn):
     """日次実行ログテーブルの作成と、システム全体のインデックス最適化を担う"""
@@ -6081,19 +12614,22 @@ def _ai_market_daily_features(
     end_date = pd.Timestamp(latest_target_date).normalize()
     start_date = end_date - pd.Timedelta(days=lookback_calendar_days)
 
-    sql = """
-        SELECT コード, 日付, 終値, 出来高
-        FROM price_history
-        WHERE 日付 >= ? AND 日付 <= ?
-        ORDER BY コード, 日付
-    """
-    mdf = pd.read_sql_query(
-        sql,
+    # PERF-OPT-V13: LIVE dailyが既に同一runで持つall-market raw cacheを共有。
+    # date範囲・dedupe・市場平均の計算式は旧SQL経路と同一。
+    _ai_mkt_t0 = time.perf_counter()
+    _mraw = _perf_price_history_raw_range(
         conn,
-        params=(
-            start_date.strftime("%Y-%m-%d"),
-            end_date.strftime("%Y-%m-%d"),
-        ),
+        start_date.strftime("%Y-%m-%d"),
+        end_date.strftime("%Y-%m-%d"),
+        tag="ai_market",
+    )
+    if _mraw.empty:
+        mdf = pd.DataFrame(columns=["コード", "日付", "終値", "出来高"])
+    else:
+        mdf = _mraw[["コード", "日付", "終値", "出来高"]].copy()
+    _perf_record_phase(
+        "export-detail:ai_market_history_load",
+        time.perf_counter() - _ai_mkt_t0, "OK"
     )
 
     if mdf.empty:
@@ -6143,7 +12679,1054 @@ def _ai_market_daily_features(
     return pd.concat([market_return, market_sentiment], axis=1).reset_index()
 
 
-def add_ai_analysis(conn, rows):
+
+
+
+# === PERF-OPT-V20-STAGE2 helpers: PREOPEN persistent cache ===
+_STAGE2_CACHE_SCHEMA = 1
+_STAGE2_HISTORY_FP_RUN_CACHE = {}
+_STAGE2_AI_CACHE_PATH = SCREEN_RUNTIME_DIR / "stage2_preopen_ai_cache.json"
+_STAGE2_ENTRY_CACHE_PATH = SCREEN_RUNTIME_DIR / "stage2_preopen_entry_history_cache.json"
+_V23_EOD_AI_CACHE_PATH = SCREEN_RUNTIME_DIR / "v23_eod_ai_cache.json"
+_V23_EOD_AI_CACHE_SCHEMA = 1
+
+# === PERF-OPT-V67: persistent cache logic token ===
+# Whole-script SHA is intentionally NOT a semantic cache dependency.
+# AI/ENTRY caches already fingerprint their real inputs; use an explicit
+# algorithm contract token so unrelated source deployments do not force a cold rebuild.
+_V67_AI_CACHE_LOGIC_TOKEN = "AI_V21_LATEST_FEATURES_CONTRACT_1"
+_V67_ENTRY_CACHE_LOGIC_TOKEN = "ENTRY_V22_HISTORY_SUMMARY_CONTRACT_1"
+# One-time migration is deliberately narrow: only the immediately previous
+# production V66 build is accepted without a logic_token.
+_V67_COMPAT_PREVIOUS_BUILD_TOKENS = {"c558ba57bec68458"}
+
+def _v67_cache_logic_compatible(obj: dict, logic_token: str) -> tuple[bool, bool]:
+    """Return (compatible, needs_migration). Never broad-accept unknown old builds."""
+    if not isinstance(obj, dict):
+        return False, False
+    if str(obj.get("logic_token") or "") == str(logic_token):
+        return True, False
+    old_logic = str(obj.get("logic_token") or "")
+    old_build = str(obj.get("build_token") or "").lower()
+    if (not old_logic) and old_build in _V67_COMPAT_PREVIOUS_BUILD_TOKENS:
+        return True, True
+    return False, False
+
+def _v67_migrate_cache_token(path: Path, obj: dict, logic_token: str, label: str) -> None:
+    try:
+        new_obj = dict(obj)
+        new_obj["logic_token"] = str(logic_token)
+        # Keep current build only as diagnostics; it is no longer a cache validity gate.
+        new_obj["build_token"] = str(_daily_build_token())
+        new_obj["logic_migrated_at"] = _now_jst().isoformat(timespec="seconds")
+        if _stage2_json_write(path, new_obj):
+            print(f"[V67-CACHE] MIGRATED {label} logic_token={logic_token}", flush=True)
+    except Exception as e:
+        print(f"[V67-CACHE][WARN] migration failed {label}: {e}", flush=True)
+# === /PERF-OPT-V67 ===
+
+def _stage2_json_read(path: Path):
+    try:
+        if not path.exists():
+            return None
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except Exception as e:
+        print(f"[stage2-cache][WARN] read failed {path.name}: {e}", flush=True)
+        return None
+
+def _stage2_json_write(path: Path, obj: dict) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + f".tmp.{os.getpid()}.{time.time_ns()}")
+        tmp.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        try:
+            if 'tmp' in locals() and tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        print(f"[stage2-cache][WARN] write failed {path.name}: {e}", flush=True)
+        return False
+
+
+# === PERF-OPT-V24 helpers ===
+_V24_CACHE_SCHEMA = 1
+_V24_FUND_CACHE_PATH = SCREEN_RUNTIME_DIR / "v24_fund_truth_overlay_cache.json"
+_V24_INST_SHORT_CACHE_PATH = SCREEN_RUNTIME_DIR / "v24_institution_short_summary_cache.json"
+_V24_FP_RUN_CACHE = {}
+
+def _v24_fast_enabled() -> bool:
+    return str(os.getenv("KABU_SCREEN_V24_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+
+def _v24_json_scalar(v):
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except Exception:
+        pass
+    if isinstance(v, np.generic):
+        v = v.item()
+    if isinstance(v, (pd.Timestamp, datetime, date)):
+        return str(v)
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    return v
+
+def _v24_frame_records(df: pd.DataFrame) -> list[dict]:
+    if df is None or df.empty:
+        return []
+    return [
+        {str(k): _v24_json_scalar(v) for k, v in rec.items()}
+        for rec in df.to_dict(orient="records")
+    ]
+
+def _v24_unique_canonical_series(series: pd.Series) -> pd.Series:
+    """canonical_code_for_dbの意味を変えず、同じraw表記へのPython関数呼出しを1回に縮約。"""
+    raw = series.astype(str)
+    uniq = pd.unique(raw)
+    mp = {str(v): canonical_code_for_db(v) for v in uniq}
+    return raw.map(mp)
+
+def _v24_table_content_fingerprint(conn: sqlite3.Connection, table: str, *, text_cols=(), numeric_cols=()) -> str:
+    """Relevant-column fingerprint. SQLite側集約だけで変更検知し、cache不一致は必ず再計算。"""
+    key = (id(conn), str(table), tuple(text_cols), tuple(numeric_cols))
+    if key in _V24_FP_RUN_CACHE:
+        return _V24_FP_RUN_CACHE[key]
+    try:
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+        if not exists:
+            fp = f"{table}:MISSING"
+            _V24_FP_RUN_CACHE[key] = fp
+            return fp
+        cols = {str(r[1]) for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+        exprs = ["COUNT(*)", "COALESCE(MAX(rowid),0)", "COALESCE(SUM(CAST(rowid AS REAL)),0)"]
+        for c in numeric_cols:
+            if c in cols:
+                qc = '"' + str(c).replace('"','""') + '"'
+                exprs.append(f"ROUND(COALESCE(SUM(COALESCE(CAST({qc} AS REAL),0)),0),6)")
+                exprs.append(f"ROUND(COALESCE(SUM(COALESCE(CAST({qc} AS REAL),0) * ((rowid % 1000003)+1)),0),6)")
+        for c in text_cols:
+            if c in cols:
+                qc = '"' + str(c).replace('"','""') + '"'
+                exprs.append(f"COALESCE(MAX(CAST({qc} AS TEXT)),'')")
+                exprs.append(f"ROUND(COALESCE(SUM(CAST(LENGTH(COALESCE(CAST({qc} AS TEXT),'')) AS REAL) * ((rowid % 1009)+1)),0),0)")
+        row = conn.execute(f'SELECT {", ".join(exprs)} FROM "{table}"').fetchone()
+        payload = [table, *list(row or ())]
+        fp = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+        _V24_FP_RUN_CACHE[key] = fp
+        return fp
+    except Exception as e:
+        print(f"[V24-cache][WARN] fingerprint failed table={table}: {e}", flush=True)
+        return ""
+
+# === PERF-OPT-V49: fund source revision contract ===
+_V49_FUND_REV_FAST = str(os.environ.get("KABU_SCREEN_V49_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+_V49_FUND_REV_READY_CONNS = set()
+_V49_FUND_SOURCE_SPECS = {
+    "quarterly_actual_history": (
+        "コード","fiscal_key","announcement_date","updated_at",
+        "quarter_no","operating_profit","ordinary_profit","sales","net_profit",
+    ),
+    "forecast_history": (
+        "コード","fiscal_key","forecast_date","forecast_type","タイトル","updated_at",
+        "forecast_op","forecast_eps",
+    ),
+    "offerings_events": (
+        "コード","提出時刻","種別","タイトル",
+    ),
+}
+
+def _v49_fund_revision_fast_enabled() -> bool:
+    return bool(_V49_FUND_REV_FAST)
+
+def _v49_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+def _v49_safe_name(name: str) -> str:
+    return re.sub(r"[^0-9A-Za-z_]+", "_", str(name)).strip("_") or "source"
+
+def _v49_ensure_fund_source_revision_contract(conn: sqlite3.Connection) -> bool:
+    """Track only the columns used by the old V24 fingerprints, without rescanning their table contents."""
+    cid = id(conn)
+    if cid in _V49_FUND_REV_READY_CONNS:
+        return True
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS data_revision_source (
+                   source TEXT PRIMARY KEY,
+                   revision INTEGER NOT NULL DEFAULT 0,
+                   schema_sig TEXT,
+                   updated_at TEXT
+               )"""
+        )
+        _meta_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(data_revision_source)").fetchall()}
+        if "schema_sig" not in _meta_cols:
+            conn.execute("ALTER TABLE data_revision_source ADD COLUMN schema_sig TEXT")
+        if "updated_at" not in _meta_cols:
+            conn.execute("ALTER TABLE data_revision_source ADD COLUMN updated_at TEXT")
+
+        repaired = 0
+        for table, wanted_cols in _V49_FUND_SOURCE_SPECS.items():
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if not exists:
+                continue
+            actual_cols = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({_v49_ident(table)})").fetchall()}
+            watched = tuple(c for c in wanted_cols if c in actual_cols)
+            if not watched:
+                raise RuntimeError(f"no watched columns available for {table}")
+            schema_sig = hashlib.sha256(
+                json.dumps([table, watched], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            safe = _v49_safe_name(table)
+            trig_names = (
+                f"trg_v49_{safe}_rev_insert",
+                f"trg_v49_{safe}_rev_delete",
+                f"trg_v49_{safe}_rev_update",
+            )
+            existing_trigs = {str(r[0]) for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (?,?,?)", trig_names
+            ).fetchall()}
+            row = conn.execute(
+                "SELECT revision, COALESCE(schema_sig,'') FROM data_revision_source WHERE source=?", (table,)
+            ).fetchone()
+            first_seed = row is None
+            schema_changed = bool(row is not None and str(row[1] or "") != schema_sig)
+            triggers_missing = any(n not in existing_trigs for n in trig_names)
+            if first_seed:
+                conn.execute(
+                    "INSERT INTO data_revision_source(source,revision,schema_sig,updated_at) VALUES(?,1,?,CURRENT_TIMESTAMP)",
+                    (table, schema_sig),
+                )
+            elif schema_changed or triggers_missing:
+                # A missing trigger or changed watched schema creates an unobservable interval; invalidate once.
+                conn.execute(
+                    "UPDATE data_revision_source SET revision=revision+1, schema_sig=?, updated_at=CURRENT_TIMESTAMP WHERE source=?",
+                    (schema_sig, table),
+                )
+            else:
+                conn.execute(
+                    "UPDATE data_revision_source SET schema_sig=? WHERE source=?", (schema_sig, table)
+                )
+
+            if first_seed or schema_changed or triggers_missing:
+                repaired += 1
+                for tn in trig_names:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {_v49_ident(tn)}")
+                qtable = _v49_ident(table)
+                qsource = table.replace("'", "''")
+                ins, dele, upd = map(_v49_ident, trig_names)
+                update_of = ",".join(_v49_ident(c) for c in watched)
+                changed_when = " OR ".join(
+                    f"OLD.{_v49_ident(c)} IS NOT NEW.{_v49_ident(c)}" for c in watched
+                )
+                conn.executescript(f"""
+                    CREATE TRIGGER {ins}
+                    AFTER INSERT ON {qtable}
+                    BEGIN
+                      INSERT INTO data_revision_source(source,revision,schema_sig,updated_at)
+                      VALUES('{qsource}',1,'{schema_sig}',CURRENT_TIMESTAMP)
+                      ON CONFLICT(source) DO UPDATE SET revision=revision+1, updated_at=CURRENT_TIMESTAMP;
+                    END;
+
+                    CREATE TRIGGER {dele}
+                    AFTER DELETE ON {qtable}
+                    BEGIN
+                      INSERT INTO data_revision_source(source,revision,schema_sig,updated_at)
+                      VALUES('{qsource}',1,'{schema_sig}',CURRENT_TIMESTAMP)
+                      ON CONFLICT(source) DO UPDATE SET revision=revision+1, updated_at=CURRENT_TIMESTAMP;
+                    END;
+
+                    CREATE TRIGGER {upd}
+                    AFTER UPDATE OF {update_of} ON {qtable}
+                    WHEN {changed_when}
+                    BEGIN
+                      INSERT INTO data_revision_source(source,revision,schema_sig,updated_at)
+                      VALUES('{qsource}',1,'{schema_sig}',CURRENT_TIMESTAMP)
+                      ON CONFLICT(source) DO UPDATE SET revision=revision+1, updated_at=CURRENT_TIMESTAMP;
+                    END;
+                """)
+        _V49_FUND_REV_READY_CONNS.add(cid)
+        if repaired:
+            print(f"[V49][fund-revision-contract] ready repaired_sources={repaired}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[V49][fund-revision-contract][WARN] setup failed -> V48 fingerprint: {e}", flush=True)
+        return False
+
+def _v49_fund_source_revision_token(conn: sqlite3.Connection) -> str:
+    if not _v49_ensure_fund_source_revision_contract(conn):
+        return ""
+    t0 = time.perf_counter()
+    try:
+        parts = []
+        for table in _V49_FUND_SOURCE_SPECS:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if not exists:
+                parts.append((table, "MISSING", ""))
+                continue
+            row = conn.execute(
+                "SELECT revision, COALESCE(schema_sig,'') FROM data_revision_source WHERE source=?", (table,)
+            ).fetchone()
+            if row is None:
+                return ""
+            parts.append((table, int(row[0] or 0), str(row[1] or "")))
+        token = hashlib.sha256(
+            json.dumps(["V49-FUND-SOURCE-REV-1", parts], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        dt = time.perf_counter() - t0
+        print(f"[V49][fund-source-revision] sources={len(parts)} dt={dt:.4f}s", flush=True)
+        try:
+            _perf_record_phase("backend-detail:v49_fund_source_revision_token", dt, "HIT")
+        except Exception:
+            pass
+        return token
+    except Exception as e:
+        print(f"[V49][fund-source-revision][WARN] token failed -> V48 fingerprint: {e}", flush=True)
+        return ""
+# === /PERF-OPT-V49 ===
+
+def _v24_fund_source_fingerprint(conn: sqlite3.Connection) -> str:
+    # V49: normally validate V24 persistent fund cache via tiny DB revision rows.
+    # Any contract/token failure falls back to the exact V48 table-content fingerprints below.
+    if _v49_fund_revision_fast_enabled():
+        _v49_token = _v49_fund_source_revision_token(conn)
+        if _v49_token:
+            try:
+                _v49_extra = Path(EXTRA_CLOSED_PATH)
+                _v49_extra_fp = _stage2_file_sha256(_v49_extra) if _v49_extra.exists() else "extra_closed:MISSING"
+            except Exception:
+                _v49_extra_fp = "extra_closed:ERROR"
+            _v49_fp = hashlib.sha256((_v49_token + "\n" + _v49_extra_fp).encode("utf-8")).hexdigest()
+            print("[V49-FUND-CACHE] source revision fastpath", flush=True)
+            return _v49_fp
+    t0 = time.perf_counter()
+    parts = [
+        _v24_table_content_fingerprint(
+            conn, "quarterly_actual_history",
+            text_cols=("コード","fiscal_key","announcement_date","updated_at"),
+            numeric_cols=("quarter_no","operating_profit","ordinary_profit","sales","net_profit"),
+        ),
+        _v24_table_content_fingerprint(
+            conn, "forecast_history",
+            text_cols=("コード","fiscal_key","forecast_date","forecast_type","タイトル","updated_at"),
+            numeric_cols=("forecast_op","forecast_eps"),
+        ),
+        _v24_table_content_fingerprint(
+            conn, "offerings_events",
+            text_cols=("コード","提出時刻","種別","タイトル"),
+        ),
+    ]
+    try:
+        p = Path(EXTRA_CLOSED_PATH)
+        parts.append(_stage2_file_sha256(p) if p.exists() else "extra_closed:MISSING")
+    except Exception:
+        parts.append("extra_closed:ERROR")
+    if any(not p for p in parts):
+        return ""
+    fp = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    print(f"[V24-FUND-CACHE] source fingerprint dt={time.perf_counter()-t0:.2f}s", flush=True)
+    return fp
+
+def _v24_sector_hash(df: pd.DataFrame) -> str:
+    if df is None or df.empty:
+        return "EMPTY"
+    if "セクター" not in df.columns:
+        return "NO_SECTOR"
+    vals = []
+    for c, s in zip(df.get("コード", pd.Series([], dtype=object)), df["セクター"]):
+        ck = canonical_code_for_db(c)
+        if ck:
+            vals.append((ck, "" if s is None else str(s)))
+    vals.sort()
+    return hashlib.sha256(json.dumps(vals, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+def _v24_institution_short_source_fingerprint(conn: sqlite3.Connection) -> str:
+    t0 = time.perf_counter()
+    parts = [
+        _v24_table_content_fingerprint(
+            conn, "institution_short_sales",
+            text_cols=("code","calc_date","institution_name","note","remarks","remark","備考"),
+            numeric_cols=("shares","shares_change","ratio","short_ratio","position_ratio","残高割合","残高比率"),
+        ),
+        _v24_table_content_fingerprint(
+            conn, "screener",
+            text_cols=("コード",), numeric_cols=("発行済株式数",),
+        ),
+        str(_today_jst()),
+    ]
+    if any(not p for p in parts):
+        return ""
+    fp = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    print(f"[V24-INST-CACHE] source fingerprint dt={time.perf_counter()-t0:.2f}s", flush=True)
+    return fp
+# === /PERF-OPT-V24 helpers ===
+
+
+# === PERF-OPT-V25 helpers ===
+_V25_CACHE_SCHEMA = 1
+_V25_LIVE_DAILY_CACHE_PATH = SCREEN_RUNTIME_DIR / "v25_live_daily_structure_cache.json"
+_V25_INTRADAY_CACHE_PATH = SCREEN_RUNTIME_DIR / "v25_intraday_feature_cache.json"
+_V25_RESEARCH_CACHE_PATH = SCREEN_RUNTIME_DIR / "v25_dashboard_research_cache.json"
+_V25_PRICE_SUMMARY_CACHE_PATH = SCREEN_RUNTIME_DIR / "v25_price_summary_cache.json"
+_V25_REPRICING_CACHE_PATH = SCREEN_RUNTIME_DIR / "v25_repricing_underreaction_cache.json"
+_V68_REPRICING_PREOPEN_CACHE_PATH = SCREEN_RUNTIME_DIR / "v68_repricing_preopen_session_cache.json"
+_V25_LEGACY_HISTORY_RUN_CACHE = {}
+_V25_INTRADAY_FP_RUN_CACHE = {}
+
+
+def _v25_fast_enabled() -> bool:
+    return str(os.getenv("KABU_SCREEN_V25_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+
+
+def _v25_hash_payload(payload) -> str:
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _v25_rows_hash(rows, fields) -> str:
+    vals = []
+    for r in rows or []:
+        c = _live_stock_code(_live_get(r, "コード"), _live_get(r, "市場"), _live_get(r, "銘柄名"))
+        if not c:
+            continue
+        rec = [str(c)]
+        for f in fields:
+            v = _live_get(r, f) if isinstance(f, str) else None
+            if isinstance(v, float) and not math.isfinite(v):
+                v = None
+            rec.append(_v24_json_scalar(v))
+        vals.append(rec)
+    vals.sort(key=lambda x: x[0])
+    return _v25_hash_payload(vals)
+
+
+def _v25_df_hash(df: pd.DataFrame, fields) -> str:
+    if df is None or df.empty:
+        return "EMPTY"
+    vals = []
+    for rec in df[list(dict.fromkeys(["コード", *fields]))].to_dict(orient="records"):
+        c = canonical_code_for_db(rec.get("コード"))
+        if not c:
+            continue
+        row = [str(c)]
+        for f in fields:
+            v = rec.get(f)
+            try:
+                if pd.isna(v): v = None
+            except Exception:
+                pass
+            if isinstance(v, float) and not math.isfinite(v): v = None
+            row.append(_v24_json_scalar(v))
+        vals.append(row)
+    vals.sort(key=lambda x: x[0])
+    return _v25_hash_payload(vals)
+
+
+# === PERF-OPT-V34 exact V25.1 raw-normalized MIDDAY baseline for live_daily/research ===
+_V34_V25_LEGACY_RUN_CACHE: dict[tuple, pd.DataFrame] = {}
+
+
+def _v34_v25_normalize_raw(df: pd.DataFrame) -> pd.DataFrame:
+    """_v25_legacy_history_frameと同じnormalizeだけを行う。dedupe/holiday filterはしない。"""
+    cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+    if df is None or getattr(df, "empty", True):
+        return pd.DataFrame(columns=cols)
+    keep = [c for c in cols if c in df.columns]
+    out = df[keep].copy()
+    out["コード"] = (_v24_unique_canonical_series(out["コード"]) if _v24_fast_enabled() else out["コード"].map(canonical_code_for_db))
+    out["日付"] = pd.to_datetime(out["日付"], errors="coerce").dt.normalize()
+    for c in ("始値","高値","安値","終値","出来高"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out.reset_index(drop=True)
+
+
+def _v34_v25_baseline_load(trade_date_s: str, base_start_s: str, prior_end_s: str) -> pd.DataFrame | None:
+    p = MIDDAY_V25_BASELINE_V34_CACHE_PATH
+    try:
+        if not p.exists(): return None
+        t0 = time.perf_counter()
+        with p.open("rb") as fh: obj = pickle.load(fh)
+        if not isinstance(obj, dict): return None
+        if int(obj.get("schema") or 0) != MIDDAY_V25_BASELINE_V34_CACHE_SCHEMA: return None
+        if str(obj.get("trade_date") or "") != str(trade_date_s): return None
+        if str(obj.get("base_start") or "") != str(base_start_s): return None
+        if str(obj.get("prior_end") or "") != str(prior_end_s): return None
+        if str(obj.get("build_token") or "") != str(_daily_build_token()): return None
+        df = obj.get("df")
+        if not isinstance(df, pd.DataFrame): return None
+        out = _v34_v25_normalize_raw(df)
+        print(
+            f"[V34][v25-baseline] HIT trade_date={trade_date_s} rows={len(out)} "
+            f"size_mb={p.stat().st_size/1048576:.2f} dt={time.perf_counter()-t0:.2f}s", flush=True
+        )
+        return out
+    except Exception as e:
+        print(f"[V34][v25-baseline][WARN] load failed -> rebuild/legacy fallback: {e}", flush=True)
+        return None
+
+
+def _v34_v25_baseline_save(trade_date_s: str, base_start_s: str, prior_end_s: str, df: pd.DataFrame) -> None:
+    p = MIDDAY_V25_BASELINE_V34_CACHE_PATH
+    tmp = None
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": MIDDAY_V25_BASELINE_V34_CACHE_SCHEMA,
+            "trade_date": str(trade_date_s), "base_start": str(base_start_s), "prior_end": str(prior_end_s),
+            "build_token": str(_daily_build_token()), "updated_at": _now_jst().isoformat(timespec="seconds"), "df": df,
+        }
+        fd, name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=str(p.parent))
+        os.close(fd); tmp = Path(name)
+        with tmp.open("wb") as fh: pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, p)
+        print(f"[V34][v25-baseline] STORE trade_date={trade_date_s} rows={len(df)} size_mb={p.stat().st_size/1048576:.2f}", flush=True)
+    except Exception as e:
+        print(f"[V34][v25-baseline][WARN] save failed (run continues): {e}", flush=True)
+        try:
+            if tmp is not None and tmp.exists(): tmp.unlink()
+        except Exception: pass
+
+
+def _v34_midday_v25_legacy_frame(conn: sqlite3.Connection, req_start: pd.Timestamp, end: pd.Timestamp, *, tag=""):
+    """MIDDAYのV25.1 normalized raw履歴を前日baseline + 当日rawでexact再構成。"""
+    if (not _v34_midday_shared_daily_fast_enabled()) or str(_auto_run_mode() or "").upper() != "MIDDAY":
+        return None
+    try:
+        cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+        trade_date = pd.Timestamp(end).normalize()
+        # live_daily(240d)を覆う固定superset。consumerのrequested startは後でslice。
+        base_start = trade_date - pd.Timedelta(days=260)
+        if req_start < base_start:
+            return None
+        prior_end = trade_date - pd.Timedelta(days=1)  # legacy休日行も意味論上保持するためcalendar day split
+        trade_date_s = trade_date.strftime("%Y-%m-%d")
+        base_start_s = base_start.strftime("%Y-%m-%d")
+        prior_end_s = prior_end.strftime("%Y-%m-%d")
+        key = (id(conn), trade_date_s, base_start_s)
+        combined = _V34_V25_LEGACY_RUN_CACHE.get(key)
+        if not isinstance(combined, pd.DataFrame):
+            base = _v34_v25_baseline_load(trade_date_s, base_start_s, prior_end_s)
+            if base is None:
+                tb = time.perf_counter()
+                raw_base = _perf_price_history_raw_range(conn, base_start_s, prior_end_s, tag="v34_v25_baseline")
+                base = _v34_v25_normalize_raw(raw_base)
+                _v34_v25_baseline_save(trade_date_s, base_start_s, prior_end_s, base)
+                print(f"[V34][v25-baseline] BUILD rows={len(base)} dt={time.perf_counter()-tb:.2f}s", flush=True)
+            tt = time.perf_counter()
+            raw_today = _perf_price_history_raw_range(conn, trade_date_s, trade_date_s, tag="v34_v25_today")
+            today = _v34_v25_normalize_raw(raw_today)
+            combined = pd.concat([base, today], ignore_index=True) if (not base.empty and not today.empty) else (today if base.empty else base.copy())
+            if combined.empty: combined = pd.DataFrame(columns=cols)
+            _V34_V25_LEGACY_RUN_CACHE[key] = combined
+            print(f"[V34][v25-baseline] combine base={len(base)} today={len(today)} rows={len(combined)} today_dt={time.perf_counter()-tt:.2f}s", flush=True)
+        dts = pd.to_datetime(combined["日付"], errors="coerce").dt.normalize()
+        out = combined.loc[dts.between(req_start, end, inclusive="both"), cols].copy()
+        print(f"[V34][v25-share] tag={tag or '-'} rows={len(out)} source_rows={len(combined)}", flush=True)
+        return out
+    except Exception as e:
+        print(f"[V34][v25-share][WARN] tag={tag or '-'} legacy fallback: {e}", flush=True)
+        return None
+# === /PERF-OPT-V34 exact V25.1 raw-normalized MIDDAY baseline ===
+
+def _v25_legacy_history_frame(conn: sqlite3.Connection, start_date: str, end_date: str, *, tag="") -> pd.DataFrame:
+    """V25.1 memory-safe exact legacy normalization.
+
+    V25はlive daily/research共用のため、raw cacheとは別に最大約63万行のnormalized
+    DataFrameをrun全体へ保持していた。初回warm-upでprice summaryへ進んだ際の
+    メモリpeakを避けるため、既存_PERF_PH_RAW_CACHEの期間sliceだけをそのconsumer用に
+    正規化し、巨大な第2run-cacheは保持しない。consumer固有dedupe順序は従来どおり。
+    """
+    req_start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+    if pd.isna(req_start) or pd.isna(end) or req_start > end:
+        return pd.DataFrame(columns=cols)
+
+    _v34_exact = _v34_midday_v25_legacy_frame(conn, req_start, end, tag=tag)
+    if isinstance(_v34_exact, pd.DataFrame):
+        return _v34_exact
+
+    t0 = time.perf_counter()
+    ph = _perf_price_history_raw_range(
+        conn, req_start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+        tag=f"v25legacy-safe:{tag or '-'}"
+    )
+    if ph.empty:
+        out = pd.DataFrame(columns=cols)
+    else:
+        keep = [c for c in cols if c in ph.columns]
+        out = ph[keep].copy()
+        out["コード"] = (_v24_unique_canonical_series(out["コード"]) if _v24_fast_enabled() else out["コード"].map(canonical_code_for_db))
+        out["日付"] = pd.to_datetime(out["日付"], errors="coerce").dt.normalize()
+        for c in ("始値","高値","安値","終値","出来高"):
+            if c in out.columns:
+                out[c] = pd.to_numeric(out[c], errors="coerce")
+        out = out.reset_index(drop=True)
+    print(f"[V25.1-MEMSAFE-PH] tag={tag or '-'} rows={len(out)} dt={time.perf_counter()-t0:.2f}s", flush=True)
+    return out
+
+
+def _v25_intraday_source_fingerprint(trade_date: str) -> str:
+    key = str(trade_date)
+    if key in _V25_INTRADAY_FP_RUN_CACHE:
+        return _V25_INTRADAY_FP_RUN_CACHE[key]
+    c = _live_snapshot_conn()
+    try:
+        row = c.execute(
+            """
+            SELECT COUNT(*), COALESCE(MAX(rowid),0), COALESCE(MAX(captured_at),''),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(current_price AS REAL),0) * ((rowid % 1009)+1)),0),6),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(day_low AS REAL),0) * ((rowid % 1013)+1)),0),6)
+              FROM intraday_scanner_snapshot
+             WHERE trade_date=?
+            """, (key,)
+        ).fetchone()
+        fp = _v25_hash_payload([key, *list(row or ())])
+    except Exception as e:
+        print(f"[V25-INTRADAY-CACHE][WARN] fingerprint failed: {e}", flush=True)
+        fp = ""
+    finally:
+        c.close()
+    _V25_INTRADAY_FP_RUN_CACHE[key] = fp
+    return fp
+
+
+def _v25_json_map_records(mp: dict) -> list[dict]:
+    out = []
+    for k, v in (mp or {}).items():
+        if not isinstance(v, dict):
+            continue
+        out.append({"code": str(k), "value": {str(a): _v24_json_scalar(b) for a,b in v.items()}})
+    return out
+
+
+def _v25_records_json_map(records) -> dict:
+    out = {}
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        c = str(rec.get("code") or "")
+        v = rec.get("value")
+        if c and isinstance(v, dict):
+            out[c] = dict(v)
+    return out
+# === /PERF-OPT-V25 helpers ===
+
+def _stage2_file_sha256(path_value) -> str:
+    try:
+        p = Path(path_value)
+        if not p.exists():
+            return "MISSING"
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception as e:
+        return f"ERROR:{type(e).__name__}:{e}"
+
+_V41_REVISION_FAST = str(os.environ.get("KABU_SCREEN_V41_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+_V41_REVISION_READY_CONNS = set()
+_V41_REVISION_TRIGGER_NAMES = (
+    "trg_v41_price_history_rev_insert",
+    "trg_v41_price_history_rev_delete",
+    "trg_v41_price_history_rev_update_new",
+    "trg_v41_price_history_rev_update_old",
+)
+
+def _v41_revision_fast_enabled() -> bool:
+    return bool(_V41_REVISION_FAST)
+
+def _stage2_price_history_fingerprint_legacy(conn: sqlite3.Connection, cutoff_date: str, calendar_days: int = 240) -> str:
+    """V40までの保守的price_history fingerprint。V41障害/無効化時のfallback。"""
+    cutoff = pd.Timestamp(cutoff_date).normalize()
+    start = (cutoff - pd.Timedelta(days=int(calendar_days))).strftime("%Y-%m-%d")
+    end = cutoff.strftime("%Y-%m-%d")
+    key = (id(conn), start, end)
+    if key in _STAGE2_HISTORY_FP_RUN_CACHE:
+        return _STAGE2_HISTORY_FP_RUN_CACHE[key]
+    t0 = time.perf_counter()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(MAX(rowid),0), COALESCE(SUM(rowid),0),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(始値 AS REAL),0)),0),4),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(高値 AS REAL),0)),0),4),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(安値 AS REAL),0)),0),4),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(終値 AS REAL),0)),0),4),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(出来高 AS REAL),0)),0),0),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(終値 AS REAL),0) * ((rowid % 1000003)+1)),0),4),
+                   ROUND(COALESCE(SUM(COALESCE(CAST(出来高 AS REAL),0) * ((rowid % 1000003)+1)),0),0),
+                   ROUND(COALESCE(SUM(CAST(REPLACE(SUBSTR(日付,1,10),'-','') AS REAL) * ((rowid % 1009)+1)),0),0),
+                   ROUND(COALESCE(SUM(LENGTH(CAST(コード AS TEXT)) * ((rowid % 1009)+1)),0),0)
+            FROM price_history
+            WHERE date(日付) >= date(?) AND date(日付) <= date(?)
+            """,
+            (start, end),
+        ).fetchone()
+        payload = [start, end, *list(row or ())]
+        fp = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        _STAGE2_HISTORY_FP_RUN_CACHE[key] = fp
+        print(f"[stage2-cache] price-history fingerprint rows={(row or [0])[0]} dt={time.perf_counter()-t0:.2f}s", flush=True)
+        return fp
+    except Exception as e:
+        print(f"[stage2-cache][WARN] price-history fingerprint failed: {e}", flush=True)
+        return ""
+
+def _v41_ensure_price_history_revision_contract(conn: sqlite3.Connection) -> bool:
+    """
+    price_historyの変更を日付別revisionへ自動記録するDB契約を準備する。
+    writer実装へ依存せずSQLite triggerで捕捉するため、別scriptからのINSERT/UPDATE/DELETEも追跡対象。
+    trigger欠落を検知した場合は全既存revisionを1つ進め、欠落期間の不確実性を安全側でcache missへ倒す。
+    """
+    cid = id(conn)
+    if cid in _V41_REVISION_READY_CONNS:
+        return True
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS data_revision_daily (
+                   source TEXT NOT NULL,
+                   data_date TEXT NOT NULL,
+                   revision INTEGER NOT NULL DEFAULT 0,
+                   updated_at TEXT,
+                   PRIMARY KEY(source, data_date)
+               )"""
+        )
+        existing = {str(r[0]) for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_v41_price_history_rev_%'"
+        ).fetchall()}
+        missing = [n for n in _V41_REVISION_TRIGGER_NAMES if n not in existing]
+        seeded = int(conn.execute(
+            "SELECT COUNT(*) FROM data_revision_daily WHERE source='price_history'"
+        ).fetchone()[0] or 0)
+
+        if seeded == 0:
+            conn.execute(
+                """INSERT OR IGNORE INTO data_revision_daily(source,data_date,revision,updated_at)
+                   SELECT 'price_history', date(日付), 1, CURRENT_TIMESTAMP
+                   FROM price_history
+                   WHERE date(日付) IS NOT NULL
+                   GROUP BY date(日付)"""
+            )
+        elif missing:
+            # trigger欠落中の変更有無は証明できないため、既存期間を全invalidateする。
+            conn.execute(
+                "UPDATE data_revision_daily SET revision=revision+1, updated_at=CURRENT_TIMESTAMP WHERE source='price_history'"
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO data_revision_daily(source,data_date,revision,updated_at)
+                   SELECT 'price_history', date(日付), 1, CURRENT_TIMESTAMP
+                   FROM price_history
+                   WHERE date(日付) IS NOT NULL
+                   GROUP BY date(日付)"""
+            )
+
+        conn.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_v41_price_history_rev_insert
+            AFTER INSERT ON price_history
+            BEGIN
+              INSERT INTO data_revision_daily(source,data_date,revision,updated_at)
+              VALUES('price_history', COALESCE(date(NEW.日付),'__INVALID__'), 1, CURRENT_TIMESTAMP)
+              ON CONFLICT(source,data_date) DO UPDATE SET revision=revision+1, updated_at=CURRENT_TIMESTAMP;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_v41_price_history_rev_delete
+            AFTER DELETE ON price_history
+            BEGIN
+              INSERT INTO data_revision_daily(source,data_date,revision,updated_at)
+              VALUES('price_history', COALESCE(date(OLD.日付),'__INVALID__'), 1, CURRENT_TIMESTAMP)
+              ON CONFLICT(source,data_date) DO UPDATE SET revision=revision+1, updated_at=CURRENT_TIMESTAMP;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_v41_price_history_rev_update_new
+            AFTER UPDATE OF コード,日付,始値,高値,安値,終値,出来高 ON price_history
+            WHEN OLD.コード IS NOT NEW.コード
+              OR OLD.日付 IS NOT NEW.日付
+              OR OLD.始値 IS NOT NEW.始値
+              OR OLD.高値 IS NOT NEW.高値
+              OR OLD.安値 IS NOT NEW.安値
+              OR OLD.終値 IS NOT NEW.終値
+              OR OLD.出来高 IS NOT NEW.出来高
+            BEGIN
+              INSERT INTO data_revision_daily(source,data_date,revision,updated_at)
+              VALUES('price_history', COALESCE(date(NEW.日付),'__INVALID__'), 1, CURRENT_TIMESTAMP)
+              ON CONFLICT(source,data_date) DO UPDATE SET revision=revision+1, updated_at=CURRENT_TIMESTAMP;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_v41_price_history_rev_update_old
+            AFTER UPDATE OF 日付 ON price_history
+            WHEN COALESCE(date(OLD.日付),'__INVALID__') <> COALESCE(date(NEW.日付),'__INVALID__')
+            BEGIN
+              INSERT INTO data_revision_daily(source,data_date,revision,updated_at)
+              VALUES('price_history', COALESCE(date(OLD.日付),'__INVALID__'), 1, CURRENT_TIMESTAMP)
+              ON CONFLICT(source,data_date) DO UPDATE SET revision=revision+1, updated_at=CURRENT_TIMESTAMP;
+            END;
+            """
+        )
+        _V41_REVISION_READY_CONNS.add(cid)
+        if missing:
+            print(f"[V41][revision-contract] ready seeded_dates={seeded} repaired_triggers={len(missing)}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[V41][revision-contract][WARN] setup failed -> legacy fingerprint: {e}", flush=True)
+        return False
+
+def _v41_price_history_revision_token(conn: sqlite3.Connection, start: str, end: str) -> str:
+    if not _v41_ensure_price_history_revision_contract(conn):
+        return ""
+    t0 = time.perf_counter()
+    try:
+        rows = conn.execute(
+            """SELECT data_date, revision
+               FROM data_revision_daily
+               WHERE source='price_history' AND data_date>=? AND data_date<=?
+               ORDER BY data_date""",
+            (start, end),
+        ).fetchall()
+        payload = ["V41-DATE-REV-1", start, end, [(str(d), int(r or 0)) for d, r in rows]]
+        token = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        dt = time.perf_counter() - t0
+        print(f"[V41][price-history-revision] days={len(rows)} start={start} end={end} dt={dt:.3f}s", flush=True)
+        try: _perf_record_phase("backend-detail:v41_price_history_revision_token", dt, "HIT")
+        except Exception: pass
+        return token
+    except Exception as e:
+        print(f"[V41][price-history-revision][WARN] token failed -> legacy fingerprint: {e}", flush=True)
+        return ""
+
+def _stage2_price_history_fingerprint(conn: sqlite3.Connection, cutoff_date: str, calendar_days: int = 240) -> str:
+    """V41: price_history source token. 通常は日付別revision、障害/無効化時だけV40 fingerprint scan。"""
+    cutoff = pd.Timestamp(cutoff_date).normalize()
+    start = (cutoff - pd.Timedelta(days=int(calendar_days))).strftime("%Y-%m-%d")
+    end = cutoff.strftime("%Y-%m-%d")
+    if _v41_revision_fast_enabled():
+        token = _v41_price_history_revision_token(conn, start, end)
+        if token:
+            return token
+    return _stage2_price_history_fingerprint_legacy(conn, cutoff_date, calendar_days)
+
+def _stage2_codes_hash(codes) -> str:
+    vals = sorted({str(canonical_code_for_db(c) or "") for c in (codes or []) if canonical_code_for_db(c)})
+    return hashlib.sha256("\n".join(vals).encode("utf-8")).hexdigest()
+
+def _stage2_ai_rows_hash(rows) -> str:
+    vals = []
+    for r in rows or []:
+        c = canonical_code_for_db(r.get("コード"))
+        if not c:
+            continue
+        p = _live_num(_live_get(r, "現在値_raw", "現在値"))
+        vals.append((str(c), None if p is None else format(float(p), ".17g")))
+    vals.sort()
+    return hashlib.sha256(json.dumps(vals, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+def _stage2_fallback_history_fingerprint(conn: sqlite3.Connection, codes, cutoff_date: str) -> str:
+    logical = sorted({str(canonical_code_for_db(c) or "") for c in (codes or []) if canonical_code_for_db(c)})
+    if not logical:
+        return "EMPTY"
+    try:
+        variants = expand_code_query_variants(logical)
+        if not variants:
+            return "EMPTY"
+        h = hashlib.sha256()
+        for i in range(0, len(variants), 250):
+            part = variants[i:i + 250]
+            qm = ','.join('?' for _ in part)
+            rows0 = conn.execute(
+                f"SELECT rowid,コード,日付,始値,高値,安値,終値,出来高 FROM price_history "
+                f"WHERE CAST(コード AS TEXT) IN ({qm}) AND date(日付)<=date(?) ORDER BY rowid",
+                [*part, str(cutoff_date)],
+            ).fetchall()
+            for rr in rows0:
+                h.update((json.dumps(list(rr), ensure_ascii=False, separators=(",", ":"), default=str) + "\n").encode("utf-8"))
+        return h.hexdigest()
+    except Exception as e:
+        print(f"[stage2-cache][WARN] fallback history fingerprint failed: {e}", flush=True)
+        return ""
+
+def _stage2_ai_model_fingerprint() -> str:
+    model_p = Path(MODEL_PATH)
+    meta_p = model_p.with_suffix(".metadata.json")
+    return hashlib.sha256((_stage2_file_sha256(model_p) + "|" + _stage2_file_sha256(meta_p)).encode("utf-8")).hexdigest()
+
+def _stage2_ai_apply_cached_outputs(rows, outputs: dict) -> None:
+    fields = ("AIスコア", "AI判定", "AI目標値", "AI目標値_raw")
+    for r in rows or []:
+        c = canonical_code_for_db(r.get("コード"))
+        v = (outputs or {}).get(str(c)) if c else None
+        if not isinstance(v, dict):
+            continue
+        for f in fields:
+            if f in v:
+                r[f] = v[f]
+
+# === /PERF-OPT-V20-STAGE2 helpers ===
+
+def _ai_load_target_history_v13(
+    conn: sqlite3.Connection,
+    target_codes: list[str],
+    cutoff_date: str,
+    history_rows: int = 120,
+    min_feature_obs: int = 75,
+) -> tuple[pd.DataFrame, dict]:
+    """PERF-OPT-V13: AI対象履歴をrun-cache優先で構成し、短い系列だけexact fallbackする。
+
+    latest-rowの最大rolling窓は75観測。cache内で有効OHLCVが75観測以上あるlogical codeは
+    旧latest120 SQLと最終特徴量が同値。75未満だけ全履歴fallbackし、IPO/休止/alias系列の意味を維持する。
+    """
+    _cols = ["_rowid", "コード", "日付", "始値", "高値", "安値", "終値", "出来高"]
+    if not target_codes:
+        return pd.DataFrame(columns=_cols), {"mode": "empty", "fallback_codes": 0}
+
+    _t0 = time.perf_counter()
+    _cut = pd.Timestamp(cutoff_date).normalize()
+    _start = (_cut - pd.Timedelta(days=240)).strftime("%Y-%m-%d")
+    # V23: AIはV21 canonical cacheと完全に同じOHLCV品質/dedupe意味論を使うため、
+    # 既にcanonical化済みなら再度全行をcanonicalize/sort/dedupeしない。
+    _v23_ai_canon = bool(_v21_fast_enabled())
+    if _v23_ai_canon:
+        _raw = _perf_price_history_canonical_range(
+            conn, _start, cutoff_date, tag="ai_history_v23", prime_calendar_days=240
+        )
+    else:
+        _raw = _perf_price_history_raw_range(conn, _start, cutoff_date, tag="ai_history")
+    _target_set = set(str(c) for c in target_codes if c)
+    _v60_ai_tail_used = False
+
+    def _logical_tail(df0: pd.DataFrame) -> pd.DataFrame:
+        if df0 is None or df0.empty:
+            return pd.DataFrame(columns=_cols)
+        d = _dedupe_price_history_df(df0[_cols].copy())
+        if d.empty:
+            return d
+        d = d[d["コード"].isin(_target_set)].copy()
+        if d.empty:
+            return d
+        return (
+            d.sort_values(["コード", "日付", "_rowid"], kind="stable")
+             .groupby("コード", sort=False, group_keys=False)
+             .tail(int(history_rows))
+             .reset_index(drop=True)
+        )
+
+    if _v23_ai_canon:
+        _v60_tail_all = _v60_midday_tail_frame(conn, cutoff_date, int(history_rows)) if V60_AI_TAIL_FAST else None
+        if isinstance(_v60_tail_all, pd.DataFrame):
+            _tail = _v60_tail_all[_v60_tail_all["コード"].isin(_target_set)].copy() if not _v60_tail_all.empty else pd.DataFrame(columns=_cols)
+            _v60_ai_tail_used = True
+        else:
+            # canonical cacheは既にholiday filter + logical code/date dedupe + numeric normalize済み。
+            _tail = _raw[_raw["コード"].isin(_target_set)].copy() if not _raw.empty else pd.DataFrame(columns=_cols)
+            if not _tail.empty:
+                _tail = (
+                    _tail.sort_values(["コード", "日付", "_rowid"], kind="stable")
+                         .groupby("コード", sort=False, group_keys=False)
+                         .tail(int(history_rows))
+                         .reset_index(drop=True)
+                )
+    else:
+        _tail = _logical_tail(_raw)
+
+    # latest featureに必要なOHLCV有効観測が75未満のcodeだけ旧DBへfallback。
+    _valid_counts = {}
+    if not _tail.empty:
+        _tmp = _tail.copy()
+        for _c in ("始値", "高値", "安値", "終値", "出来高"):
+            _tmp[_c] = pd.to_numeric(_tmp[_c], errors="coerce")
+        _ok = (
+            _tmp["日付"].notna()
+            & _tmp["始値"].gt(0) & _tmp["高値"].gt(0) & _tmp["安値"].gt(0)
+            & _tmp["終値"].gt(0) & _tmp["出来高"].ge(0)
+        )
+        _valid_counts = _tmp.loc[_ok].groupby("コード", sort=False).size().to_dict()
+
+    _fallback_codes = [c for c in target_codes if int(_valid_counts.get(c, 0)) < int(min_feature_obs)]
+    _fallback_parts = []
+    if _fallback_codes:
+        for _i in range(0, len(_fallback_codes), 250):
+            _logical_part = _fallback_codes[_i:_i + 250]
+            _qvars = expand_code_query_variants(_logical_part)
+            if not _qvars:
+                continue
+            _qmarks = ",".join("?" * len(_qvars))
+            _part = pd.read_sql_query(
+                f"SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高 "
+                f"FROM price_history WHERE CAST(コード AS TEXT) IN ({_qmarks}) "
+                f"AND date(日付)<=date(?) ORDER BY 日付, rowid",
+                conn,
+                params=[*_qvars, cutoff_date],
+            )
+            if not _part.empty:
+                _fallback_parts.append(_part)
+
+    if _fallback_parts:
+        if V62_AI_FB_REPLACE and _v60_ai_tail_used:
+            # V62: exact fallbackが必要なのは通常ごく少数。
+            # 旧経路はfallback 10銘柄のためにtarget全35百銘柄(約42万行)を再dedupe/sortしていた。
+            # 不足codeだけexact tailを作り、そのcodeだけcached tailから置換する。
+            _fb_raw = pd.concat(_fallback_parts, ignore_index=True, sort=False)
+            _fb_tail = _logical_tail(_fb_raw)
+            _fb_set = set(str(c) for c in _fallback_codes if c)
+            _base_tail = _tail.loc[~_tail["コード"].astype(str).isin(_fb_set)].copy()
+            # 小さいfallback集合について旧「cached不足tail + exact raw -> dedupe/tail」と同値か監査。
+            try:
+                _legacy_fb_src = pd.concat([
+                    _tail.loc[_tail["コード"].astype(str).isin(_fb_set)].copy(),
+                    _fb_raw,
+                ], ignore_index=True, sort=False)
+                _legacy_fb_tail = _logical_tail(_legacy_fb_src)
+                _cmp_cols = [c for c in _cols if c in _legacy_fb_tail.columns and c in _fb_tail.columns]
+                _a = _legacy_fb_tail[_cmp_cols].copy().sort_values(["コード","日付","_rowid"], kind="stable").reset_index(drop=True)
+                _b = _fb_tail[_cmp_cols].copy().sort_values(["コード","日付","_rowid"], kind="stable").reset_index(drop=True)
+                _audit_ok = bool(_a.equals(_b))
+                print(f"[V62-AI-FB] {'AUDIT-PASS' if _audit_ok else 'AUDIT-FAIL'} codes={len(_fb_set)} exact_rows={len(_fb_tail)}", flush=True)
+                if not _audit_ok:
+                    raise RuntimeError("V62 AI fallback subset audit mismatch")
+            except Exception as _v62_fb_e:
+                print(f"[V62-AI-FB][WARN] audit failed -> legacy fallback path: {_v62_fb_e}", flush=True)
+                _combined = pd.concat([_tail, *_fallback_parts], ignore_index=True, sort=False)
+                _tail = _logical_tail(_combined)
+                _mode = "v60_tail+exact_fallback"
+            else:
+                _tail = pd.concat([_base_tail, _fb_tail], ignore_index=True, sort=False)
+                _mode = "v62_tail_replace_exact"
+        else:
+            _combined_source = _tail if _v60_ai_tail_used else _raw
+            _combined = pd.concat([_combined_source, *_fallback_parts], ignore_index=True, sort=False)
+            # exact fallbackにはraw履歴が混ざるため、ここだけ従来dedupeを必ず通す。
+            _tail = _logical_tail(_combined)
+            _mode = ("v60_tail+exact_fallback" if _v60_ai_tail_used else ("canonical_run_cache+exact_fallback" if _v23_ai_canon else "run_cache+exact_fallback"))
+    else:
+        _mode = "v60_tail" if _v60_ai_tail_used else ("canonical_run_cache" if _v23_ai_canon else "run_cache")
+
+    _dt = time.perf_counter() - _t0
+    print(
+        f"[AI-V13] history mode={_mode} rows={len(_tail)} "
+        f"targets={len(target_codes)} fallback_codes={len(_fallback_codes)} dt={_dt:.2f}s",
+        flush=True,
+    )
+    _perf_record_phase("export-detail:ai_target_history_load", _dt, "OK")
+    return _tail, {
+        "mode": _mode,
+        "fallback_codes": len(_fallback_codes),
+        "fallback_code_list": list(_fallback_codes),
+        "rows": len(_tail),
+        "seconds": _dt,
+    }
+
+def _v21_legacy_add_ai_analysis(conn, rows):
     """
     CatBoost 19特徴量・学習/推論完全一致版。
 
@@ -6207,46 +13790,66 @@ def add_ai_analysis(conn, rows):
             f"min_price={min_price:.0f}"
         )
 
+        # V20-STAGE2: PREOPENでは確定日足・model・metadata・対象価格が同一なら、
+        # 前回の同じV20計算結果4列をそのまま再利用する。fingerprint不一致/障害時は必ず従来計算へfallback。
+        _stage2_ai_cache_ctx = None
+        _stage2_ai_mode = str(_auto_run_mode() or "").upper()
+        if _stage2_ai_mode == "PREOPEN":
+            _stage2_ai_cache_t0 = time.perf_counter()
+            _stage2_ai_cutoff0 = _expected_snapshot_date_for_run(_stage2_ai_mode).isoformat()
+            _stage2_hist_fp = _stage2_price_history_fingerprint(conn, _stage2_ai_cutoff0, 240)
+            _stage2_model_fp = _stage2_ai_model_fingerprint()
+            _stage2_rows_fp = _stage2_ai_rows_hash(rows)
+            _stage2_cache = _stage2_json_read(_STAGE2_AI_CACHE_PATH)
+            _v67_ai_logic_ok, _v67_ai_needs_migration = _v67_cache_logic_compatible(
+                _stage2_cache, _V67_AI_CACHE_LOGIC_TOKEN
+            )
+            _stage2_base_ok = bool(
+                _stage2_hist_fp and _stage2_model_fp and _stage2_rows_fp
+                and isinstance(_stage2_cache, dict)
+                and int(_stage2_cache.get("schema", 0) or 0) == _STAGE2_CACHE_SCHEMA
+                and _v67_ai_logic_ok
+                and str(_stage2_cache.get("cutoff") or "") == _stage2_ai_cutoff0
+                and str(_stage2_cache.get("history_fp") or "") == _stage2_hist_fp
+                and str(_stage2_cache.get("model_fp") or "") == _stage2_model_fp
+                and str(_stage2_cache.get("rows_fp") or "") == _stage2_rows_fp
+            )
+            if _stage2_base_ok:
+                _stage2_fb_codes = _stage2_cache.get("fallback_codes") or []
+                _stage2_fb_fp = _stage2_fallback_history_fingerprint(conn, _stage2_fb_codes, _stage2_ai_cutoff0)
+                if _stage2_fb_fp and str(_stage2_cache.get("fallback_fp") or "") == _stage2_fb_fp:
+                    _stage2_outputs = _stage2_cache.get("outputs") or {}
+                    if isinstance(_stage2_outputs, dict) and len(_stage2_outputs) >= max(1, len(rows) - 5):
+                        _stage2_ai_apply_cached_outputs(rows, _stage2_outputs)
+                        if _v67_ai_needs_migration:
+                            _v67_migrate_cache_token(
+                                _STAGE2_AI_CACHE_PATH, _stage2_cache, _V67_AI_CACHE_LOGIC_TOKEN, "AI-PREOPEN"
+                            )
+                        _stage2_dt = time.perf_counter() - _stage2_ai_cache_t0
+                        _perf_record_phase("export-detail:ai_preopen_persistent_cache", _stage2_dt, "HIT")
+                        print(f"[AI-V20-CACHE] HIT cutoff={_stage2_ai_cutoff0} outputs={len(_stage2_outputs)} dt={_stage2_dt:.2f}s", flush=True)
+                        return rows
+            _stage2_ai_cache_ctx = {
+                "cutoff": _stage2_ai_cutoff0,
+                "history_fp": _stage2_hist_fp,
+                "model_fp": _stage2_model_fp,
+                "rows_fp": _stage2_rows_fp,
+            }
+            print(f"[AI-V20-CACHE] MISS cutoff={_stage2_ai_cutoff0} dt={time.perf_counter()-_stage2_ai_cache_t0:.2f}s", flush=True)
+
         # 1. 対象銘柄の価格履歴
         # P1-580: PREOPEN AIも当日legacy足を先読みせず、前営業日の確定snapshotだけを使う。
         _ai_cutoff = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
-        # P2-91: 最新AI推論の最大窓はMA75（他は20日以下）。旧実装はほぼ全銘柄を
-        # CAST INで指定しながら全期間履歴をPythonへ転送し、毎run同じ過去特徴量まで再計算した。
-        # raw codeごとの最新120観測だけをDB側で取り、alias統合後もlogical codeごとに
-        # 最新120観測へ再限定する。75日特徴量の結果は全期間版と同一で、転送/計算量だけ減らす。
         _ai_history_rows = 120
-        hist_q = """
-            WITH ranked AS (
-                SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY コード
-                           ORDER BY date(日付) DESC, rowid DESC
-                       ) AS _rn
-                FROM price_history
-                WHERE date(日付)<=date(?)
-            )
-            SELECT _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
-            FROM ranked
-            WHERE _rn<=?
-            ORDER BY 日付, _rowid
-        """
-        # P1-416: legacy future/weekend行をAI最新観測/市場特徴量の基準日にしない。
-        df = pd.read_sql_query(hist_q, conn, params=[_ai_cutoff, _ai_history_rows])
-        # P1-282: canonical検索だけでlegacy-only履歴を落とさず、split系列も1本へ結合。
-        df = _dedupe_price_history_df(df)
-        _ai_target_set = set(target_codes)
-        if not df.empty:
-            df = df[df["コード"].isin(_ai_target_set)].copy()
-            df = (
-                df.sort_values(["コード", "日付", "_rowid"], kind="stable")
-                  .groupby("コード", sort=False, group_keys=False)
-                  .tail(_ai_history_rows)
-                  .reset_index(drop=True)
-            )
+        # PERF-OPT-V13: 同一runのall-market raw cacheを共有。75観測未満だけexact fallback。
+        df, _ai_hist_meta = _ai_load_target_history_v13(
+            conn, target_codes, _ai_cutoff, history_rows=_ai_history_rows, min_feature_obs=75
+        )
         if df.empty:
             print("[AI][WARN] 対象銘柄の price_history がありません")
             return rows
 
+        _ai_feature_t0 = time.perf_counter()
         df = df.rename(
             columns={
                 "始値": "open",
@@ -6408,12 +14011,20 @@ def add_ai_analysis(conn, rows):
                 f"[AI] 特徴量不足/学習価格帯外のため {excluded_count}銘柄を判定対象外"
             )
 
+        _ai_feature_dt = time.perf_counter() - _ai_feature_t0
+        _perf_record_phase("export-detail:ai_feature_compute", _ai_feature_dt, "OK")
+        print(f"[AI-V13] feature_compute={_ai_feature_dt:.2f}s valid={len(df_valid)} excluded={excluded_count}", flush=True)
+
         scores = {}
+        _ai_predict_t0 = time.perf_counter()
         if not df_valid.empty:
             X = df_valid[features].copy()
             X["liquidity_class"] = X["liquidity_class"].astype(int)
             probs = model.predict_proba(X)[:, 1]
             scores = dict(zip(df_valid.index.astype(str), probs))
+        _ai_predict_dt = time.perf_counter() - _ai_predict_t0
+        _perf_record_phase("export-detail:ai_model_predict", _ai_predict_dt, "OK")
+        print(f"[AI-V13] model_predict={_ai_predict_dt:.2f}s", flush=True)
 
         # 5. 結果反映
         for r in rows:
@@ -6454,10 +14065,216 @@ def add_ai_analysis(conn, rows):
             # ダッシュボードのソート値はAI到達確率（AIスコア）に変更する。
             r["AI目標値_raw"] = score_val
 
+        if _stage2_ai_cache_ctx is not None:
+            _stage2_fb_codes = list((_ai_hist_meta or {}).get("fallback_code_list") or [])
+            _stage2_fb_fp = _stage2_fallback_history_fingerprint(conn, _stage2_fb_codes, _stage2_ai_cache_ctx.get("cutoff"))
+            _stage2_outputs = {}
+            for _r0 in rows or []:
+                _c0 = canonical_code_for_db(_r0.get("コード"))
+                if not _c0:
+                    continue
+                _stage2_outputs[str(_c0)] = {
+                    "AIスコア": _r0.get("AIスコア"),
+                    "AI判定": _r0.get("AI判定"),
+                    "AI目標値": _r0.get("AI目標値"),
+                    "AI目標値_raw": _r0.get("AI目標値_raw"),
+                }
+            _stage2_obj = {
+                "schema": _STAGE2_CACHE_SCHEMA,
+                "logic_token": _V67_AI_CACHE_LOGIC_TOKEN,
+                "build_token": str(_daily_build_token()),
+                **_stage2_ai_cache_ctx,
+                "fallback_codes": _stage2_fb_codes,
+                "fallback_fp": _stage2_fb_fp,
+                "outputs": _stage2_outputs,
+                "saved_at": _now_jst().isoformat(timespec="seconds"),
+            }
+            if _stage2_fb_fp and _stage2_json_write(_STAGE2_AI_CACHE_PATH, _stage2_obj):
+                print(f"[AI-V20-CACHE] STORE outputs={len(_stage2_outputs)} fallback={len(_stage2_fb_codes)}", flush=True)
+
     except Exception:
         logging.error("[AI] 分析エラー", exc_info=True)
 
     return rows
+
+
+# === PERF-OPT-V21 AI latest-only fastpath ===
+def _v21_ai_market_latest(conn: sqlite3.Connection, latest_date: pd.Timestamp):
+    end=pd.Timestamp(latest_date).normalize(); start=end-pd.Timedelta(days=45)
+    m=_perf_price_history_canonical_range(conn,start.strftime("%Y-%m-%d"),end.strftime("%Y-%m-%d"),tag="ai_market_latest")
+    if m.empty:return None,None
+    m=m[["コード","日付","終値","出来高"]].copy(); m=m[np.isfinite(m["終値"])&(m["終値"]>0)&np.isfinite(m["出来高"])&(m["出来高"]>=0)]
+    if m.empty:return None,None
+    dates=sorted(pd.Series(m["日付"].dropna().unique()).tolist())
+    if len(dates)<2:return None,None
+    last=pd.Timestamp(dates[-1]).normalize(); prev=pd.Timestamp(dates[-2]).normalize()
+    if last!=end:return None,None
+    a=m.loc[m["日付"].eq(prev),["コード","終値"]].rename(columns={"終値":"prev"}); b=m.loc[m["日付"].eq(last),["コード","終値"]].rename(columns={"終値":"cur"}); z=b.merge(a,on="コード",how="inner")
+    if z.empty:return None,None
+    r=z["cur"]/z["prev"]-1.0; r=r.replace([np.inf,-np.inf],np.nan).dropna()
+    if r.empty:return None,None
+    return float(r.mean()), float((r>0).mean())
+
+def _v21_ai_latest_features(df: pd.DataFrame, market_return, market_sentiment) -> pd.DataFrame:
+    rows=[]
+    if df is None or df.empty:return pd.DataFrame()
+    d=df.copy(); d=d.rename(columns={"始値":"open","高値":"high","安値":"low","終値":"close","出来高":"volume"}); d["date"]=pd.to_datetime(d["日付"],errors="coerce")
+    for c in ("open","high","low","close","volume"): d[c]=pd.to_numeric(d[c],errors="coerce")
+    d=d.dropna(subset=["コード","date","open","high","low","close","volume"]); d=d[(d["open"]>0)&(d["high"]>0)&(d["low"]>0)&(d["close"]>0)&(d["volume"]>=0)].copy()
+    if d.empty:return pd.DataFrame()
+    d=d.sort_values(["コード","date"],kind="stable")
+    for code,g in d.groupby("コード",sort=False):
+        c=g["close"].to_numpy(dtype=float); o=g["open"].to_numpy(dtype=float); h=g["high"].to_numpy(dtype=float); l=g["low"].to_numpy(dtype=float); v=g["volume"].to_numpy(dtype=float); n=len(g)
+        if n<2: continue
+        ma5=_v21_roll_mean_at(c,n-1,5,5); ma25=_v21_roll_mean_at(c,n-1,25,25); ma75=_v21_roll_mean_at(c,n-1,75,75)
+        ret=c[-1]/c[-2]-1.0; rng=(h[-1]-l[-1])/c[-1]; body=(c[-1]-o[-1])/o[-1]; upper=(h[-1]-max(c[-1],o[-1]))/c[-1]
+        k5=(c[-1]-ma5)/ma5 if np.isfinite(ma5) and ma5!=0 else np.nan; k25=(c[-1]-ma25)/ma25 if np.isfinite(ma25) and ma25!=0 else np.nan; k75=(c[-1]-ma75)/ma75 if np.isfinite(ma75) and ma75!=0 else np.nan
+        rsi=np.nan
+        if n>=15:
+            delta=np.diff(c[-15:]); gain=np.clip(delta,0,None); loss=-np.clip(delta,None,0); gm=float(np.mean(gain)); lm=float(np.mean(loss))
+            if lm==0 and gm>0:rsi=100.0
+            elif lm==0 and gm==0:rsi=50.0
+            else:rsi=100-(100/(1+gm/lm))
+        bb=np.nan
+        if n>=20:
+            w=c[-20:]; mean=float(np.mean(w)); std=float(np.std(w,ddof=1)); bb=(c[-1]-mean)/(2*std) if std!=0 else np.nan
+        vr=np.nan
+        if n>=5:
+            vm=float(np.mean(v[-5:])); vr=v[-1]/vm if vm!=0 else np.nan
+        perfect=int(np.isfinite(ma5) and np.isfinite(ma25) and np.isfinite(ma75) and ma5>ma25>ma75); trend=int(np.isfinite(ma5) and np.isfinite(ma25) and c[-1]>ma5 and c[-1]>ma25)
+        stop=0
+        if n>=6:
+            min5=float(np.min(l[-6:-1])); stop=int(l[-1]<min5 and c[-1]>o[-1] and (o[-1]-l[-1])>(c[-1]-o[-1]))
+        poc=np.nan
+        if n>=20:
+            j=int(np.argmax(v[-20:])); poc=float(c[-20:][j])
+        dist=(c[-1]-poc)/poc if np.isfinite(poc) and poc!=0 else np.nan
+        turn=c*v; tavg=float(np.mean(turn[-20:])) if n>=20 else np.nan; liq=0 if np.isfinite(tavg) and tavg<100_000_000 else (2 if np.isfinite(tavg) and tavg>=3_000_000_000 else 1)
+        rel=ret-market_return if market_return is not None and np.isfinite(market_return) else np.nan
+        rows.append({"コード":str(code),"date":pd.Timestamp(g["date"].iloc[-1]),"close":float(c[-1]),"return_1d":ret,"range":rng,"body":body,"upper_shadow":upper,"kairi_5":k5,"kairi_25":k25,"kairi_75":k75,"rsi_14":rsi,"bb_pos":bb,"vol_ratio":vr,"perfect_order":perfect,"trend_strong":trend,"market_return":market_return,"market_sentiment":market_sentiment,"relative_strength":rel,"stop_hunt_reversal":stop,"dist_from_poc":dist,"turnover_20d_avg":tavg,"liquidity_class":liq})
+    return pd.DataFrame(rows).set_index("コード") if rows else pd.DataFrame()
+
+def add_ai_analysis(conn, rows):
+    mode=str(_auto_run_mode() or "").upper()
+    if (not _v21_fast_enabled()) or mode=="PREOPEN":
+        return _v21_legacy_add_ai_analysis(conn,rows)
+    if rows is None:return rows
+    for r in rows:
+        r["AIスコア"]="-"; r["AI判定"]="-"; r["AI目標値"]="-"; r["AI目標値_raw"]=-999999
+    if not os.path.exists(MODEL_PATH): print(f"[AI] モデルファイルが見つかりません: {MODEL_PATH}"); return rows
+    t0=time.perf_counter()
+    try:
+        target=list(dict.fromkeys(canonical_code_for_db(r["コード"]) for r in rows if r.get("コード") is not None and r.get("現在値"))); target=[c for c in target if c]
+        if not target:return rows
+
+        # V23: EODは確定日足・model・現在値集合が同一ならAI表示4列を完全再利用。
+        # fingerprint不一致/破損/不足は必ずV21 latest-only通常計算へ進む。
+        _v23_eod_ctx = None
+        if mode == "EOD":
+            _v23_ct0 = time.perf_counter()
+            _v23_cutoff = _expected_snapshot_date_for_run(mode).isoformat()
+            _v23_hist_fp = _stage2_price_history_fingerprint(conn, _v23_cutoff, 240)
+            _v23_model_fp = _stage2_ai_model_fingerprint()
+            _v23_rows_fp = _stage2_ai_rows_hash(rows)
+            _v23_cache = _stage2_json_read(_V23_EOD_AI_CACHE_PATH)
+            _v67_eod_logic_ok, _v67_eod_needs_migration = _v67_cache_logic_compatible(
+                _v23_cache, _V67_AI_CACHE_LOGIC_TOKEN
+            )
+            _v23_base_ok = bool(
+                _v23_hist_fp and _v23_model_fp and _v23_rows_fp
+                and isinstance(_v23_cache, dict)
+                and int(_v23_cache.get("schema", 0) or 0) == _V23_EOD_AI_CACHE_SCHEMA
+                and _v67_eod_logic_ok
+                and str(_v23_cache.get("cutoff") or "") == _v23_cutoff
+                and str(_v23_cache.get("history_fp") or "") == _v23_hist_fp
+                and str(_v23_cache.get("model_fp") or "") == _v23_model_fp
+                and str(_v23_cache.get("rows_fp") or "") == _v23_rows_fp
+            )
+            if _v23_base_ok:
+                _v23_fb_codes = list(_v23_cache.get("fallback_codes") or [])
+                _v23_fb_fp = _stage2_fallback_history_fingerprint(conn, _v23_fb_codes, _v23_cutoff)
+                _v23_outputs = _v23_cache.get("outputs") or {}
+                if (
+                    _v23_fb_fp
+                    and str(_v23_cache.get("fallback_fp") or "") == _v23_fb_fp
+                    and isinstance(_v23_outputs, dict)
+                    and len(_v23_outputs) >= max(1, len(rows) - 5)
+                ):
+                    _stage2_ai_apply_cached_outputs(rows, _v23_outputs)
+                    if _v67_eod_needs_migration:
+                        _v67_migrate_cache_token(
+                            _V23_EOD_AI_CACHE_PATH, _v23_cache, _V67_AI_CACHE_LOGIC_TOKEN, "AI-EOD"
+                        )
+                    _v23_dt = time.perf_counter() - _v23_ct0
+                    _perf_record_phase("export-detail:ai_eod_persistent_cache", _v23_dt, "HIT")
+                    print(f"[AI-V23-EOD-CACHE] HIT cutoff={_v23_cutoff} outputs={len(_v23_outputs)} dt={_v23_dt:.2f}s", flush=True)
+                    return rows
+            _v23_eod_ctx = {
+                "cutoff": _v23_cutoff, "history_fp": _v23_hist_fp,
+                "model_fp": _v23_model_fp, "rows_fp": _v23_rows_fp,
+            }
+            _v23_dt = time.perf_counter() - _v23_ct0
+            _perf_record_phase("export-detail:ai_eod_persistent_cache", _v23_dt, "MISS")
+            print(f"[AI-V23-EOD-CACHE] MISS cutoff={_v23_cutoff} dt={_v23_dt:.2f}s", flush=True)
+
+        print(f"[AI] {len(target)}銘柄の分析を開始（CatBoost 19特徴量・学習定義一致版/V21 latest-only）...",flush=True)
+        mp=Path(MODEL_PATH); lock=mp.with_suffix(".publishing.lock")
+        if lock.exists(): print(f"[AI] モデルpublish中のため今回のAI推論を見送ります: {lock}"); return rows
+        model=joblib.load(MODEL_PATH); meta=_ai_load_model_metadata(); mg=str(getattr(model,"_kabu_generation_id","") or "").strip(); gg=str(meta.get("generation_id") or "").strip()
+        if (gg or mg) and (not gg or not mg or gg!=mg): raise RuntimeError(f"AI model generation mismatch: model={mg or 'missing'} meta={gg or 'missing'}")
+        th=float(meta["decision_threshold"]); target_pct=float(meta["target_pct"]); min_price=float(meta["min_price"]); print(f"[AI] decision_threshold={th:.3f} strong_threshold={(float(meta['strong_threshold'])) if meta.get('strong_threshold') is not None else 'metadataなし'} near_display_from={max(0.0,th-float(meta.get('attention_band',0.10))):.3f} target=+{(target_pct-1.0)*100:.1f}% min_price={min_price:.0f}")
+        cutoff=_expected_snapshot_date_for_run(mode).isoformat(); df,hmeta=_ai_load_target_history_v13(conn,target,cutoff,history_rows=120,min_feature_obs=75)
+        if df.empty:return rows
+        latest=pd.to_datetime(df["日付"],errors="coerce").max(); mr,ms=_v21_ai_market_latest(conn,latest); f0=time.perf_counter(); latestdf=_v21_ai_latest_features(df,mr,ms)
+        features=["return_1d","range","body","upper_shadow","kairi_5","kairi_25","kairi_75","rsi_14","bb_pos","vol_ratio","perfect_order","trend_strong","market_return","market_sentiment","relative_strength","stop_hunt_reversal","dist_from_poc","turnover_20d_avg","liquidity_class"]
+        if latestdf.empty:return rows
+        valid=(latestdf["close"]>=min_price)&latestdf["date"].dt.normalize().eq(pd.Timestamp(latest).normalize())&latestdf[features].notna().all(axis=1); vdf=latestdf.loc[valid].copy(); excluded=int((~valid).sum())
+        if excluded: print(f"[AI] 特徴量不足/学習価格帯外のため {excluded}銘柄を判定対象外")
+        fdt=time.perf_counter()-f0; _perf_record_phase("export-detail:ai_feature_compute",fdt,"OK"); print(f"[AI-V21] feature_compute={fdt:.2f}s valid={len(vdf)} excluded={excluded}",flush=True)
+        scores={}; p0=time.perf_counter()
+        if not vdf.empty:
+            X=vdf[features].copy(); X["liquidity_class"]=X["liquidity_class"].astype(int); probs=model.predict_proba(X)[:,1]; scores=dict(zip(vdf.index.astype(str),probs))
+        pdt=time.perf_counter()-p0; _perf_record_phase("export-detail:ai_model_predict",pdt,"OK"); print(f"[AI-V21] model_predict={pdt:.2f}s",flush=True)
+        for r in rows:
+            c=canonical_code_for_db(r.get("コード")); prob=scores.get(c)
+            if prob is None: continue
+            prob=float(prob); sv=round(prob*100,1); r["AIスコア"]=sv; r["AI判定"]=_ai_probability_label(prob,meta)
+            try: pv=float(str(r.get("現在値",0)).replace(",",""))
+            except Exception: pv=0.0
+            td,_=_ai_format_target_threshold(pv,target_pct); r["AI目標値"]=td; r["AI目標値_raw"]=sv if td!="-" else -999999
+
+        if _v23_eod_ctx is not None:
+            _v23_fb_codes = list((hmeta or {}).get("fallback_code_list") or [])
+            _v23_fb_fp = _stage2_fallback_history_fingerprint(conn, _v23_fb_codes, _v23_eod_ctx.get("cutoff"))
+            _v23_outputs = {}
+            for _r0 in rows or []:
+                _c0 = canonical_code_for_db(_r0.get("コード"))
+                if not _c0:
+                    continue
+                _v23_outputs[str(_c0)] = {
+                    "AIスコア": _r0.get("AIスコア"),
+                    "AI判定": _r0.get("AI判定"),
+                    "AI目標値": _r0.get("AI目標値"),
+                    "AI目標値_raw": _r0.get("AI目標値_raw"),
+                }
+            _v23_obj = {
+                "schema": _V23_EOD_AI_CACHE_SCHEMA,
+                "logic_token": _V67_AI_CACHE_LOGIC_TOKEN,
+                "build_token": str(_daily_build_token()),
+                **_v23_eod_ctx,
+                "fallback_codes": _v23_fb_codes,
+                "fallback_fp": _v23_fb_fp,
+                "outputs": _v23_outputs,
+                "saved_at": _now_jst().isoformat(timespec="seconds"),
+            }
+            if _v23_fb_fp and _stage2_json_write(_V23_EOD_AI_CACHE_PATH, _v23_obj):
+                print(f"[AI-V23-EOD-CACHE] STORE outputs={len(_v23_outputs)} fallback={len(_v23_fb_codes)}", flush=True)
+
+        print(f"[AI-V21] total={time.perf_counter()-t0:.2f}s",flush=True); return rows
+    except Exception as e:
+        print(f"[V21][AI][WARN] fastpath failed -> legacy fallback: {e}",flush=True)
+        return _v21_legacy_add_ai_analysis(conn,rows)
+# === /PERF-OPT-V21 AI latest-only fastpath ===
 
 # ==========================================
 # ★追加: DBからTOB情報を取得する関数
@@ -6937,14 +14754,25 @@ def _apply_shortterm_metrics(conn: sqlite3.Connection):
             ORDER BY コード, 日付, rowid
         """
         # P1-406: ATR/最高値もlegacy未来日を系列末尾にしない。
-        df_all = pd.read_sql_query(q_hist, conn, params=[_asof, _asof], parse_dates=["日付"])
+        # V29: PREOPEN前段で既に構築済みのcanonical daily cacheを再利用する。
+        # standalone呼出し等でcacheが無ければ従来SQL+dedupeへ戻す。
+        _v29_short_start = (date.fromisoformat(str(_asof)[:10]) - timedelta(days=120)).isoformat()
+        df_all = _v29_existing_canonical_range(
+            conn, _v29_short_start, _asof, tag="shortterm_enhancements"
+        )
+        _v29_short_cache = df_all is not None
+        if df_all is None:
+            df_all = pd.read_sql_query(q_hist, conn, params=[_asof, _asof], parse_dates=["日付"])
         if df_all.empty:
             return
             
         for c in ("高値", "安値", "終値"):
             df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
         # P1-280: aliasを分けたままATRを計算すると系列が途中で分断される。
-        df_all = _dedupe_price_history_df(df_all)
+        if not _v29_short_cache:
+            df_all = _dedupe_price_history_df(df_all)
+        else:
+            print(f"[V29][shortterm] history=shared-canon rows={len(df_all)}", flush=True)
         # P1-676: ATRも有効な正の終値を持つ観測行だけで計算する。
         # NULL/0/非有限終値のplaceholderがprev_close/TRや観測数を歪めないよう除外。
         df_all = df_all[
@@ -6966,7 +14794,11 @@ def _apply_shortterm_metrics(conn: sqlite3.Connection):
 
         updates = []
         # P1-258: latest_prices/historyのlegacy表記差を吸収してATR等を結合。
-        df_all["_code_key"] = df_all["コード"].map(canonical_code_for_db)
+        if _v29_short_cache:
+            # canonical cacheではコードは既にlogical key。30万回級の再canonicalizeを避ける。
+            df_all["_code_key"] = df_all["コード"].astype(str)
+        else:
+            df_all["_code_key"] = df_all["コード"].map(canonical_code_for_db)
         df_dict = {code: g for code, g in df_all.groupby("_code_key", sort=False) if code}
 
         for r in rows:
@@ -7169,22 +15001,65 @@ def phase_sync_latest_prices(conn: sqlite3.Connection):
         # 最新1論理足しか使わないのに全期間履歴をDataFrameへ読む旧処理を廃止。
         # raw aliasごとの直近8行だけSQL側で絞り、休日/alias重複は従来どおり
         # _dedupe_price_history_df() でlogical codeへ統合する。
-        _ph = pd.read_sql_query(
-            """
-            WITH ranked AS (
-                SELECT rowid AS _rowid, コード, 日付, 終値,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY CAST(コード AS TEXT)
-                           ORDER BY date(日付) DESC, rowid DESC
-                       ) AS _rn
-                FROM price_history
-                WHERE date(日付) <= date(?)
+        # V29: 旧ROW_NUMBERはprice_history全体(100万行級)をpartitionしてからfetchするため、
+        # 最新8行/ raw codeだけ欲しい処理に対して非常に重い。既存の
+        # idx_price_history_perf_code_text_date を使い、raw codeごとに最大8行をindex probeする。
+        # 取得候補集合は旧SQLと同じ「raw code別 date(日付) DESC,rowid DESC の上位8行」。
+        # index/SQLite障害時は旧ROW_NUMBER SQLへfallbackする。
+        _v29_sync_t0 = time.perf_counter()
+        _ph = None
+        if _v29_derivatives_fast_enabled():
+            try:
+                _raw_codes = [
+                    r[0] for r in cur.execute(
+                        "SELECT DISTINCT CAST(コード AS TEXT) "
+                        "FROM price_history INDEXED BY idx_price_history_perf_code_text_date "
+                        "WHERE コード IS NOT NULL"
+                    ).fetchall()
+                    if r[0] is not None and str(r[0]).strip() != ""
+                ]
+                _probe_sql = (
+                    "SELECT rowid AS _rowid, コード, 日付, 終値 "
+                    "FROM price_history INDEXED BY idx_price_history_perf_code_text_date "
+                    "WHERE CAST(コード AS TEXT)=? AND date(日付) <= date(?) "
+                    "ORDER BY date(日付) DESC, rowid DESC LIMIT 8"
+                )
+                _probe_rows = []
+                for _raw_code in _raw_codes:
+                    _probe_rows.extend(tuple(x) for x in cur.execute(_probe_sql, (_raw_code, _cutoff)).fetchall())
+                _ph = pd.DataFrame.from_records(
+                    _probe_rows, columns=["_rowid", "コード", "日付", "終値"]
+                )
+                print(
+                    f"[V29][sync-latest] route=index-probe raw_codes={len(_raw_codes)} "
+                    f"candidate_rows={len(_ph)} dt={time.perf_counter()-_v29_sync_t0:.2f}s",
+                    flush=True,
+                )
+            except Exception as _v29_e:
+                _ph = None
+                print(f"[V29][sync-latest][WARN] index-probe failed -> legacy window: {_v29_e}", flush=True)
+        if _ph is None:
+            _ph = pd.read_sql_query(
+                """
+                WITH ranked AS (
+                    SELECT rowid AS _rowid, コード, 日付, 終値,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY CAST(コード AS TEXT)
+                               ORDER BY date(日付) DESC, rowid DESC
+                           ) AS _rn
+                    FROM price_history
+                    WHERE date(日付) <= date(?)
+                )
+                SELECT _rowid, コード, 日付, 終値
+                FROM ranked
+                WHERE _rn <= 8
+                """,
+                conn, params=[_cutoff])
+            print(
+                f"[V29][sync-latest] route=legacy-window candidate_rows={len(_ph)} "
+                f"dt={time.perf_counter()-_v29_sync_t0:.2f}s",
+                flush=True,
             )
-            SELECT _rowid, コード, 日付, 終値
-            FROM ranked
-            WHERE _rn <= 8
-            """,
-            conn, params=[_cutoff])
         if _ph.empty:
             # P1-497: screenerがあるのに有効価格履歴0件でreturnすると、旧latest_pricesを
             # そのまま今回snapshotとして公開し得る。空ユニバース時だけ正常skip。
@@ -7247,10 +15122,19 @@ def phase_sync_latest_prices(conn: sqlite3.Connection):
 
 def phase_shortterm_enhancements(conn: sqlite3.Connection):
     """
-    既存フローの任意の場所（派生値更新の直後など）で呼び出してください。
-    - ATR(14) と since-signal を計算して latest_prices に反映（スキーマは既に整備済み前提）
+    V66: legacy shortterm writer is intentionally disabled.
+
+    Evidence from the production DB showed ``SELECT rowid`` on ``latest_prices``
+    returns NULL for every logical row, so both the legacy and V65 writers using
+    ``WHERE rowid=?`` were non-addressable/no-op.  The two since-signal columns
+    have no read-side consumer in the production Python/template, while ATR_14 is
+    recalculated and written by the immediately-following resistance phase.
+
+    Keep the phase/timer contract in place, but avoid the wasted history load and
+    calculations.
     """
-    _apply_shortterm_metrics(conn)
+    print("[V66-SHORT] skipped dead rowid writer; ATR_14 owned by resistance_update", flush=True)
+    return None
 # ==== Resistance lines (水平/斜め) : price_history → latest_prices ====
 
 
@@ -7440,6 +15324,215 @@ def _ensure_resistance_columns(conn):
     finally:
         cur.close()
 
+
+# === PERF-OPT-V30 resistance NumPy fastpath ===
+def _v30_resistance_fast_enabled() -> bool:
+    return str(os.getenv("KABU_SCREEN_V30_FAST", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _v30_hist_zone_np(values, band_ratio, touch_min, ref_price=None):
+    """_v5_hist_zone と同じ探索意味論を NumPy + searchsorted/prefix sum で計算。"""
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return None
+    arr = arr[~np.isnan(arr)]
+    if arr.size == 0:
+        return None
+    # legacy _v5_num は inf を通す。非有限値が混じる稀な破損データは旧実装へ戻す。
+    if not np.isfinite(arr).all():
+        return _v5_hist_zone(values, band_ratio, touch_min, ref_price)
+    arr.sort()
+    prefix = np.empty(arr.size + 1, dtype=float)
+    prefix[0] = 0.0
+    np.cumsum(arr, out=prefix[1:])
+    best_center = None
+    best_cnt = 0
+    best_score = -1.0
+    for i in range(arr.size):
+        v = float(arr[i])
+        hi = v + abs(v) * band_ratio
+        j = int(np.searchsorted(arr, hi, side="right") - 1)
+        if j < i:
+            j = i
+        cnt = j - i + 1
+        if cnt < touch_min:
+            continue
+        center = float((prefix[j + 1] - prefix[i]) / cnt)
+        if ref_price is not None:
+            distance = abs(center - ref_price) / ref_price
+            score = cnt / (1 + distance * 20)
+        else:
+            score = cnt
+        # 旧実装と同じく同点では先に見つかった帯を維持。
+        if score > best_score:
+            best_score = score
+            best_cnt = cnt
+            best_center = center
+    if best_center is None:
+        return None
+    return (best_center, best_cnt)
+
+
+def _v30_linreg_today_np(ys):
+    """_v5_linreg_today(range(n), ys) と同値の単回帰。"""
+    y = np.asarray(ys, dtype=float)
+    if y.size == 0:
+        return (None, None)
+    x = np.arange(y.size, dtype=float)
+    mask = ~np.isnan(y)
+    if int(mask.sum()) < 5:
+        return (None, None)
+    if not np.isfinite(y[mask]).all():
+        return _v5_linreg_today(list(range(len(y))), y.tolist())
+    xv = x[mask]
+    yv = y[mask]
+    n = float(yv.size)
+    mx = float(xv.mean())
+    my = float(yv.mean())
+    dx = xv - mx
+    dy = yv - my
+    sxx = float(np.dot(dx, dx))
+    if sxx == 0.0:
+        return (None, None)
+    sxy = float(np.dot(dx, dy))
+    a = sxy / sxx
+    b = my - a * mx
+    yhat = a * xv + b
+    sst = float(np.dot(dy, dy))
+    ssr = float(np.dot(yhat - my, yhat - my))
+    r2 = (ssr / sst) if sst else None
+    y_today = a * (float(xv[-1]) + 1.0) + b
+    return (float(y_today), (float(r2) if r2 is not None else None))
+
+
+def _v30_v5_calc_df(df: pd.DataFrame, code=None):
+    """phase_resistance_update 用。V5の判定式/候補/閾値は変えずDataFrame→list往復を省略。"""
+    keys = list(_V5_COLS.keys())
+    if df is None or df.empty:
+        return {k: None for k in keys}
+    d = df.tail(_V5_N_DAYS)
+    if d.empty:
+        return {k: None for k in keys}
+
+    dates = d["日付"].to_numpy(copy=False)
+    highs = d["高値"].to_numpy(dtype=float, copy=False)
+    lows = d["安値"].to_numpy(dtype=float, copy=False)
+    closes = d["終値"].to_numpy(dtype=float, copy=False)
+    # phase側でdropna済みだが、破損inf等は旧計算へ安全fallback。
+    if not (np.isfinite(highs).all() and np.isfinite(lows).all() and np.isfinite(closes).all()):
+        rows = list(d[["日付", "始値", "高値", "安値", "終値"]].itertuples(index=False, name=None))
+        return _v5_calc(rows, code)
+
+    close_today = float(closes[-1])
+    res_hh = float(np.max(highs))
+    sup_ll = float(np.min(lows))
+
+    highs_above = highs[highs > close_today]
+    lows_below = lows[lows < close_today]
+    zr = _v30_hist_zone_np(highs_above, _V5_TOUCH_PCT, _V5_TOUCH_MIN, close_today)
+    zs = _v30_hist_zone_np(lows_below, _V5_TOUCH_PCT, _V5_TOUCH_MIN, close_today)
+    res_zone, res_touch = ((zr[0], zr[1]) if zr else (None, None))
+    sup_zone, sup_touch = ((zs[0], zs[1]) if zs else (None, None))
+
+    res_last = None
+    if res_zone is not None:
+        idx = np.flatnonzero(np.abs(highs - res_zone) <= res_zone * _V5_TOUCH_PCT)
+        if idx.size:
+            res_last = pd.Timestamp(dates[int(idx[-1])])
+    sup_last = None
+    if sup_zone is not None:
+        idx = np.flatnonzero(np.abs(lows - sup_zone) <= sup_zone * _V5_TOUCH_PCT)
+        if idx.size:
+            sup_last = pd.Timestamp(dates[int(idx[-1])])
+
+    rl = _v5_round_levels(close_today)
+    step, nearest, _ = rl[0] if rl and rl[0][1] is not None else (None, None, None)
+    res_round_step = step
+    sup_round_step = step
+    res_round = nearest
+    sup_round = nearest
+    near_flag = None if nearest is None else (1 if abs(close_today - nearest) <= close_today * _V5_TOUCH_PCT else 0)
+
+    sw_h = highs[-_V5_SWING_LOOKBACK:]
+    sw_l = lows[-_V5_SWING_LOOKBACK:]
+    res_line_today, res_r2 = _v30_linreg_today_np(sw_h)
+    sup_line_today, sup_r2 = _v30_linreg_today_np(sw_l)
+
+    high20 = float(np.max(highs[-20:]))
+    high60 = float(np.max(highs[-60:]))
+    low20 = float(np.min(lows[-20:]))
+    low60 = float(np.min(lows[-60:]))
+
+    trusted_res_line = res_line_today if (res_line_today is not None and res_r2 is not None and res_r2 >= _V5_LINE_MIN_R2) else None
+    trusted_sup_line = sup_line_today if (sup_line_today is not None and sup_r2 is not None and sup_r2 >= _V5_LINE_MIN_R2) else None
+    up_candidates = [v for v in (res_zone, res_hh, high20, high60, trusted_res_line) if v is not None and v > close_today]
+    dn_candidates = [v for v in (sup_zone, sup_ll, low20, low60, trusted_sup_line) if v is not None and v < close_today]
+    res_near = min(up_candidates, key=lambda x: abs(x - close_today)) if up_candidates else None
+    sup_near = min(dn_candidates, key=lambda x: abs(x - close_today)) if dn_candidates else None
+
+    if str(code) == "5074":
+        print("=" * 80)
+        print("DEBUG 5074")
+        print("close_today =", close_today)
+        print("highs_above =", highs_above[-20:].tolist())
+        print("lows_below  =", lows_below[-20:].tolist())
+        print("zr =", zr)
+        print("zs =", zs)
+        print("up_candidates =", up_candidates)
+        print("dn_candidates =", dn_candidates)
+        print("res_zone =", res_zone)
+        print("sup_zone =", sup_zone)
+        print("res_near =", res_near)
+        print("sup_near =", sup_near)
+        print("=" * 80)
+
+    return {
+        "Res_HH": res_hh,
+        "Res_Zone": res_zone,
+        "Res_Zone_Touches": res_touch,
+        "Res_Zone_Last": res_last,
+        "Res_Round": res_round,
+        "Res_Round_Step": res_round_step,
+        "Res_Round_Near": near_flag,
+        "Res_Line_Today": res_line_today,
+        "Res_Line_R2": res_r2,
+        "Res_Nearest": res_near,
+        "Sup_LL": sup_ll,
+        "Sup_Zone": sup_zone,
+        "Sup_Zone_Touches": sup_touch,
+        "Sup_Zone_Last": sup_last,
+        "Sup_Round": sup_round,
+        "Sup_Round_Step": sup_round_step,
+        "Sup_Round_Near": near_flag,
+        "Sup_Line_Today": sup_line_today,
+        "Sup_Line_R2": sup_r2,
+        "Sup_Nearest": sup_near,
+    }
+
+
+def _v30_atr14_last_np(df: pd.DataFrame):
+    """pandas ewm(span=14, adjust=False, min_periods=1) の最終値だけを再現。"""
+    if df is None or df.empty:
+        return None
+    h = df["高値"].to_numpy(dtype=float, copy=False)
+    l = df["安値"].to_numpy(dtype=float, copy=False)
+    c = df["終値"].to_numpy(dtype=float, copy=False)
+    if h.size == 0 or not (np.isfinite(h).all() and np.isfinite(l).all() and np.isfinite(c).all()):
+        return None
+    prev = np.empty_like(c)
+    prev[0] = np.nan
+    if c.size > 1:
+        prev[1:] = c[:-1]
+    tr1 = np.abs(h - l)
+    tr2 = np.abs(h - prev)
+    tr3 = np.abs(l - prev)
+    tr = np.fmax(tr1, np.fmax(tr2, tr3))
+    alpha = 2.0 / 15.0
+    acc = float(tr[0])
+    for v in tr[1:]:
+        acc = (1.0 - alpha) * acc + alpha * float(v)
+    return float(acc)
+
 def phase_resistance_update(conn):
     _ensure_resistance_columns(conn)
     _ensure_latest_prices_code_col(conn)
@@ -7472,17 +15565,27 @@ def phase_resistance_update(conn):
 
         # P1-421: DBを書き換える前に今回値をすべてメモリ上で完成させる。
         # 計算途中の例外/returnで前回値を全NULL化しない。
-        df_all = pd.read_sql_query("""
-            SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値
-            FROM price_history
-            WHERE date(日付) >= date(?) AND date(日付) <= date(?)
-            ORDER BY 日付, rowid ASC
-        """, conn, params=[start_date, market_asof], parse_dates=["日付"])
+        # V29: preopen_price_rebuildで構築済みcanonical daily cacheが範囲を覆う時は
+        # SQLite再読込+holiday/alias dedupeを省略。cache未準備なら従来SQLへfallback。
+        df_all = _v29_existing_canonical_range(
+            conn, start_date, market_asof, tag="resistance_update"
+        )
+        _v29_res_cache = df_all is not None
+        if df_all is None:
+            df_all = pd.read_sql_query("""
+                SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値
+                FROM price_history
+                WHERE date(日付) >= date(?) AND date(日付) <= date(?)
+                ORDER BY 日付, rowid ASC
+            """, conn, params=[start_date, market_asof], parse_dates=["日付"])
 
         if not df_all.empty:
             for c in ("始値", "高値", "安値", "終値"):
                 df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
-            df_all = _dedupe_price_history_df(df_all)
+            if not _v29_res_cache:
+                df_all = _dedupe_price_history_df(df_all)
+            else:
+                print(f"[V29][resistance] history=shared-canon rows={len(df_all)}", flush=True)
             df_all = df_all.dropna(subset=["高値", "安値", "終値"])
             # P1-676: 支持抵抗も破損した0/非有限終値をcurrent観測日にしない。
             df_all = df_all[np.isfinite(df_all["終値"]) & (df_all["終値"] > 0)].copy()
@@ -7520,34 +15623,57 @@ def phase_resistance_update(conn):
                     pass
                 # HTML exportで同じ銘柄を個別SQL付きで再計算しない。
                 # ここで一括取得済みdfから、最終表示と同じV5計算を完成させる。
-                _v5_rows = list(
-                    df[["日付", "始値", "高値", "安値", "終値"]]
-                    .itertuples(index=False, name=None)
-                )
-                res_data = _v5_calc(_v5_rows, code)
+                # V30: V5支持抵抗とATR14のper-code DataFrame/list往復をNumPy化。
+                # 判定式・候補・閾値は従来と同じ。異常値/例外時は従来pandas計算へfallback。
+                if _v30_resistance_fast_enabled():
+                    try:
+                        res_data = _v30_v5_calc_df(df, code)
+                        _atr14 = _v30_atr14_last_np(df)
+                        if _atr14 is None:
+                            raise ValueError("V30 ATR non-finite")
+                    except Exception as _v30_e:
+                        print(f"[V30][resistance][WARN] code={code} numpy fallback: {_v30_e}", flush=True)
+                        _v5_rows = list(
+                            df[["日付", "始値", "高値", "安値", "終値"]]
+                            .itertuples(index=False, name=None)
+                        )
+                        res_data = _v5_calc(_v5_rows, code)
+                        _atr_high = pd.to_numeric(df["高値"], errors="coerce")
+                        _atr_low = pd.to_numeric(df["安値"], errors="coerce")
+                        _atr_close = pd.to_numeric(df["終値"], errors="coerce")
+                        _atr_prev = _atr_close.shift(1)
+                        _atr_tr = pd.concat(
+                            [
+                                (_atr_high - _atr_low).abs(),
+                                (_atr_high - _atr_prev).abs(),
+                                (_atr_low - _atr_prev).abs(),
+                            ],
+                            axis=1,
+                        ).max(axis=1)
+                        _atr_series = _atr_tr.ewm(span=14, adjust=False, min_periods=1).mean()
+                        _atr14 = float(_atr_series.iloc[-1]) if len(_atr_series) and pd.notna(_atr_series.iloc[-1]) else None
+                else:
+                    _v5_rows = list(
+                        df[["日付", "始値", "高値", "安値", "終値"]]
+                        .itertuples(index=False, name=None)
+                    )
+                    res_data = _v5_calc(_v5_rows, code)
+                    _atr_high = pd.to_numeric(df["高値"], errors="coerce")
+                    _atr_low = pd.to_numeric(df["安値"], errors="coerce")
+                    _atr_close = pd.to_numeric(df["終値"], errors="coerce")
+                    _atr_prev = _atr_close.shift(1)
+                    _atr_tr = pd.concat(
+                        [
+                            (_atr_high - _atr_low).abs(),
+                            (_atr_high - _atr_prev).abs(),
+                            (_atr_low - _atr_prev).abs(),
+                        ],
+                        axis=1,
+                    ).max(axis=1)
+                    _atr_series = _atr_tr.ewm(span=14, adjust=False, min_periods=1).mean()
+                    _atr14 = float(_atr_series.iloc[-1]) if len(_atr_series) and pd.notna(_atr_series.iloc[-1]) else None
                 if not res_data:
                     continue
-                # P2-84: 支持抵抗と同じcurrent履歴からATR14も最終確定する。
-                # shorttermフェーズの中間値に依存せず、公開直前のauthoritative
-                # snapshotでATR/tri_volが全件欠損になる経路を塞ぐ。
-                _atr_high = pd.to_numeric(df["高値"], errors="coerce")
-                _atr_low = pd.to_numeric(df["安値"], errors="coerce")
-                _atr_close = pd.to_numeric(df["終値"], errors="coerce")
-                _atr_prev = _atr_close.shift(1)
-                _atr_tr = pd.concat(
-                    [
-                        (_atr_high - _atr_low).abs(),
-                        (_atr_high - _atr_prev).abs(),
-                        (_atr_low - _atr_prev).abs(),
-                    ],
-                    axis=1,
-                ).max(axis=1)
-                _atr_series = _atr_tr.ewm(span=14, adjust=False, min_periods=1).mean()
-                _atr14 = (
-                    float(_atr_series.iloc[-1])
-                    if len(_atr_series) and pd.notna(_atr_series.iloc[-1])
-                    else None
-                )
                 updates.append(
                     tuple(_v5_sqlite_value(res_data.get(_c)) for _c in _V5_COLS)
                     + (_v5_sqlite_value(_atr14), sh_val, _lp_raw.get(code, code))
@@ -7575,6 +15701,8 @@ def phase_resistance_update(conn):
             raise
 
         _atr_valid = sum(1 for _u in updates if _u[-3] is not None)
+        if _v30_resistance_fast_enabled():
+            print(f"[V30][resistance] metrics=numpy codes={len(updates)}", flush=True)
         print(f"[resistance] updated {len(updates)} rows / ATR14 valid={_atr_valid}")
     finally:
         cur.close()
@@ -7828,6 +15956,15 @@ def _validate_dashboard_semantic_contract(template_text: str) -> str:
         "参考上限": ('data-col="参考上限株価"',),
         "EPS品質": ('data-col="EPS品質"',),
         "評価方式": ('data-col="評価方式"',),
+        "希薄化状態": ('data-col="希薄化状態"',),
+        "希薄化種別": ('data-col="希薄化種別"',),
+        "希薄化最終日": ('data-col="希薄化最終日"',),
+        "希薄化重大フラグ": ('data-col="希薄化重大フラグ"',),
+        "再主役研究スコア": ('data-col="再主役研究スコア"',),
+        "再主役強度": ('data-col="再主役強度"',),
+        "再主役爆発級": ('data-col="再主役爆発級"',),
+        "再主役初回日": ('data-col="再主役初回日"',),
+        "再主役経過営業日": ('data-col="再主役経過営業日"',),
     }
     problems = []
     for label, tokens in required.items():
@@ -7849,9 +15986,10 @@ def _validate_dashboard_semantic_contract(template_text: str) -> str:
         if token in text:
             problems.append(f"{label}: found {token}")
 
-    # current writerの無い希薄化legacyスコアを、再びsortableにしない。
-    if re.search(r'<th\b[^>]*class="[^"]*sortable[^"]*"[^>]*data-col="増資スコア"', text):
-        problems.append("増資スコア: current writer無しなのにsortable")
+    # 廃止済みlegacy増資3列をtemplateへ戻さない。
+    for _legacy_col in ("増資リスク", "増資スコア", "増資理由"):
+        if f'data-col="{_legacy_col}"' in text:
+            problems.append(f"{_legacy_col}: 廃止済みlegacy列がtemplateへ再導入")
 
     if problems:
         raise RuntimeError(
@@ -7895,6 +16033,31 @@ def _load_dashboard_template_str():
         )
     with open(_selected, "r", encoding="utf-8") as _f:
         _text = _f.read()
+
+    # BUILD-DYNAMIC-DATA-HYGIENE-FIX-V1 2026-08-27
+    # template.htmlへ生成済みindex.htmlの内容が混入しても、
+    # 1) build表示を必ず実行時build_idへ戻す
+    # 2) 前回runの巨大__DATA__ JSONをテンプレートから除去する
+    # ことで、古いbuild表示・巨大テンプレート化・無駄な再解析を防ぐ。
+    _text, _build_fix_n = re.subn(
+        r'(<span\\s+class=["\\\']mini["\\\']\\s+style=["\\\']margin-left:auto["\\\']>\\s*build:\\s*)[^<]*(</span>)',
+        r'\\1{{ build_id }}\\2',
+        _text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    _text, _data_fix_n = re.subn(
+        r'(<script\\s+id=["\\\']__DATA__["\\\']\\s+type=["\\\']application/json["\\\']\\s*>).*?(</script>)',
+        r'\\1\\n{}\\n\\2',
+        _text,
+        count=1,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if _build_fix_n:
+        print("[template] normalized build label -> {{ build_id }}")
+    if _data_fix_n:
+        print("[template] stripped stale inline __DATA__ from source template")
+
     _text = _patch_dashboard_right_up_score_ui(_text)
     # template.html は今後VT版だけ。意味論契約と仮想DOM契約の両方を必須にする。
     _text = _validate_dashboard_vt_contract(_text)
@@ -8130,17 +16293,59 @@ def _require_current_price_history_snapshot(conn: sqlite3.Connection, run_mode: 
         )
     return actual
 
-def _latest_valid_history_date(conn: sqlite3.Connection, codes=None):
-    """P1-454/P1-592: 今回runのsnapshot上限以下にある最新JPX営業日。
+def _v28_latest_date_fast_enabled() -> bool:
+    return str(os.getenv("KABU_SCREEN_V28_FAST", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
 
-    codesを渡した場合はその論理銘柄集合だけでas-ofを決める。legacy suffix/float aliasも含める。
-    P1-592: PREOPENだけは前営業日が正本。営業日だからという理由で壁時計の今日まで許すと、
-    legacy/部分的な当日行1本だけで全体as-ofが今日へ進み、鮮度判定を壊し得る。
+def _latest_valid_history_date(conn: sqlite3.Connection, codes=None):
+    """P1-454/P1-592/P1-664 + V28: 今回runのsnapshot上限以下にある最新JPX営業日。
+
+    V28は全市場as-of(codes=None)だけ、price_history(date(日付)) expression indexを
+    末尾から1行ずつ探す。旧実装の DISTINCT 全日付 fetchall は100万行級DBで20秒前後を
+    要したが、必要なのは「最新の有効営業日1日」だけ。休日なら前日へ進めて再検索する。
+    条件・cutoff・有効終値・JPX休日判定の意味論は変更しない。
+    codes指定時、index未整備時、fastpath例外時は従来SQLへfallbackする。
     """
     cutoff = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+    extra = _load_extra_closed(EXTRA_CLOSED_PATH)
+
+    # V28: 現行主要callerはcodes=None。date(日付) indexをDESC走査すれば、
+    # 最新有効行が通常ほぼ即座に見つかり、全日付DISTINCTのfetchallを避けられる。
+    if _v28_latest_date_fast_enabled() and not codes:
+        _t0 = time.perf_counter()
+        _probe = cutoff
+        try:
+            # 長期休場・壊れた休日行が連続しても十分な上限。通常は1回でreturn。
+            for _ in range(32):
+                row = conn.execute(
+                    """
+                    SELECT substr(日付,1,10) AS d
+                    FROM price_history INDEXED BY idx_price_history_perf_date_expr
+                    WHERE date(日付) <= date(?)
+                      AND 終値 IS NOT NULL
+                      AND CAST(終値 AS REAL) > 0
+                    ORDER BY date(日付) DESC
+                    LIMIT 1
+                    """,
+                    (_probe,),
+                ).fetchone()
+                if not row or not row[0]:
+                    print(f"[V28][latest-date] fast none cutoff={cutoff} dt={time.perf_counter()-_t0:.3f}s", flush=True)
+                    return None
+                try:
+                    d = date.fromisoformat(str(row[0])[:10])
+                except Exception:
+                    # 解析不能な末尾日付は従来実装へ委ねる。
+                    raise ValueError(f"invalid latest history date: {row[0]!r}")
+                if not is_jp_market_holiday(d, extra):
+                    print(f"[V28][latest-date] fast={d.isoformat()} cutoff={cutoff} dt={time.perf_counter()-_t0:.3f}s", flush=True)
+                    return d.isoformat()
+                _probe = (d - timedelta(days=1)).isoformat()
+            raise RuntimeError("latest-date holiday probe exceeded 32 iterations")
+        except Exception as e:
+            print(f"[V28][latest-date][WARN] fastpath failed -> legacy fallback: {e}", flush=True)
+
+    # Legacy exact fallback: codes指定時も従来のalias意味論を維持。
     params = [cutoff]
-    # P1-664: 「最新日」は日付行が存在するだけでは不十分。
-    # 当日placeholder/部分取得で終値NULLの行だけあってもsnapshot到達と認定しない。
     where = "date(日付) <= date(?) AND 終値 IS NOT NULL AND CAST(終値 AS REAL) > 0"
     if codes:
         _vars = expand_code_query_variants(codes)
@@ -8152,7 +16357,6 @@ def _latest_valid_history_date(conn: sqlite3.Connection, codes=None):
         f"SELECT DISTINCT substr(日付,1,10) AS d FROM price_history WHERE {where} ORDER BY date(日付) DESC",
         params,
     ).fetchall()
-    extra = _load_extra_closed(EXTRA_CLOSED_PATH)
     for row in rows:
         if not row or not row[0]:
             continue
@@ -8257,6 +16461,208 @@ def _cleanup_screener_logical_duplicates(conn: sqlite3.Connection, target_codes=
         print(f"[csv-import][ERROR] screener logical duplicate cleanup failed: {e}")
         raise RuntimeError("screener logical duplicate cleanup failed") from e
 
+
+
+# ==============================================================================
+# BRISK-UNIVERSE-SOURCE-V1 2026-09-07
+# BRiSK current master を東証通常株universeの正本として利用する。
+#
+# 重要:
+# - 通常screenerへ入れるのは prefix=P/S/G かつ 4桁 or 3桁+英字コードのみ。
+# - E/R/Pro/Y、5桁優先株等は通常株母集団から除外。
+# - 1306/2516はここでは入れない。既存地合い処理がprice_history用proxyとして別途取得する。
+# - ^TOPX/^N225/^GRT250等はphase_delist_cleanupの国内コード判定対象外なので維持される。
+# - BRiSK異常時は既存CSV/株コード番号.txtへfallbackし、全universeを壊さない。
+# - 地方市場はBRiSKに無い。既定では現行戦略境界を維持して追加しない。
+#   KABU_BRISK_INCLUDE_REGIONAL=1 の場合のみ既存CSVから名/福/札を補完する。
+# ==============================================================================
+
+_BRISK_UNIVERSE_CACHE = None
+
+def _brisk_universe_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+def _brisk_universe_prepare():
+    """同一processでimport/cleanupが必ず同じ正本を使うよう1回だけ決定する。"""
+    global _BRISK_UNIVERSE_CACHE
+    if _BRISK_UNIVERSE_CACHE is not None:
+        return _BRISK_UNIVERSE_CACHE
+
+    enabled = _brisk_universe_bool_env("KABU_BRISK_UNIVERSE_ENABLED", True)
+    required = _brisk_universe_bool_env("KABU_BRISK_UNIVERSE_REQUIRED", False)
+    include_regional = _brisk_universe_bool_env("KABU_BRISK_INCLUDE_REGIONAL", False)
+    brisk_path = Path(os.environ.get(
+        "KABU_BRISK_MASTER",
+        r"D:\kabu\main\0-市場データ基盤\BRiSK\output\brisk_master_all.csv"
+    ))
+    runtime_csv = Path(os.environ.get(
+        "KABU_BRISK_EFFECTIVE_UNIVERSE",
+        str(Path(SCREEN_RUNTIME_DIR) / "brisk_equity_universe.csv")
+    ))
+
+    def _legacy(reason: str):
+        out = {
+            "source": "LEGACY",
+            "reason": str(reason),
+            "effective_csv": None,
+            "count": None,
+            "counts": {},
+            "trade_date": None,
+            "include_regional": False,
+        }
+        print(f"[universe][WARN] BRiSK universe fallback -> LEGACY: {reason}", flush=True)
+        return out
+
+    if not enabled:
+        _BRISK_UNIVERSE_CACHE = _legacy("KABU_BRISK_UNIVERSE_ENABLED=0")
+        return _BRISK_UNIVERSE_CACHE
+
+    try:
+        if not brisk_path.is_file():
+            raise FileNotFoundError(f"BRiSK master not found: {brisk_path}")
+
+        b = pd.read_csv(brisk_path, dtype=str, encoding="utf-8-sig")
+        required_cols = {"issue_code", "name", "prefix"}
+        missing = sorted(required_cols - set(b.columns))
+        if missing:
+            raise RuntimeError(f"missing columns={missing}")
+        if b.empty:
+            raise RuntimeError("BRiSK master is empty")
+
+        b["_code"] = b["issue_code"].map(canonical_code_for_db)
+        b["_prefix"] = b["prefix"].fillna("").astype(str).str.strip()
+        b["_name"] = b["name"].fillna("").astype(str).str.strip()
+
+        mask = (
+            b["_prefix"].isin(["P", "S", "G"])
+            & b["_code"].astype(str).str.fullmatch(r"(?:\d{4}|\d{3}[A-Z])", na=False)
+            & b["_name"].astype(str).str.len().gt(0)
+        )
+        x = b.loc[mask, ["_code", "_name", "_prefix"]].copy()
+
+        if x["_code"].duplicated().any():
+            dups = x.loc[x["_code"].duplicated(keep=False), "_code"].drop_duplicates().tolist()
+            raise RuntimeError(f"duplicate equity codes={dups[:20]}")
+
+        counts = x["_prefix"].value_counts().to_dict()
+        n = int(len(x))
+
+        min_total = int(os.environ.get("KABU_BRISK_UNIVERSE_MIN", "3600"))
+        max_total = int(os.environ.get("KABU_BRISK_UNIVERSE_MAX", "3800"))
+        gates = {
+            "P": (1400, 1700),
+            "S": (1400, 1700),
+            "G": (450, 750),
+        }
+        if not (min_total <= n <= max_total):
+            raise RuntimeError(f"equity count out of range: {n} not in [{min_total},{max_total}]")
+        for pfx, (lo, hi) in gates.items():
+            val = int(counts.get(pfx, 0))
+            if not (lo <= val <= hi):
+                raise RuntimeError(f"{pfx} count out of range: {val} not in [{lo},{hi}]")
+
+        max_trade_date = None
+        if "trade_date" in b.columns:
+            td = pd.to_datetime(b["trade_date"], errors="coerce").dropna()
+            if not td.empty:
+                max_trade_date = td.max().date()
+                today = _now_jst().date()
+                age = (today - max_trade_date).days
+                fresh_days = max(1, int(os.environ.get("KABU_BRISK_UNIVERSE_FRESH_DAYS", "10")))
+                if age < -1 or age > fresh_days:
+                    raise RuntimeError(
+                        f"BRiSK master trade_date stale/future: max={max_trade_date} age_days={age} limit={fresh_days}"
+                    )
+
+        market_map = {"P": "東P", "S": "東S", "G": "東G"}
+        out = pd.DataFrame({
+            "コード": x["_code"].astype(str),
+            "銘柄名": x["_name"].astype(str),
+            "市場": x["_prefix"].map(market_map),
+        })
+
+        regional_n = 0
+        if include_regional:
+            regional_markets = {"名M","名N","名P","福","福Q","札","札A"}
+            legacy_path = Path(CSV_INPUT_PATH)
+            if not legacy_path.is_file():
+                raise RuntimeError(
+                    "KABU_BRISK_INCLUDE_REGIONAL=1 but legacy CSV is missing: "
+                    + str(legacy_path)
+                )
+            rg = pd.read_csv(legacy_path, sep=None, engine="python", dtype=str, encoding="utf-8-sig")
+            need = {"コード","銘柄名","市場"}
+            if not need.issubset(rg.columns):
+                raise RuntimeError(f"regional legacy CSV missing columns={sorted(need-set(rg.columns))}")
+            rg = rg[list(need)].copy()
+            rg["コード"] = rg["コード"].map(canonical_code_for_db)
+            rg["銘柄名"] = rg["銘柄名"].fillna("").astype(str).str.strip()
+            rg["市場"] = rg["市場"].fillna("").astype(str).str.strip()
+            rg = rg[
+                rg["市場"].isin(regional_markets)
+                & rg["コード"].astype(str).str.fullmatch(r"(?:\d{4}|\d{3}[A-Z])", na=False)
+                & rg["銘柄名"].str.len().gt(0)
+            ].drop_duplicates("コード", keep="last")
+            regional_n = int(len(rg))
+            if not (50 <= regional_n <= 160):
+                raise RuntimeError(f"regional supplement count suspicious: {regional_n}")
+            out = pd.concat([out, rg], ignore_index=True)
+
+        out = out.drop_duplicates("コード", keep="last").sort_values("コード", kind="stable").reset_index(drop=True)
+        if out.empty:
+            raise RuntimeError("effective universe empty")
+
+        sio = io.StringIO()
+        out.to_csv(sio, index=False, lineterminator="\n")
+        runtime_csv.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text_file(runtime_csv, sio.getvalue(), encoding="utf-8-sig")
+
+        _BRISK_UNIVERSE_CACHE = {
+            "source": "BRISK",
+            "reason": "",
+            "effective_csv": str(runtime_csv),
+            "count": int(len(out)),
+            "counts": {k: int(v) for k, v in counts.items()},
+            "trade_date": str(max_trade_date) if max_trade_date else None,
+            "include_regional": bool(include_regional),
+            "regional_count": int(regional_n),
+            "brisk_path": str(brisk_path),
+        }
+        print(
+            "[universe] source=BRISK "
+            f"equities={n} P={int(counts.get('P',0))} "
+            f"S={int(counts.get('S',0))} G={int(counts.get('G',0))} "
+            f"regional={regional_n} effective={len(out)} "
+            f"trade_date={max_trade_date or '-'} "
+            f"file={runtime_csv}",
+            flush=True,
+        )
+        return _BRISK_UNIVERSE_CACHE
+
+    except Exception as e:
+        if required:
+            raise RuntimeError(f"BRiSK universe required but invalid: {e}") from e
+        _BRISK_UNIVERSE_CACHE = _legacy(str(e))
+        return _BRISK_UNIVERSE_CACHE
+
+def phase_brisk_universe_import(conn, **kwargs):
+    src = _brisk_universe_prepare()
+    if src.get("source") == "BRISK":
+        return phase_csv_import(conn, csv_path=src["effective_csv"], **kwargs)
+    return phase_csv_import(conn, **kwargs)
+
+def phase_brisk_universe_cleanup(conn, also_clean_notes: bool = False, **kwargs):
+    src = _brisk_universe_prepare()
+    if src.get("source") == "BRISK":
+        return phase_delist_cleanup(
+            conn,
+            master_csv_path=src["effective_csv"],
+            also_clean_notes=also_clean_notes,
+        )
+    return phase_delist_cleanup(conn, also_clean_notes=also_clean_notes)
 
 def phase_csv_import(conn, csv_path=None, overwrite_registered_date=None, **_ignored):
     """
@@ -8507,6 +16913,33 @@ def phase_mark_karauri_nashi(conn: sqlite3.Connection):
         conn.execute(f"RELEASE SAVEPOINT {sp}")
         raise
     print(f"[karauri-flag] DB snapshot success={len(success_codes)}/{len(logical)} no_short={len(no_short)} complete={complete}")
+    if len(success_codes) == 0:
+        _mode_hint = str(globals().get("_run_mode_at_start", "UNKNOWN"))
+        print(
+            "[karauri-flag][INFO] 当日snapshotの成功行が0件です。これは『機関空売りが0件』という意味ではありません。"
+            f" 本体が利用できる当日データをまだ確認できていない状態です。run_mode={_mode_hint}",
+            flush=True,
+        )
+        if _mode_hint.upper() == "PREOPEN":
+            print(
+                "[karauri-flag][INFO] PREOPENでは08:00 MORNING_CATCHUPの空売りproducer実行前なら正常に起こり得ます。"
+                " 朝処理後も0件なら system_jobs.py の [morning][karauri] ログと"
+                " 空売り無しリスト出しスクリプト.py のsnapshot writerを確認してください。",
+                flush=True,
+            )
+        else:
+            print(
+                "[karauri-flag][WARN] PREOPEN以外で当日snapshot成功0件です。"
+                " system_jobs.py の [morning][karauri] / producer結果と"
+                " 空売り無しリスト出しスクリプト.py のsnapshot writerを確認してください。",
+                flush=True,
+            )
+    elif not complete:
+        print(
+            f"[karauri-flag][INFO] 当日snapshotは一部取得です: success={len(success_codes)}/{len(logical)}。"
+            " 未取得銘柄は『空売り0株』にせず『未取得/不明』として扱います。",
+            flush=True,
+        )
     return complete
 
 
@@ -9022,24 +17455,69 @@ def _update_screener_from_history(conn, codes):
     # logical codeごとの直近2営業日へdedupeする。日付下限は置かないため、
     # 長期売買停止後の前回終値も維持する。
     _recent_history = {}
-    _bulk_hist = pd.read_sql_query(
-        """
-        WITH ranked AS (
-            SELECT rowid AS _rowid, コード, 日付, 終値, 出来高,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY CAST(コード AS TEXT)
-                       ORDER BY date(日付) DESC, rowid DESC
-                   ) AS _rn
-            FROM price_history
-            WHERE date(日付) <= date(?)
+    # V31: V29 sync_latest_pricesで実測済みのcode/date index probeを同じTop8/raw-code取得へ適用。
+    # 旧ROW_NUMBER SQLと候補集合は同一（raw code別 date DESC,rowid DESC 上位8行）。
+    # index障害時は旧window SQLへfallbackし、dedupe/holiday/canonical意味論は従来関数へ委譲する。
+    _v31_hist_t0 = time.perf_counter()
+    _bulk_hist = None
+    if _v31_cold_preopen_fast_enabled():
+        try:
+            _raw_codes = [
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT CAST(コード AS TEXT) "
+                    "FROM price_history INDEXED BY idx_price_history_perf_code_text_date "
+                    "WHERE コード IS NOT NULL"
+                ).fetchall()
+                if r[0] is not None and str(r[0]).strip() != ""
+            ]
+            _probe_sql = (
+                "SELECT rowid AS _rowid, コード, 日付, 終値, 出来高 "
+                "FROM price_history INDEXED BY idx_price_history_perf_code_text_date "
+                "WHERE CAST(コード AS TEXT)=? AND date(日付) <= date(?) "
+                "ORDER BY date(日付) DESC, rowid DESC LIMIT 8"
+            )
+            _probe_rows = []
+            _cur_probe = conn.cursor()
+            try:
+                for _raw_code in _raw_codes:
+                    _probe_rows.extend(tuple(x) for x in _cur_probe.execute(_probe_sql, (_raw_code, _cutoff)).fetchall())
+            finally:
+                _cur_probe.close()
+            _bulk_hist = pd.DataFrame.from_records(
+                _probe_rows, columns=["_rowid", "コード", "日付", "終値", "出来高"]
+            )
+            print(
+                f"[V31][screener-history] route=index-probe raw_codes={len(_raw_codes)} "
+                f"candidate_rows={len(_bulk_hist)} dt={time.perf_counter()-_v31_hist_t0:.2f}s",
+                flush=True,
+            )
+        except Exception as _v31_e:
+            _bulk_hist = None
+            print(f"[V31][screener-history][WARN] index-probe failed -> legacy window: {_v31_e}", flush=True)
+    if _bulk_hist is None:
+        _bulk_hist = pd.read_sql_query(
+            """
+            WITH ranked AS (
+                SELECT rowid AS _rowid, コード, 日付, 終値, 出来高,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CAST(コード AS TEXT)
+                           ORDER BY date(日付) DESC, rowid DESC
+                       ) AS _rn
+                FROM price_history
+                WHERE date(日付) <= date(?)
+            )
+            SELECT _rowid, コード, 日付, 終値, 出来高
+            FROM ranked
+            WHERE _rn <= 8
+            ORDER BY 日付 DESC, _rowid DESC
+            """,
+            conn, params=[_cutoff]
         )
-        SELECT _rowid, コード, 日付, 終値, 出来高
-        FROM ranked
-        WHERE _rn <= 8
-        ORDER BY 日付 DESC, _rowid DESC
-        """,
-        conn, params=[_cutoff]
-    )
+        print(
+            f"[V31][screener-history] route=legacy-window candidate_rows={len(_bulk_hist)} "
+            f"dt={time.perf_counter()-_v31_hist_t0:.2f}s",
+            flush=True,
+        )
     if not _bulk_hist.empty:
         _bulk_hist = _dedupe_price_history_df(_bulk_hist)
         _wanted = set(codes)
@@ -9330,6 +17808,30 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
             _missing = [c for c in chunk if canonical_code_for_db(c) not in _returned]
             if _missing:
                 _failed_chunks.append(("exist-partial", list(_missing), "empty/partial yahoo response"))
+
+            # EOD-EXPECTED-DATE-GUARD-V1:
+            # 「銘柄自体がレスポンスに含まれた」だけではEOD確定としない。
+            # 6176のように前営業日までしか返らない銘柄を検知し、daily markerを立てず再試行させる。
+            _expected_codes = set()
+            if df_add is not None and not df_add.empty and {"コード", "日付"}.issubset(df_add.columns):
+                _ed_code = df_add["コード"].map(canonical_code_for_db)
+                _ed_date = df_add["日付"].astype(str).str[:10]
+                _expected_codes = {
+                    canonical_code_for_db(c)
+                    for c in _ed_code.loc[_ed_date == _expected_bulk_date].dropna()
+                    if canonical_code_for_db(c)
+                }
+            _missing_expected = [
+                c for c in chunk
+                if canonical_code_for_db(c) not in _expected_codes
+            ]
+            if _missing_expected:
+                _failed_chunks.append((
+                    "exist-missing-expected-date",
+                    list(_missing_expected),
+                    f"no row for expected JPX date {_expected_bulk_date}",
+                ))
+
             _incomplete = _incomplete_expected_bar_codes(df_add)
             if _incomplete:
                 _failed_chunks.append(("exist-incomplete-eod", list(_incomplete), "expected-date OHLCV incomplete"))
@@ -9368,6 +17870,28 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
             _missing = [c for c in chunk if canonical_code_for_db(c) not in _returned]
             if _missing:
                 _failed_chunks.append(("new-partial", list(_missing), "empty/partial yahoo response"))
+
+            # EOD-EXPECTED-DATE-GUARD-V1: 新規銘柄も期待日そのものの行を必須にする。
+            _expected_codes = set()
+            if df_add is not None and not df_add.empty and {"コード", "日付"}.issubset(df_add.columns):
+                _ed_code = df_add["コード"].map(canonical_code_for_db)
+                _ed_date = df_add["日付"].astype(str).str[:10]
+                _expected_codes = {
+                    canonical_code_for_db(c)
+                    for c in _ed_code.loc[_ed_date == _expected_bulk_date].dropna()
+                    if canonical_code_for_db(c)
+                }
+            _missing_expected = [
+                c for c in chunk
+                if canonical_code_for_db(c) not in _expected_codes
+            ]
+            if _missing_expected:
+                _failed_chunks.append((
+                    "new-missing-expected-date",
+                    list(_missing_expected),
+                    f"no row for expected JPX date {_expected_bulk_date}",
+                ))
+
             _incomplete = _incomplete_expected_bar_codes(df_add)
             if _incomplete:
                 _failed_chunks.append(("new-incomplete-eod", list(_incomplete), "expected-date OHLCV incomplete"))
@@ -9413,12 +17937,38 @@ def phase_yahoo_bulk_refresh(conn, codes, batch_size=100):
     apply_auto_metrics_eod(conn)
     apply_composite_score(conn)
     print(f"[refresh] 追記 {total_added} 行 / 銘柄 {len(codes)} 件（既存{len(exist_codes)}・新規{len(new_codes)}）")
+    # EOD-INDEX-NONFATAL-V1 2026-09-07
+    # EOD Yahoo履歴の厳格guardは国内株へ維持する一方、指数(^...)の部分/未取得だけで
+    # 全銘柄EODを停止させない。指数はcurrent/stale clearの対象には残るため、
+    # 取得不能時に前回値をcurrentとして再公開することはない。
     if _failed_chunks:
-        failed_codes = [c for _, chunk, _ in _failed_chunks for c in chunk]
-        raise RuntimeError(
-            f"P1-113 yahoo_bulk_refresh: {len(_failed_chunks)} chunk(s) failed; "
-            f"daily marker is intentionally not written. retry codes={failed_codes[:20]}"
-        )
+        _fatal_chunks = []
+        _index_warn = []
+        for _kind, _chunk, _reason in _failed_chunks:
+            _fatal_codes = []
+            for _c in _chunk:
+                _cc = canonical_code_for_db(_c)
+                if str(_cc or "").startswith("^"):
+                    _index_warn.append((_kind, _cc, _reason))
+                else:
+                    _fatal_codes.append(_c)
+            if _fatal_codes:
+                _fatal_chunks.append((_kind, _fatal_codes, _reason))
+
+        if _index_warn:
+            _idx_codes = list(dict.fromkeys(str(_c) for _, _c, _ in _index_warn if _c))
+            print(
+                f"[refresh][WARN] Yahoo index history unavailable/nonfatal: "
+                f"codes={_idx_codes[:20]} count={len(_idx_codes)}",
+                flush=True,
+            )
+
+        if _fatal_chunks:
+            failed_codes = [c for _, chunk, _ in _fatal_chunks for c in chunk]
+            raise RuntimeError(
+                f"P1-113 yahoo_bulk_refresh: {len(_fatal_chunks)} fatal chunk(s) failed; "
+                f"daily marker is intentionally not written. retry codes={failed_codes[:20]}"
+            )
 # ==== 時価総額取得
 
 # ===== 全銘柄の時価総額を一括更新 =====
@@ -9782,6 +18332,42 @@ def phase_yahoo_intraday_snapshot(conn: sqlite3.Connection):
     if symbols_all and not any(str(_r[1])[:10] == _mid_expected for _r in up_hist):
         raise RuntimeError(f"MIDDAY quote snapshot has no quote timestamp for expected JPX date {_mid_expected}")
 
+    # === V20.1 MIDDAY-QUOTE-COVERAGE-GUARD ===
+    # Yahoo側の遅延/部分更新で「当日timestamp到達が数銘柄だけ」の場合、
+    # 旧live値を大量NULL化してから0件dashboard/feedを公開しない。
+    # DB変更より前に、今回の当日quote coverageをfail-closedで検証する。
+    if not TEST_MODE:
+        _mid_requested_stock = {
+            canonical_code_for_db(c)
+            for c in codes
+            if canonical_code_for_db(c) and canonical_code_for_db(c) not in set(_benchmark_codes)
+        }
+        _mid_valid_stock = {
+            canonical_code_for_db(_r[0])
+            for _r in up_hist
+            if _r and canonical_code_for_db(_r[0]) and canonical_code_for_db(_r[0]) not in set(_benchmark_codes)
+        }
+        _mid_valid_stock &= _mid_requested_stock
+        _mid_req_n = len(_mid_requested_stock)
+        _mid_valid_n = len(_mid_valid_stock)
+        _mid_cov = (_mid_valid_n / _mid_req_n) if _mid_req_n else 0.0
+        _mid_min_rows = 500
+        _mid_min_cov = 0.80
+        print(
+            f"[MIDDAY-QUOTE-COVERAGE] valid={_mid_valid_n}/{_mid_req_n} "
+            f"coverage={_mid_cov*100:.1f}% required_rows>={_mid_min_rows} "
+            f"required_cov>={_mid_min_cov*100:.0f}%",
+            flush=True,
+        )
+        if _mid_req_n >= _mid_min_rows and (
+            _mid_valid_n < _mid_min_rows or _mid_cov < _mid_min_cov
+        ):
+            raise RuntimeError(
+                "MIDDAY quote coverage too low; refusing DB clear/publish: "
+                f"valid={_mid_valid_n}/{_mid_req_n} coverage={_mid_cov*100:.1f}%"
+            )
+    # === /V20.1 MIDDAY-QUOTE-COVERAGE-GUARD ===
+
     if up_screener or up_hist or _mid_invalid_raw:
         # P1-441/P1-637: valid quoteが0件でもsentinel/invalid clearは同一snapshotで確定。
         cur = conn.cursor()
@@ -9960,7 +18546,7 @@ def phase_update_shodou_multipliers(conn):
 # ==========================================
 # ★ 追加: 相対強度(RS)・地合い・逆行フラグのDB永続化
 # ==========================================
-def phase_update_market_metrics(conn: sqlite3.Connection):
+def _v21_legacy_phase_update_market_metrics(conn: sqlite3.Connection):
     """
     個別株のRS/地合い/逆行フラグをDB保存。
     P1-105: 個別株と指数の観測終了日を必ず一致させ、異なる日付同士のリターンを引かない。
@@ -10183,6 +18769,245 @@ def phase_update_market_metrics(conn: sqlite3.Connection):
     cur.close()
     print(f"[MarketMetrics] RS等のDB保存が完了しました: {len(updates)} 銘柄")
 
+
+
+def phase_update_market_metrics(conn: sqlite3.Connection):
+    """V21 fastpath: legacyと同じRS/地合い/逆行をshared canonical history + vectorで算出。"""
+    if not _v21_fast_enabled():
+        return _v21_legacy_phase_update_market_metrics(conn)
+    t0 = time.perf_counter()
+    try:
+        columns_to_add = [
+            ("RS_5", "REAL"), ("RS_20", "REAL"), ("Growth_Bias", "REAL"),
+            ("地合いフラグ", "INTEGER"), ("逆行強フラグ", "INTEGER"), ("逆行弱フラグ", "INTEGER")
+        ]
+        cur = conn.cursor()
+        schema_cols = {r[1] for r in cur.execute("PRAGMA table_info(screener)").fetchall()}
+        for col_name, dtype in columns_to_add:
+            if col_name not in schema_cols:
+                cur.execute(f'ALTER TABLE screener ADD COLUMN "{col_name}" {dtype}')
+                schema_cols.add(col_name)
+        conn.commit()
+        print("[MarketMetrics] RS・地合い・逆行フラグの計算とDB保存を開始します... [V21]", flush=True)
+        df = pd.read_sql_query("SELECT コード, 市場, 現在値, 前日終値 FROM screener", conn)
+        if df.empty:
+            cur.close(); return
+        df["_screener_code_raw"] = df["コード"]
+        df["コード"] = df["コード"].map(canonical_code_for_db)
+        df["現在値"] = pd.to_numeric(df["現在値"], errors="coerce")
+        df["前日終値"] = pd.to_numeric(df["前日終値"], errors="coerce")
+        asof = _latest_valid_history_date(conn)
+        if not asof:
+            cur.close(); return
+        start = (pd.Timestamp(asof) - pd.Timedelta(days=140)).strftime("%Y-%m-%d")
+        mh = _perf_price_history_canonical_range(conn, start, asof, tag="market_metrics")
+        if not mh.empty:
+            mh = mh[np.isfinite(mh["終値"]) & (mh["終値"] > 0)].copy()
+        if mh.empty:
+            df["株価基準日"] = pd.NaT; df["終値5日前"] = np.nan; df["終値20日前"] = np.nan
+        else:
+            mh = mh.sort_values(["コード","日付"], kind="stable")
+            _off_recs = []
+            for _c, _g in mh.groupby("コード", sort=False):
+                _vv = _g["終値"].to_numpy(dtype=float)
+                _off_recs.append({
+                    "コード": _c,
+                    "株価基準日": pd.Timestamp(_g["日付"].iloc[-1]).normalize(),
+                    "終値5日前": float(_vv[-6]) if len(_vv) >= 6 else np.nan,
+                    "終値20日前": float(_vv[-21]) if len(_vv) >= 21 else np.nan,
+                })
+            offs = pd.DataFrame(_off_recs)
+            df = df.merge(offs, on="コード", how="left")
+
+        req_ts = pd.Timestamp(asof).normalize()
+        def idx_rec(code):
+            c = canonical_code_for_db(code)
+            if mh.empty:
+                return {1:None,5:None,20:None,"asof":None}
+            g = mh.loc[mh["コード"].eq(c), ["日付","終値"]].copy()
+            g = g[np.isfinite(g["終値"]) & (g["終値"] > 0)].sort_values("日付", kind="stable")
+            out={1:None,5:None,20:None,"asof":None}
+            if g.empty: return out
+            vals=g["終値"].to_numpy(dtype=float); out["asof"]=pd.Timestamp(g["日付"].iloc[-1]).normalize(); last=float(vals[-1])
+            for d in (1,5,20):
+                if len(vals)>d and vals[-(d+1)]!=0: out[d]=(last-float(vals[-(d+1)]))/float(vals[-(d+1)])
+            return out
+        idx={sym:idx_rec(sym) for sym in ("^TOPX","^N225","^GRT250")}
+        topx_proxy=idx_rec("1306")
+        if not (idx["^TOPX"].get("asof") is not None and pd.Timestamp(idx["^TOPX"]["asof"]).normalize()==req_ts) and (topx_proxy.get("asof") is not None and pd.Timestamp(topx_proxy["asof"]).normalize()==req_ts):
+            idx["^TOPX"]=topx_proxy; print("[MarketMetrics] TOPIX正式指数が未到達のため1306.T ETFリターンを代理使用")
+        grt_proxy=idx_rec("2516")
+        if not (idx["^GRT250"].get("asof") is not None and pd.Timestamp(idx["^GRT250"]["asof"]).normalize()==req_ts) and (grt_proxy.get("asof") is not None and pd.Timestamp(grt_proxy["asof"]).normalize()==req_ts):
+            idx["^GRT250"]=grt_proxy; print("[MarketMetrics] Growth250正式指数が未到達のため2516.T ETFリターンを代理使用")
+
+        index_asofs=[v.get("asof") for v in idx.values() if v.get("asof") is not None]
+        market_asof=max(index_asofs) if index_asofs else None
+        topx1=idx["^TOPX"].get(1) if idx["^TOPX"].get("asof")==market_asof else None
+        nikkei1=idx["^N225"].get(1) if idx["^N225"].get("asof")==market_asof else None
+        vals=[v for v in (topx1,nikkei1) if v is not None and np.isfinite(v)]
+        market_flag=None if not vals else (-1 if any(v<=-0.01 for v in vals) else (1 if any(v>=0.01 for v in vals) else 0))
+
+        mkt=df["市場"].fillna("").astype(str); mu=mkt.str.upper()
+        growth_mask=(mkt.str.contains("グロース", regex=False) | mu.isin(["東G","東証G","東証GRT","G","GRT","GROWTH"]) | mu.str.contains("GROWTH", regex=False))
+        idx5=np.where(growth_mask, idx["^GRT250"].get(5), idx["^TOPX"].get(5))
+        idx20=np.where(growth_mask, idx["^GRT250"].get(20), idx["^TOPX"].get(20))
+        idx_asof=np.where(growth_mask, idx["^GRT250"].get("asof"), idx["^TOPX"].get("asof"))
+        stock_asof=pd.to_datetime(df["株価基準日"], errors="coerce").dt.normalize()
+        idx_asof_s=pd.to_datetime(pd.Series(idx_asof, index=df.index), errors="coerce").dt.normalize()
+        same_day=stock_asof.eq(idx_asof_s)
+        p=df["現在値"].to_numpy(dtype=float); p5=pd.to_numeric(df["終値5日前"],errors="coerce").to_numpy(dtype=float); p20=pd.to_numeric(df["終値20日前"],errors="coerce").to_numpy(dtype=float)
+        st5=np.full(len(df),np.nan); st20=np.full(len(df),np.nan)
+        ok5=np.isfinite(p)&np.isfinite(p5)&(p5!=0); ok20=np.isfinite(p)&np.isfinite(p20)&(p20!=0)
+        st5[ok5]=p[ok5]/p5[ok5]-1.0; st20[ok20]=p[ok20]/p20[ok20]-1.0
+        i5=np.asarray(idx5,dtype=float); i20=np.asarray(idx20,dtype=float)
+        rs5=np.where(same_day.to_numpy() & np.isfinite(st5)&np.isfinite(i5), st5-i5, np.nan)
+        rs20=np.where(same_day.to_numpy() & np.isfinite(st20)&np.isfinite(i20), st20-i20, np.nan)
+        prev=df["前日終値"].to_numpy(dtype=float); dayret=np.full(len(df),np.nan); ok=np.isfinite(p)&np.isfinite(prev)&(prev!=0); dayret[ok]=p[ok]/prev[ok]-1.0
+        same_market = stock_asof.eq(pd.Timestamp(market_asof).normalize()) if market_asof is not None else pd.Series(False,index=df.index)
+        revs=np.full(len(df),np.nan); revw=np.full(len(df),np.nan)
+        valid=same_market.to_numpy() & np.isfinite(dayret) & (market_flag is not None)
+        if market_flag is not None:
+            revs[valid]=((market_flag==-1)&(dayret[valid]>=0.01)).astype(int)
+            revw[valid]=((market_flag==1)&(dayret[valid]<=-0.01)).astype(int)
+        geo=np.full(len(df),np.nan)
+        if market_flag is not None: geo[same_market.to_numpy()]=market_flag
+        topx20=idx["^TOPX"].get(20); grt20=idx["^GRT250"].get(20); ta=idx["^TOPX"].get("asof"); ga=idx["^GRT250"].get("asof")
+        same_growth=bool(ta is not None and ga is not None and pd.Timestamp(ta).normalize()==pd.Timestamp(ga).normalize()==req_ts)
+        gbias=(grt20-topx20) if same_growth and topx20 is not None and grt20 is not None else None
+        updates=[]
+        for a,b,raw,gs,r1,r2 in zip(rs5,rs20,df["_screener_code_raw"].astype(str),geo,revs,revw):
+            updates.append((round(float(a),4) if np.isfinite(a) else None, round(float(b),4) if np.isfinite(b) else None, round(float(gbias),4) if gbias is not None and np.isfinite(gbias) else None, int(gs) if np.isfinite(gs) else None, int(r1) if np.isfinite(r1) else None, int(r2) if np.isfinite(r2) else None, raw))
+        sp=f"sp_market_metrics_v21_{time.time_ns()}"; conn.execute(f"SAVEPOINT {sp}")
+        try:
+            cur.executemany('UPDATE screener SET RS_5=?, RS_20=?, Growth_Bias=?, 地合いフラグ=?, 逆行強フラグ=?, 逆行弱フラグ=? WHERE コード=?', updates)
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
+        except Exception:
+            try: conn.execute(f"ROLLBACK TO SAVEPOINT {sp}"); conn.execute(f"RELEASE SAVEPOINT {sp}")
+            except Exception: pass
+            cur.close(); raise
+        cur.close()
+        print(f"[MarketMetrics] RS等のDB保存が完了しました: {len(updates)} 銘柄 [V21 dt={time.perf_counter()-t0:.2f}s]", flush=True)
+    except Exception as e:
+        print(f"[V21][MarketMetrics][WARN] fastpath failed -> legacy fallback: {e}", flush=True)
+        return _v21_legacy_phase_update_market_metrics(conn)
+
+def _v64_derive_hist_legacy(conn: sqlite3.Connection, cutoff: str, wanted_codes: list[str]) -> dict[str, pd.DataFrame]:
+    """Exact pre-V64 derive history route: raw-code ROW_NUMBER(40) -> canonical dedupe -> logical head(32)."""
+    bulk = pd.read_sql_query(
+        """
+        WITH ranked AS (
+            SELECT rowid AS _rowid, コード, 日付, 終値,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY CAST(コード AS TEXT)
+                       ORDER BY date(日付) DESC, rowid DESC
+                   ) AS _rn
+            FROM price_history
+            WHERE date(日付) <= date(?)
+        )
+        SELECT _rowid, コード, 日付, 終値
+        FROM ranked
+        WHERE _rn <= 40
+        ORDER BY 日付 DESC, _rowid DESC
+        """,
+        conn, params=[cutoff]
+    )
+    out = {}
+    if bulk.empty:
+        return out
+    bulk = _dedupe_price_history_df(bulk)
+    wanted = set(wanted_codes)
+    bulk = bulk[bulk["コード"].map(canonical_code_for_db).isin(wanted)].copy()
+    for hcode, hg in bulk.groupby("コード", sort=False):
+        hk = canonical_code_for_db(hcode)
+        if hk:
+            out[hk] = hg.sort_values("日付", ascending=False).head(32).reset_index(drop=True)
+    return out
+
+
+def _v64_derive_hist_fast(conn: sqlite3.Connection, cutoff: str, wanted_codes: list[str]) -> dict[str, pd.DataFrame] | None:
+    """Use the already-canonical MIDDAY superset; no full-table SQL window scan."""
+    if (not V64_DERIVE_CANON_FAST) or str(_auto_run_mode() or "").upper() != "MIDDAY":
+        return None
+    base = _v60_midday_canon_superset(conn, cutoff)
+    if not isinstance(base, pd.DataFrame):
+        return None
+    wanted = set(wanted_codes)
+    if base.empty:
+        return {}
+    t0 = time.perf_counter()
+    x = base.loc[
+        base["コード"].astype(str).isin(wanted),
+        ["_rowid", "コード", "日付", "終値"]
+    ].copy()
+    if x.empty:
+        print(f"[V64-DERIVE] fast candidate codes=0 rows=0 dt={time.perf_counter()-t0:.2f}s", flush=True)
+        return {}
+    x["日付"] = pd.to_datetime(x["日付"], errors="coerce")
+    x["終値"] = pd.to_numeric(x["終値"], errors="coerce")
+    x = x.dropna(subset=["コード", "日付"]).sort_values(["コード", "日付"], kind="stable")
+    x = x.groupby("コード", sort=False, group_keys=False).tail(32)
+    out = {}
+    for hcode, hg in x.groupby("コード", sort=False):
+        hk = canonical_code_for_db(hcode)
+        if hk:
+            out[hk] = hg.sort_values("日付", ascending=False).reset_index(drop=True)
+    print(f"[V64-DERIVE] fast candidate codes={len(out)} rows={len(x)} dt={time.perf_counter()-t0:.2f}s", flush=True)
+    return out
+
+
+def _v64_derive_hist_signature(hist: dict[str, pd.DataFrame], wanted_codes: list[str]):
+    sig = {}
+    for code in wanted_codes:
+        g = hist.get(code)
+        vals = []
+        if isinstance(g, pd.DataFrame) and not g.empty:
+            gg = g.sort_values("日付", ascending=False).head(32)
+            for _, r in gg.iterrows():
+                try:
+                    d = pd.Timestamp(r.get("日付")).date().isoformat()
+                except Exception:
+                    d = str(r.get("日付"))[:10]
+                v = pd.to_numeric(pd.Series([r.get("終値")]), errors="coerce").iloc[0]
+                vals.append((d, None if pd.isna(v) else float(v)))
+        sig[code] = tuple(vals)
+    return sig
+
+
+def _v64_derive_hist_audited(conn: sqlite3.Connection, cutoff: str, wanted_codes: list[str]) -> dict[str, pd.DataFrame]:
+    fast = _v64_derive_hist_fast(conn, cutoff, wanted_codes)
+    if fast is None:
+        print("[V64-DERIVE] canonical unavailable -> legacy", flush=True)
+        return _v64_derive_hist_legacy(conn, cutoff, wanted_codes)
+
+    token = {
+        "schema": V64_DERIVE_AUDIT_SCHEMA,
+        "trade_date": str(_expected_snapshot_date_for_run("MIDDAY")),
+        "cutoff": str(cutoff),
+        "build_token": str(_daily_build_token()),
+        "codes": int(len(wanted_codes)),
+    }
+    old = _stage2_json_read(V64_DERIVE_AUDIT_PATH)
+    if isinstance(old, dict) and old.get("status") == "PASS" and all(old.get(k) == v for k, v in token.items()):
+        print(f"[V64-DERIVE] HIT audited codes={len(fast)}", flush=True)
+        return fast
+
+    t0 = time.perf_counter()
+    legacy = _v64_derive_hist_legacy(conn, cutoff, wanted_codes)
+    fs = _v64_derive_hist_signature(fast, wanted_codes)
+    ls = _v64_derive_hist_signature(legacy, wanted_codes)
+    bad = [c for c in wanted_codes if fs.get(c) != ls.get(c)]
+    if bad:
+        print(f"[V64-DERIVE] AUDIT-FAIL mismatched={len(bad)} sample={bad[:10]} dt={time.perf_counter()-t0:.2f}s -> legacy", flush=True)
+        try:
+            _stage2_json_write(V64_DERIVE_AUDIT_PATH, {**token, "status":"FAIL", "mismatched":len(bad), "sample":bad[:20], "saved_at":_now_jst().isoformat(timespec="seconds")})
+        except Exception:
+            pass
+        return legacy
+    _stage2_json_write(V64_DERIVE_AUDIT_PATH, {**token, "status":"PASS", "saved_at":_now_jst().isoformat(timespec="seconds")})
+    print(f"[V64-DERIVE] AUDIT-PASS codes={len(wanted_codes)} legacy_codes={len(legacy)} fast_codes={len(fast)} dt={time.perf_counter()-t0:.2f}s", flush=True)
+    return fast
+
+
 def phase_derive_update(conn: sqlite3.Connection):
     cur = conn.cursor()
     cur.execute("SELECT コード, 初動株価, 現在値, UP継続回数, DOWN継続回数, 登録日, 時価総額億円 FROM screener")
@@ -10226,39 +19051,12 @@ def phase_derive_update(conn: sqlite3.Connection):
     _derive_holidays_all = _derive_holidays(_min_reg, cal_today + timedelta(days=45)) if _parsed_rows else []
     _derive_cutoff = _expected_jpx_asof_date().isoformat()
 
-    # P2-19/P2-83: 必要なのは銘柄ごとの直近32本だけ。
-    # 200銘柄ごとのCAST条件で大表を約18回走査せず、price_historyを1回だけ
-    # 走査してraw aliasごとの直近40行へSQL側で絞り、logical 32本へdedupeする。
-    _derive_hist = {}
-    _derive_codes = list(dict.fromkeys(canonical_code_for_db(_r[0]) for _r, _ in _parsed_rows if canonical_code_for_db(_r[0])))
-    _bulk_ph = pd.read_sql_query(
-        """
-        WITH ranked AS (
-            SELECT rowid AS _rowid, コード, 日付, 終値,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY CAST(コード AS TEXT)
-                       ORDER BY date(日付) DESC, rowid DESC
-                   ) AS _rn
-            FROM price_history
-            WHERE date(日付) <= date(?)
-        )
-        SELECT _rowid, コード, 日付, 終値
-        FROM ranked
-        WHERE _rn <= 40
-        ORDER BY 日付 DESC, _rowid DESC
-        """,
-        conn, params=[_derive_cutoff]
-    )
-    if not _bulk_ph.empty:
-        _bulk_ph = _dedupe_price_history_df(_bulk_ph)
-        _derive_wanted = set(_derive_codes)
-        _bulk_ph = _bulk_ph[
-            _bulk_ph["コード"].map(canonical_code_for_db).isin(_derive_wanted)
-        ].copy()
-        for _hcode, _hg in _bulk_ph.groupby("コード", sort=False):
-            _hk = canonical_code_for_db(_hcode)
-            if _hk:
-                _derive_hist[_hk] = _hg.sort_values("日付", ascending=False).head(32).reset_index(drop=True)
+    # V64: 旧SQLはprice_history全表へROW_NUMBERを掛けるため、30分更新の主要ボトルネックだった。
+    # 既存V60 canonical supersetから同じ論理直近32本を作り、初回のみ旧SQL全件と照合する。
+    _derive_codes = list(dict.fromkeys(
+        canonical_code_for_db(_r[0]) for _r, _ in _parsed_rows if canonical_code_for_db(_r[0])
+    ))
+    _derive_hist = _v64_derive_hist_audited(conn, _derive_cutoff, _derive_codes)
 
     _derive_updates = []
     _derive_resets = []
@@ -10453,6 +19251,115 @@ def _trend_metrics_df(g: pd.DataFrame):
         week_up_ratio=float(wk_ratio), mdd=float(mdd), hl_ratio=float(hl_ratio)
     )
 
+def _v27_right_persistent_fast_enabled() -> bool:
+    return str(os.environ.get("KABU_SCREEN_V27_FAST", "1")).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _v27_roll_mean_full_finite(a: np.ndarray, window: int) -> np.ndarray:
+    """finite正値close専用のrolling mean。pandas rolling(window,min_periods=window)と同値。"""
+    x = np.asarray(a, dtype=float)
+    n = len(x)
+    out = np.full(n, np.nan, dtype=float)
+    w = int(window)
+    if n < w or w <= 0:
+        return out
+    cs = np.concatenate(([0.0], np.cumsum(x, dtype=float)))
+    idx = np.arange(w - 1, n)
+    out[idx] = (cs[idx + 1] - cs[idx + 1 - w]) / float(w)
+    return out
+
+
+def _v27_trend_metrics_np(g: pd.DataFrame):
+    """V27: _trend_metrics_df() と同じ7指標をNumPy中心で算出。
+
+    前提はV26 compute_right_up_persistent入口と同じ:
+    - 日付昇順のcanonical日足
+    - 終値はfiniteかつ正値のみ
+    - 高値/安値のNaNは従来pandas min(skipna=True)意味論を維持
+    """
+    # canonical cacheはcode/date昇順だが、legacy fallbackも含め意味論を固定する。
+    if g is None or g.empty:
+        raise ValueError("empty trend group")
+    if not g["日付"].is_monotonic_increasing:
+        g = g.sort_values("日付", kind="stable")
+
+    close_full = g["終値"].to_numpy(dtype=float, copy=False)
+    high_full = (g["高値"] if "高値" in g.columns else g["終値"]).to_numpy(dtype=float, copy=False)
+    low_full = (g["安値"] if "安値" in g.columns else g["終値"]).to_numpy(dtype=float, copy=False)
+    dates_full = pd.to_datetime(g["日付"], errors="coerce").to_numpy()
+
+    n = len(close_full)
+    score_start = max(0, n - int(LOOKBACK))
+    px = close_full[score_start:]
+    hi = high_full[score_start:]
+    lo = low_full[score_start:]
+    dates = dates_full[score_start:]
+
+    # 1) 回帰。旧np.polyfit式をそのまま維持。
+    y = np.log(px)
+    x = np.arange(len(px), dtype=float)
+    b1, b0 = np.polyfit(x, y, 1)
+    y_hat = b0 + b1 * x
+    ss_res = np.sum((y - y_hat) ** 2)
+    ss_tot = np.sum((y - np.mean(y)) ** 2)
+    r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+    slope_ann = np.exp(b1 * 252) - 1.0
+
+    # 2) MA20/50/100。closeは入口でfinite正値化済みなのでcumsumで同値。
+    s20_full = _v27_roll_mean_full_finite(close_full, 20)
+    s50_full = _v27_roll_mean_full_finite(close_full, 50)
+    s100_full = _v27_roll_mean_full_finite(close_full, 100)
+    ribbon_days = min(int(RIBBON_KEEP_DAYS), len(px))
+    rib_start = max(0, n - ribbon_days)
+    a = s20_full[rib_start:]
+    b = s50_full[rib_start:]
+    c = s100_full[rib_start:]
+    rib_ok = int(np.sum(np.isfinite(a) & np.isfinite(b) & np.isfinite(c) & (a > b) & (b > c)))
+    ribbon_ratio = rib_ok / max(1, ribbon_days)
+
+    # SMA50上回り比率は旧仕様どおり「直近LOOKBACK窓内だけ」でrollingを作る。
+    s50_score = _v27_roll_mean_full_finite(px, 50)
+    valid50 = np.isfinite(s50_score)
+    above50_ratio = float(np.sum(px[valid50] > s50_score[valid50])) / max(1, int(valid50.sum()))
+
+    # 3) resample('W-FRI').last().dropna() と同じ週末Friday bucketの最終観測。
+    if len(dates):
+        periods = pd.DatetimeIndex(dates).to_period("W-FRI")
+        keys = periods.astype(str).to_numpy()
+        week_end_idx = np.r_[np.flatnonzero(keys[1:] != keys[:-1]), len(keys) - 1]
+        week_last = px[week_end_idx]
+        week_diff = np.diff(week_last)
+        week_up_ratio = float(np.sum(week_diff > 0)) / max(1, len(week_diff))
+    else:
+        week_up_ratio = 0.0
+
+    # 4) 最大ドローダウン。
+    cummax = np.maximum.accumulate(px)
+    mdd = float(np.min(px / cummax - 1.0)) * -1.0
+
+    # 5) 旧 _pivot_ratio_higher_lows と同じcentered window / skipna min。
+    troughs = []
+    win = int(HL_WIN)
+    nn = len(lo)
+    for i in range(win, nn - win):
+        wv = lo[i - win:i + win + 1]
+        finite = np.isfinite(wv)
+        mn = float(np.min(wv[finite])) if np.any(finite) else np.nan
+        if lo[i] == mn:
+            troughs.append(i)
+    if len(troughs) < 2:
+        hl_ratio = 0.0
+    else:
+        cnt = sum(1 for aa, bb in zip(troughs, troughs[1:]) if lo[bb] > lo[aa])
+        hl_ratio = cnt / max(1, len(troughs) - 1)
+
+    return dict(
+        slope_ann=float(slope_ann), r2=float(max(0, min(1, r2))),
+        ribbon_ratio=float(ribbon_ratio), above50_ratio=float(above50_ratio),
+        week_up_ratio=float(week_up_ratio), mdd=float(mdd), hl_ratio=float(hl_ratio),
+    )
+
+
 def compute_right_up_persistent(conn, as_of=None, log_datetime=None, replace_log_day=False):
     """『ずーーっと右肩上がり』をスコア化して screener を更新"""
     # 対象日
@@ -10469,20 +19376,39 @@ def compute_right_up_persistent(conn, as_of=None, log_datetime=None, replace_log
     # カレンダー日換算には余裕を持たせ、採点窓90日は変えずMA計算用の助走だけ取得する。
     _trend_hist_rows = max(LOOKBACK, 100 + RIBBON_KEEP_DAYS)
     start = (today - pd.Timedelta(days=int(_trend_hist_rows * 1.8))).strftime("%Y-%m-%d")
-    ph = pd.read_sql_query(
-        "SELECT rowid AS _rowid, 日付, コード, 終値, 高値, 安値 FROM price_history "
-        "WHERE date(日付)>=date(?) AND date(日付)<=date(?) ORDER BY 日付, rowid",
-        conn, params=[start, today.strftime("%Y-%m-%d")], parse_dates=["日付"]
-    )
-    # P1-287: split aliasを別系列のままMA/R2へ入れない。
-    ph = _dedupe_price_history_df(ph)
-    # P1-676: 持続右肩のMA/回帰も有効な正の終値だけを観測列にする。
+    # V26: 右肩持続だけがshared canonical cacheを使わずprice_historyを再読込し、
+    # さらにこの関数では参照しないadd_price_featuresを全履歴へ付与していた。
+    # _trend_metrics_df() は日付/終値/高値/安値からMA・回帰等を自身で再計算するため、
+    # canonical cacheを共有し、未使用特徴量生成を省く。判定式・採点式・DB更新式は変更しない。
+    _v26_t0 = time.perf_counter()
+    try:
+        ph = _perf_price_history_canonical_range(
+            conn, start, today.strftime("%Y-%m-%d"), tag="right_up_persistent_v26"
+        )
+        if not ph.empty:
+            ph = ph[[c for c in ("_rowid", "日付", "コード", "終値", "高値", "安値") if c in ph.columns]].copy()
+        _v26_mode = "shared-canon"
+    except Exception as _v26_e:
+        # cache経路に障害があっても既存判定を止めない。従来のDB読込へfail-safe fallback。
+        print(f"[V26][右肩持続][WARN] shared cache failed -> legacy load: {_v26_e}", flush=True)
+        ph = pd.read_sql_query(
+            "SELECT rowid AS _rowid, 日付, コード, 終値, 高値, 安値 FROM price_history "
+            "WHERE date(日付)>=date(?) AND date(日付)<=date(?) ORDER BY 日付, rowid",
+            conn, params=[start, today.strftime("%Y-%m-%d")], parse_dates=["日付"]
+        )
+        ph = _dedupe_price_history_df(ph)
+        _v26_mode = "legacy-load"
+
+    # P1-676維持: 持続右肩のMA/回帰は有効な正の終値だけを観測列にする。
     if not ph.empty:
         ph["終値"] = pd.to_numeric(ph["終値"], errors="coerce")
         ph = ph[ph["終値"].notna() & np.isfinite(ph["終値"]) & (ph["終値"] > 0)].copy()
-    ph = add_price_features(ph)  # v10: unify price feature calc
-    if ph.empty: 
+    if ph.empty:
         print("[右肩上がり] データ無し"); return
+    print(
+        f"[V26][右肩持続] history={_v26_mode} rows={len(ph)} load_dt={time.perf_counter()-_v26_t0:.2f}s "
+        f"unused_add_price_features=skipped", flush=True
+    )
 
     # P1-579: 持続右肩はphase_signal_detection側の別ロジック(tob_score)ログと分離する。
     # 専用種別「右肩上がり-持続」を同じsnapshot内で記録し、開始日もこの履歴から算出する。
@@ -10519,7 +19445,14 @@ def compute_right_up_persistent(conn, as_of=None, log_datetime=None, replace_log
             continue
         if len(g.tail(LOOKBACK)) < MIN_DAYS:
             continue
-        met = _trend_metrics_df(g)
+        if _v27_right_persistent_fast_enabled():
+            try:
+                met = _v27_trend_metrics_np(g)
+            except Exception as _v27_e:
+                print(f"[V27][右肩持続][WARN] NumPy metrics failed code={code} -> pandas fallback: {_v27_e}", flush=True)
+                met = _trend_metrics_df(g)
+        else:
+            met = _trend_metrics_df(g)
 
         # ---- スコア（0-100） ----
         # 回帰傾き（0→40点）：12%/年で0点、50%/年で満点
@@ -10610,13 +19543,14 @@ def compute_right_up_persistent(conn, as_of=None, log_datetime=None, replace_log
     if not outs:
         print("[右肩上がり] 該当なし（前回値をクリア）"); return
     print(f"[右肩上がり] 持続トレンド版 {len(outs)} 銘柄を更新 / 閾値={THRESH_SCORE}")
+    print(f"[V27][右肩持続] metrics={'numpy' if _v27_right_persistent_fast_enabled() else 'pandas-legacy'} codes={len(outs)}", flush=True)
 
 # ========================= 右肩上がり・早期トリガー（完全版：置換用） =========================
 
 # ---- スキーマ確保（screener の列/ 最小列）----
 
 # ---- メイン：早期トリガー計算・DB更新・ログ記録（日時で記録）----
-def compute_right_up_early_triggers(conn, as_of=None, log_datetime=None, replace_log_day=False):
+def _v21_legacy_compute_right_up_early_triggers(conn, as_of=None, log_datetime=None, replace_log_day=False):
 
     if as_of is not None:
         as_of_date = pd.to_datetime(as_of).date()
@@ -10865,7 +19799,260 @@ def _calc_upside_potential_score(mcap_oku, close, ma20, volume_ratio):
     return round(max(0.0, min(100.0, known_score * 100.0 / known_weight)), 1)
 
 
-def phase_signal_detection(conn: sqlite3.Connection):
+
+
+def _v21_early_best_from_group(g: pd.DataFrame):
+    if g is None or len(g) < max(60,50): return 0.0, "", ""
+    close=g["終値"].to_numpy(dtype=float); high=g["高値"].to_numpy(dtype=float); vol=g["出来高"].to_numpy(dtype=float); n=len(g); i=n-1
+    s10=_v21_roll_mean_at(close,i,10,10); s20=_v21_roll_mean_at(close,i,20,20); s50=_v21_roll_mean_at(close,i,50,50); s100=_v21_roll_mean_at(close,i,100,100); s200=_v21_roll_mean_at(close,i,200,200)
+    v20_prev=_v21_roll_mean_at(vol,i-1,20,20); hh60=_v21_roll_max_at(high,i-1,HH_N,HH_N)
+    if not np.isfinite(s20) or not np.isfinite(s50): return 0.0,"",""
+    close_t=float(close[-1]); vol_t=float(vol[-1]) if np.isfinite(vol[-1]) else np.nan
+    ext20=(close_t-s20)/s20 if s20>0 else 0.0; ext50=(close_t-s50)/s50 if s50>0 else 0.0; sigs=[]
+    if np.isfinite(hh60):
+        cond_break=close_t>=hh60*(1.0+PIVOT_EPS); cond_vol=np.isfinite(v20_prev) and np.isfinite(vol_t) and vol_t>=v20_prev*VOL_BOOST
+        s50_prev=_v21_roll_mean_at(close,i-1,50,50); cond_ma=(s20>s50) and np.isfinite(s50_prev) and s50>s50_prev; cond_ext=(ext20<=EXT_20_MAX) and (ext50<=EXT_50_MAX)
+        if cond_break and cond_vol and cond_ma and cond_ext:
+            near=max(0.0,1.0-(close_t/hh60-1.0)/0.05); vol_score=0.0 if not np.isfinite(v20_prev) else min(1.0,(vol_t/max(1.0,v20_prev))/2.5); ma_gap=min(1.0,(s20/s50-1.0)/0.05) if s50>0 else 0.0
+            sigs.append((55*near+25*vol_score+20*ma_gap,"ブレイク",f"HH{HH_N}+{PIVOT_EPS*100:.1f}%, vol≥{VOL_BOOST}x, 20>50"))
+    if np.isfinite(s10) and np.isfinite(hh60):
+        lo=max(1,n-POCKET_WIN-1); hi=n-1; dvs=[]
+        for k in range(lo,hi):
+            if close[k]-close[k-1] < 0 and np.isfinite(vol[k]): dvs.append(float(vol[k]))
+        down_vol_max=max(dvs) if dvs else np.nan; near_pivot=close_t/hh60-1.0
+        cond_pp=close_t>s10 and np.isfinite(down_vol_max) and np.isfinite(vol_t) and vol_t>down_vol_max; cond_near=(-0.03<=near_pivot<=0.02)
+        if cond_pp and cond_near:
+            rr=pd.Series(close[-10:]).pct_change().dropna(); tight=float(rr.std()) if len(rr) else np.nan; tight_score=max(0.0,1.0-(tight/0.025)) if np.isfinite(tight) else 0.0; vol_score=min(1.0,vol_t/max(1.0,down_vol_max)/2.0)
+            sigs.append((35+35*vol_score+30*tight_score,"ポケット",f">10MA, vol>{POCKET_WIN}dDownMax, near HH{HH_N}"))
+    start=max(0,n-REB_WIN-1); s20tail=_v21_ma_series_tail(close,start,20,20); ctail=close[start:]; below=np.isfinite(s20tail)&(ctail<s20tail); cross=bool(np.any((~below[:-1]) & below[:-1] & False)) if False else False
+    # pandas式: below20.shift(1,False) & ~below20 のtail(REB_WIN)
+    if len(below)>=2:
+        cross_arr=np.concatenate([[False],below[:-1]]) & (~below); cross=bool(np.any(cross_arr[-REB_WIN:]))
+    cond_c=cross and close_t>=s20 and np.isfinite(s50) and close_t>=s50 and np.isfinite(v20_prev) and np.isfinite(vol_t) and vol_t>=v20_prev
+    if cond_c:
+        near20=max(0.0,1.0-abs(ext20)/0.04); sigs.append((30+40*near20+30*min(1.0,vol_t/max(1.0,v20_prev)),"20MAリバ","20MA reclaim & vol≥Avg20 & ≥50MA"))
+    if np.isfinite(s200):
+        start=max(0,n-RECLAIM_WIN-1); s200tail=_v21_ma_series_tail(close,start,200,200); ctail=close[start:]; above=np.isfinite(s200tail)&(ctail>=s200tail)
+        crossed=False
+        if len(above)>=2:
+            ca=(~np.concatenate([[False],above[:-1]])) & above; crossed=bool(np.any(ca[-RECLAIM_WIN:]))
+        stay3=bool(len(above)>=3 and np.all(above[-3:])); s50_old=_v21_roll_mean_at(close,i-4,50,50); s100_old=_v21_roll_mean_at(close,i-4,100,100)
+        slope50_up=np.isfinite(s50_old) and s50>s50_old; slope100_ok=np.isfinite(s100_old) and np.isfinite(s100) and s100>=s100_old
+        if crossed and stay3 and slope50_up and slope100_ok:
+            ext200=(close_t-s200)/s200 if s200>0 else 0.0; near200=max(0.0,1.0-abs(ext200)/0.06); vol_score=0.0 if (not np.isfinite(vol_t) or not np.isfinite(v20_prev)) else min(1.0,vol_t/max(1.0,v20_prev))
+            sigs.append((25+45*near200+30*vol_score,"200MAリクレイム","cross&stay3d, 50MA↑,100MA↔↑"))
+    if not sigs: return 0.0,"",""
+    sigs.sort(key=lambda x:x[0], reverse=True); return sigs[0]
+
+
+
+# === PERF-OPT-V33 MIDDAY right-up-early persistent daily baseline ===
+_V33_RIGHT_UP_EARLY_RUN_CACHE: dict[tuple, pd.DataFrame] = {}
+
+def _v33_right_up_early_fast_enabled() -> bool:
+    return bool(RIGHT_UP_EARLY_V33_FAST)
+
+def _v33_right_up_early_normalize_canon(df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+    if df is None or getattr(df, "empty", True):
+        return pd.DataFrame(columns=cols)
+    x = _dedupe_price_history_df(df[cols].copy())
+    if x.empty:
+        return pd.DataFrame(columns=cols)
+    x["日付"] = pd.to_datetime(x["日付"], errors="coerce").dt.normalize()
+    for c in ("始値","高値","安値","終値","出来高"):
+        x[c] = pd.to_numeric(x[c], errors="coerce")
+    x = (x.dropna(subset=["コード","日付"])
+           .sort_values(["コード","日付"], kind="stable")
+           .reset_index(drop=True))
+    return x[cols]
+
+def _v33_right_up_early_baseline_load(trade_date_s: str, start_date_s: str, prior_end_s: str) -> pd.DataFrame | None:
+    p = RIGHT_UP_EARLY_V33_CACHE_PATH
+    try:
+        if not p.exists():
+            return None
+        t0 = time.perf_counter()
+        with p.open("rb") as fh:
+            obj = pickle.load(fh)
+        if not isinstance(obj, dict):
+            return None
+        if int(obj.get("schema") or 0) != RIGHT_UP_EARLY_V33_CACHE_SCHEMA:
+            return None
+        if str(obj.get("trade_date") or "") != str(trade_date_s):
+            return None
+        if str(obj.get("start_date") or "") != str(start_date_s):
+            return None
+        if str(obj.get("prior_end") or "") != str(prior_end_s):
+            return None
+        if str(obj.get("build_token") or "") != str(_daily_build_token()):
+            return None
+        df = obj.get("df")
+        if not isinstance(df, pd.DataFrame):
+            return None
+        cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+        if any(c not in df.columns for c in cols):
+            return None
+        out = df[cols].copy()
+        out["日付"] = pd.to_datetime(out["日付"], errors="coerce").dt.normalize()
+        print(
+            f"[V33][right-up-early-baseline] HIT trade_date={trade_date_s} rows={len(out)} "
+            f"size_mb={p.stat().st_size/1048576:.2f} dt={time.perf_counter()-t0:.2f}s",
+            flush=True,
+        )
+        return out
+    except Exception as e:
+        print(f"[V33][right-up-early-baseline][WARN] load failed -> rebuild/full fallback: {e}", flush=True)
+        return None
+
+def _v33_right_up_early_baseline_save(trade_date_s: str, start_date_s: str, prior_end_s: str, df: pd.DataFrame) -> None:
+    p = RIGHT_UP_EARLY_V33_CACHE_PATH
+    tmp = None
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": RIGHT_UP_EARLY_V33_CACHE_SCHEMA,
+            "trade_date": str(trade_date_s),
+            "start_date": str(start_date_s),
+            "prior_end": str(prior_end_s),
+            "build_token": str(_daily_build_token()),
+            "updated_at": _now_jst().isoformat(timespec="seconds"),
+            "df": df,
+        }
+        fd, name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=str(p.parent))
+        os.close(fd); tmp = Path(name)
+        with tmp.open("wb") as fh:
+            pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, p)
+        print(
+            f"[V33][right-up-early-baseline] STORE trade_date={trade_date_s} rows={len(df)} "
+            f"size_mb={p.stat().st_size/1048576:.2f}",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[V33][right-up-early-baseline][WARN] save failed (run continues): {e}", flush=True)
+        try:
+            if tmp is not None and tmp.exists(): tmp.unlink()
+        except Exception:
+            pass
+
+def _v33_right_up_early_history(conn: sqlite3.Connection, start_date_s: str, as_of_date: date) -> pd.DataFrame:
+    """MIDDAYだけ、前営業日までのcanonical日足をdisk baseline化して当日分だけ再取得。
+
+    返却列/holiday/dedupe/numeric semanticsはV21 canonical rangeと同じ。
+    PREOPEN/EODまたはfast無効時はV21従来経路をそのまま使う。
+    """
+    if (not _v33_right_up_early_fast_enabled()) or _auto_run_mode() != "MIDDAY":
+        return _perf_price_history_canonical_range(
+            conn, start_date_s, as_of_date.isoformat(), tag="right_up_early"
+        )
+    cols = ["_rowid","コード","日付","始値","高値","安値","終値","出来高"]
+    trade_date_s = as_of_date.isoformat()
+    key = (id(conn), trade_date_s, str(start_date_s))
+    hit = _V33_RIGHT_UP_EARLY_RUN_CACHE.get(key)
+    if isinstance(hit, pd.DataFrame):
+        print(f"[V33][right-up-early] run-cache HIT rows={len(hit)}", flush=True)
+        return hit.copy()
+    try:
+        extra = _load_extra_closed(EXTRA_CLOSED_PATH)
+        prior_end = prev_business_day_jp(as_of_date, extra)
+        prior_end_s = prior_end.isoformat()
+        base = _v33_right_up_early_baseline_load(trade_date_s, start_date_s, prior_end_s)
+        if base is None:
+            tb = time.perf_counter()
+            raw_prior = _perf_price_history_raw_range(
+                conn, start_date_s, prior_end_s, tag="v33_right_up_early_baseline"
+            )
+            base = _v33_right_up_early_normalize_canon(raw_prior)
+            # baselineには当日を絶対に含めない。
+            if not base.empty:
+                base = base[base["日付"] < pd.Timestamp(as_of_date)].copy()
+            _v33_right_up_early_baseline_save(trade_date_s, start_date_s, prior_end_s, base)
+            print(
+                f"[V33][right-up-early-baseline] BUILD rows={len(base)} dt={time.perf_counter()-tb:.2f}s",
+                flush=True,
+            )
+        tc = time.perf_counter()
+        raw_today = _perf_price_history_raw_range(
+            conn, trade_date_s, trade_date_s, tag="v33_right_up_early_today"
+        )
+        today = _v33_right_up_early_normalize_canon(raw_today)
+        if not today.empty:
+            today = today[today["日付"] == pd.Timestamp(as_of_date)].copy()
+        if base.empty:
+            out = today
+        elif today.empty:
+            out = base.copy()
+        else:
+            out = pd.concat([base, today], ignore_index=True)
+            out = out.sort_values(["コード","日付"], kind="stable").reset_index(drop=True)
+        out = out[cols] if not out.empty else pd.DataFrame(columns=cols)
+        _V33_RIGHT_UP_EARLY_RUN_CACHE[key] = out.copy()
+        print(
+            f"[V33][right-up-early] route=disk-baseline+today base={len(base)} today={len(today)} "
+            f"rows={len(out)} today_dt={time.perf_counter()-tc:.2f}s",
+            flush=True,
+        )
+        return out
+    except Exception as e:
+        print(f"[V33][right-up-early][WARN] persistent path failed -> V21 full fallback: {e}", flush=True)
+        return _perf_price_history_canonical_range(
+            conn, start_date_s, as_of_date.isoformat(), tag="right_up_early_v33_fallback"
+        )
+# === /PERF-OPT-V33 MIDDAY right-up-early persistent daily baseline ===
+
+def compute_right_up_early_triggers(conn, as_of=None, log_datetime=None, replace_log_day=False):
+    if not _v21_fast_enabled(): return _v21_legacy_compute_right_up_early_triggers(conn,as_of,log_datetime,replace_log_day)
+    t0=time.perf_counter()
+    try:
+        if as_of is not None: as_of_date=pd.to_datetime(as_of).date()
+        else:
+            va=_latest_valid_history_date(conn)
+            if not va: print("[右肩早期] price_history が空です"); return
+            as_of_date=date.fromisoformat(va)
+        if log_datetime is not None:
+            dt_log=pd.Timestamp(log_datetime); dt_log=dt_log.tz_convert("Asia/Tokyo") if dt_log.tzinfo is not None else dt_log
+        else: dt_log=pd.Timestamp(_now_jst())
+        dt_str=dt_log.strftime("%Y-%m-%d %H:%M:%S"); print("[右肩早期] データを一括計算中... [V21]", flush=True)
+        start=(pd.Timestamp(as_of_date)-pd.Timedelta(days=320)).strftime("%Y-%m-%d")
+        ph=_v33_right_up_early_history(conn,start,as_of_date)
+        if ph.empty: print("[右肩早期] データなし"); return
+        ph=ph[np.isfinite(ph["終値"]) & (ph["終値"]>0)].copy()
+        if ph.empty: print("[右肩早期] 有効終値データなし"); return
+        early_raw={}
+        for (rc,) in conn.execute("SELECT コード FROM screener").fetchall():
+            rk=canonical_code_for_db(rc)
+            if rk and rk not in early_raw: early_raw[rk]=rc
+        results=[]; logs=[]; cnt=0
+        for code,g in ph.groupby("コード",sort=False):
+            if g.empty or pd.Timestamp(g["日付"].iloc[-1]).date()!=as_of_date: continue
+            score,tag,detail=_v21_early_best_from_group(g); flag="候補" if score>=SCORE_TH and tag else ""
+            results.append((None if score==0 else round(float(score),1), tag if tag else None, flag, early_raw.get(canonical_code_for_db(code),str(code))))
+            if flag:
+                cnt+=1; last=g.iloc[-1]
+                logs.append((dt_str,canonical_code_for_db(code),"右肩上がり-早期",f"{tag} | score={round(float(score),1)} | {detail}",float(last["終値"]) if pd.notna(last.get("終値")) else None,float(last["高値"]) if pd.notna(last.get("高値")) else None,float(last["安値"]) if pd.notna(last.get("安値")) else None,int(last["出来高"]) if pd.notna(last.get("出来高")) else None,round(float(score),1),0))
+        cur=conn.cursor()
+        try:
+            cur.execute("SAVEPOINT v21_right_up_early"); cur.execute("UPDATE screener SET 右肩早期フラグ='', 右肩早期種別=NULL, 右肩早期スコア=NULL")
+            if results: cur.executemany('UPDATE screener SET 右肩早期スコア=?, 右肩早期種別=?, 右肩早期フラグ=? WHERE コード=?',results)
+            if replace_log_day: cur.execute("DELETE FROM signals_log WHERE 種別='右肩上がり-早期' AND substr(日時,1,10)=?",(as_of_date.isoformat(),))
+            if logs:
+                try:
+                    cur.executemany("INSERT INTO signals_log (日時,コード,種別,詳細,終値,高値,安値,出来高,スコア,検証済み) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(コード,日時,種別) DO UPDATE SET 詳細=excluded.詳細,終値=excluded.終値,高値=excluded.高値,安値=excluded.安値,出来高=excluded.出来高,スコア=excluded.スコア,検証済み=excluded.検証済み",logs)
+                except sqlite3.OperationalError:
+                    cur.executemany('INSERT INTO signals_log (日時,コード,種別,詳細,終値,高値,安値,出来高,スコア,検証済み) VALUES(?,?,?,?,?,?,?,?,?,?)',logs)
+            cur.execute("RELEASE SAVEPOINT v21_right_up_early")
+        except Exception:
+            try: cur.execute("ROLLBACK TO SAVEPOINT v21_right_up_early"); cur.execute("RELEASE SAVEPOINT v21_right_up_early")
+            except Exception: pass
+            raise
+        finally: cur.close()
+        print(f"[右肩早期] 候補 {cnt} 件 / 総{len(results)}件 as_of={as_of_date} 閾値{SCORE_TH} dt={dt_str} [V21 {time.perf_counter()-t0:.2f}s]", flush=True)
+    except Exception as e:
+        print(f"[V21][右肩早期][WARN] fastpath failed -> legacy fallback: {e}",flush=True)
+        return _v21_legacy_compute_right_up_early_triggers(conn,as_of,log_datetime,replace_log_day)
+
+def _v21_legacy_phase_signal_detection(conn: sqlite3.Connection):
     
     cur = conn.cursor()
     _valid_max = _latest_valid_history_date(conn)
@@ -11152,6 +20339,111 @@ def phase_signal_detection(conn: sqlite3.Connection):
             cur.close()
 
 # ===== 翌営業日検証 =====
+
+
+def _v21_signal_pack(g: pd.DataFrame):
+    close=g["終値"].to_numpy(dtype=float); high=g["高値"].to_numpy(dtype=float); low=g["安値"].to_numpy(dtype=float); vol=g["出来高"].to_numpy(dtype=float); opn=g["始値"].to_numpy(dtype=float); n=len(g); i=n-1
+    ma5=_v21_roll_mean_at(close,i,5,1); ma13=_v21_roll_mean_at(close,i,13,1); ma20=_v21_roll_mean_at(close,i,20,1); ma26=_v21_roll_mean_at(close,i,26,1); ma25=_v21_roll_mean_at(close,i,25,25)
+    vma5prev=_v21_roll_mean_at(vol,i-1,5,5); vma20prev=_v21_roll_mean_at(vol,i-1,20,20); vma20=_v21_roll_mean_at(vol,i,20,1); vol60=_v21_roll_mean_at(vol,i,60,60); high52=_v21_roll_max_at(close,i,252,252)
+    rsi=np.nan
+    if n>=15:
+        d=np.diff(close[-15:]); up=np.clip(d,0,None); down=-np.clip(d,None,0); um=float(np.mean(up)); dm=float(np.mean(down)); rs=um/(dm if dm!=0 else 1e-9); rsi=100-(100/(1+rs))
+    atr=np.nan
+    if n>=20:
+        trs=[]
+        for k in range(n-20,n):
+            vals=[]
+            if np.isfinite(high[k]) and np.isfinite(low[k]): vals.append(abs(high[k]-low[k]))
+            if k>0 and np.isfinite(close[k-1]):
+                if np.isfinite(high[k]): vals.append(abs(high[k]-close[k-1]))
+                if np.isfinite(low[k]): vals.append(abs(low[k]-close[k-1]))
+            trs.append(max(vals) if vals else np.nan)
+        if np.isfinite(trs).sum()>=20: atr=float(np.mean(trs))
+    slope13=0.0; slope26=0.0
+    if n>=26:
+        old13=_v21_roll_mean_at(close,i-12,13,1)
+        if np.isfinite(old13) and old13!=0: slope13=ma13/old13-1.0
+    if n>=52:
+        old26=_v21_roll_mean_at(close,i-25,26,1)
+        if np.isfinite(old26) and old26!=0: slope26=ma26/old26-1.0
+    above20=0.0
+    if n>=60:
+        st=n-60; ma20tail=_v21_ma_series_tail(close,st,20,1); above20=float(np.mean(close[st:]>ma20tail))
+    return {"ma5":ma5,"ma13":ma13,"ma20":ma20,"ma25":ma25,"ma26":ma26,"vma5prev":vma5prev,"vma20prev":vma20prev,"vma20":vma20,"vol60":vol60,"rsi14":rsi,"high52":high52,"atr20":atr,"slope13":slope13,"slope26":slope26,"above20":above20,"open":opn[-1] if n else np.nan}
+
+def phase_signal_detection(conn: sqlite3.Connection):
+    if not _v21_fast_enabled(): return _v21_legacy_phase_signal_detection(conn)
+    t0=time.perf_counter()
+    try:
+        valid=_latest_valid_history_date(conn)
+        if not valid: return
+        today=str(valid)[:10]; signal_sraw={}; signal_mcap={}
+        for rc,mc in conn.execute("SELECT コード, 時価総額億円 FROM screener").fetchall():
+            rk=canonical_code_for_db(rc)
+            if rk and rk not in signal_sraw: signal_sraw[rk]=rc; signal_mcap[rk]=mc
+        codes=list(signal_sraw.keys())
+        if not codes:return
+        try: asof_d=date.fromisoformat(today)
+        except Exception: asof_d=date.fromisoformat(_today_jst())
+        start=(asof_d-timedelta(days=max(int(SIGNAL_LOOKBACK_DAYS),400))).strftime("%Y-%m-%d")
+        print("[シグナル] データを一括計算中... [V21]",flush=True)
+        ph=_perf_price_history_canonical_range(conn,start,today,tag="signal_detection")
+        if not ph.empty:
+            ph=ph[np.isfinite(ph["終値"])&(ph["終値"]>0)&ph["コード"].isin(set(codes))].copy()
+        upd=[]; logs=[]; touched=set()
+        if not ph.empty:
+            for code,g in ph.groupby("コード",sort=False):
+                last=g.iloc[-1]; ck=canonical_code_for_db(code); last_date=pd.Timestamp(last["日付"]).strftime("%Y-%m-%d"); touched.add(ck)
+                if last_date!=today:
+                    upd.append((None,None,None,last_date,signal_sraw.get(ck,code))); continue
+                f=_v21_signal_pack(g)
+                if len(g)<21 or not np.isfinite(f["ma5"]) or not np.isfinite(f["ma20"]) or not np.isfinite(f["vma5prev"]):
+                    upd.append((None,None,None,today,signal_sraw.get(ck,code))); continue
+                prev_close=float(g["終値"].iloc[-2]) if len(g)>=2 else float(last["終値"]); zenhi=float(last["終値"])-prev_close
+                cur_vol=float(last["出来高"]) if pd.notna(last["出来高"]) and np.isfinite(last["出来高"]) else None; prev5=f["vma5prev"] if np.isfinite(f["vma5prev"]) and f["vma5prev"]>0 else None; vol_bai=(cur_vol/prev5) if cur_vol is not None and prev5 is not None else None
+                price_ma5_ratio=float(last["終値"])/f["ma5"] if f["ma5"] else 0
+                normal=(vol_bai is not None and vol_bai>=2 and price_ma5_ratio>=1.03 and zenhi>0)
+                reversal=False
+                if np.isfinite(f["ma25"]) and pd.notna(last.get("始値")):
+                    ma25=f["ma25"]; reversal=(float(last["安値"])<=ma25*1.02 and float(last["終値"])>ma25 and float(last["終値"])>float(last["始値"]) and vol_bai is not None and vol_bai>=1.5)
+                shodou="候補" if (normal or reversal) else None
+                range_ok=False
+                if pd.notna(last["高値"]) and pd.notna(last["安値"]) and float(last["高値"])>float(last["安値"]): range_ok=((float(last["終値"])-float(last["安値"]))/(float(last["高値"])-float(last["安値"]))>=0.6)
+                bottom="候補" if (np.isfinite(f["rsi14"]) and f["rsi14"]<=30 and zenhi>0 and range_ok) else None
+                try:
+                    z=signal_mcap.get(ck); zika=float(z) if z is not None and pd.notna(z) else None
+                except Exception: zika=None
+                potential=_calc_upside_potential_score(zika,last.get("終値"),f["ma20"],vol_bai)
+                near_high=bool(np.isfinite(f["high52"]) and f["high52"]>0 and last["終値"] and float(last["終値"])/f["high52"]>=0.95)
+                vol_contraction=(f["atr20"]/float(last["終値"])<=0.03) if last["終値"] and np.isfinite(f["atr20"]) else False
+                dryup=(np.isfinite(f["vma20"]) and np.isfinite(f["vol60"]) and f["vma20"]<f["vol60"]*0.8)
+                rumor=(np.isfinite(f["vma20prev"]) and pd.notna(last["出来高"]) and float(last["出来高"])>=f["vma20prev"]*1.5 and zenhi>0)
+                tob=0; tob+=20 if near_high else 0; tob+=15 if f["slope13"]>0 else 0; tob+=15 if f["slope26"]>0 else 0; tob+=20 if f["above20"]>=0.80 else 0; tob+=15 if vol_contraction else 0; tob+=10 if dryup else 0; tob+=5 if rumor else 0; tob_flag="候補" if tob>=60 else None
+                upd.append((shodou,bottom,potential,today,signal_sraw.get(ck,code)))
+                def app(kind,score): logs.append((code,today,kind,last['終値'],last['高値'],last['安値'],int(last['出来高']) if pd.notna(last['出来高']) else None,score,0,None,None,None,None,None,None,None,None,None))
+                if shodou: app('初動',potential if potential is not None else None)
+                if bottom: app('底打ち',potential if potential is not None else None)
+                if potential is not None and potential>=60: app('上昇余地',potential)
+                if tob_flag: app('右肩上がり',float(tob))
+        for ck,raw in signal_sraw.items():
+            if ck not in touched: upd.append((None,None,None,None,raw))
+        if upd or logs:
+            cur=conn.cursor()
+            try:
+                cur.execute("SAVEPOINT v21_signal_detection")
+                if upd: cur.executemany('UPDATE screener SET 初動フラグ=?,底打ちフラグ=?,上昇余地スコア=?,シグナル更新日=? WHERE コード=?',upd)
+                if logs: cur.executemany("INSERT OR IGNORE INTO signals_log (コード,日時,種別,終値,高値,安値,出来高,スコア,検証済み,次日始値,次日終値,次日高値,次日安値,リターン終値pct,フォロー高値pct,最大逆行pct,判定,理由) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",logs)
+                cur.execute("RELEASE SAVEPOINT v21_signal_detection")
+            except Exception:
+                try: cur.execute("ROLLBACK TO SAVEPOINT v21_signal_detection"); cur.execute("RELEASE SAVEPOINT v21_signal_detection")
+                except Exception: pass
+                raise
+            finally: cur.close()
+        print(f"[signal-v21] updated={len(upd)} logs={len(logs)} dt={time.perf_counter()-t0:.2f}s",flush=True)
+    except Exception as e:
+        print(f"[V21][signal][WARN] fastpath failed -> legacy fallback: {e}",flush=True)
+        return _v21_legacy_phase_signal_detection(conn)
+
 def phase_validate_prev_business_day(conn: sqlite3.Connection):
     extra_closed = _load_extra_closed(EXTRA_CLOSED_PATH)
     today = date.fromisoformat(_today_jst())
@@ -11381,14 +20673,13 @@ def phase_validate_prev_business_day(conn: sqlite3.Connection):
         _report_written.append(f"{_sig_day_s}→{_next_day_s}:{len(_report_rows)}")
 
     if _report_written:
-        try:
-            notification.notify(
-                title="翌日検証レポート",
-                message=f"検証レポート更新: {_report_total}件 / " + ", ".join(_report_written[:4]),
-                timeout=5,
-            )
-        except Exception:
-            pass
+        _report_title = "翌日検証レポート"
+        _report_message = f"検証レポート更新: {_report_total}件 / " + ", ".join(_report_written[:4])
+        # NOTIFY-ASYNC-V1: 通知表示やユーザー操作でscreening本体を待たせない。
+        if os.name == "nt":
+            _leader_notify_windows_toast(_report_title, _report_message, timeout_sec=5, code="")
+        else:
+            _plyer_notify_async(_report_title, _report_message, timeout_sec=5)
 
     # P1-678: 一部未完成なら検証可能分は保持しつつ成功markerを立てない。
     # 次回runでは未検証残件だけが再試行される。
@@ -11805,17 +21096,6 @@ def _derive_triangle_scores(d):
         else:
             s -= 5
 
-    # 増資リスク
-    zr = _to_float(d.get("増資スコア"))
-    if zr is not None:
-        _safety_obs += 1
-        if zr >= 70:
-            s -= 15
-        elif zr >= 40:
-            s -= 8
-        else:
-            s += 3
-
     # ATR（ボラ高すぎ＝減点）
     atr = _to_float(d.get("ATR14_PCT"))
     if atr is not None:
@@ -12155,9 +21435,12 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
     # P2-41: Yahoo URLは全行を1銘柄ずつresolverへ通さず、DB読込をbulkで1回にまとめる。
     _yahoo_symbol_map = {}
     if conn is not None and df is not None and not df.empty and "コード" in df.columns:
-        _link_codes = list(dict.fromkeys(
-            canonical_code_for_db(c) for c in df["コード"].tolist() if canonical_code_for_db(c)
-        ))
+        _link_codes = []
+        for _lc_raw in df["コード"].tolist():
+            _lc = canonical_code_for_db(_lc_raw)
+            if _lc:
+                _link_codes.append(_lc)
+        _link_codes = list(dict.fromkeys(_link_codes))
         if _link_codes:
             _link_symbols = resolve_yahoo_symbols_bulk(_link_codes, conn)
             _yahoo_symbol_map = dict(zip(_link_codes, _link_symbols))
@@ -12166,8 +21449,9 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
     def _clean(val):
         return None if pd.isna(val) else val
 
-    for _, r in df.iterrows():
-        d = {k: _clean(r.get(k)) for k in df.columns}
+    # PERF-OPT-V1: Series生成コストの大きいiterrowsを避け、同じ列値をrecordsで処理する。
+    for _rec in df.to_dict("records"):
+        d = {k: _clean(v) for k, v in _rec.items()}
 
         # コード/銘柄
         if "コード" in d:
@@ -12287,9 +21571,17 @@ def _prepare_rows(df: pd.DataFrame, conn: sqlite3.Connection | None = None):
 def _ensure_template_file(template_dir: str, overwrite=True):
     os.makedirs(template_dir, exist_ok=True)
     path = os.path.join(template_dir, "dashboard.html")
+    desired = _load_dashboard_template_str()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as _tf:
+                if _tf.read() == desired:
+                    return path
+        except Exception:
+            pass
     if overwrite or not os.path.exists(path):
         # P1-396: truncate途中で落ちて壊れたtemplateを残さない。
-        _atomic_write_text_file(path, _load_dashboard_template_str())
+        _atomic_write_text_file(path, desired)
     return path
 
 # =================== ダッシュボード書き出し（完全版） ===================
@@ -12358,6 +21650,246 @@ def _load_offering_codes_from_db(conn, days=400):
 
 
 # ==== [BULK PRICE SUMMARIES - TOP LEVEL] ================================
+def _v62_price_summary_values_equal(a, b) -> bool:
+    if a is None or b is None:
+        return a is b
+    if isinstance(a, (float, np.floating)) or isinstance(b, (float, np.floating)):
+        try:
+            fa, fb = float(a), float(b)
+            if (not math.isfinite(fa)) and (not math.isfinite(fb)):
+                return True
+            return abs(fa - fb) <= 1e-8 * max(1.0, abs(fa), abs(fb))
+        except Exception:
+            pass
+    return a == b
+
+
+def _v62_price_summary_maps_equal(fast_map: dict, legacy_map: dict) -> tuple[bool, str]:
+    fields = (
+        "last_date","last_close","last_high","last_low","prev_date","prev_close",
+        "ma5","ma25","ma75","history_obs","history_first_date","history_span_days",
+        "db_last_close","db_prev_close","fresh","expected_asof"
+    )
+    if set(fast_map) != set(legacy_map):
+        return False, f"code-set fast={len(fast_map)} legacy={len(legacy_map)}"
+    diffs = []
+    for code in sorted(fast_map):
+        fa, la = fast_map.get(code) or {}, legacy_map.get(code) or {}
+        for f in fields:
+            if not _v62_price_summary_values_equal(fa.get(f), la.get(f)):
+                diffs.append((code, f, fa.get(f), la.get(f)))
+                if len(diffs) >= 5:
+                    return False, repr(diffs)
+    return True, ""
+
+
+def _v62_midday_price_summary_fast(conn, codes, window_days=200):
+    """前日までの200日summary baselineをdiskへ保存し、当日1行だけoverlayする。"""
+    if (not V62_PRICE_SUMMARY_FAST) or str(_auto_run_mode() or "").upper() != "MIDDAY":
+        return None, None
+    try:
+        codes = [_normalize_jp_security_code(c) for c in codes]
+        codes = [c for c in codes if c]
+        if not codes:
+            return {}, None
+        trade_date_s = _expected_snapshot_date_for_run("MIDDAY").isoformat()
+        trade_ts = pd.Timestamp(trade_date_s).normalize()
+        extra = _load_extra_closed(EXTRA_CLOSED_PATH)
+        prior_end_s = prev_business_day_jp(date.fromisoformat(trade_date_s), extra).isoformat()
+        start_s = (date.fromisoformat(_today_jst()) - timedelta(days=int(window_days))).isoformat()
+        rev = _v41_price_history_revision_token(conn, start_s, prior_end_s) if _v41_revision_fast_enabled() else ""
+        codes_fp = _stage2_codes_hash(codes)
+        token = {
+            "schema": V62_PRICE_SUMMARY_CACHE_SCHEMA,
+            "trade_date": trade_date_s,
+            "prior_end": prior_end_s,
+            "start": start_s,
+            "window_days": int(window_days),
+            "revision": str(rev or ""),
+            "codes_fp": str(codes_fp or ""),
+            "build_token": str(_daily_build_token()),
+        }
+        baseline = None
+        p = V62_PRICE_SUMMARY_CACHE_PATH
+        t0 = time.perf_counter()
+        try:
+            if p.exists():
+                with p.open("rb") as fh:
+                    obj = pickle.load(fh)
+                if isinstance(obj, dict) and all(obj.get(k) == v for k, v in token.items()) and isinstance(obj.get("baseline"), dict):
+                    baseline = obj["baseline"]
+                    print(f"[V62-PRICE] baseline HIT codes={len(baseline)} dt={time.perf_counter()-t0:.2f}s", flush=True)
+        except Exception as e:
+            print(f"[V62-PRICE][WARN] baseline load failed: {e}", flush=True)
+            baseline = None
+
+        superset = _v60_midday_canon_superset(conn, trade_date_s)
+        if not isinstance(superset, pd.DataFrame):
+            return None, token
+        code_set = set(codes)
+        if baseline is None:
+            tb = time.perf_counter()
+            dts = pd.to_datetime(superset["日付"], errors="coerce").dt.normalize()
+            base = superset.loc[
+                dts.between(pd.Timestamp(start_s), pd.Timestamp(prior_end_s), inclusive="both")
+                & superset["コード"].astype(str).isin(code_set),
+                ["コード","日付","終値","高値","安値"]
+            ].copy()
+            base["日付"] = pd.to_datetime(base["日付"], errors="coerce").dt.normalize()
+            for c in ("終値","高値","安値"):
+                base[c] = pd.to_numeric(base[c], errors="coerce")
+            baseline = {}
+            for code, g in base.groupby("コード", sort=False):
+                g = g.sort_values("日付", kind="stable")
+                last = g.iloc[-1] if len(g) else None
+                prev = g.iloc[-2] if len(g) > 1 else None
+                closes = pd.to_numeric(g["終値"], errors="coerce").to_numpy(dtype=float, copy=False)
+                valid = np.isfinite(closes) & (closes > 0)
+                valid_pos = np.flatnonzero(valid)
+                valid_close = closes[valid]
+                first_date = None
+                span_days = None
+                if len(valid_pos):
+                    first_ts = pd.Timestamp(g["日付"].iloc[int(valid_pos[0])])
+                    last_valid_ts = pd.Timestamp(g["日付"].iloc[int(valid_pos[-1])])
+                    first_date = str(first_ts.date())
+                    span_days = int((last_valid_ts.normalize() - first_ts.normalize()).days)
+                baseline[str(code)] = {
+                    "last_date": None if last is None else str(pd.Timestamp(last["日付"]).date()),
+                    "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
+                    "last_high": None if last is None or pd.isna(last["高値"]) else float(last["高値"]),
+                    "last_low": None if last is None or pd.isna(last["安値"]) else float(last["安値"]),
+                    "prev_date": None if prev is None else str(pd.Timestamp(prev["日付"]).date()),
+                    "prev_close": None if prev is None or pd.isna(prev["終値"]) else float(prev["終値"]),
+                    "valid_tail75": [float(x) for x in valid_close[-75:]],
+                    "history_obs": int(len(valid_close)),
+                    "history_first_date": first_date,
+                    "history_span_days": span_days,
+                }
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                fd, name = tempfile.mkstemp(prefix=p.name+".", suffix=".tmp", dir=str(p.parent)); os.close(fd)
+                tmp = Path(name)
+                with tmp.open("wb") as fh:
+                    pickle.dump({**token, "baseline": baseline, "saved_at": _now_jst().isoformat(timespec="seconds")}, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                os.replace(tmp, p)
+            except Exception as e:
+                print(f"[V62-PRICE][WARN] baseline store failed: {e}", flush=True)
+            print(f"[V62-PRICE] baseline BUILD codes={len(baseline)} dt={time.perf_counter()-tb:.2f}s", flush=True)
+
+        # 当日canonical rowだけ（最大約3600行）。
+        dts = pd.to_datetime(superset["日付"], errors="coerce").dt.normalize()
+        today = superset.loc[
+            dts.eq(trade_ts) & superset["コード"].astype(str).isin(code_set),
+            ["コード","日付","終値","高値","安値"]
+        ].copy()
+        today["日付"] = pd.to_datetime(today["日付"], errors="coerce").dt.normalize()
+        for c in ("終値","高値","安値"):
+            today[c] = pd.to_numeric(today[c], errors="coerce")
+        today_map = {str(r["コード"]): r for _, r in today.iterrows()}
+
+        live_prices = {}
+        for raw, val in conn.execute("SELECT コード, 現在値 FROM screener WHERE 現在値 IS NOT NULL").fetchall():
+            ck = _normalize_jp_security_code(raw)
+            try:
+                fv = float(str(val).replace(",", ""))
+                if ck and math.isfinite(fv) and fv > 0:
+                    live_prices[ck] = fv
+            except Exception:
+                pass
+        now_jst = _now_jst()
+        try:
+            live_allowed = _is_trading_session_now(now_jst)
+        except Exception:
+            live_allowed = (now_jst.weekday() < 5) and (dt_time(9,0) <= now_jst.time() < dt_time(15,30))
+
+        out = {}
+        for code in codes:
+            b = baseline.get(code) or {}
+            tr = today_map.get(code)
+            db_today_close = None
+            cur_close = None
+            cur_high = None
+            cur_low = None
+            if tr is not None:
+                try: db_today_close = float(tr["終値"]) if pd.notna(tr["終値"]) else None
+                except Exception: db_today_close = None
+                try: cur_high = float(tr["高値"]) if pd.notna(tr["高値"]) else None
+                except Exception: cur_high = None
+                try: cur_low = float(tr["安値"]) if pd.notna(tr["安値"]) else None
+                except Exception: cur_low = None
+                cur_close = db_today_close
+            live_px = live_prices.get(code)
+            # legacy同様、場中は現在値で当日終値をoverlay。DB fresh判定はoverlay前の終値で固定。
+            if live_allowed and live_px is not None:
+                cur_close = live_px
+            has_today_row = tr is not None
+            fresh = bool(has_today_row and db_today_close is not None and math.isfinite(db_today_close) and db_today_close > 0)
+            tail = [float(x) for x in (b.get("valid_tail75") or []) if x is not None and math.isfinite(float(x)) and float(x) > 0]
+            if cur_close is not None and math.isfinite(float(cur_close)) and float(cur_close) > 0:
+                tail2 = (tail + [float(cur_close)])[-75:]
+                hist_obs = int(b.get("history_obs") or 0) + 1
+                first_date = b.get("history_first_date") or trade_date_s
+                try: span_days = int((trade_ts - pd.Timestamp(first_date).normalize()).days)
+                except Exception: span_days = b.get("history_span_days")
+            else:
+                tail2 = tail[-75:]
+                hist_obs = int(b.get("history_obs") or 0)
+                first_date = b.get("history_first_date")
+                span_days = b.get("history_span_days")
+            ma5 = float(np.mean(tail2[-5:])) if len(tail2) >= 5 else None
+            ma25 = float(np.mean(tail2[-25:])) if len(tail2) >= 25 else None
+            ma75 = float(np.mean(tail2[-75:])) if len(tail2) >= 75 else None
+            if has_today_row or (live_allowed and live_px is not None):
+                last_date = trade_date_s
+                last_close = cur_close
+                last_high = cur_high
+                last_low = cur_low
+                prev_date = b.get("last_date")
+                prev_close = b.get("last_close")
+                db_last_close = db_today_close if has_today_row else b.get("last_close")
+                db_prev_close = b.get("last_close") if has_today_row else b.get("prev_close")
+            else:
+                last_date = b.get("last_date")
+                last_close = b.get("last_close")
+                last_high = b.get("last_high")
+                last_low = b.get("last_low")
+                prev_date = b.get("prev_date")
+                prev_close = b.get("prev_close")
+                db_last_close = b.get("last_close")
+                db_prev_close = b.get("prev_close")
+            out[code] = {
+                "last_date": last_date, "last_close": last_close, "last_high": last_high, "last_low": last_low,
+                "prev_date": prev_date, "prev_close": prev_close,
+                "ma5": ma5, "ma25": ma25, "ma75": ma75,
+                "history_obs": hist_obs, "history_first_date": first_date, "history_span_days": span_days,
+                "db_last_close": db_last_close, "db_prev_close": db_prev_close,
+                "fresh": fresh, "expected_asof": trade_date_s,
+            }
+        print(f"[V62-PRICE] fast candidate codes={len(out)} today_rows={len(today_map)} dt={time.perf_counter()-t0:.2f}s", flush=True)
+        return out, token
+    except Exception as e:
+        print(f"[V62-PRICE][WARN] fast candidate failed -> legacy: {e}", flush=True)
+        return None, None
+
+
+def _v62_price_audit_hit(token) -> bool:
+    if not token:
+        return False
+    try:
+        obj = _stage2_json_read(V62_PRICE_SUMMARY_AUDIT_PATH)
+        return isinstance(obj, dict) and obj.get("status") == "PASS" and all(obj.get(k) == v for k, v in token.items())
+    except Exception:
+        return False
+
+
+def _v62_price_audit_store(token):
+    try:
+        _stage2_json_write(V62_PRICE_SUMMARY_AUDIT_PATH, {**token, "status":"PASS", "saved_at":_now_jst().isoformat(timespec="seconds")})
+    except Exception as e:
+        print(f"[V62-PRICE][WARN] audit marker store failed: {e}", flush=True)
+
+
 def preload_price_summaries(conn, codes, window_days=200): # ← 期間を200日に延長
     """対象コードをまとめて読み、直近の終値/高値/安値と MA5/25/75 を返す"""
     if not codes:
@@ -12370,6 +21902,46 @@ def preload_price_summaries(conn, codes, window_days=200): # ← 期間を200日
     # P1-570: 価格サマリもrun sessionの期待as-ofを基準に個別鮮度を判定する。
     # PREOPENは前営業日、MIDDAY/EODは当日（休場日は直前営業日）。
     _summary_expected_asof = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+    _v25_ps_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    _v25_ps_hist_fp = ""
+    _v25_ps_codes_fp = ""
+    _v62_fast_candidate = None
+    _v62_fast_token = None
+    if V62_PRICE_SUMMARY_FAST and _v25_ps_mode == "MIDDAY":
+        _v62_fast_candidate, _v62_fast_token = _v62_midday_price_summary_fast(conn, codes, window_days)
+        if isinstance(_v62_fast_candidate, dict) and _v62_price_audit_hit(_v62_fast_token):
+            print(f"[V62-PRICE] HIT audited codes={len(_v62_fast_candidate)}", flush=True)
+            return _v62_fast_candidate
+    if _v25_fast_enabled() and _v25_ps_mode in ("EOD", "PREOPEN"):
+        try:
+            _v25_ps_hist_fp = _stage2_price_history_fingerprint(conn, _summary_expected_asof, 240)
+            _v25_ps_codes_fp = _stage2_codes_hash(codes)
+            _obj = _stage2_json_read(_V25_PRICE_SUMMARY_CACHE_PATH)
+            if (
+                _v25_ps_hist_fp and isinstance(_obj, dict)
+                and int(_obj.get("schema") or 0) == _V25_CACHE_SCHEMA
+                and str(_obj.get("asof") or "") == str(_summary_expected_asof)
+                and int(_obj.get("window_days") or 0) == int(window_days)
+                and str(_obj.get("history_fp") or "") == _v25_ps_hist_fp
+                and str(_obj.get("codes_fp") or "") == _v25_ps_codes_fp
+            ):
+                _records = _obj.get("records")
+                _hit = {str(x.get("code")): dict(x.get("value")) for x in (_records or []) if isinstance(x, dict) and x.get("code") and isinstance(x.get("value"), dict)}
+                print(f"[V25-PRICE-SUMMARY-CACHE] HIT codes={len(_hit)}", flush=True)
+                return _hit
+            print("[V25-PRICE-SUMMARY-CACHE] MISS", flush=True)
+        except Exception as _e:
+            print(f"[V25-PRICE-SUMMARY-CACHE][WARN] lookup failed: {_e}", flush=True)
+    # V25.1: 初回warm-upではlive daily/researchの大きな一時DataFrameが直前まで存在する。
+    # price summaryの約50万行sliceを作る前に参照切れobjectを回収し、メモリpeakを下げる。
+    if _v25_fast_enabled():
+        try:
+            import gc as _v25_gc
+            _v25_gc.collect()
+            print("[V25.1-MEMSAFE] gc before price_summary", flush=True)
+        except Exception:
+            pass
+
     # P1-281: legacy候補展開でSQL変数上限を超えにくいサイズへ。
     CH = 300
     
@@ -12391,104 +21963,175 @@ def preload_price_summaries(conn, codes, window_days=200): # ← 期間を200日
     # HTML価格サマリだけで約46秒を消費していた。対象は実質全screenerなので、
     # 200日窓を1回だけ読み、後段のchunkはメモリ上で分割する。
     try:
-        dfp_all = pd.read_sql_query(
-            """
-            SELECT rowid AS _rowid, コード, 日付, 終値, 高値, 安値
-            FROM price_history
-            WHERE date(日付) >= date(?) AND date(日付) <= date(?)
-            ORDER BY 日付, rowid
-            """,
-            conn,
-            params=[start_date, _summary_expected_asof],
-            parse_dates=["日付"],
-        )
+        _v23_ps_t0 = time.perf_counter(); _v60_ps_canon=False
+        _v60_ps = _v60_midday_canon_slice(conn,start_date,_summary_expected_asof,consumer="price_summary") if V60_PRICE_SUMMARY_CANON else None
+        if isinstance(_v60_ps,pd.DataFrame):
+            dfp_all=_v60_ps[["_rowid","コード","日付","終値","高値","安値"]].copy(); _v60_ps_canon=True
+            print(f"[V60-PRICE] canonical source rows={len(dfp_all)}",flush=True)
+        else:
+            # PERF-OPT-V3: 同一asofの広いraw窓を再利用。dedupe quality列は従来SELECTと同じに保つ。
+            dfp_all = _perf_price_history_raw_range(
+                conn, start_date, _summary_expected_asof, tag="price_summary"
+            )[["_rowid", "コード", "日付", "終値", "高値", "安値"]].copy()
+        dfp_all["日付"] = pd.to_datetime(dfp_all["日付"], errors="coerce")
+        _v23_ps_t1 = time.perf_counter()
+        _perf_record_phase("export-detail:price_summary_source_slice", _v23_ps_t1-_v23_ps_t0, "OK")
     except Exception as _e:
-        print(f"[bulkprice][ERROR] single-pass history read failed: {_e}")
-        raise RuntimeError("bulk price summary single-pass read failed") from _e
+        print(f"[bulkprice][ERROR] shared history read failed: {_e}")
+        raise RuntimeError("bulk price summary shared history read failed") from _e
     if dfp_all.empty:
         return out
-    dfp_all["_summary_key"] = dfp_all["コード"].map(_normalize_jp_security_code)
-
-    for i in range(0, len(codes), CH):
-        part = codes[i:i+CH]
-        part_set = set(part)
-        dfp = dfp_all[dfp_all["_summary_key"].isin(part_set)].drop(
-            columns=["_summary_key"], errors="ignore"
-        ).copy()
-        if dfp.empty:
-            continue
+    _summary_code_set = set(codes)
+    if _v60_ps_canon:
+        dfp=dfp_all[dfp_all["コード"].astype(str).isin(_summary_code_set)].copy()
         for c in ("終値","高値","安値"):
-            if c in dfp.columns:
-                dfp[c] = pd.to_numeric(dfp[c], errors="coerce")
-        dfp = _dedupe_price_history_df(dfp)
-        for code, g in dfp.groupby("コード", sort=False):
-            c4 = _normalize_jp_security_code(code)
+            if c in dfp.columns: dfp[c]=pd.to_numeric(dfp[c],errors="coerce")
+        _v23_ps_t2=time.perf_counter(); _v23_ps_t3=_v23_ps_t2
+        _perf_record_phase("export-detail:price_summary_filter_normalize",_v23_ps_t2-_v23_ps_t1,"OK")
+        _perf_record_phase("export-detail:price_summary_dedupe",0.0,"SKIP-V60")
+    else:
+        if _v24_fast_enabled():
+            _v24_ps_raw = dfp_all["コード"].astype(str)
+            _v24_ps_map = {str(v): _normalize_jp_security_code(v) for v in pd.unique(_v24_ps_raw)}
+            dfp_all["_summary_key"] = _v24_ps_raw.map(_v24_ps_map)
+        else:
+            dfp_all["_summary_key"] = dfp_all["コード"].map(_normalize_jp_security_code)
+        dfp = dfp_all[dfp_all["_summary_key"].isin(_summary_code_set)].drop(columns=["_summary_key"], errors="ignore").copy()
+        if dfp.empty:return out
+        for c in ("終値","高値","安値"):
+            if c in dfp.columns: dfp[c]=pd.to_numeric(dfp[c],errors="coerce")
+        _v23_ps_t2=time.perf_counter(); dfp=_dedupe_price_history_df(dfp); _v23_ps_t3=time.perf_counter()
+        _perf_record_phase("export-detail:price_summary_filter_normalize", _v23_ps_t2-_v23_ps_t1, "OK")
+        _perf_record_phase("export-detail:price_summary_dedupe", _v23_ps_t3-_v23_ps_t2, "OK")
+    for code, g in dfp.groupby("コード", sort=False):
+        c4 = _normalize_jp_security_code(code)
+        if not _v24_fast_enabled():
             g = g.sort_values("日付")
-            
-            # ▼【修正：ここに追加】ライブ価格追加前の「DB上の確実な直近2営業日」の終値を確保
-            db_last = g.iloc[-1] if len(g) > 0 else None
-            db_prev = g.iloc[-2] if len(g) > 1 else None
-            db_last_close = float(db_last["終値"]) if db_last is not None and pd.notna(db_last["終値"]) else None
-            db_prev_close = float(db_prev["終値"]) if db_prev is not None and pd.notna(db_prev["終値"]) else None
-            try:
-                db_last_date = str(pd.Timestamp(db_last["日付"]).date()) if db_last is not None and pd.notna(db_last["日付"]) else None
-            except Exception:
-                db_last_date = None
-            # P1-663: 日付だけ当日でも終値NULLならcurrent price summaryとして扱わない。
-            # P1-635のscreener価格fresh条件と揃え、MA/高安だけをcurrent表示へ残さない。
-            _summary_fresh = bool(
-                db_last_date
-                and db_last_date == _summary_expected_asof
-                and db_last_close is not None
-                and np.isfinite(db_last_close)
-                and db_last_close > 0
-            )
-            
-            # ▼当日の現在値をMA計算の末尾に連結
-            today_ts = pd.Timestamp(_today_jst())
-            live_px = live_prices.get(c4)
-            # P1-231: screener.現在値をMAへ混ぜるのは実際の場中だけ。
-            # P1-158は休日/9時前だけを防いだため、引け後に古いscreener値で確定終値を上書きできた。
-            now_jst = _now_jst()
-            try:
-                live_override_allowed = _is_trading_session_now(now_jst)
-            except Exception:
-                live_override_allowed = (now_jst.weekday() < 5) and (dt_time(9,0) <= now_jst.time() < dt_time(15,30))  # P1-382
-            if live_px is not None and live_override_allowed:
-                if not g.empty and g["日付"].iloc[-1].date() == today_ts.date():
-                    g.loc[g.index[-1], "終値"] = live_px
-                else:
-                    new_row = pd.DataFrame({"コード": [c4], "日付": [today_ts], "終値": [live_px], "高値": [np.nan], "安値": [np.nan]})
-                    g = pd.concat([g, new_row], ignore_index=True)
-            
-            # P1-676: MAの窓数も有効な正の終値だけで数える。
-            close = pd.to_numeric(g["終値"], errors="coerce")
-            close = close[close.notna() & np.isfinite(close) & (close > 0)]
-            
-            # min_periods を期間と一致させ、データ不足時の異常値を防ぐ
+        
+        # ▼【修正：ここに追加】ライブ価格追加前の「DB上の確実な直近2営業日」の終値を確保
+        db_last = g.iloc[-1] if len(g) > 0 else None
+        db_prev = g.iloc[-2] if len(g) > 1 else None
+        db_last_close = float(db_last["終値"]) if db_last is not None and pd.notna(db_last["終値"]) else None
+        db_prev_close = float(db_prev["終値"]) if db_prev is not None and pd.notna(db_prev["終値"]) else None
+        try:
+            db_last_date = str(pd.Timestamp(db_last["日付"]).date()) if db_last is not None and pd.notna(db_last["日付"]) else None
+        except Exception:
+            db_last_date = None
+        # P1-663: 日付だけ当日でも終値NULLならcurrent price summaryとして扱わない。
+        # P1-635のscreener価格fresh条件と揃え、MA/高安だけをcurrent表示へ残さない。
+        _summary_fresh = bool(
+            db_last_date
+            and db_last_date == _summary_expected_asof
+            and db_last_close is not None
+            and np.isfinite(db_last_close)
+            and db_last_close > 0
+        )
+        
+        # ▼当日の現在値をMA計算の末尾に連結
+        today_ts = pd.Timestamp(_today_jst())
+        live_px = live_prices.get(c4)
+        # P1-231: screener.現在値をMAへ混ぜるのは実際の場中だけ。
+        # P1-158は休日/9時前だけを防いだため、引け後に古いscreener値で確定終値を上書きできた。
+        now_jst = _now_jst()
+        try:
+            live_override_allowed = _is_trading_session_now(now_jst)
+        except Exception:
+            live_override_allowed = (now_jst.weekday() < 5) and (dt_time(9,0) <= now_jst.time() < dt_time(15,30))  # P1-382
+        if live_px is not None and live_override_allowed:
+            if not g.empty and g["日付"].iloc[-1].date() == today_ts.date():
+                g.loc[g.index[-1], "終値"] = live_px
+            else:
+                new_row = pd.DataFrame({"コード": [c4], "日付": [today_ts], "終値": [live_px], "高値": [np.nan], "安値": [np.nan]})
+                g = pd.concat([g, new_row], ignore_index=True)
+        
+        # P1-676: MAの窓数も有効な正の終値だけで数える。
+        close_raw = pd.to_numeric(g["終値"], errors="coerce")
+        if _v24_fast_enabled():
+            _close_arr = close_raw.to_numpy(dtype=float, copy=False)
+            _valid_mask = np.isfinite(_close_arr) & (_close_arr > 0)
+            _valid_pos = np.flatnonzero(_valid_mask)
+            _close_valid = _close_arr[_valid_mask]
+            history_obs = int(len(_close_valid))
+            history_first_date = None
+            history_span_days = None
+            if history_obs > 0:
+                try:
+                    _first_ts = pd.Timestamp(g["日付"].iloc[int(_valid_pos[0])])
+                    _last_ts = pd.Timestamp(g["日付"].iloc[int(_valid_pos[-1])])
+                    history_first_date = str(_first_ts.date())
+                    history_span_days = int((_last_ts.normalize() - _first_ts.normalize()).days)
+                except Exception:
+                    history_first_date = None
+                    history_span_days = None
+            ma5 = float(np.mean(_close_valid[-5:])) if history_obs >= 5 else None
+            ma25 = float(np.mean(_close_valid[-25:])) if history_obs >= 25 else None
+            ma75 = float(np.mean(_close_valid[-75:])) if history_obs >= 75 else None
+        else:
+            close = close_raw[close_raw.notna() & np.isfinite(close_raw) & (close_raw > 0)]
+            history_obs = int(len(close))
+            history_first_date = None
+            history_span_days = None
+            if history_obs > 0:
+                try:
+                    _first_idx = close.index[0]
+                    _last_idx = close.index[-1]
+                    _first_ts = pd.Timestamp(g.loc[_first_idx, "日付"])
+                    _last_ts = pd.Timestamp(g.loc[_last_idx, "日付"])
+                    history_first_date = str(_first_ts.date())
+                    history_span_days = int((_last_ts.normalize() - _first_ts.normalize()).days)
+                except Exception:
+                    history_first_date = None
+                    history_span_days = None
             ma5  = close.rolling(5,  min_periods=5).mean().iloc[-1] if len(close) >= 5 else None
             ma25 = close.rolling(25, min_periods=25).mean().iloc[-1] if len(close) >= 25 else None
             ma75 = close.rolling(75, min_periods=75).mean().iloc[-1] if len(close) >= 75 else None
-            
-            last = g.iloc[-1] if len(g) > 0 else None
-            prev = g.iloc[-2] if len(g) > 1 else None
-            out[c4] = {
-                "last_date": None if last is None else str(last["日付"].date()),
-                "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
-                "last_high":  None if last is None or pd.isna(last["高値"]) else float(last["高値"]),
-                "last_low":   None if last is None or pd.isna(last["安値"]) else float(last["安値"]),
-                "prev_date":  None if prev is None else str(prev["日付"].date()),
-                "prev_close": None if prev is None or pd.isna(prev["終値"]) else float(prev["終値"]),
-                "ma5":  None if pd.isna(ma5)  else float(ma5),
-                "ma25": None if pd.isna(ma25) else float(ma25),
-                "ma75": None if pd.isna(ma75) else float(ma75),
-                # ▼【修正：ここに追加】
-                "db_last_close": db_last_close,
-                "db_prev_close": db_prev_close,
-                # P1-570: stale個別系列を表示current/MAへ復活させないための鮮度フラグ。
-                "fresh": _summary_fresh,
-                "expected_asof": _summary_expected_asof,
-            }
+        
+        last = g.iloc[-1] if len(g) > 0 else None
+        prev = g.iloc[-2] if len(g) > 1 else None
+        out[c4] = {
+            "last_date": None if last is None else str(last["日付"].date()),
+            "last_close": None if last is None or pd.isna(last["終値"]) else float(last["終値"]),
+            "last_high":  None if last is None or pd.isna(last["高値"]) else float(last["高値"]),
+            "last_low":   None if last is None or pd.isna(last["安値"]) else float(last["安値"]),
+            "prev_date":  None if prev is None else str(prev["日付"].date()),
+            "prev_close": None if prev is None or pd.isna(prev["終値"]) else float(prev["終値"]),
+            "ma5":  None if pd.isna(ma5)  else float(ma5),
+            "ma25": None if pd.isna(ma25) else float(ma25),
+            "ma75": None if pd.isna(ma75) else float(ma75),
+            "history_obs": history_obs,
+            "history_first_date": history_first_date,
+            "history_span_days": history_span_days,
+            # ▼【修正：ここに追加】
+            "db_last_close": db_last_close,
+            "db_prev_close": db_prev_close,
+            # P1-570: stale個別系列を表示current/MAへ復活させないための鮮度フラグ。
+            "fresh": _summary_fresh,
+            "expected_asof": _summary_expected_asof,
+        }
+    _v23_ps_t4 = time.perf_counter()
+    try:
+        _perf_record_phase("export-detail:price_summary_group_compute", _v23_ps_t4-_v23_ps_t3, "OK")
+    except Exception:
+        pass
+    if _v25_fast_enabled() and _v25_ps_mode in ("EOD", "PREOPEN") and _v25_ps_hist_fp and _v25_ps_codes_fp:
+        try:
+            if _stage2_json_write(_V25_PRICE_SUMMARY_CACHE_PATH, {
+                "schema": _V25_CACHE_SCHEMA, "asof": str(_summary_expected_asof), "window_days": int(window_days),
+                "history_fp": _v25_ps_hist_fp, "codes_fp": _v25_ps_codes_fp,
+                "records": _v25_json_map_records(out), "saved_at": _now_jst().isoformat(timespec="seconds"),
+            }):
+                print(f"[V25-PRICE-SUMMARY-CACHE] STORE codes={len(out)}", flush=True)
+        except Exception as _e:
+            print(f"[V25-PRICE-SUMMARY-CACHE][WARN] store failed: {_e}", flush=True)
+    if isinstance(_v62_fast_candidate, dict) and _v62_fast_token:
+        _ok, _detail = _v62_price_summary_maps_equal(_v62_fast_candidate, out)
+        print(f"[V62-PRICE] {'AUDIT-PASS' if _ok else 'AUDIT-FAIL'} fast={len(_v62_fast_candidate)} legacy={len(out)}{(' detail='+_detail) if _detail else ''}", flush=True)
+        if _ok:
+            _v62_price_audit_store(_v62_fast_token)
+        else:
+            # 初回監査不一致時はlegacyを返し、次runもfast HITさせない。
+            try: V62_PRICE_SUMMARY_AUDIT_PATH.unlink(missing_ok=True)
+            except Exception: pass
     return out
 
 def enrich_rows_with_price_summary(rows, summary_map):
@@ -12571,6 +22214,23 @@ def enrich_rows_with_price_summary(rows, summary_map):
             r["25日"]  = r.get("MA25","" )
             r["MA75"]  = "" if s.get("ma75")       is None else f"{s['ma75']:,.0f}"
             r["75日"]  = r.get("MA75","" )
+
+            _hobs = s.get("history_obs")
+            try:
+                _hobs_i = int(_hobs) if _hobs is not None else 0
+            except Exception:
+                _hobs_i = 0
+            r["短期履歴本数"] = _hobs_i if _hobs_i > 0 else None
+            r["短期履歴開始日"] = s.get("history_first_date") or ""
+            r["短期履歴経過日数"] = s.get("history_span_days")
+            # MA75の正式計算に届かない20〜74本を「短期履歴」とする。
+            # IPO/新規上場とは断定せず、履歴量だけを事実として扱う。
+            r["短期履歴フラグ"] = 1 if 20 <= _hobs_i < 75 else 0
+        else:
+            r["短期履歴本数"] = None
+            r["短期履歴開始日"] = ""
+            r["短期履歴経過日数"] = None
+            r["短期履歴フラグ"] = 0
     return rows
 # ==== [/BULK PRICE SUMMARIES - TOP LEVEL] ===============================
 
@@ -12877,15 +22537,12 @@ def _log(msg):
 
 
 # === Bulk OR query support for Kabutan via Google News RSS ===
-def _kabunews_make_multi_url(pairs):
-    """
-    pairs: list of tuples (code, name)
-    Returns Google News RSS URL that ORs multiple symbols: site:kabutan.jp ((3350 OR "メタプラネット") OR (3905 OR "データセクション") ...)
-    """
+def _kabunews_make_multi_url(pairs, site_only=True, lookback_days=None):
+    """Google News RSS URL。site:kabutan.jp版とsite指定なし版の両方に対応。"""
     parts = []
     for code, name in pairs:
         c = (str(code) or '').strip()
-        n = (str(name) or '').strip().replace('"', '')  # avoid breaking quotes
+        n = (str(name) or '').strip().replace('"', '')
         if not c and not n:
             continue
         if c and n:
@@ -12896,7 +22553,9 @@ def _kabunews_make_multi_url(pairs):
             parts.append(f'("{n}")')
     if not parts:
         parts = ['']
-    q = f'site:kabutan.jp ' + '(' + ' OR '.join(parts) + ')'
+    lb = max(1, int(lookback_days or _KABUNEWS_CONF.get("lookback_days", 5)))
+    prefix = 'site:kabutan.jp ' if site_only else ''
+    q = prefix + '(' + ' OR '.join(parts) + f') when:{lb}d'
     qs = urllib.parse.urlencode({
         "q": q,
         "hl": _KABUNEWS_CONF["lang"],
@@ -13004,7 +22663,7 @@ def _kabunews_store_success_cache(cache, pairs, result_map, successful_codes, fe
         # cacheは速度補助。保存失敗で取得済みニュースまで失わない。
         print(f"[kabunews][cache][WARN] save failed: {e}")
 
-def kabutan_news_fetch_bulk(pairs, per_symbol=None):
+def kabutan_news_fetch_bulk(pairs, per_symbol=None, episode_windows=None, return_successful_codes=False):
     """
     Fetch Kabutan news for multiple symbols with a single (or few) Google News RSS requests using OR.
     pairs: list of (code, name)
@@ -13013,6 +22672,16 @@ def kabutan_news_fetch_bulk(pairs, per_symbol=None):
     """
 
     per_symbol = per_symbol or int(_KABUNEWS_CONF.get("max_items_per_symbol", 3))
+    episode_windows = episode_windows or {}
+    # 対象episodeの最古window_startまでRSS検索を広げる。最大20営業日+5日前のbounded窓。
+    _episode_lookback_days = _leader_rainbow_news_pre_days()
+    try:
+        _today = _expected_snapshot_date_for_run(_auto_run_mode())
+        _starts = [date.fromisoformat(str(v.get("window_start"))) for v in episode_windows.values() if v.get("window_start")]
+        if _starts:
+            _episode_lookback_days = max(_episode_lookback_days, (_today - min(_starts)).days + 1)
+    except Exception:
+        pass
     # P1-155/P2-92: ニュース経路も7203.0/285Aを共通正規化し、
     # alias/重複銘柄でRSS queryとcacheを二重化しない。
     normalized_pairs = []
@@ -13026,21 +22695,12 @@ def kabutan_news_fetch_bulk(pairs, per_symbol=None):
     pairs = normalized_pairs
     out = {code: [] for code, _ in pairs}
     if not pairs:
-        return out
+        return (out, set()) if return_successful_codes else out
 
-    # P2-92: 同一候補の10分ごと再取得を避ける。新規候補はcache missで即時取得される。
-    cache = _kabunews_load_cache()
-    now_epoch = time.time()
-    ttl_seconds = max(0.0, float(_KABUNEWS_CONF.get("cache_ttl_minutes", 30))) * 60.0
-    fetch_pairs = []
-    cache_hits = 0
-    for code, name in pairs:
-        cached_items = _kabunews_cache_fresh_items(cache, code, name, now_epoch, ttl_seconds)
-        if cached_items is None:
-            fetch_pairs.append((code, name))
-        else:
-            out[code] = cached_items[:per_symbol]
-            cache_hits += 1
+    # LEADER-NEWS-EPISODE-ARCHIVE-V1:
+    # この関数は「今回ネット取得すると決めた銘柄」だけを取得する。
+    # 再取得頻度と永続化は上位のepisode planner/archiveが管理する。
+    fetch_pairs = list(pairs)
 
     # P2-86/P2-89/P2-90: 逐次RSS取得は初回54秒＋AI差分124秒を占めた。
     # P2-89で32銘柄queryを試した本番runは記事総数・ニュース有銘柄が約半減したため、
@@ -13053,16 +22713,19 @@ def kabutan_news_fetch_bulk(pairs, per_symbol=None):
     while i < len(fetch_pairs):
         width = min(_max_pairs, len(fetch_pairs) - i)
         chunk = fetch_pairs[i:i + width]
-        url = _kabunews_make_multi_url(chunk)
+        url = _kabunews_make_multi_url(chunk, site_only=True, lookback_days=_episode_lookback_days)
         while len(url) > _max_url and width > 1:
             width = max(1, width // 2)
             chunk = fetch_pairs[i:i + width]
-            url = _kabunews_make_multi_url(chunk)
+            url = _kabunews_make_multi_url(chunk, site_only=True, lookback_days=_episode_lookback_days)
         chunks.append((chunk, url))
+        if bool(_KABUNEWS_CONF.get("dual_search", True)):
+            chunks.append((chunk, _kabunews_make_multi_url(chunk, site_only=False, lookback_days=_episode_lookback_days)))
         i += width
 
     def _fetch_one(item):
         chunk, url = item
+        last_reason = "unknown"
         for attempt in range(2):
             try:
                 resp = requests.get(
@@ -13072,37 +22735,87 @@ def kabutan_news_fetch_bulk(pairs, per_symbol=None):
                 )
                 if resp.status_code == 200:
                     root = ET.fromstring(resp.content)
-                    return chunk, root.findall(".//item"), True
+                    return chunk, root.findall(".//item"), True, "ok"
+                last_reason = f"http_{resp.status_code}"
                 if resp.status_code == 429 or 500 <= resp.status_code < 600:
                     if attempt == 0:
                         time.sleep(0.4)
                         continue
                 _log(f'[kabunews][bulk][WARN] status={resp.status_code} url={url[:160]}')
-                return chunk, [], False
-            except Exception as e:
+                return chunk, [], False, last_reason
+            except requests.exceptions.Timeout as e:
+                last_reason = "timeout"
                 if attempt == 0:
                     time.sleep(0.2)
                     continue
                 _log(f'[kabunews][bulk][ERR] {e!r}')
-                return chunk, [], False
-        return chunk, [], False
+                return chunk, [], False, last_reason
+            except Exception as e:
+                last_reason = type(e).__name__ or "error"
+                if attempt == 0:
+                    time.sleep(0.2)
+                    continue
+                _log(f'[kabunews][bulk][ERR] {e!r}')
+                return chunk, [], False, last_reason
+        return chunk, [], False, last_reason
 
+    # RATE-LIMIT-GUARD-V2: worker数ごとのwaveで実行し、3連続失敗なら以後のwaveを送らない。
     workers = max(1, min(int(_KABUNEWS_CONF.get("max_workers", 3)), len(chunks)))
+    breaker_n = max(1, int(_KABUNEWS_CONF.get("leader_news_breaker_failures", 3)))
+    fetched = []
+    consecutive_failures = 0
+    breaker_tripped = False
+    breaker_reason = ""
     if chunks:
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kabunews") as pool:
-            fetched = list(pool.map(_fetch_one, chunks))
+        for pos in range(0, len(chunks), workers):
+            wave = chunks[pos:pos + workers]
+            with ThreadPoolExecutor(max_workers=min(workers, len(wave)), thread_name_prefix="kabunews") as pool:
+                wave_results = list(pool.map(_fetch_one, wave))
+            fetched.extend(wave_results)
+            for _chunk, _items, _ok, _reason in wave_results:
+                if _ok:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    breaker_reason = str(_reason or "fetch_failure")
+                    if consecutive_failures >= breaker_n:
+                        breaker_tripped = True
+                        break
+            if breaker_tripped:
+                until_s = _leader_news_provider_circuit_trip(breaker_reason, consecutive_failures)
+                _log(
+                    f"[kabunews][circuit] TRIPPED consecutive_failures={consecutive_failures} "
+                    f"reason={breaker_reason} cooldown_until={until_s} "
+                    f"requests_done={len(fetched)}/{len(chunks)}"
+                )
+                break
     else:
         fetched = []
 
+    if fetched and any(bool(x[2]) for x in fetched) and not breaker_tripped:
+        _leader_news_provider_circuit_success()
+
     # mapは入力chunk順を保つため、逐次版と同じ決定的な優先順位でmergeできる。
-    successful_codes = set()
-    for chunk, items, fetch_ok in fetched:
+    # dual queryの片側だけ成功した場合は記事自体は読めても「取得完了」とはみなさない。
+    # そうすることでfetch_stateを進めず、次run/EOD再実行で不足側を再試行できる。
+    _expected_fetches = {}
+    for _chunk, _url in chunks:
+        for _c, _n in _chunk:
+            _c4 = _normalize_jp_security_code(_c)
+            if _c4:
+                _expected_fetches[_c4] = _expected_fetches.get(_c4, 0) + 1
+    _ok_fetches = {}
+    any_success_codes = set()
+    for chunk, items, fetch_ok, _fetch_reason in fetched:
         ck = [
             (_normalize_jp_security_code(c), (str(n) or '').strip())
             for c, n in chunk
         ]
         if fetch_ok:
-            successful_codes.update(c4 for c4, _ in ck if c4)
+            for c4, _ in ck:
+                if c4:
+                    any_success_codes.add(c4)
+                    _ok_fetches[c4] = _ok_fetches.get(c4, 0) + 1
         for it in items:
             title = (it.findtext("title") or "").strip()
             link = (it.findtext("link") or "").strip()
@@ -13155,17 +22868,192 @@ def kabutan_news_fetch_bulk(pairs, per_symbol=None):
             ),
             reverse=True,
         )
-        out[c4] = deduped[:per_symbol]
+        # episode窓: 初回🌈の5日前から現在まで。pubDate不明はRSS検索窓を信頼して残す。
+        _win = episode_windows.get(c4) or {}
+        _start_ts = None
+        if _win.get("window_start"):
+            try:
+                _start_ts = datetime.combine(date.fromisoformat(str(_win["window_start"])), dt_time.min, tzinfo=JST).timestamp()
+            except Exception:
+                _start_ts = None
+        if _start_ts is None:
+            _start_ts = time.time() - max(1, _leader_rainbow_news_pre_days()) * 86400.0
+        _recent = []
+        for _tpl in deduped:
+            _ts = _parse_pub_ts(_tpl[2])
+            if _ts is None or _ts >= _start_ts:
+                _recent.append(_tpl)
+        out[c4] = _recent[:per_symbol]
 
-    _kabunews_store_success_cache(cache, pairs, out, successful_codes, now_epoch)
-    failed_codes = max(0, len(fetch_pairs) - len(successful_codes))
+    successful_codes = {
+        c4 for c4 in out
+        if _expected_fetches.get(c4, 0) > 0 and _ok_fetches.get(c4, 0) >= _expected_fetches.get(c4, 0)
+    }
+    partial_codes = any_success_codes - successful_codes
+    failed_codes = max(0, len(fetch_pairs) - len(successful_codes) - len(partial_codes))
     _log(
-        f"[kabunews][cache] hit={cache_hits} miss={len(fetch_pairs)} "
-        f"fetched={len(successful_codes)} failed={failed_codes} ttl_min={ttl_seconds/60.0:g}"
+        f"[kabunews][episode-fetch] targets={len(fetch_pairs)} "
+        f"complete={len(successful_codes)} partial={len(partial_codes)} failed={failed_codes}"
     )
+    if return_successful_codes:
+        return out, successful_codes
     return out
 
-def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="銘柄名", per_symbol=None, return_fulltext=False):
+
+# === RAINBOW-NEWS-CLASSIFICATION-V1 2026-08-30 ===
+# 🌈銘柄ニュースを「材料/決算」「値動き・テクニカル」「一般」に事実分類する。
+# 分類は表示・研究補助のみ。candidate/priority/今買える/🌈🔥判定には加点減点しない。
+_V48_NEWS_EARNINGS_RE = re.compile(
+    r"(?:決算|[1-4１-４]Q|第[1-4１-４]四半期|通期|業績予想|上方修正|下方修正|増額修正|減額修正|"
+    r"営業(?:利益|益)|経常(?:利益|益)|最終(?:利益|益)|純利益|売上高|黒字転換|赤字転落|最高益|増益|減益)",
+    re.I,
+)
+_V48_NEWS_MATERIAL_RE = re.compile(
+    r"(?:提携|協業|業務提携|資本提携|契約|受注|採用|導入|新製品|新商品|新サービス|提供開始|発売|承認|認証|特許|"
+    r"共同開発|開発開始|自社株買い|自己株式取得|株式分割|増配|復配|TOB|公開買付|M&A|買収|子会社化|合弁|大型案件|"
+    r"大型受注|設備投資|増産|中期経営計画|投入|運用開始|サービス開始|販売開始|実用化|量産|量産開始|選定|供給|供給開始|報道|伝わる|発表)",
+    re.I,
+)
+_V48_NEWS_TECHNICAL_RE = re.compile(
+    r"(?:出来高変化率|出来高急増|売買代金|値上がり率|上昇率|急騰|急伸|続伸|反発|大幅高|ストップ高|S高|買い気配|上げ幅|"
+    r"高値更新|年初来高値|上場来高値|新高値|ランキング|ボリンジャ|[+＋-－]?[123]σ|移動平均|一目均衡|RSI|MACD|テクニカル|"
+    r"チャート|ゴールデンクロス|デッドクロス|騰落レシオ)",
+    re.I,
+)
+
+def _kabutan_news_kind(title: str) -> str:
+    t = re.sub(r"\s+", "", str(title or ""))
+    if not t:
+        return "OTHER"
+
+    if str(os.environ.get("KABU_SCREEN_V48_FAST", "1")).strip().lower() not in {"0", "false", "off", "no"}:
+        if _V48_NEWS_EARNINGS_RE.search(t):
+            return "EARNINGS"
+        if _V48_NEWS_MATERIAL_RE.search(t):
+            return "MATERIAL"
+        if _V48_NEWS_TECHNICAL_RE.search(t):
+            return "TECHNICAL"
+        return "OTHER"
+
+    # V47互換fallback。pattern優先順位/意味論は同一。
+    earnings_patterns = (
+        r"決算", r"[1-4１-４]Q", r"第[1-4１-４]四半期", r"通期",
+        r"業績予想", r"上方修正", r"下方修正", r"増額修正", r"減額修正",
+        r"営業(?:利益|益)", r"経常(?:利益|益)", r"最終(?:利益|益)",
+        r"純利益", r"売上高", r"黒字転換", r"赤字転落", r"最高益",
+        r"増益", r"減益",
+    )
+    if any(re.search(p, t, re.I) for p in earnings_patterns):
+        return "EARNINGS"
+    material_patterns = (
+        r"提携", r"協業", r"業務提携", r"資本提携", r"契約", r"受注",
+        r"採用", r"導入", r"新製品", r"新商品", r"新サービス", r"提供開始",
+        r"発売", r"承認", r"認証", r"特許", r"共同開発", r"開発開始",
+        r"自社株買い", r"自己株式取得", r"株式分割", r"増配", r"復配",
+        r"TOB", r"公開買付", r"M&A", r"買収", r"子会社化", r"合弁",
+        r"大型案件", r"大型受注", r"設備投資", r"増産", r"中期経営計画",
+        r"投入", r"提供開始", r"運用開始", r"サービス開始", r"販売開始", r"実用化",
+        r"量産", r"量産開始", r"選定", r"供給", r"供給開始", r"報道", r"伝わる", r"発表",
+    )
+    if any(re.search(p, t, re.I) for p in material_patterns):
+        return "MATERIAL"
+    technical_patterns = (
+        r"出来高変化率", r"出来高急増", r"売買代金", r"値上がり率",
+        r"上昇率", r"急騰", r"急伸", r"続伸", r"反発", r"大幅高",
+        r"ストップ高", r"S高", r"買い気配", r"上げ幅", r"高値更新",
+        r"年初来高値", r"上場来高値", r"新高値", r"ランキング",
+        r"ボリンジャ", r"[+＋-－]?[123]σ", r"移動平均", r"一目均衡",
+        r"RSI", r"MACD", r"テクニカル", r"チャート", r"ゴールデンクロス",
+        r"デッドクロス", r"騰落レシオ",
+    )
+    if any(re.search(p, t, re.I) for p in technical_patterns):
+        return "TECHNICAL"
+    return "OTHER"
+
+
+def _kabutan_news_kind_label(kind: str) -> str:
+    return {
+        "EARNINGS": "決算",
+        "MATERIAL": "材料",
+        "TECHNICAL": "値動き",
+        "OTHER": "一般",
+    }.get(str(kind or "").upper(), "一般")
+
+
+def _kabutan_news_summary_from_fulltext(text: str) -> dict:
+    counts = {"EARNINGS": 0, "MATERIAL": 0, "TECHNICAL": 0, "OTHER": 0}
+    raw = str(text or "").strip()
+    if raw:
+        for line in re.split(r"[\r\n]+", raw):
+            line = str(line or "").strip()
+            if not line:
+                continue
+            # YYYY-MM-DD\tタイトル の日付だけ除く。
+            m = re.match(r"^\d{4}-\d{2}-\d{2}\t(.*)$", line)
+            title = m.group(1).strip() if m else line
+            counts[_kabutan_news_kind(title)] += 1
+
+    total = sum(counts.values())
+    substantive = counts["EARNINGS"] + counts["MATERIAL"]
+    if substantive > 0:
+        if counts["EARNINGS"] and counts["MATERIAL"]:
+            state = "🟢材料・決算あり"
+        elif counts["EARNINGS"]:
+            state = "🟢決算記事あり"
+        else:
+            state = "🟢材料記事あり"
+    elif counts["TECHNICAL"] > 0 and counts["OTHER"] == 0:
+        state = "⚪値動き記事のみ"
+    elif counts["OTHER"] > 0:
+        state = "🟡一般記事のみ" if counts["TECHNICAL"] == 0 else "🟡一般＋値動き"
+    else:
+        state = "⚪記事なし"
+
+    return {
+        "🌈ニュース状態": state,
+        "🌈ニュース記事数": total,
+        "🌈材料記事数": counts["MATERIAL"],
+        "🌈決算記事数": counts["EARNINGS"],
+        "🌈値動き記事数": counts["TECHNICAL"],
+        "🌈一般記事数": counts["OTHER"],
+    }
+
+
+def _v48_kabutan_news_summary_from_items(items) -> dict:
+    """V48: fulltext再parseを避け、archive item tupleから同一分類集計を返す。"""
+    counts = {"EARNINGS": 0, "MATERIAL": 0, "TECHNICAL": 0, "OTHER": 0}
+    for _title, _link, _pub in (items or []):
+        _t = str(_title or "").strip()
+        if not _t:
+            continue
+        counts[_kabutan_news_kind(_t)] += 1
+    total = sum(counts.values())
+    substantive = counts["EARNINGS"] + counts["MATERIAL"]
+    if substantive > 0:
+        if counts["EARNINGS"] and counts["MATERIAL"]:
+            state = "🟢材料・決算あり"
+        elif counts["EARNINGS"]:
+            state = "🟢決算記事あり"
+        else:
+            state = "🟢材料記事あり"
+    elif counts["TECHNICAL"] > 0 and counts["OTHER"] == 0:
+        state = "⚪値動き記事のみ"
+    elif counts["OTHER"] > 0:
+        state = "🟡一般記事のみ" if counts["TECHNICAL"] == 0 else "🟡一般＋値動き"
+    else:
+        state = "⚪記事なし"
+    return {
+        "🌈ニュース状態": state,
+        "🌈ニュース記事数": total,
+        "🌈材料記事数": counts["MATERIAL"],
+        "🌈決算記事数": counts["EARNINGS"],
+        "🌈値動き記事数": counts["TECHNICAL"],
+        "🌈一般記事数": counts["OTHER"],
+    }
+# === /RAINBOW-NEWS-CLASSIFICATION-V1 ===
+
+
+def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="銘柄名", per_symbol=None, return_fulltext=False, episode_windows=None, result_map_override=None):
     """
     df(コード・銘柄名入り) → 株探ニュース(3) 用の表示Seriesを返す。
     P1-9: return_fulltext=True の場合は (表示Series, 判定用全文Series) を返す。
@@ -13186,8 +23074,11 @@ def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="�
         pairs.append((c4, n))
         idx_map.append((idx, c4))
 
-    # OR一括でタイトル・リンク・日付を取る
-    result_map = kabutan_news_fetch_bulk(pairs, per_symbol=per_symbol)
+    # 通常はRSS取得。episode archive経路では保存済みresult_mapを渡してネット通信を行わない。
+    if result_map_override is None:
+        result_map = kabutan_news_fetch_bulk(pairs, per_symbol=per_symbol, episode_windows=episode_windows)
+    else:
+        result_map = {str(k): list(v or []) for k, v in (result_map_override or {}).items()}
 
 
     # --- ポジティブ単語辞書で判定（軽量版） ---
@@ -13213,7 +23104,11 @@ def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="�
 
                 # P1-10: 「自社株買い終了」「増配見送り」を青●にしない。
                 # 材料系3語は文脈判定へ回し、それ以外の辞書語だけ従来どおりsubstring判定する。
-                other_pos_hit = any((w not in material_words) and (w in title) for w in pos_words)
+                _news_kind = _kabutan_news_kind(title)
+                other_pos_hit = (
+                    _news_kind != "TECHNICAL"
+                    and any((w not in material_words) and (w in title) for w in pos_words)
+                )
                 material_flags = material_detector._extract_news_flags(title)
                 material_hit = bool(material_flags.get("share_buyback_flag") or material_flags.get("dividend_up_flag"))
                 if other_pos_hit or material_hit:
@@ -13238,12 +23133,13 @@ def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="�
         try:
             dt = _pdt(s)
             if dt is not None:
-                return dt.date()
+                # NEWS-PUBDATE-JST-V1: RSSのaware日時はJSTへ変換してから表示/判定日付へ。
+                return dt.astimezone(JST).date() if dt.tzinfo is not None else dt.date()
         except Exception:
             pass
         try:
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            return dt.date()
+            return dt.astimezone(JST).date() if dt.tzinfo is not None else dt.date()
         except Exception:
             pass
         if len(s) >= 10 and s[0:4].isdigit() and s[4] in "-/" and s[7] in "-/":
@@ -13257,10 +23153,25 @@ def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="�
         d = _pub_date(pub)
         return d.strftime("%y/%m/%d") if d is not None else ""
 
+    def _parse_news_pub_sort_ts(pub: str):
+        d = _pub_date(pub)
+        if d is None:
+            return None
+        try:
+            return datetime.combine(d, dt_time.min, tzinfo=JST).timestamp()
+        except Exception:
+            return None
+
     # 1銘柄分を HTML 1本に整形
     def fmt(code4, items):
         out = []
-        for j, (title, link, pub) in enumerate(items or []):
+        _display_n = max(1, int(_KABUNEWS_CONF.get("display_items_per_symbol", 3)))
+        _rank = {"MATERIAL": 0, "EARNINGS": 1, "OTHER": 2, "TECHNICAL": 3}
+        _display_items = sorted(
+            list(items or []),
+            key=lambda x: (_rank.get(_kabutan_news_kind(x[0]), 9), -(_parse_news_pub_sort_ts(x[2]) or 0.0)),
+        )[:_display_n]
+        for j, (title, link, pub) in enumerate(_display_items):
             title = (title or "").strip()
             link  = (link or "").strip()
             date_str = _fmt_pub(pub)
@@ -13268,6 +23179,15 @@ def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="�
             # タイトルはちょっと長めに（例：先頭 24 文字）
             short_title = title[:24]
             label = f"{date_str} {short_title}" if date_str else short_title
+            _kind = _kabutan_news_kind(title)
+            _kind_label = _kabutan_news_kind_label(_kind)
+            _kind_cls = {
+                "EARNINGS": "news-kind-earnings",
+                "MATERIAL": "news-kind-material",
+                "TECHNICAL": "news-kind-technical",
+                "OTHER": "news-kind-other",
+            }.get(_kind, "news-kind-other")
+            kind_badge = f'<span class="news-kind-badge {_kind_cls}">[{_kind_label}]</span>'
 
             # BERT が positive なら青丸を付与
             sentiment = bert_labels.get(code4, {}).get(j)
@@ -13278,9 +23198,9 @@ def kabutan_news_lines_bulk_for_dataframe(df, code_col="コード", name_col="�
                     dot = '<span class="bert-pos-dot">●</span>'
 
             if link:
-                html = f'{dot}<a href="{link}" target="_blank" rel="noopener noreferrer">{label}</a>'
+                html = f'{kind_badge}{dot}<a href="{link}" target="_blank" rel="noopener noreferrer">{label}</a>'
             else:
-                html = f'{dot}{label}'
+                html = f'{kind_badge}{dot}{label}'
             out.append(html)
         return " / ".join(out)
 
@@ -13572,49 +23492,81 @@ def _attach_latest_theme(df, latest_theme_map):
     
 
 def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFrame) -> list:
-    """
-    静的ノイズをクレンジングしたテーマランキングを計算。平均騰落率を内包させる。
+    """V62 Theme Heat V1.
+
+    表示用テーマランキングだけを「今日どこへ資金が集まり、どれだけ広がっているか」へ寄せる。
+    Candidate Contract / priority / LIVE50 / apply_shodou_score の旧テーマ強度には逆流させない。
+
+    heat_score =
+      資金流入 30点 + 上昇の広がり 35点 + シグナル 25点 + 鮮度/ニュース 10点
+
+    旧式 median_turnover*(1+signal_density) は legacy_flow_score として残す。
+    UI/rotation互換の true_flow_score には heat_score を入れる。
     """
     try:
-        # P1-122: SQLite date('now') はUTC基準。JST 0:00-8:59に30日窓が1日ずれるため、
-        # Python側のJST市場日付からcutoffを明示して渡す。
         _theme_today = date.fromisoformat(_today_jst())
         theme_cutoff = (_theme_today - timedelta(days=30)).isoformat()
         theme_today = _theme_today.isoformat()
         query = """
-            -- P1-38: 同一銘柄×テーマの複数取得日を重複カウントしない。
-            SELECT DISTINCT t.コード AS コード, m.theme_name AS テーマ
+            SELECT t.コード AS コード, m.theme_name AS テーマ, t.取得日 AS 取得日
             FROM stock_theme_kabutan t
             JOIN theme_master m ON t.theme_id = m.theme_id
-            -- P1-37/P1-122: 銘柄×テーマ紐付け自身をJST基準の30日窓で採用。
             WHERE date(t.取得日) >= date(?) AND date(t.取得日) <= date(?)
         """
         df_theme = pd.read_sql_query(query, conn, params=(theme_cutoff, theme_today))
-        if not df_theme.empty:
-            # P1-133: テーマランキングの英数字証券コードを保持。
-            df_theme["コード"] = df_theme["コード"].map(_normalize_jp_security_code)
-            df_theme = df_theme[df_theme["コード"] != ""]
-            # P1-468: SQL DISTINCTはrawコードに対して効くため、legacyの7203/7203.0や
-            # 1234/1234.Nが併存するとcanonical化後に同一銘柄×テーマが二重化する。
-            # active_stocks/turnover/signaled_countを水増ししないようlogical keyで再度1本化。
-            df_theme = df_theme.drop_duplicates(["コード", "テーマ"], keep="last").reset_index(drop=True)
-        
+        if df_theme.empty:
+            return []
+        df_theme["コード"] = df_theme["コード"].map(_normalize_jp_security_code)
+        df_theme["取得日"] = pd.to_datetime(df_theme["取得日"], errors="coerce").dt.normalize()
+        df_theme = df_theme[(df_theme["コード"] != "") & df_theme["テーマ"].notna()].copy()
+        df_theme["theme_source"] = "DB"
+        df_theme = (
+            df_theme.sort_values(["コード","テーマ","取得日"], kind="stable")
+                    .drop_duplicates(["コード","テーマ"], keep="last")
+                    .reset_index(drop=True)
+        )
+
         if df_cand is None or df_cand.empty or "コード" not in df_cand.columns:
             return []
-            
         turnover_col = '売買代金億' if '売買代金億' in df_cand.columns else '売買代金(億)'
         if turnover_col not in df_cand.columns:
             return []
 
-        # ★ 修正: DBのカラム名である '前日終値比率' を使用する
-        for c in ['初動フラグ', '右肩早期フラグ', '右肩上がりフラグ', '前日終値比率']:
+        # 「関連テーマ」にはDBテーマ + ニュースタイトルから抽出したテーマが入っている。
+        # DBに存在しないcode×themeだけを当日NEWS_TITLEリンクとしてランキング母集団へ追加する。
+        if V62_THEME_HEAT and "関連テーマ" in df_cand.columns:
+            try:
+                _db_pairs = set(zip(df_theme["コード"].astype(str), df_theme["テーマ"].astype(str)))
+                _news_rows = []
+                for _r in df_cand[["コード","関連テーマ"]].itertuples(index=False, name=None):
+                    _ck = _normalize_jp_security_code(_r[0])
+                    if not _ck or _r[1] in (None, ""):
+                        continue
+                    for _tn in re.split(r"\s*/\s*|\s*／\s*", str(_r[1])):
+                        _tn = str(_tn or "").strip()
+                        if _tn and (_ck, _tn) not in _db_pairs:
+                            _news_rows.append((_ck, _tn, pd.Timestamp(theme_today), "NEWS_TITLE"))
+                            _db_pairs.add((_ck, _tn))
+                if _news_rows:
+                    df_theme = pd.concat([
+                        df_theme,
+                        pd.DataFrame(_news_rows, columns=["コード","テーマ","取得日","theme_source"])
+                    ], ignore_index=True, sort=False)
+                    print(f"[THEME-HEAT-V1] news-derived links added={len(_news_rows)}", flush=True)
+            except Exception as _news_theme_e:
+                print(f"[THEME-HEAT-V1][WARN] news-link augment skipped: {_news_theme_e}", flush=True)
+
+        needed = [
+            '初動フラグ','右肩早期フラグ','右肩上がりフラグ','前日終値比率',
+            'INITIAL_MOMENTUM','主役化状態','RVOL代金'
+        ]
+        for c in needed:
             if c not in df_cand.columns:
                 df_cand[c] = ""
-                
-        df_s = df_cand[['コード', turnover_col, '初動フラグ', '右肩早期フラグ', '右肩上がりフラグ', '前日終値比率']].copy()
+
+        df_s = df_cand[['コード', turnover_col, *needed]].copy()
         df_s['_raw_code'] = df_s['コード'].astype(str)
         df_s['コード'] = df_s['コード'].map(_normalize_jp_security_code)
-        # P3-2: df_cand側にもlegacy aliasが混在してもテーマ人数/売買代金を二重計上しない。
         df_s['_canonical_row'] = [
             str(raw).strip().upper() == str(code).strip().upper()
             for raw, code in zip(df_s['_raw_code'], df_s['コード'])
@@ -13623,78 +23575,234 @@ def calculate_robust_theme_ranking(conn: sqlite3.Connection, df_cand: pd.DataFra
             df_s[df_s['コード'].astype(bool)]
             .sort_values(['_canonical_row'], ascending=False, kind='stable')
             .drop_duplicates('コード', keep='first')
-            .drop(columns=['_raw_code', '_canonical_row'], errors='ignore')
+            .drop(columns=['_raw_code','_canonical_row'], errors='ignore')
         )
 
-        # P1-588: テーマランキングの active_stocks / signal_density も、今回runの価格snapshotへ
-        # 到達した銘柄だけで集計する。旧実装はstale銘柄の売買代金/騰落率自体はNULLでも、
-        # active_stocksの分母には残るため、テーマのシグナル密度を古い休止銘柄で希釈できた。
+        # current runの価格snapshotへ到達した銘柄だけ正式集計。
         _theme_rank_asof = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
         _theme_rank_fresh = set()
-        try:
-            _tr_rows = conn.execute(
-                "SELECT コード, 終値 FROM price_history WHERE date(日付)=date(?)",
-                (_theme_rank_asof,),
-            ).fetchall()
-            # P1-679: 日付行の存在だけでfreshにせず、有限な正の終値が実在するlogical codeだけ採用。
-            _theme_rank_fresh = set()
-            for _r in _tr_rows:
-                if not _r:
-                    continue
-                _ck = _normalize_jp_security_code(_r[0])
-                _cv = ffloat(_r[1], None)
-                if _ck and _cv is not None and math.isfinite(float(_cv)) and float(_cv) > 0:
-                    _theme_rank_fresh.add(_ck)
-        except Exception as _e:
-            raise RuntimeError(f"theme ranking freshness lookup failed: {_e}") from _e
+        for _r in conn.execute(
+            "SELECT コード, 終値 FROM price_history WHERE date(日付)=date(?)",
+            (_theme_rank_asof,),
+        ).fetchall():
+            if not _r:
+                continue
+            _ck = _normalize_jp_security_code(_r[0])
+            _cv = ffloat(_r[1], None)
+            if _ck and _cv is not None and math.isfinite(float(_cv)) and float(_cv) > 0:
+                _theme_rank_fresh.add(_ck)
         df_s = df_s[df_s['コード'].isin(_theme_rank_fresh)].copy()
         if df_s.empty:
             return []
 
-        # P1-42: 売買代金/騰落率の欠損を実測0へ変換してテーマ統計を薄めない。
         df_s['売買代金(億)'] = pd.to_numeric(df_s[turnover_col], errors='coerce')
         df_s['前日終値比率'] = pd.to_numeric(
             df_s['前日終値比率'].astype(str).str.replace(r'[^\d\.\-]', '', regex=True),
             errors='coerce'
         )
-        
+        df_s['RVOL代金_num'] = pd.to_numeric(df_s['RVOL代金'], errors='coerce')
         df_s['is_signaled'] = np.where(
-            df_s['初動フラグ'].astype(str).str.contains('候補') | 
+            df_s['初動フラグ'].astype(str).str.contains('候補') |
             df_s['右肩早期フラグ'].astype(str).str.contains('候補') |
-            df_s['右肩上がりフラグ'].astype(str).str.contains('候補'), 
-            1, 0
+            df_s['右肩上がりフラグ'].astype(str).str.contains('候補'), 1, 0
         )
-        
+        df_s['is_initial'] = (pd.to_numeric(df_s['INITIAL_MOMENTUM'], errors='coerce') == 1.0).astype(int)
+        _leader_text = df_s['主役化状態'].fillna('').astype(str).str.strip()
+        df_s['is_leader'] = (_leader_text.str.startswith('🌈') | _leader_text.str.startswith('🔥')).astype(int)
+        df_s['is_rainbow'] = _leader_text.str.startswith('🌈').astype(int)
+        df_s['is_fire'] = _leader_text.str.startswith('🔥').astype(int)
+
         df_mrg = pd.merge(df_theme, df_s, on='コード', how='inner')
         if df_mrg.empty:
             return []
-            
+        df_mrg['is_news_link'] = df_mrg['theme_source'].eq('NEWS_TITLE').astype(int)
+        _ret = pd.to_numeric(df_mrg['前日終値比率'], errors='coerce')
+        df_mrg['is_positive'] = (_ret > 0).astype(int)
+        df_mrg['is_plus3'] = (_ret >= 3.0).astype(int)
+        df_mrg['is_plus5'] = (_ret >= 5.0).astype(int)
+        df_mrg['is_rvol15'] = (pd.to_numeric(df_mrg['RVOL代金_num'], errors='coerce') >= 1.5).astype(int)
+        # THEME-HEAT-V2: 同じ銘柄で価格上昇と出来高増加が同時に出た「現在の点火」を観測する。
+        df_mrg['is_hot_combo'] = ((df_mrg['is_plus3'] == 1) & (df_mrg['is_rvol15'] == 1)).astype(int)
+
+        # 取得日はテーマ情報を取得した日であり「テーマが旬になった日」ではない。
+        # V2ではスコアへ使わず、分布監査用の比率だけ保持する。
+        _link_age = (pd.Timestamp(theme_today) - pd.to_datetime(df_mrg['取得日'], errors='coerce')).dt.days
+        df_mrg['theme_link_age1'] = _link_age.between(0, 1, inclusive='both').astype(int)
+        df_mrg['theme_link_age3'] = _link_age.between(0, 3, inclusive='both').astype(int)
+        df_mrg['theme_link_age7'] = _link_age.between(0, 7, inclusive='both').astype(int)
+
         stats = df_mrg.groupby('テーマ').agg(
             total_turnover=('売買代金(億)', 'sum'),
             median_turnover=('売買代金(億)', 'median'),
             turnover_obs=('売買代金(億)', 'count'),
             active_stocks=('コード', 'count'),
             signaled_count=('is_signaled', 'sum'),
-            avg_return=('前日終値比率', 'mean')
+            initial_count=('is_initial', 'sum'),
+            leader_count=('is_leader', 'sum'),
+            rainbow_count=('is_rainbow', 'sum'),
+            fire_count=('is_fire', 'sum'),
+            news_link_count=('is_news_link', 'sum'),
+            avg_return=('前日終値比率', 'mean'),
+            median_return=('前日終値比率', 'median'),
+            positive_count=('is_positive', 'sum'),
+            plus3_count=('is_plus3', 'sum'),
+            plus5_count=('is_plus5', 'sum'),
+            median_rvol=('RVOL代金_num', 'median'),
+            rvol15_count=('is_rvol15', 'sum'),
+            hot_combo_count=('is_hot_combo', 'sum'),
+            theme_link_age1_count=('theme_link_age1', 'sum'),
+            theme_link_age3_count=('theme_link_age3', 'sum'),
+            theme_link_age7_count=('theme_link_age7', 'sum'),
+            latest_theme_date=('取得日', 'max'),
         ).reset_index()
 
-        # P1-46: active_stocksが3でも、売買代金が1銘柄しか取れていないテーマを
-        # その1点だけでランキングしない。最低3銘柄の有効売買代金を要求する。
         stats = stats[(stats['active_stocks'] >= 3) & (stats['turnover_obs'] >= 3)].copy()
+        stats = stats[stats['median_turnover'].notna()].copy()
         if stats.empty:
             return []
-        
-        stats['signal_density'] = stats['signaled_count'] / stats['active_stocks']
-        stats['true_flow_score'] = _theme_true_flow_score(stats['median_turnover'], stats['signal_density']).round(1)
-        # 売買代金が全件欠損のテーマは強度を計算不能としてランキング対象外。
-        stats = stats[stats['median_turnover'].notna()].copy()
 
-        stats = stats.sort_values(by='true_flow_score', ascending=False).head(30)
-        return stats.to_dict(orient='records')
-        
+        # テーマ内上位5銘柄の累積売買代金。巨大テーマの銘柄数だけでなく主役群への集中を拾う。
+        _top5 = (
+            df_mrg.dropna(subset=['売買代金(億)'])
+                  .sort_values(['テーマ','売買代金(億)'], ascending=[True,False], kind='stable')
+                  .groupby('テーマ', sort=False).head(5)
+                  .groupby('テーマ')['売買代金(億)'].sum()
+        )
+        stats['top5_turnover'] = stats['テーマ'].map(_top5).fillna(0.0)
+
+        den = stats['active_stocks'].replace(0, np.nan)
+        stats['signal_density'] = stats['signaled_count'] / den
+        stats['initial_density'] = stats['initial_count'] / den
+        stats['leader_density'] = stats['leader_count'] / den
+        stats['positive_ratio'] = stats['positive_count'] / den
+        stats['plus3_ratio'] = stats['plus3_count'] / den
+        stats['plus5_ratio'] = stats['plus5_count'] / den
+        stats['rvol15_ratio'] = stats['rvol15_count'] / den
+        stats['hot_combo_density'] = stats['hot_combo_count'] / den
+        stats['news_density'] = stats['news_link_count'] / den
+        stats['theme_link_age1_ratio'] = stats['theme_link_age1_count'] / den
+        stats['theme_link_age3_ratio'] = stats['theme_link_age3_count'] / den
+        stats['theme_link_age7_ratio'] = stats['theme_link_age7_count'] / den
+        stats['legacy_flow_score'] = _theme_true_flow_score(stats['median_turnover'], stats['signal_density'])
+
+        def _rank01(series, inverse=False):
+            x = pd.to_numeric(series, errors='coerce')
+            out = pd.Series(np.nan, index=x.index, dtype=float)
+            valid = x.notna() & np.isfinite(x)
+            n = int(valid.sum())
+            if n <= 0:
+                return out.fillna(0.5)
+            vals = x[valid]
+            if n == 1 or vals.nunique(dropna=True) <= 1:
+                out.loc[valid] = 0.5
+            else:
+                r = vals.rank(method='average', ascending=not inverse)
+                out.loc[valid] = (r - 1.0) / float(n - 1)
+            return out.fillna(0.5)
+
+        def _rank01_zero_safe(series):
+            """0が『相対的に普通』として0.5点化されるのを防ぐ活動量専用rank。"""
+            x = pd.to_numeric(series, errors='coerce')
+            valid = x.notna() & np.isfinite(x)
+            out = pd.Series(0.0, index=x.index, dtype=float)
+            if not bool(valid.any()):
+                return out
+            vals = x[valid]
+            if float(vals.max()) <= 0.0:
+                return out
+            if vals.nunique(dropna=True) <= 1:
+                out.loc[valid] = 1.0
+                return out
+            r = vals.rank(method='average', ascending=True)
+            out.loc[valid] = (r - 1.0) / float(max(1, len(vals) - 1))
+            return out.clip(0.0, 1.0)
+
+        # 資金流入30: raw規模だけでなくRVOL/上位集中を重視。
+        _capital = (
+            0.35 * _rank01(np.log1p(stats['top5_turnover'].clip(lower=0))) +
+            0.15 * _rank01(np.log1p(stats['median_turnover'].clip(lower=0))) +
+            0.25 * _rank01(stats['median_rvol']) +
+            0.25 * _rank01(stats['rvol15_ratio'])
+        )
+        # 広がり35: 1銘柄のS高だけでなくテーマ内の面的上昇を要求。
+        _breadth = (
+            0.20 * _rank01(stats['positive_ratio']) +
+            0.30 * _rank01(stats['plus3_ratio']) +
+            0.20 * _rank01(stats['plus5_ratio']) +
+            0.30 * _rank01(stats['median_return'])
+        )
+        # シグナル25: 旧3種密度 + INITIAL_MOMENTUM + 現在の🌈/🔥密度。
+        _signal = (
+            0.45 * _rank01(stats['signal_density']) +
+            0.30 * _rank01(stats['initial_density']) +
+            0.25 * _rank01(stats['leader_density'])
+        )
+        # THEME-HEAT-V2: DB取得日は市場テーマの旬ではないためfreshness配点から除外。
+        # 現在性はニュース実リンクと『+3%かつRVOL>=1.5』同時発生密度で測る。
+        # news_densityが全0ならニュース寄与は厳密に0。
+        _fresh = (
+            0.60 * _rank01_zero_safe(stats['hot_combo_density']) +
+            0.40 * _rank01_zero_safe(stats['news_density'])
+        )
+
+        # 古い静的タグへ大型株の今日の強さだけが乗るのを抑える現在性gate。
+        # hard deleteはせず、ランキング時にcurrent evidenceありを優先し、監査列も残す。
+        stats['current_evidence_ok'] = (
+            (stats['news_density'] > 0.0) |
+            (stats['leader_density'] > 0.0) |
+            (stats['initial_density'] >= 0.15) |
+            (stats['hot_combo_density'] >= 0.15) |
+            (stats['plus3_ratio'] >= 0.30)
+        )
+        def _evidence_reason(r):
+            reasons = []
+            if float(r.get('news_density') or 0.0) > 0.0: reasons.append('NEWS')
+            if float(r.get('leader_density') or 0.0) > 0.0: reasons.append('LEADER')
+            if float(r.get('initial_density') or 0.0) >= 0.15: reasons.append('INITIAL15')
+            if float(r.get('hot_combo_density') or 0.0) >= 0.15: reasons.append('HOT_COMBO15')
+            if float(r.get('plus3_ratio') or 0.0) >= 0.30: reasons.append('PLUS3_30')
+            return '/'.join(reasons) if reasons else 'STALE_ATTRIBUTE_ONLY'
+        stats['current_evidence_reason'] = stats.apply(_evidence_reason, axis=1)
+
+        stats['capital_score'] = (30.0 * _capital).round(1)
+        stats['breadth_score'] = (35.0 * _breadth).round(1)
+        stats['signal_score'] = (25.0 * _signal).round(1)
+        stats['freshness_score'] = (10.0 * _fresh).round(1)
+        stats['heat_score'] = (
+            stats['capital_score'] + stats['breadth_score'] + stats['signal_score'] + stats['freshness_score']
+        ).round(1)
+        # 既存UI/rotation契約を壊さない。true_flow_scoreはV2 heatを維持。
+        stats['true_flow_score'] = stats['heat_score']
+        stats['ranking_version'] = 'THEME_HEAT_V2'
+        stats['rank_basis'] = 'theme_heat_v2_current_evidence'
+
+        # 旧順位との比較ログ。現在性gateは表示順位だけに適用し、候補選定へは逆流させない。
+        _legacy_order = stats.sort_values(['legacy_flow_score','テーマ'], ascending=[False,True], kind='stable').reset_index(drop=True)
+        _legacy_rank = {str(t): i + 1 for i, t in enumerate(_legacy_order['テーマ'].tolist())}
+        stats = stats.sort_values(
+            ['current_evidence_ok','heat_score','top5_turnover','テーマ'],
+            ascending=[False,False,False,True], kind='stable'
+        ).reset_index(drop=True)
+        stats['heat_rank'] = np.arange(1, len(stats) + 1)
+        stats['legacy_rank'] = stats['テーマ'].map(_legacy_rank)
+        try:
+            _ad = stats[stats['テーマ'].astype(str).str.contains('自動運転', regex=False)]
+            for _, _r in _ad.iterrows():
+                print(
+                    f"[THEME-HEAT-V2] theme={_r['テーマ']} heat_rank={int(_r['heat_rank'])} "
+                    f"legacy_rank={int(_r['legacy_rank'])} heat={float(_r['heat_score']):.1f} "
+                    f"legacy={float(_r['legacy_flow_score']):.2f} active={int(_r['active_stocks'])} "
+                    f"+3={float(_r['plus3_ratio']):.1%} +5={float(_r['plus5_ratio']):.1%} "
+                    f"signal={float(_r['signal_density']):.1%} leader={float(_r['leader_density']):.1%}",
+                    flush=True,
+                )
+        except Exception:
+            pass
+
+        # PERF-OPT-V63: V62実地監査で自動運転車がheat_rank=31まで改善した一方、
+        # backend側head(30)のため表示から1つだけ落ちていた。ランキング式は触らず表示上限のみ50へ。
+        return stats.head(50).to_dict(orient='records')
     except Exception as e:
-        # P2-67: DB/schema障害まで「該当テーマ0件」に変換すると、正常な空ランキングと区別できない。
-        # optional表示として空に落とす判断は呼出側に一本化し、ここでは原因を保持して伝播する。
         raise RuntimeError(f"robust theme ranking calculation failed: {e}") from e
 
 # === [/THEME] ===========================================================
@@ -13871,7 +23979,7 @@ class MarketEventCalendar:
 # === [追加] セクター・マスタ統合とランキング計算ロジック ===
 def sync_sector_data(conn: sqlite3.Connection):
     """JPX公式業種データを用いてscreenerセクターを同期。P1-452: atomic/fail-visible。"""
-    url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+    url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx"
     try:
         # P1-461: pd.read_excel(URL)任せだとHTTP timeoutを制御できず、
         # JPX応答停止時にHTML生成全体が無期限hangし得る。明示timeoutでbytes取得。
@@ -14503,8 +24611,8 @@ def _load_institution_short_summary(conn: sqlite3.Connection) -> pd.DataFrame:
 
     - 機関空売り合計株数: 各機関の「現存と判定できる」最新報告残高の合計
     - 空売り更新日:      その銘柄で最も新しい報告日
-    - 本日の増減合計株数: 上記の最新報告日に更新された機関の shares_change だけを合計
-      （最新日に shares_change が全件NULLならNULLを保持）
+    - 本日の増減合計株数: 互換用の内部列名。実意味は「最新報告日に更新された機関の shares_change 合計」
+      （最新報告日の shares_change が全件NULLならNULLを保持。dashboard見出しは「最新報告日増減」）
     - 主要機関の動き:    現存機関の最新残高・最新報告日を表示用に連結
     """
     import numpy as np
@@ -14649,6 +24757,64 @@ def _load_institution_short_summary(conn: sqlite3.Connection) -> pd.DataFrame:
         })
 
     return pd.DataFrame(rows)
+
+
+# PERF-OPT-V19-STAGE1: dashboard and Fair Value need the exact same current public short-position summary.
+# No producer updates institution_short_sales inside one scanner process, so compute once and return copies
+# to prevent downstream rename/mutation from altering the cached canonical frame.
+_INSTITUTION_SHORT_SUMMARY_RUN_CACHE = {}
+
+def _load_institution_short_summary_run_cached(conn: sqlite3.Connection) -> pd.DataFrame:
+    _key = id(conn)
+    _cached = _INSTITUTION_SHORT_SUMMARY_RUN_CACHE.get(_key)
+    if isinstance(_cached, pd.DataFrame):
+        print(f"[institution-short-cache] hit rows={len(_cached)}", flush=True)
+        return _cached.copy(deep=True)
+
+    _v24_fp = ""
+    if _v24_fast_enabled():
+        try:
+            _v24_fp = _v24_institution_short_source_fingerprint(conn)
+            _obj = _stage2_json_read(_V24_INST_SHORT_CACHE_PATH)
+            if (
+                _v24_fp
+                and isinstance(_obj, dict)
+                and int(_obj.get("schema") or 0) == _V24_CACHE_SCHEMA
+                and str(_obj.get("source_fp") or "") == _v24_fp
+                and str(_obj.get("asof") or "") == str(_today_jst())
+            ):
+                _records = _obj.get("records")
+                _pf = pd.DataFrame(_records) if isinstance(_records, list) else pd.DataFrame()
+                _expected_cols = ["code", "空売り更新日", "機関空売り合計株数", "本日の増減合計株数", "主要機関の動き"]
+                if all(c in _pf.columns for c in _expected_cols):
+                    _pf = _pf[_expected_cols].copy()
+                    for _nc in ("機関空売り合計株数", "本日の増減合計株数"):
+                        _pf[_nc] = pd.to_numeric(_pf[_nc], errors="coerce")
+                    _INSTITUTION_SHORT_SUMMARY_RUN_CACHE.clear()
+                    _INSTITUTION_SHORT_SUMMARY_RUN_CACHE[_key] = _pf.copy(deep=True)
+                    print(f"[V24-INST-CACHE] HIT rows={len(_pf)}", flush=True)
+                    return _pf.copy(deep=True)
+            print("[V24-INST-CACHE] MISS", flush=True)
+        except Exception as _v24_inst_e:
+            print(f"[V24-INST-CACHE][WARN] lookup failed; legacy compute: {_v24_inst_e}", flush=True)
+
+    _fresh = _load_institution_short_summary(conn)
+    _INSTITUTION_SHORT_SUMMARY_RUN_CACHE.clear()
+    _INSTITUTION_SHORT_SUMMARY_RUN_CACHE[_key] = _fresh.copy(deep=True)
+    print(f"[institution-short-cache] store rows={len(_fresh)}", flush=True)
+    if _v24_fast_enabled() and _v24_fp:
+        try:
+            _obj = {
+                "schema": _V24_CACHE_SCHEMA,
+                "asof": str(_today_jst()),
+                "source_fp": _v24_fp,
+                "records": _v24_frame_records(_fresh),
+            }
+            if _stage2_json_write(_V24_INST_SHORT_CACHE_PATH, _obj):
+                print(f"[V24-INST-CACHE] STORE rows={len(_fresh)}", flush=True)
+        except Exception as _v24_inst_store_e:
+            print(f"[V24-INST-CACHE][WARN] store failed: {_v24_inst_store_e}", flush=True)
+    return _fresh.copy(deep=True)
 
 
 def _load_institution_short_snapshot_status(
@@ -14879,16 +25045,12 @@ def _shinden_snapshot_is_current(conn) -> bool:
         jobs = ["live_shinden_full"] if mode in ("MIDDAY", "EOD") else ["morning_shinden_full", "live_shinden_full"]
         _fresh_dts = []
         for job in jobs:
-            st = _external_job_state(job)
-            if str(st.get("status") or "") != "success":
-                continue
-            ts = st.get("last_finished_at") or st.get("last_success_at")
-            if not ts:
-                continue
-            try:
-                _fresh_dts.append(datetime.fromisoformat(str(ts)))
-            except Exception:
-                continue
+            dt_job = _fresh_external_job_datetime(
+                job,
+                require_today=(mode == "PREOPEN")
+            )
+            if dt_job is not None:
+                _fresh_dts.append(dt_job)
         if not _fresh_dts:
             return False
         dt = max(_fresh_dts)
@@ -15072,6 +25234,78 @@ def _overlay_latest_actual_earnings_age(df_cand: pd.DataFrame, conn: sqlite3.Con
     asof_ts = pd.Timestamp(asof)
     keys = out["コード"].map(canonical_code_for_db)
 
+
+    # PERF-OPT-V2: dashboard構築時とFair Value再計算時は、同一run内で同じ正本overlayを2回呼ぶ。
+    # 正本テーブルはこの間に更新しないため、asof+logical universeが同じなら派生列だけ再利用する。
+    _fund_key_tuple = tuple(sorted({str(k) for k in keys.dropna().tolist() if str(k)}))
+    _fund_cache_key = (str(asof), _fund_key_tuple)
+    _fund_cache = globals().get("_FUND_SOURCE_TRUTH_RUN_CACHE")
+    if isinstance(_fund_cache, dict) and _fund_cache.get("key") == _fund_cache_key:
+        _cached = _fund_cache.get("frame")
+        if isinstance(_cached, pd.DataFrame) and not _cached.empty and "_fund_key" in _cached.columns:
+            _cached_idx = _cached.drop_duplicates("_fund_key", keep="last").set_index("_fund_key")
+            for _fc in defaults:
+                if _fc in _cached_idx.columns:
+                    out[_fc] = keys.map(_cached_idx[_fc])
+            print(
+                f"[fund-source][cache] run-cache hit asof={asof} codes={len(_fund_key_tuple)}",
+                flush=True,
+            )
+            return out
+
+    # PERF-OPT-V24: first export call itselfをpersistent reuse。source/asof/universe/sectorの完全一致時だけ採用。
+    _v24_fund_source_fp = ""
+    _v24_fund_universe_hash = ""
+    _v24_fund_sector_hash = ""
+    if _v24_fast_enabled():
+        try:
+            _v24_fund_source_fp = _v24_fund_source_fingerprint(conn)
+            _v24_fund_universe_hash = _stage2_codes_hash(keys.tolist())
+            _v24_fund_sector_hash = _v24_sector_hash(out)
+            _v24_obj = _stage2_json_read(_V24_FUND_CACHE_PATH)
+            if (
+                _v24_fund_source_fp
+                and isinstance(_v24_obj, dict)
+                and int(_v24_obj.get("schema") or 0) == _V24_CACHE_SCHEMA
+                and str(_v24_obj.get("asof") or "") == str(asof)
+                and str(_v24_obj.get("source_fp") or "") == _v24_fund_source_fp
+                and str(_v24_obj.get("universe_hash") or "") == _v24_fund_universe_hash
+                and str(_v24_obj.get("sector_hash") or "") == _v24_fund_sector_hash
+            ):
+                _v24_records = _v24_obj.get("records")
+                _v24_frame = pd.DataFrame(_v24_records) if isinstance(_v24_records, list) else pd.DataFrame()
+                if not _v24_frame.empty and "_fund_key" in _v24_frame.columns:
+                    _v24_idx = _v24_frame.drop_duplicates("_fund_key", keep="last").set_index("_fund_key")
+                    if set(_fund_key_tuple).issubset(set(_v24_idx.index.astype(str))):
+                        for _fc in defaults:
+                            if _fc in _v24_idx.columns:
+                                out[_fc] = keys.map(_v24_idx[_fc])
+                        globals()["_FUND_SOURCE_TRUTH_RUN_CACHE"] = {
+                            "key": _fund_cache_key,
+                            "frame": _v24_frame.copy(),
+                        }
+                        _v24_q_records = _v24_obj.get("repricing_q_records")
+                        if isinstance(_v24_q_records, list) and _v24_q_records:
+                            _v24_qf = pd.DataFrame(_v24_q_records)
+                            for _dc in ("_ann", "_upd"):
+                                if _dc in _v24_qf.columns:
+                                    _v24_qf[_dc] = pd.to_datetime(_v24_qf[_dc], errors="coerce")
+                            for _nc in ("_rowid", "quarter_no", "operating_profit"):
+                                if _nc in _v24_qf.columns:
+                                    _v24_qf[_nc] = pd.to_numeric(_v24_qf[_nc], errors="coerce")
+                            globals()["_REPRICING_Q_DEDUP_RUN_CACHE"] = {
+                                "asof": str(asof),
+                                "frame": _v24_qf,
+                            }
+                        print(
+                            f"[V24-FUND-CACHE] HIT asof={asof} codes={len(_fund_key_tuple)} records={len(_v24_frame)}",
+                            flush=True,
+                        )
+                        return out
+            print(f"[V24-FUND-CACHE] MISS asof={asof} codes={len(_fund_key_tuple)}", flush=True)
+        except Exception as _v24_fund_e:
+            print(f"[V24-FUND-CACHE][WARN] lookup failed; legacy compute: {_v24_fund_e}", flush=True)
+
     def _finite(v):
         try:
             x = float(v)
@@ -15148,6 +25382,22 @@ def _overlay_latest_actual_earnings_age(df_cand: pd.DataFrame, conn: sqlite3.Con
                             )
                             .drop_duplicates(["コード", "fiscal_key", "quarter_no"], keep="last")
                         )
+
+                        # PERF-OPT-V16:
+                        # このQ正本は直後の再評価探索Bでも同じasof・同じtableから再構築していた。
+                        # canonical/dedupe済みframeだけを同一run内で共有し、二重SQL/parse/sortを避ける。
+                        try:
+                            globals()["_REPRICING_Q_DEDUP_RUN_CACHE"] = {
+                                "asof": str(asof),
+                                "frame": q.copy(),
+                            }
+                            print(
+                                f"[fund-source][repricing-q-cache] stored asof={asof} rows={len(q)}",
+                                flush=True,
+                            )
+                        except Exception as _rqce:
+                            print(f"[fund-source][repricing-q-cache][WARN] store failed: {_rqce}", flush=True)
+
                         # 銘柄ごとの最新発表Q。
                         latest_q = (
                             q.sort_values(["コード", "_ann", "_upd", "_canon_match", "_rowid"], kind="stable", na_position="first")
@@ -15308,9 +25558,18 @@ def _overlay_latest_actual_earnings_age(df_cand: pd.DataFrame, conn: sqlite3.Con
                             if rate >= 0.5: return 1
                             return 0
 
+                        # PERF-OPT-V1: current fiscalごとにfh全体を再走査しない。
+                        _fh_current_groups = {
+                            (str(_code), str(_fk)): _g.sort_values(
+                                ["_date", "_upd", "_rowid"], kind="stable", na_position="first"
+                            ).reset_index(drop=True)
+                            for (_code, _fk), _g in fh.groupby(["コード", "fiscal_key"], sort=False)
+                        }
                         for code, fk in current_fiscal.items():
-                            g = fh[(fh["コード"] == code) & (fh["fiscal_key"].astype(str) == fk)].copy()
-                            g = g.sort_values(["_date", "_upd", "_rowid"], kind="stable", na_position="first")
+                            _g0 = _fh_current_groups.get((str(code), str(fk)))
+                            if _g0 is None:
+                                continue
+                            g = _g0
                             if g.empty:
                                 continue
                             lr = g.iloc[-1]
@@ -15464,9 +25723,45 @@ def _overlay_latest_actual_earnings_age(df_cand: pd.DataFrame, conn: sqlite3.Con
     except Exception as e:
         print(f"[fund-source][WARN] coverage calculation failed: {e}", flush=True)
 
+    # PERF-OPT-V2: 次のFair Value呼出し用に正本派生列だけrun内cacheへ保存。
+    try:
+        _cache_frame = out[list(defaults.keys())].copy()
+        _cache_frame.insert(0, "_fund_key", keys.astype(object).to_numpy())
+        globals()["_FUND_SOURCE_TRUTH_RUN_CACHE"] = {
+            "key": _fund_cache_key,
+            "frame": _cache_frame,
+        }
+        print(f"[fund-source][cache] stored asof={asof} codes={len(_fund_key_tuple)}", flush=True)
+        if _v24_fast_enabled() and _v24_fund_source_fp:
+            _v24_qcache = globals().get("_REPRICING_Q_DEDUP_RUN_CACHE")
+            _v24_qframe = (
+                _v24_qcache.get("frame")
+                if isinstance(_v24_qcache, dict) and _v24_qcache.get("asof") == str(asof)
+                else None
+            )
+            _v24_qcols = [
+                c for c in ("_rowid","コード","fiscal_key","quarter_no","announcement_date",
+                            "operating_profit","updated_at","_ann","_upd")
+                if isinstance(_v24_qframe, pd.DataFrame) and c in _v24_qframe.columns
+            ]
+            _v24_cache_obj = {
+                "schema": _V24_CACHE_SCHEMA,
+                "asof": str(asof),
+                "source_fp": _v24_fund_source_fp,
+                "universe_hash": _v24_fund_universe_hash,
+                "sector_hash": _v24_fund_sector_hash,
+                "records": _v24_frame_records(_cache_frame),
+                "repricing_q_records": _v24_frame_records(_v24_qframe[_v24_qcols]) if _v24_qcols else [],
+            }
+            if _stage2_json_write(_V24_FUND_CACHE_PATH, _v24_cache_obj):
+                print(f"[V24-FUND-CACHE] STORE records={len(_cache_frame)}", flush=True)
+    except Exception as _cache_e:
+        print(f"[fund-source][cache][WARN] store failed: {_cache_e}", flush=True)
+
     return out
 
 def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    _repr_all_t0 = time.perf_counter()
     '''REPRICING-DISCOVERY-V1: 企業価値の変化と株価の織り込み遅れを分離して付与する。
 
     研究V7〜V10Bの知見を「入口を狭めすぎない」形で本番へ移植する。
@@ -15571,6 +25866,11 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
     out["最新Q利益率_pct_正本"] = cur_margin
     out["前年同期Q利益率_pct_正本"] = prev_margin
     out["利益率前年差_ppt_正本"] = cur_margin - prev_margin
+    _repr_t_a = time.perf_counter()
+    _perf_record_phase(
+        "export-detail:repricing_current_q_vector",
+        _repr_t_a - _repr_all_t0, "OK"
+    )
 
     # B) 3ヵ月単独actualを年度合計し、fresh finance_notesの会社予想と比較する。
     try:
@@ -15586,29 +25886,46 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
                     + op_expr + ", " + upd_expr + " FROM quarterly_actual_history "
                     "WHERE announcement_date IS NOT NULL"
                 )
-                q = pd.read_sql_query(sql, conn)
+                _repr_future_q_t0 = time.perf_counter()
+                _rq_cache = globals().get("_REPRICING_Q_DEDUP_RUN_CACHE")
+                _rq_cached_frame = (
+                    _rq_cache.get("frame")
+                    if isinstance(_rq_cache, dict) and _rq_cache.get("asof") == str(asof)
+                    else None
+                )
+                if isinstance(_rq_cached_frame, pd.DataFrame):
+                    q = _rq_cached_frame.copy()
+                    _repr_future_q_mode = "fund_source_run_cache"
+                else:
+                    q = pd.read_sql_query(sql, conn)
+                    _repr_future_q_mode = "legacy_sql"
+                _repr_future_q_source_t = time.perf_counter()
+
                 if not q.empty:
-                    q["_raw"] = q["コード"].astype(str).str.strip()
-                    q["コード"] = q["コード"].map(canonical_code_for_db)
-                    q["fiscal_key"] = q["fiscal_key"].fillna("").astype(str).str.strip()
-                    q["quarter_no"] = pd.to_numeric(q["quarter_no"], errors="coerce")
-                    q["operating_profit"] = pd.to_numeric(q["operating_profit"], errors="coerce")
-                    q["_ann"] = q["announcement_date"].map(_p1_608_jst_naive_ts)
-                    q["_upd"] = q.get("updated_at").map(_p1_608_jst_naive_ts)
-                    q["_canon"] = (q["_raw"].str.upper() == q["コード"].astype(str).str.upper()).astype(int)
-                    q = q[
-                        q["コード"].astype(bool) & q["quarter_no"].isin([1,2,3,4]) &
-                        q["fiscal_key"].ne("") & q["_ann"].notna() &
-                        (q["_ann"].dt.normalize() <= asof_ts)
-                    ].copy()
-                    if not q.empty:
-                        q = (
-                            q.sort_values(
-                                ["コード","fiscal_key","quarter_no","_upd","_canon","_ann","_rowid"],
-                                kind="stable", na_position="first"
+                    if _repr_future_q_mode != "fund_source_run_cache":
+                        q["_raw"] = q["コード"].astype(str).str.strip()
+                        q["コード"] = q["コード"].map(canonical_code_for_db)
+                        q["fiscal_key"] = q["fiscal_key"].fillna("").astype(str).str.strip()
+                        q["quarter_no"] = pd.to_numeric(q["quarter_no"], errors="coerce")
+                        q["operating_profit"] = pd.to_numeric(q["operating_profit"], errors="coerce")
+                        q["_ann"] = q["announcement_date"].map(_p1_608_jst_naive_ts)
+                        q["_upd"] = q.get("updated_at").map(_p1_608_jst_naive_ts)
+                        q["_canon"] = (q["_raw"].str.upper() == q["コード"].astype(str).str.upper()).astype(int)
+                        q = q[
+                            q["コード"].astype(bool) & q["quarter_no"].isin([1,2,3,4]) &
+                            q["fiscal_key"].ne("") & q["_ann"].notna() &
+                            (q["_ann"].dt.normalize() <= asof_ts)
+                        ].copy()
+                        if not q.empty:
+                            q = (
+                                q.sort_values(
+                                    ["コード","fiscal_key","quarter_no","_upd","_canon","_ann","_rowid"],
+                                    kind="stable", na_position="first"
+                                )
+                                .drop_duplicates(["コード","fiscal_key","quarter_no"], keep="last")
                             )
-                            .drop_duplicates(["コード","fiscal_key","quarter_no"], keep="last")
-                        )
+                    _repr_future_q_prepare_t = time.perf_counter()
+                    if not q.empty:
                         latest_q = (
                             q.sort_values(["コード","_ann","_upd","_rowid"], kind="stable", na_position="first")
                              .groupby("コード", sort=False).tail(1)
@@ -15619,22 +25936,45 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
                             .agg(_qcount=("quarter_no","nunique"), _op_sum=("operating_profit","sum"), _ann_max=("_ann","max"))
                         )
                         annual = annual[annual["_qcount"].eq(4)].copy()
-                        annual_map = {
-                            (str(r["コード"]), str(r["fiscal_key"])): float(r["_op_sum"])
-                            for _, r in annual.iterrows()
-                            if pd.notna(r["_op_sum"]) and math.isfinite(float(r["_op_sum"]))
-                        }
+                        # PERF-OPT-V17:
+                        # annualをlatest_q各行ごとにfilter+sortする旧O(codes × annual scan)を廃止。
+                        # 旧sort(["_ann_max","fiscal_key"])と同じ順序のrecord listを銘柄別に一度だけ作る。
+                        annual_map = {}
+                        annual_by_code = {}
+                        if not annual.empty:
+                            _annual_sorted = annual.sort_values(
+                                ["コード","_ann_max","fiscal_key"],
+                                kind="stable", na_position="first"
+                            )
+                            # V17-FIX2:
+                            # pandas.itertuples() は "_op_sum" を "_2" 等へrenameするため属性参照禁止。
+                            # 旧V16と同じannual行を、列Seriesから直接読み取る。
+                            _annual_codes = _annual_sorted["コード"].astype(str).to_numpy(copy=False)
+                            _annual_fiscals = _annual_sorted["fiscal_key"].astype(str).to_numpy(copy=False)
+                            _annual_ops = pd.to_numeric(
+                                _annual_sorted["_op_sum"], errors="coerce"
+                            ).to_numpy(dtype=float, copy=False)
+
+                            for _acode, _afiscal, _aop in zip(
+                                _annual_codes, _annual_fiscals, _annual_ops
+                            ):
+                                if math.isfinite(float(_aop)):
+                                    _af = float(_aop)
+                                    annual_map[(_acode, _afiscal)] = _af
+                                    annual_by_code.setdefault(_acode, []).append((_afiscal, _af))
+
                         context_map = {}
-                        for _, lr in latest_q.iterrows():
-                            code = str(lr["コード"])
-                            fiscal = str(lr["fiscal_key"])
-                            qno = int(lr["quarter_no"])
-                            a = annual[annual["コード"].eq(code)].sort_values(["_ann_max","fiscal_key"], kind="stable")
+                        for _lr in latest_q.itertuples(index=False):
+                            code = str(getattr(_lr, "コード"))
+                            fiscal = str(getattr(_lr, "fiscal_key"))
+                            qno = int(getattr(_lr, "quarter_no"))
                             base = None
                             if qno < 4:
-                                prev_a = a[a["fiscal_key"].astype(str) != fiscal]
-                                if not prev_a.empty:
-                                    base = float(prev_a.iloc[-1]["_op_sum"])
+                                # 旧 prev_a.iloc[-1]: sort済みannualの末尾からcurrent fiscal以外を探す。
+                                for _pfiscal, _pop in reversed(annual_by_code.get(code, ())):
+                                    if _pfiscal != fiscal:
+                                        base = _pop
+                                        break
                                 target_fiscal = fiscal
                             else:
                                 base = annual_map.get((code, fiscal))
@@ -15644,6 +25984,7 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
                                     if _m else ""
                                 )
                             context_map[code] = {"base": base, "target_fiscal": target_fiscal}
+                        _repr_future_context_t = time.perf_counter()
 
                         # forecast_history (既にFUND-SOURCE-TRUTHで正本化済み)を最優先。
                         # 対象年度が一致する数値だけを使い、finance_notesはfresh fallback。
@@ -15676,35 +26017,88 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
                                         fwd_fiscal_map[_code] = _target
                                 except Exception:
                                     pass
-                        if "finance_notes" in tables:
-                            fncols = {r[1] for r in conn.execute("PRAGMA table_info(finance_notes)").fetchall()}
-                            if {"コード","forecast_op"}.issubset(fncols):
-                                upd_sel = 'updated_at' if 'updated_at' in fncols else 'NULL AS updated_at'
-                                fn = pd.read_sql_query(
-                                    "SELECT rowid AS _rowid, コード, forecast_op, " + upd_sel + " FROM finance_notes",
-                                    conn,
-                                )
-                                if not fn.empty:
-                                    fn = _latest_finance_notes_by_canonical(fn, "コード")
-                                    fn["forecast_op"] = pd.to_numeric(fn["forecast_op"], errors="coerce")
-                                    stale = _finance_codes_stale_after_latest_earnings(conn)
-                                    for _, fr in fn.iterrows():
-                                        code = canonical_code_for_db(fr.get("コード"))
-                                        val = fr.get("forecast_op")
-                                        if (not code) or code not in _non_fin_codes or code in stale or pd.isna(val) or code in fwd_map:
-                                            continue
-                                        # 金融業はforecast_opを経常利益予想の代替にしない。
-                                        _ctx = context_map.get(code) or {}
-                                        if not _ctx:
-                                            continue
-                                        try:
-                                            fv = float(val)
-                                            if math.isfinite(fv):
-                                                fwd_map[code] = fv
-                                                fwd_source_map[code] = "finance_notes_fresh"
-                                                fwd_fiscal_map[code] = str(_ctx.get("target_fiscal") or "")
-                                        except Exception:
-                                            pass
+                        _repr_future_tdnet_t = time.perf_counter()
+                        _repr_fin_cache = globals().get("_REPRICING_FINANCE_FORECAST_RUN_CACHE")
+                        _repr_fin_map = (
+                            _repr_fin_cache.get("map")
+                            if isinstance(_repr_fin_cache, dict)
+                            and _repr_fin_cache.get("conn_id") == id(conn)
+                            and isinstance(_repr_fin_cache.get("map"), dict)
+                            else None
+                        )
+                        if _repr_fin_map is not None:
+                            _repr_future_finance_mode = "operating_income_run_cache"
+                            for code, fv in _repr_fin_map.items():
+                                if code not in _non_fin_codes or code in fwd_map:
+                                    continue
+                                _ctx = context_map.get(code) or {}
+                                if not _ctx:
+                                    continue
+                                fwd_map[code] = fv
+                                fwd_source_map[code] = "finance_notes_fresh"
+                                fwd_fiscal_map[code] = str(_ctx.get("target_fiscal") or "")
+                        else:
+                            _repr_future_finance_mode = "legacy_sql"
+                            if "finance_notes" in tables:
+                                fncols = {r[1] for r in conn.execute("PRAGMA table_info(finance_notes)").fetchall()}
+                                if {"コード","forecast_op"}.issubset(fncols):
+                                    upd_sel = 'updated_at' if 'updated_at' in fncols else 'NULL AS updated_at'
+                                    fn = pd.read_sql_query(
+                                        "SELECT rowid AS _rowid, コード, forecast_op, " + upd_sel + " FROM finance_notes",
+                                        conn,
+                                    )
+                                    if not fn.empty:
+                                        fn = _latest_finance_notes_by_canonical(fn, "コード")
+                                        fn["forecast_op"] = pd.to_numeric(fn["forecast_op"], errors="coerce")
+                                        stale = _finance_codes_stale_after_latest_earnings(conn)
+                                        for _, fr in fn.iterrows():
+                                            code = canonical_code_for_db(fr.get("コード"))
+                                            val = fr.get("forecast_op")
+                                            if (not code) or code not in _non_fin_codes or code in stale or pd.isna(val) or code in fwd_map:
+                                                continue
+                                            _ctx = context_map.get(code) or {}
+                                            if not _ctx:
+                                                continue
+                                            try:
+                                                fv = float(val)
+                                                if math.isfinite(fv):
+                                                    fwd_map[code] = fv
+                                                    fwd_source_map[code] = "finance_notes_fresh"
+                                                    fwd_fiscal_map[code] = str(_ctx.get("target_fiscal") or "")
+                                            except Exception:
+                                                pass
+                        _repr_future_finance_t = time.perf_counter()
+
+                        _perf_record_phase(
+                            "export-detail:repricing_future_q_source",
+                            _repr_future_q_source_t - _repr_future_q_t0, "OK"
+                        )
+                        _perf_record_phase(
+                            "export-detail:repricing_future_q_prepare",
+                            _repr_future_q_prepare_t - _repr_future_q_source_t, "OK"
+                        )
+                        _perf_record_phase(
+                            "export-detail:repricing_future_context",
+                            _repr_future_context_t - _repr_future_q_prepare_t, "OK"
+                        )
+                        _perf_record_phase(
+                            "export-detail:repricing_future_tdnet_map",
+                            _repr_future_tdnet_t - _repr_future_context_t, "OK"
+                        )
+                        _perf_record_phase(
+                            "export-detail:repricing_future_finance_fallback",
+                            _repr_future_finance_t - _repr_future_tdnet_t, "OK"
+                        )
+                        print(
+                            f"[REPRICING-V17] future_q_mode={_repr_future_q_mode} "
+                            f"finance_mode={_repr_future_finance_mode} "
+                            f"q_source={_repr_future_q_source_t-_repr_future_q_t0:.2f}s "
+                            f"q_prepare={_repr_future_q_prepare_t-_repr_future_q_source_t:.2f}s "
+                            f"context={_repr_future_context_t-_repr_future_q_prepare_t:.2f}s "
+                            f"tdnet={_repr_future_tdnet_t-_repr_future_context_t:.2f}s "
+                            f"finance={_repr_future_finance_t-_repr_future_tdnet_t:.2f}s",
+                            flush=True,
+                        )
 
                         def _future_state(fwd, base):
                             try:
@@ -15761,6 +26155,11 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
                         out.loc[~non_fin, "未来方向_探索"] = "情報不足"
     except Exception as e:
         print(f"[repricing][WARN] future-direction overlay failed: {e}", flush=True)
+    _repr_t_b = time.perf_counter()
+    _perf_record_phase(
+        "export-detail:repricing_future_direction",
+        _repr_t_b - _repr_t_a, "OK"
+    )
 
     # C) 待てる度。単一のPBRや配当をhard gateにはしない。
     px = _num_series("現在値")
@@ -15786,86 +26185,325 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
     wait_count = conds.sum(axis=1).astype(int)
     out["待てる条件数_探索"] = wait_count
     out["待てる評価_探索"] = np.select([wait_count >= 4, wait_count >= 3, wait_count >= 2], ["S","A","B"], default="C")
+    _repr_t_c = time.perf_counter()
+    _perf_record_phase(
+        "export-detail:repricing_waitability",
+        _repr_t_c - _repr_t_b, "OK"
+    )
 
     # D) 最新決算後の株価織り込み度。
-    try:
-        ann = pd.to_datetime(out.get("最新決算発表日"), errors="coerce")
-        age = _num_series("決算後営業日数")
-        valid_dates = ann.dropna()
-        all_tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if not valid_dates.empty and "price_history" in all_tables:
-            start_date = max(asof - timedelta(days=220), valid_dates.min().date() - timedelta(days=14))
-            ph = pd.read_sql_query(
-                "SELECT rowid AS _rowid, コード, 日付, 終値, 高値 FROM price_history "
-                "WHERE date(日付) >= date(?) AND date(日付) <= date(?)",
-                conn, params=(start_date.isoformat(), asof.isoformat()),
+    _v25_repr_hit = False
+    _v25_repr_hist_fp = ""
+    _v25_repr_inputs_fp = ""
+    _v25_repr_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+
+    # V68-FIX2:
+    # PREOPENは「前営業日の確定price snapshot + 現在値 + 最新決算日 + 決算後営業日数」が
+    # 同一PREOPENセッション内で完全一致する場合だけ、直前runの完全出力を再利用する。
+    # EOD→翌PREOPENの跨日再利用は、決算後営業日数が進むため行わない。
+    # 初回PREOPENは従来V67ロジックをそのまま計算し、その完全出力を保存する。
+    _v68_pre_hist_fp = ""
+    _v68_pre_inputs_fp = ""
+    _v68_pre_snapshot_asof = ""
+    _v68_pre_trade_date = _now_jst().date().isoformat()
+    if _v25_fast_enabled() and _v25_repr_mode == "PREOPEN":
+        try:
+            _v68_pre_snapshot_asof = _expected_snapshot_date_for_run("PREOPEN").isoformat()
+            _v68_pre_hist_fp = _stage2_price_history_fingerprint(conn, _v68_pre_snapshot_asof, 240)
+            _v68_pre_inputs_fp = _v25_df_hash(
+                out, ("現在値", "最新決算発表日", "決算後営業日数")
             )
-            if not ph.empty:
-                ph["_raw"] = ph["コード"].astype(str).str.strip()
-                ph["コード"] = ph["コード"].map(canonical_code_for_db)
-                ph["_date"] = pd.to_datetime(ph["日付"], errors="coerce").dt.normalize()
-                ph["終値"] = pd.to_numeric(ph["終値"], errors="coerce")
-                ph["高値"] = pd.to_numeric(ph["高値"], errors="coerce")
-                ph["_canon"] = (ph["_raw"].str.upper() == ph["コード"].astype(str).str.upper()).astype(int)
-                ph = ph[ph["コード"].astype(bool) & ph["_date"].notna() & ph["終値"].notna() & np.isfinite(ph["終値"]) & (ph["終値"] > 0)].copy()
-                ph = ph.sort_values(["コード","_date","_canon","_rowid"], kind="stable").drop_duplicates(["コード","_date"], keep="last")
-                ph_groups = {str(c): g.sort_values("_date", kind="stable") for c,g in ph.groupby("コード", sort=False)}
-                pre_map, cur_ret_map, max_ret_map, draw_map, absorb_map, under_map = {}, {}, {}, {}, {}, {}
-                current_map, ann_map, age_map = {}, {}, {}
-                for c, v in zip(out["コード"], px):
-                    ck = canonical_code_for_db(c)
+            _obj = _stage2_json_read(_V68_REPRICING_PREOPEN_CACHE_PATH)
+            _reasons = []
+            if not isinstance(_obj, dict):
+                _reasons.append("no_cache")
+            else:
+                if int(_obj.get("schema") or 0) != 1:
+                    _reasons.append("schema")
+                if str(_obj.get("trade_date") or "") != _v68_pre_trade_date:
+                    _reasons.append("trade_date")
+                if str(_obj.get("snapshot_asof") or "") != _v68_pre_snapshot_asof:
+                    _reasons.append("snapshot_asof")
+                if str(_obj.get("history_fp") or "") != _v68_pre_hist_fp:
+                    _reasons.append("history_fp")
+                if str(_obj.get("inputs_fp") or "") != _v68_pre_inputs_fp:
+                    _reasons.append("inputs_fp")
+
+            if not _reasons and _v68_pre_hist_fp and _v68_pre_inputs_fp:
+                _records = _obj.get("records")
+                _cf = pd.DataFrame(_records) if isinstance(_records, list) else pd.DataFrame()
+                if not _cf.empty and "コード" in _cf.columns:
+                    _cf["コード"] = _cf["コード"].map(canonical_code_for_db)
+                    _cf = _cf.drop_duplicates("コード", keep="last").set_index("コード")
+                    for _cc in (
+                        "決算前基準終値_探索",
+                        "決算後現在騰落率_pct_探索",
+                        "決算後最大上昇率_pct_探索",
+                        "決算後高値から現在_pct_探索",
+                        "株価織り込み度_探索",
+                        "株価未反応フラグ_探索",
+                    ):
+                        if _cc in _cf.columns:
+                            out[_cc] = keys.map(_cf[_cc])
+                    out["株価織り込み度_探索"] = out["株価織り込み度_探索"].fillna("情報不足")
+                    out["株価未反応フラグ_探索"] = (
+                        pd.to_numeric(out["株価未反応フラグ_探索"], errors="coerce")
+                        .fillna(0).astype(int)
+                    )
+                    _v25_repr_hit = True
+                    print(
+                        f"[V68-REPRICING-PREOPEN-CACHE] SAFE-HIT rows={len(_cf)} "
+                        f"trade_date={_v68_pre_trade_date} "
+                        f"snapshot_asof={_v68_pre_snapshot_asof}",
+                        flush=True,
+                    )
                     try:
-                        fv = float(v); current_map[ck] = fv if math.isfinite(fv) and fv > 0 else None
+                        _perf_record_phase(
+                            "export-detail:repricing_price_preopen_session_cache",
+                            0.0, "HIT"
+                        )
                     except Exception:
-                        current_map[ck] = None
-                for c, d in zip(out["コード"], ann):
-                    if pd.notna(d): ann_map[canonical_code_for_db(c)] = d.normalize()
-                for c, v in zip(out["コード"], age):
-                    ck = canonical_code_for_db(c)
-                    try:
-                        fv = float(v); age_map[ck] = fv if math.isfinite(fv) else None
-                    except Exception:
-                        age_map[ck] = None
-                for code, ad in ann_map.items():
-                    g = ph_groups.get(code); cur = current_map.get(code); aget = age_map.get(code)
-                    if g is None or g.empty or cur is None: continue
-                    pre = g[g["_date"] < ad]
-                    if pre.empty: continue
-                    base = float(pre.iloc[-1]["終値"])
-                    if not math.isfinite(base) or base <= 0: continue
-                    pre_map[code] = base
-                    cur_ret = (cur / base - 1.0) * 100.0
-                    post = g[g["_date"] > ad].copy()
-                    max_high = cur
-                    if not post.empty:
-                        vals = pd.concat([pd.to_numeric(post["高値"], errors="coerce"), pd.to_numeric(post["終値"], errors="coerce")], ignore_index=True)
-                        vals = vals[vals.notna() & np.isfinite(vals)]
-                        if not vals.empty: max_high = max(max_high, float(vals.max()))
-                    max_ret = (max_high / base - 1.0) * 100.0
-                    draw = (cur / max_high - 1.0) * 100.0 if max_high > 0 else None
-                    cur_ret_map[code] = cur_ret; max_ret_map[code] = max_ret
-                    if draw is not None: draw_map[code] = draw
-                    if aget is None or aget < 0:
-                        state_txt, under_flag = "情報不足", 0
-                    elif aget == 0:
-                        state_txt, under_flag = "決算当日", 0
-                    elif aget <= 20:
-                        if cur_ret <= -3: state_txt, under_flag = "逆行・未評価", 1
-                        elif cur_ret <= 5 and max_ret <= 10: state_txt, under_flag = "未反応", 1
-                        elif cur_ret <= 10 and max_ret <= 15: state_txt, under_flag = "反応小", 1
-                        elif cur_ret <= 20: state_txt, under_flag = "一部反応", 0
-                        else: state_txt, under_flag = "織り込み進行", 0
-                    else:
-                        state_txt, under_flag = "決算後経過", 0
-                    absorb_map[code] = state_txt; under_map[code] = under_flag
-                out["決算前基準終値_探索"] = keys.map(pre_map)
-                out["決算後現在騰落率_pct_探索"] = keys.map(cur_ret_map)
-                out["決算後最大上昇率_pct_探索"] = keys.map(max_ret_map)
-                out["決算後高値から現在_pct_探索"] = keys.map(draw_map)
-                out["株価織り込み度_探索"] = keys.map(absorb_map).fillna("情報不足")
-                out["株価未反応フラグ_探索"] = keys.map(under_map).fillna(0).astype(int)
-    except Exception as e:
-        print(f"[repricing][WARN] price-underreaction overlay failed: {e}", flush=True)
+                        pass
+
+            if not _v25_repr_hit:
+                print(
+                    f"[V68-REPRICING-PREOPEN-CACHE] MISS "
+                    f"reason={','.join(_reasons) if _reasons else 'empty_or_invalid_records'} "
+                    f"trade_date={_v68_pre_trade_date} "
+                    f"snapshot_asof={_v68_pre_snapshot_asof}",
+                    flush=True,
+                )
+        except Exception as _e:
+            print(
+                f"[V68-REPRICING-PREOPEN-CACHE][WARN] lookup failed: {_e}",
+                flush=True,
+            )
+
+    # EOD persistent cacheは従来V67のまま。
+    if (not _v25_repr_hit) and _v25_fast_enabled() and _v25_repr_mode == "EOD":
+        try:
+            _v25_repr_hist_fp = _stage2_price_history_fingerprint(conn, asof.isoformat(), 240)
+            _v25_repr_inputs_fp = _v25_df_hash(out, ("現在値", "最新決算発表日", "決算後営業日数"))
+            _obj = _stage2_json_read(_V25_REPRICING_CACHE_PATH)
+            if (
+                _v25_repr_hist_fp and isinstance(_obj, dict)
+                and int(_obj.get("schema") or 0) == _V25_CACHE_SCHEMA
+                and str(_obj.get("asof") or "") == str(asof)
+                and str(_obj.get("history_fp") or "") == _v25_repr_hist_fp
+                and str(_obj.get("inputs_fp") or "") == _v25_repr_inputs_fp
+            ):
+                _records = _obj.get("records")
+                _cf = pd.DataFrame(_records) if isinstance(_records, list) else pd.DataFrame()
+                if not _cf.empty and "コード" in _cf.columns:
+                    _cf["コード"] = _cf["コード"].map(canonical_code_for_db)
+                    _cf = _cf.drop_duplicates("コード", keep="last").set_index("コード")
+                    for _cc in ("決算前基準終値_探索","決算後現在騰落率_pct_探索","決算後最大上昇率_pct_探索","決算後高値から現在_pct_探索","株価織り込み度_探索","株価未反応フラグ_探索"):
+                        if _cc in _cf.columns:
+                            out[_cc] = keys.map(_cf[_cc])
+                    out["株価織り込み度_探索"] = out["株価織り込み度_探索"].fillna("情報不足")
+                    out["株価未反応フラグ_探索"] = pd.to_numeric(out["株価未反応フラグ_探索"], errors="coerce").fillna(0).astype(int)
+                    _v25_repr_hit = True
+                    print(f"[V25-REPRICING-CACHE] HIT rows={len(_cf)}", flush=True)
+                    try: _perf_record_phase("export-detail:repricing_price_persistent_cache", 0.0, "HIT")
+                    except Exception: pass
+            if not _v25_repr_hit:
+                print("[V25-REPRICING-CACHE] MISS", flush=True)
+        except Exception as _e:
+            print(f"[V25-REPRICING-CACHE][WARN] lookup failed: {_e}", flush=True)
+
+    if not _v25_repr_hit:
+        try:
+            ann = pd.to_datetime(out.get("最新決算発表日"), errors="coerce")
+            age = _num_series("決算後営業日数")
+            valid_dates = ann.dropna()
+            all_tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if not valid_dates.empty and "price_history" in all_tables:
+                start_date = max(asof - timedelta(days=220), valid_dates.min().date() - timedelta(days=14))
+                # PERF-OPT-V14:
+                # 後段LIVE dailyと同じraw price_history cacheを使う。
+                # helperは旧SQLと同じinclusive date範囲・raw rowsを返し、
+                # canonical/dedupe/価格条件は直下の既存処理をそのまま通す。
+                ph = _perf_price_history_raw_range(
+                    conn, start_date.isoformat(), asof.isoformat(), tag="repricing_price"
+                )
+                if not ph.empty:
+                    ph = ph[["_rowid", "コード", "日付", "終値", "高値"]].copy()
+                    ph["_raw"] = ph["コード"].astype(str).str.strip()
+                    ph["コード"] = (_v24_unique_canonical_series(ph["_raw"]) if _v24_fast_enabled() else ph["コード"].map(canonical_code_for_db))
+                    ph["_date"] = pd.to_datetime(ph["日付"], errors="coerce").dt.normalize()
+                    ph["終値"] = pd.to_numeric(ph["終値"], errors="coerce")
+                    ph["高値"] = pd.to_numeric(ph["高値"], errors="coerce")
+                    ph["_canon"] = (ph["_raw"].str.upper() == ph["コード"].astype(str).str.upper()).astype(int)
+                    ph = ph[ph["コード"].astype(bool) & ph["_date"].notna() & ph["終値"].notna() & np.isfinite(ph["終値"]) & (ph["終値"] > 0)].copy()
+                    _repr_price_norm_t = time.perf_counter()
+                    ph = ph.sort_values(["コード","_date","_canon","_rowid"], kind="stable").drop_duplicates(["コード","_date"], keep="last")
+                    _repr_price_dedupe_t = time.perf_counter()
+
+                    # PERF-OPT-V15:
+                    # 旧版は約3,500銘柄それぞれで g[g["_date"] < ad] / > ad を作っていた。
+                    # 同じdedupe済み日足から、各銘柄をNumPy配列に1回だけ変換する。
+                    ph_groups = {}
+                    for _c, _g in ph.groupby("コード", sort=False):
+                        _dates = _g["_date"].to_numpy(dtype="datetime64[ns]", copy=False)
+                        _close = _g["終値"].to_numpy(dtype=float, copy=False)
+                        _high = pd.to_numeric(_g["高値"], errors="coerce").to_numpy(dtype=float, copy=False)
+                        # concat(high, close).max() と同値。closeは上の品質gateでfinite/positive済み。
+                        _pair_max = np.fmax(_high, _close)
+                        _suffix_max = np.maximum.accumulate(_pair_max[::-1])[::-1]
+                        ph_groups[str(_c)] = (_dates, _close, _suffix_max)
+                    _repr_price_index_t = time.perf_counter()
+
+                    pre_map, cur_ret_map, max_ret_map, draw_map, absorb_map, under_map = {}, {}, {}, {}, {}, {}
+                    current_map, ann_map, age_map = {}, {}, {}
+                    for c, v in zip(out["コード"], px):
+                        ck = canonical_code_for_db(c)
+                        try:
+                            fv = float(v); current_map[ck] = fv if math.isfinite(fv) and fv > 0 else None
+                        except Exception:
+                            current_map[ck] = None
+                    for c, d in zip(out["コード"], ann):
+                        if pd.notna(d): ann_map[canonical_code_for_db(c)] = d.normalize()
+                    for c, v in zip(out["コード"], age):
+                        ck = canonical_code_for_db(c)
+                        try:
+                            fv = float(v); age_map[ck] = fv if math.isfinite(fv) else None
+                        except Exception:
+                            age_map[ck] = None
+
+                    for code, ad in ann_map.items():
+                        pack = ph_groups.get(code); cur = current_map.get(code); aget = age_map.get(code)
+                        if pack is None or cur is None:
+                            continue
+                        dates, closes, suffix_max = pack
+                        if len(dates) == 0:
+                            continue
+                        ad64 = ad.to_datetime64()
+                        # 旧 pre = date < announcement_date
+                        left = int(np.searchsorted(dates, ad64, side="left"))
+                        if left <= 0:
+                            continue
+                        base = float(closes[left - 1])
+                        if not math.isfinite(base) or base <= 0:
+                            continue
+
+                        pre_map[code] = base
+                        cur_ret = (cur / base - 1.0) * 100.0
+
+                        # 旧 post = date > announcement_date
+                        right = int(np.searchsorted(dates, ad64, side="right"))
+                        max_high = cur
+                        if right < len(suffix_max):
+                            _post_max = float(suffix_max[right])
+                            if math.isfinite(_post_max):
+                                max_high = max(max_high, _post_max)
+
+                        max_ret = (max_high / base - 1.0) * 100.0
+                        draw = (cur / max_high - 1.0) * 100.0 if max_high > 0 else None
+                        cur_ret_map[code] = cur_ret; max_ret_map[code] = max_ret
+                        if draw is not None: draw_map[code] = draw
+
+                        if aget is None or aget < 0:
+                            state_txt, under_flag = "情報不足", 0
+                        elif aget == 0:
+                            state_txt, under_flag = "決算当日", 0
+                        elif aget <= 20:
+                            if cur_ret <= -3: state_txt, under_flag = "逆行・未評価", 1
+                            elif cur_ret <= 5 and max_ret <= 10: state_txt, under_flag = "未反応", 1
+                            elif cur_ret <= 10 and max_ret <= 15: state_txt, under_flag = "反応小", 1
+                            elif cur_ret <= 20: state_txt, under_flag = "一部反応", 0
+                            else: state_txt, under_flag = "織り込み進行", 0
+                        else:
+                            state_txt, under_flag = "決算後経過", 0
+                        absorb_map[code] = state_txt; under_map[code] = under_flag
+                    _repr_price_loop_t = time.perf_counter()
+
+                    _perf_record_phase(
+                        "export-detail:repricing_price_normalize_filter",
+                        _repr_price_norm_t - _repr_t_c, "OK"
+                    )
+                    _perf_record_phase(
+                        "export-detail:repricing_price_dedupe",
+                        _repr_price_dedupe_t - _repr_price_norm_t, "OK"
+                    )
+                    _perf_record_phase(
+                        "export-detail:repricing_price_index_build",
+                        _repr_price_index_t - _repr_price_dedupe_t, "OK"
+                    )
+                    _perf_record_phase(
+                        "export-detail:repricing_price_event_loop",
+                        _repr_price_loop_t - _repr_price_index_t, "OK"
+                    )
+
+                    out["決算前基準終値_探索"] = keys.map(pre_map)
+                    out["決算後現在騰落率_pct_探索"] = keys.map(cur_ret_map)
+                    out["決算後最大上昇率_pct_探索"] = keys.map(max_ret_map)
+                    out["決算後高値から現在_pct_探索"] = keys.map(draw_map)
+                    out["株価織り込み度_探索"] = keys.map(absorb_map).fillna("情報不足")
+                    out["株価未反応フラグ_探索"] = keys.map(under_map).fillna(0).astype(int)
+        except Exception as e:
+            print(f"[repricing][WARN] price-underreaction overlay failed: {e}", flush=True)
+
+        if _v25_fast_enabled() and _v25_repr_mode == "EOD" and _v25_repr_hist_fp and _v25_repr_inputs_fp:
+            try:
+                _cols = ["コード","決算前基準終値_探索","決算後現在騰落率_pct_探索","決算後最大上昇率_pct_探索","決算後高値から現在_pct_探索","株価織り込み度_探索","株価未反応フラグ_探索"]
+                _cache_df = out[_cols].copy()
+                _cache_df["コード"] = _cache_df["コード"].map(canonical_code_for_db)
+                if _stage2_json_write(_V25_REPRICING_CACHE_PATH, {
+                    "schema": _V25_CACHE_SCHEMA, "asof": str(asof), "history_fp": _v25_repr_hist_fp,
+                    "inputs_fp": _v25_repr_inputs_fp, "records": _v24_frame_records(_cache_df),
+                    "saved_at": _now_jst().isoformat(timespec="seconds"),
+                }):
+                    print(f"[V25-REPRICING-CACHE] STORE rows={len(_cache_df)}", flush=True)
+            except Exception as _e:
+                print(f"[V25-REPRICING-CACHE][WARN] store failed: {_e}", flush=True)
+
+        # V68-FIX2: PREOPEN初回は従来計算の完全出力を同一セッションcacheへ保存。
+        if (
+            _v25_fast_enabled()
+            and _v25_repr_mode == "PREOPEN"
+            and _v68_pre_hist_fp
+            and _v68_pre_inputs_fp
+        ):
+            try:
+                _cols = [
+                    "コード",
+                    "決算前基準終値_探索",
+                    "決算後現在騰落率_pct_探索",
+                    "決算後最大上昇率_pct_探索",
+                    "決算後高値から現在_pct_探索",
+                    "株価織り込み度_探索",
+                    "株価未反応フラグ_探索",
+                ]
+                _cache_df = out[_cols].copy()
+                _cache_df["コード"] = _cache_df["コード"].map(canonical_code_for_db)
+                if _stage2_json_write(
+                    _V68_REPRICING_PREOPEN_CACHE_PATH,
+                    {
+                        "schema": 1,
+                        "trade_date": _v68_pre_trade_date,
+                        "snapshot_asof": _v68_pre_snapshot_asof,
+                        "history_fp": _v68_pre_hist_fp,
+                        "inputs_fp": _v68_pre_inputs_fp,
+                        "records": _v24_frame_records(_cache_df),
+                        "saved_at": _now_jst().isoformat(timespec="seconds"),
+                    },
+                ):
+                    print(
+                        f"[V68-REPRICING-PREOPEN-CACHE] STORE rows={len(_cache_df)} "
+                        f"trade_date={_v68_pre_trade_date} "
+                        f"snapshot_asof={_v68_pre_snapshot_asof}",
+                        flush=True,
+                    )
+            except Exception as _e:
+                print(
+                    f"[V68-REPRICING-PREOPEN-CACHE][WARN] store failed: {_e}",
+                    flush=True,
+                )
+    _repr_t_d = time.perf_counter()
+    _perf_record_phase(
+        "export-detail:repricing_price_underreaction",
+        _repr_t_d - _repr_t_c, "OK"
+    )
 
     # E) 独立ルート。厳密CORE再現ではなく、取りこぼしを抑えたCandidate Engine。
     state = out.get("利益状態", pd.Series("情報不足", index=out.index)).fillna("情報不足").astype(str)
@@ -15942,6 +26580,11 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
     out["再評価探索順位"] = rank_num
     out["再評価探索ランク"] = rank_num.map({4:"S",3:"A",2:"B",1:"C",0:"-"}).fillna("-")
     out["再評価余地"] = np.select([rank_num.eq(4),rank_num.eq(3),rank_num.eq(2),rank_num.eq(1)], ["高","中〜高","中","要確認"], default="-")
+    _repr_t_e = time.perf_counter()
+    _perf_record_phase(
+        "export-detail:repricing_route_scoring",
+        _repr_t_e - _repr_t_d, "OK"
+    )
 
     def _reason_row(r):
         facts = []
@@ -15968,6 +26611,22 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
 
     out["再評価理由"] = out.apply(_reason_row, axis=1)
     out["再評価注意"] = out.apply(_warn_row, axis=1)
+    _repr_t_reason = time.perf_counter()
+    _perf_record_phase(
+        "export-detail:repricing_reason_text",
+        _repr_t_reason - _repr_t_e, "OK"
+    )
+    _perf_record_phase(
+        "export-detail:repricing_total_internal",
+        _repr_t_reason - _repr_all_t0, "OK"
+    )
+    print(
+        f"[REPRICING-V14] current_q={_repr_t_a-_repr_all_t0:.2f}s "
+        f"future={_repr_t_b-_repr_t_a:.2f}s wait={_repr_t_c-_repr_t_b:.2f}s "
+        f"price={_repr_t_d-_repr_t_c:.2f}s routes={_repr_t_e-_repr_t_d:.2f}s "
+        f"reason={_repr_t_reason-_repr_t_e:.2f}s total={_repr_t_reason-_repr_all_t0:.2f}s",
+        flush=True,
+    )
     try:
         counts = {c:int(pd.to_numeric(out[c], errors="coerce").fillna(0).eq(1).sum()) for c,_ in route_defs}
         print("[repricing] " + f"candidate={int(repricing.sum())} S={int(rank_num.eq(4).sum())} A={int(rank_num.eq(3).sum())} B={int(rank_num.eq(2).sum())} C={int(rank_num.eq(1).sum())} " + " ".join(f"{k}={v}" for k,v in counts.items()), flush=True)
@@ -15979,6 +26638,7 @@ def _apply_repricing_discovery_overlay(df_cand: pd.DataFrame, conn: sqlite3.Conn
 
 # === POST-EARNINGS-MIGRATION-V1 ===
 def _apply_post_earnings_strategy_overlay(df_cand: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    _v47_all_t0 = time.perf_counter()
     """決算後専用3ルートを本線へ統合。既存LIVE candidate gate/priorityは変更しない。"""
     if df_cand is None or df_cand.empty:
         return df_cand
@@ -15997,8 +26657,13 @@ def _apply_post_earnings_strategy_overlay(df_cand: pd.DataFrame, conn: sqlite3.C
     def _num(name):
         return pd.to_numeric(out[name],errors="coerce") if name in out.columns else pd.Series(np.nan,index=out.index,dtype=float)
 
+    # V47: D1 reactionの意味論を変えず、Python関数変換をunique raw値単位へ縮約し、
+    # dedupe後のactual-day照合をiterrowsからvector mapへ置換する。
+    _v47_fast = str(os.environ.get("KABU_SCREEN_V47_FAST", "1") or "1").strip().lower() not in {"0","false","off","no"}
+
     # 最新実決算と一致するD1だけを採用
     d1_map={}
+    _v47_d1_t0 = time.perf_counter()
     try:
         tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "earnings_reaction_labels" in tables:
@@ -16010,10 +26675,31 @@ def _apply_post_earnings_strategy_overlay(df_cand: pd.DataFrame, conn: sqlite3.C
                     conn
                 )
                 if not rdf.empty:
-                    rdf["_raw"]=rdf["コード"].astype(str).str.strip()
-                    rdf["コード"]=rdf["コード"].map(canonical_code_for_db)
-                    rdf["_event"]=rdf["発表日時"].map(_p1_608_jst_naive_ts)
-                    rdf["_upd"]=rdf.get("updated_at").map(_p1_608_jst_naive_ts)
+                    if _v47_fast:
+                        # canonical/timestamp parserは同じ関数を使う。呼出回数だけunique値数へ縮約。
+                        rdf["_raw"]=rdf["コード"].astype(str).str.strip()
+                        _raw_unique=pd.unique(rdf["_raw"])
+                        _canon_lut={_x:canonical_code_for_db(_x) for _x in _raw_unique}
+                        rdf["コード"]=rdf["_raw"].map(_canon_lut)
+
+                        _event_raw=rdf["発表日時"]
+                        _event_unique=pd.unique(_event_raw.dropna())
+                        _event_lut={_x:_p1_608_jst_naive_ts(_x) for _x in _event_unique}
+                        rdf["_event"]=_event_raw.map(_event_lut)
+
+                        _upd_raw=rdf.get("updated_at")
+                        if _upd_raw is not None:
+                            _upd_unique=pd.unique(_upd_raw.dropna())
+                            _upd_lut={_x:_p1_608_jst_naive_ts(_x) for _x in _upd_unique}
+                            rdf["_upd"]=_upd_raw.map(_upd_lut)
+                        else:
+                            rdf["_upd"]=pd.NaT
+                    else:
+                        rdf["_raw"]=rdf["コード"].astype(str).str.strip()
+                        rdf["コード"]=rdf["コード"].map(canonical_code_for_db)
+                        rdf["_event"]=rdf["発表日時"].map(_p1_608_jst_naive_ts)
+                        rdf["_upd"]=rdf.get("updated_at").map(_p1_608_jst_naive_ts)
+
                     rdf["_canon"]=(rdf["_raw"].str.upper()==rdf["コード"].astype(str).str.upper()).astype(int)
                     rdf["D1終値騰落率"]=pd.to_numeric(rdf["D1終値騰落率"],errors="coerce")
                     rdf=rdf[rdf["コード"].astype(bool)&rdf["_event"].notna()&rdf["D1終値騰落率"].notna()].copy()
@@ -16022,19 +26708,43 @@ def _apply_post_earnings_strategy_overlay(df_cand: pd.DataFrame, conn: sqlite3.C
                            .drop_duplicates(["コード","_day"],keep="last"))
                     actual={}
                     if "最新決算発表日" in out.columns:
-                        for k,v in zip(keys.tolist(),out["最新決算発表日"].tolist()):
-                            if not k or v in (None,""): continue
-                            try: actual[k]=str(pd.Timestamp(v).date())
-                            except Exception: actual[k]=str(v)[:10]
-                    for _,rr in rdf.iterrows():
-                        code=canonical_code_for_db(rr.get("コード"))
-                        if code and actual.get(code)==str(rr.get("_day") or ""):
-                            try:
-                                x=float(rr["D1終値騰落率"])
-                                if math.isfinite(x): d1_map[code]=x
-                            except Exception: pass
+                        if _v47_fast:
+                            _actual_raw=out["最新決算発表日"]
+                            _actual_unique=pd.unique(_actual_raw.dropna())
+                            _actual_lut={}
+                            for _x in _actual_unique:
+                                if _x in (None,""):
+                                    continue
+                                try: _actual_lut[_x]=str(pd.Timestamp(_x).date())
+                                except Exception: _actual_lut[_x]=str(_x)[:10]
+                            for k,v in zip(keys.tolist(),_actual_raw.tolist()):
+                                if not k or v in (None,""): continue
+                                actual[k]=_actual_lut.get(v, str(v)[:10])
+                        else:
+                            for k,v in zip(keys.tolist(),out["最新決算発表日"].tolist()):
+                                if not k or v in (None,""): continue
+                                try: actual[k]=str(pd.Timestamp(v).date())
+                                except Exception: actual[k]=str(v)[:10]
+                    if _v47_fast and not rdf.empty and actual:
+                        _actual_day=rdf["コード"].map(actual)
+                        _hit=rdf[_actual_day.eq(rdf["_day"]) & rdf["D1終値騰落率"].notna()]
+                        if not _hit.empty:
+                            d1_map=dict(zip(_hit["コード"].astype(str), _hit["D1終値騰落率"].astype(float)))
+                    else:
+                        for _,rr in rdf.iterrows():
+                            code=canonical_code_for_db(rr.get("コード"))
+                            if code and actual.get(code)==str(rr.get("_day") or ""):
+                                try:
+                                    x=float(rr["D1終値騰落率"])
+                                    if math.isfinite(x): d1_map[code]=x
+                                except Exception: pass
     except Exception as e:
         print(f"[post-earnings][WARN] D1 reaction overlay failed: {e}",flush=True)
+    _v47_d1_t1 = time.perf_counter()
+    try:
+        _perf_record_phase("export-detail:post_earnings_d1_transform", _v47_d1_t1-_v47_d1_t0, "FAST-V47" if _v47_fast else "V46")
+    except Exception:
+        pass
     out["決算後D1騰落率_pct"]=keys.map(d1_map)
 
     age=_num("決算後営業日数"); cur=_num("決算後現在騰落率_pct_探索")
@@ -16089,7 +26799,23 @@ def _apply_post_earnings_strategy_overlay(df_cand: pd.DataFrame, conn: sqlite3.C
                 if math.isfinite(x): p.append(f"{nm}{x:+.1f}%")
             except Exception: pass
         return " / ".join(p[:7])
-    out["POST_EARNINGS_REASON"]=out.apply(_reason,axis=1)
+
+    _v47_reason_t0=time.perf_counter()
+    if _v47_fast:
+        # POST_EARNINGS=0 の大多数行は理由が必ず空。active行だけ既存関数を通す。
+        _reason_ser=pd.Series("",index=out.index,dtype=object)
+        _reason_mask=out["POST_EARNINGS"].eq(1)
+        if bool(_reason_mask.any()):
+            _reason_ser.loc[_reason_mask]=out.loc[_reason_mask].apply(_reason,axis=1)
+        out["POST_EARNINGS_REASON"]=_reason_ser
+    else:
+        out["POST_EARNINGS_REASON"]=out.apply(_reason,axis=1)
+    _v47_reason_t1=time.perf_counter()
+    try:
+        _perf_record_phase("export-detail:post_earnings_reason", _v47_reason_t1-_v47_reason_t0, "FAST-V47" if _v47_fast else "V46")
+        _perf_record_phase("export-detail:post_earnings_total", time.perf_counter()-_v47_all_t0, "FAST-V47" if _v47_fast else "V46")
+    except Exception:
+        pass
     try:
         print(f"[post-earnings] all={int(out['POST_EARNINGS'].sum())} continuation={int(out['POST_EARNINGS_CONTINUATION'].sum())} recovery={int(out['POST_EARNINGS_RECOVERY'].sum())} oversold={int(out['GOOD_EARNINGS_OVERSOLD'].sum())}",flush=True)
     except Exception: pass
@@ -16193,6 +26919,36 @@ def _ensure_watch_signal_state_schema(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_signal_history_code_time ON watch_signal_history(code, observed_at)")
 
+    # WATCH-RISK-PERSIST-V1: 撤退ライン/リスクを状態遷移時点の事実として保存する。
+    # CREATE TABLE済みの既存DBにもALTERで安全に追補する。
+    _state_cols = {r[1] for r in conn.execute("PRAGMA table_info(watch_signal_state)").fetchall()}
+    for _name, _ddl in (
+        ("exit_price", "REAL"),
+        ("risk_pct", "REAL"),
+        ("risk_per_share_yen", "REAL"),
+        ("risk_100_shares_yen", "REAL"),
+        ("risk_level", "TEXT"),
+        ("risk_judgement", "TEXT"),
+        ("max_shares_by_risk", "INTEGER"),
+        ("exit_reason", "TEXT"),
+    ):
+        if _name not in _state_cols:
+            conn.execute(f'ALTER TABLE watch_signal_state ADD COLUMN "{_name}" {_ddl}')
+
+    _hist_cols = {r[1] for r in conn.execute("PRAGMA table_info(watch_signal_history)").fetchall()}
+    for _name, _ddl in (
+        ("exit_price", "REAL"),
+        ("risk_pct", "REAL"),
+        ("risk_per_share_yen", "REAL"),
+        ("risk_100_shares_yen", "REAL"),
+        ("risk_level", "TEXT"),
+        ("risk_judgement", "TEXT"),
+        ("max_shares_by_risk", "INTEGER"),
+        ("exit_reason", "TEXT"),
+    ):
+        if _name not in _hist_cols:
+            conn.execute(f'ALTER TABLE watch_signal_history ADD COLUMN "{_name}" {_ddl}')
+
 
 def _watch_f(v):
     try:
@@ -16212,7 +26968,99 @@ def _watch_alpha_rank(v) -> float:
     return max(0.0,min(100.0,base+adj))
 
 
-def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
+# === SHORT-HISTORY-V1: IPOマスタなしで「履歴が短い強い銘柄」を別評価 ===
+def _short_history_eval_row(r: dict) -> dict:
+    """20〜74本の有効日足しかない銘柄を、長期履歴不足だけで捨てず監視候補化する。
+
+    IPO/新規上場の断定はしない。価格履歴量そのものを判定根拠にする。
+    既存 INITIAL_MOMENTUM / STEADY_UP / BOTTOM_REVERSAL のcandidate rankingは変更せず、
+    WATCH-TIMING の監視入口だけを補完する。
+    """
+    obs=int(_watch_f(r.get("短期履歴本数")) or 0)
+    enabled=(int(_watch_f(r.get("短期履歴フラグ")) or 0)==1 and 20 <= obs < 75)
+    if not enabled:
+        return {"candidate":False,"score":0.0,"reason":"","label":"","obs":obs}
+
+    dayret=_watch_f(r.get("前日終値比率"))
+    rvol=_watch_f(r.get("RVOL代金"))
+    rs5=_watch_f(r.get("RS_5"))
+    im_score=_watch_f(r.get("INITIAL_MOMENTUM_SCORE"))
+    steady=_watch_f(r.get("持続上昇スコア"))
+    turn=_watch_f(r.get("売買代金(億)"))
+    px=_watch_f(r.get("現在値"))
+    ma5=_watch_f(r.get("5日"))
+    ma25=_watch_f(r.get("25日"))
+    close_pos=_watch_f(r.get("初動終値位置"))
+
+    def _rs_pct(x):
+        if x is None: return None
+        return x*100.0 if abs(x) <= 2.0 else x
+
+    rs5p=_rs_pct(rs5)
+    score=15.0
+    reasons=[f"履歴{obs}本"]
+
+    if dayret is not None:
+        if dayret >= 5: score+=18; reasons.append(f"前日比{dayret:+.1f}%")
+        elif dayret >= 2: score+=14; reasons.append(f"前日比{dayret:+.1f}%")
+        elif dayret >= 0.5: score+=6
+
+    if rvol is not None:
+        if rvol >= 2.0: score+=18; reasons.append(f"RVOL{rvol:.2f}")
+        elif rvol >= 1.5: score+=14; reasons.append(f"RVOL{rvol:.2f}")
+        elif rvol >= 1.2: score+=10; reasons.append(f"RVOL{rvol:.2f}")
+
+    if rs5p is not None:
+        if rs5p >= 5: score+=18; reasons.append(f"RS5 {rs5p:+.1f}%")
+        elif rs5p >= 3: score+=14; reasons.append(f"RS5 {rs5p:+.1f}%")
+        elif rs5p > 0: score+=8
+
+    if im_score is not None:
+        if im_score >= 80: score+=20
+        elif im_score >= 70: score+=15
+        elif im_score >= 60: score+=10
+
+    if steady is not None:
+        if steady >= 80: score+=12; reasons.append(f"持続{steady:.0f}")
+        elif steady >= 60: score+=8
+        elif steady >= 45: score+=4
+
+    if turn is not None:
+        if turn >= 20: score+=12; reasons.append(f"代金{turn:.1f}億")
+        elif turn >= 5: score+=9
+        elif turn >= 1: score+=5
+
+    if px is not None and ma5 is not None and ma5 > 0 and px >= ma5:
+        score+=5
+    if px is not None and ma25 is not None and ma25 > 0 and px >= ma25:
+        score+=5
+    if close_pos is not None:
+        if close_pos >= 80: score+=7
+        elif close_pos >= 60: score+=4
+
+    score=float(max(0.0,min(100.0,score)))
+    concrete=bool(
+        (dayret is not None and dayret >= 2.0)
+        or (rvol is not None and rvol >= 1.2)
+        or (im_score is not None and im_score >= 60.0)
+        or (rs5p is not None and rs5p >= 3.0)
+    )
+    candidate=bool(score >= 65.0 and concrete)
+    label=("強い" if score >= 80 else ("監視" if candidate else "弱い"))
+    return {"candidate":candidate,"score":round(score,1),"reason":" / ".join(reasons[:5]),"label":label,"obs":obs}
+
+
+def _apply_short_history_overlay(rows: list[dict]) -> list[dict]:
+    for r in rows or []:
+        ev=_short_history_eval_row(r)
+        is_short=int(_watch_f(r.get("短期履歴フラグ")) or 0)==1
+        r["短期履歴スコア"]=ev["score"] if is_short else None
+        r["短期履歴判定"]=ev["label"] if is_short else ""
+        r["短期履歴理由"]=ev["reason"] if is_short else ""
+    return rows
+
+
+def _watch_eval_row(r: dict, prev_state: str | None = None, prev_source: str | None = None) -> dict:
     """1銘柄を同一snapshotだけで評価。売買指示ではなく「確認優先度」の状態機械。"""
     code=canonical_code_for_db(r.get('コード'))
     px=_watch_f(r.get('現在値'))
@@ -16268,6 +27116,9 @@ def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
                     ((op is not None and op >= 15) or (sales is not None and sales >= 10) or (future is not None and future >= 10)))
     repricing_good=(repricing and not severe_bad and (repr_rank in {'S','A'} or len(routes) >= 2))
     post_main=bool(fund_main and age is not None and 0 <= age <= 10)
+    short_ev=_short_history_eval_row(r)
+    short_candidate=bool(short_ev.get("candidate")) and not severe_bad
+    short_score=float(short_ev.get("score") or 0.0)
     post_cont=int(_watch_f(r.get('POST_EARNINGS_CONTINUATION')) or 0)==1
     post_recovery=int(_watch_f(r.get('POST_EARNINGS_RECOVERY')) or 0)==1
     post_oversold=int(_watch_f(r.get('GOOD_EARNINGS_OVERSOLD')) or 0)==1
@@ -16305,7 +27156,9 @@ def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
     if post_oversold: source.append('GOOD_EARNINGS_OVERSOLD')
     if repricing_good: source.append('REPRICING')
     if quality_growth: source.append('QUALITY_GROWTH')
-    candidate=bool(source) and quality >= 65 and px is not None and px > 0
+    fundamental_candidate=bool(source) and quality >= 65 and px is not None and px > 0
+    if short_candidate: source.append('SHORT_HISTORY_MOMENTUM')
+    candidate=bool((fundamental_candidate or short_candidate) and px is not None and px > 0)
 
     # PRICE 0-100: 安くなった/支持へ来た度。単なる下落率ではなく「価値+支持」を優先。
     ps=0.0; price_reasons=[]
@@ -16358,6 +27211,11 @@ def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
     if px is not None and ma5 is not None and ma5 > 0 and px >= ma5: ts+=7
     if now_rank >= 3: ts+=15; trigger_reasons.append('今買える3')
     elif now_rank >= 2: ts+=9
+    if short_candidate:
+        if short_score >= 85: ts+=26
+        elif short_score >= 75: ts+=20
+        else: ts+=14
+        trigger_reasons.append(f'短期履歴{short_score:.0f}')
     if '🔥過熱' in heat or ('過熱' in heat and '微熱' not in heat): ts-=22
     elif '微熱' in heat: ts-=5
     trigger=max(0.0,min(100.0,ts))
@@ -16366,10 +27224,25 @@ def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
     heat_block=('🔥過熱' in heat or ('過熱' in heat and '微熱' not in heat))
 
     # 既存監視銘柄だけは、前提崩壊をBROKENとして残す。初見の悪い銘柄を大量表示しない。
-    if prev_state and (severe_bad or (not candidate and quality < 50)):
+    short_matured=bool(
+        prev_source and 'SHORT_HISTORY_MOMENTUM' in str(prev_source)
+        and int(_watch_f(r.get('短期履歴本数')) or 0) >= 75
+    )
+    if prev_state and (severe_bad or (not candidate and quality < 50 and not short_matured)):
         state='BROKEN'; route='BROKEN'
     elif not candidate:
         state='NONE'; route=''
+    elif short_candidate and not fundamental_candidate:
+        # SHORT-HISTORY専用。ファンダQUALITY不足を「会社が悪い」と誤解せず、
+        # 値動きの成熟度だけで WATCH→START を許す。READYは厳格gateを維持する。
+        if short_score >= 82 and trigger >= 65 and price >= 30 and not env_block and not heat_block:
+            state='READY'; route='START'
+        elif trigger >= 55:
+            state='START'; route='START'
+        elif price >= 45:
+            state='NEAR'; route='PRICE'
+        else:
+            state='WATCH'; route='WAIT'
     else:
         ready_price=(price >= 70 and trigger >= 45)
         ready_start=(price >= 50 and trigger >= 65)
@@ -16417,6 +27290,11 @@ def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
         if post_recovery or post_oversold or post_cont:
             _add_exit('決算後支持割れ', sup, 0.40, 0.010)
             _add_exit('反転安値割れ', day_low, 0.30, 0.008)
+        if short_candidate:
+            # 短期履歴銘柄は古い機械的損切りだけに依存せず、直近5日線/当日安値を優先候補にする。
+            _add_exit('短期履歴5日線割れ', ma5, 0.25, 0.008)
+            _add_exit('短期履歴当日安値割れ', day_low, 0.15, 0.006)
+            _add_exit('短期履歴支持割れ', sup, 0.25, 0.008)
         if mechanical_stop is not None and 0 < mechanical_stop < px:
             _candidates.append((float(mechanical_stop),'既存ATR損切目安'))
 
@@ -16442,6 +27320,8 @@ def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
 
     reasons=[]
     if source: reasons.append('/'.join(source))
+    if short_candidate and short_ev.get("reason"):
+        reasons.append(str(short_ev.get("reason")))
     if state=='BROKEN':
         if dilution==1: reasons.append('重大希薄化')
         if hard_down: reasons.append('下方修正')
@@ -16465,18 +27345,1142 @@ def _watch_eval_row(r: dict, prev_state: str | None = None) -> dict:
     }
 
 
+
+# === WHY-TODAY-V1: 「今日買う株」を良い銘柄ではなく、今日性を説明できる銘柄へ ===
+def _today_buy_eval_row(r: dict) -> dict:
+    """自動スクリーニングだけで観測できる事実から「なぜ今日か」を判定する。
+
+    注意:
+      - 板/VWAP/歩み値はここでは見ない。最終ENTRY NOWはkabuステーション側。
+      - 「良い会社」「強い銘柄」だけではTODAY_BUYにしない。
+      - TODAY_BUYには少なくとも1つの当日トリガー/成熟シナリオを必須にする。
+    """
+    px=_watch_f(r.get('現在値'))
+    turn=_watch_f(r.get('売買代金(億)'))
+    resilience=_watch_f(r.get('相場耐性スコア'))
+    env_score=_watch_f(r.get('地合い込み一次判定スコア'))
+    env=str(r.get('地合い込み一次判定') or '')
+    sup=_watch_f(r.get('最寄り支持')) or _watch_f(r.get('支持帯中心'))
+    res=_watch_f(r.get('最寄り抵抗')) or _watch_f(r.get('抵抗帯中心'))
+    ma5=_watch_f(r.get('5日'))
+    ma25=_watch_f(r.get('25日'))
+    rvol=_watch_f(r.get('RVOL代金'))
+    rs5=_watch_f(r.get('RS_5'))
+    rs20=_watch_f(r.get('RS_20'))
+    dayret=_watch_f(r.get('前日終値比率'))
+    steady=_watch_f(r.get('持続上昇スコア')) or 0.0
+    bottom=_watch_f(r.get('底反転スコア')) or 0.0
+    initial=int(_watch_f(r.get('INITIAL_MOMENTUM')) or 0)==1
+    watch_state=str(r.get('WATCH_STATE') or '')
+    watch_trigger=_watch_f(r.get('TRIGGER_SCORE')) or 0.0
+    post_cont=int(_watch_f(r.get('POST_EARNINGS_CONTINUATION')) or 0)==1
+    post_recovery=int(_watch_f(r.get('POST_EARNINGS_RECOVERY')) or 0)==1
+    post_oversold=int(_watch_f(r.get('GOOD_EARNINGS_OVERSOLD')) or 0)==1
+    reverse_strong=int(_watch_f(r.get('逆行強フラグ')) or 0)==1
+    heat=str(r.get('イナゴ過熱判定') or '')
+    tanki=str(r.get('短期需給判定') or '')
+    risk_pct=_watch_f(r.get('EXIT_RISK_PCT'))
+
+    def _rs_pct(x):
+        if x is None: return None
+        return x*100.0 if abs(x) <= 2.0 else x
+    rs5p=_rs_pct(rs5); rs20p=_rs_pct(rs20)
+
+    support_gap=(px/sup-1.0)*100.0 if px and sup and sup>0 else None
+    resistance_room=(res/px-1.0)*100.0 if px and res and px>0 and res>px else None
+    ma5_gap=(px/ma5-1.0)*100.0 if px and ma5 and ma5>0 else None
+    ma25_gap=(px/ma25-1.0)*100.0 if px and ma25 and ma25>0 else None
+
+    hard_sell=('強い売り' in tanki)
+    hot=('🔥過熱' in heat or ('過熱' in heat and '微熱' not in heat) or (dayret is not None and dayret > 8.0))
+
+    blockers=[]
+    if not env.startswith('◎'): blockers.append('地合込ENTRYが◎未満')
+    if turn is None or turn < 5: blockers.append('売買代金5億未満')
+    if resilience is None or resilience < 70: blockers.append('相場耐性70未満')
+    if resistance_room is not None and resistance_room < 2.0: blockers.append('上値余地2%未満')
+    if support_gap is None: blockers.append('支持位置不明')
+    elif not (-1.0 <= support_gap <= 8.0): blockers.append('支持から遠い')
+    if hard_sell: blockers.append('短期需給が強い売り')
+    if hot: blockers.append('過熱')
+    if risk_pct is None:
+        blockers.append('撤退ライン未確定')
+    elif risk_pct > 7.0:
+        blockers.append('撤退リスク幅7%超')
+
+    # 「今日性」そのもの。相関する条件を大量加点せず、理由として説明できる単位にまとめる。
+    reasons=[]; today_points=0.0; hard_today=False
+
+    if watch_state == 'READY':
+        reasons.append('買い時監視READY'); today_points += 32; hard_today=True
+    elif watch_state == 'START':
+        reasons.append('短期トリガー発生'); today_points += 25; hard_today=True
+
+    if initial:
+        reasons.append('初動2x+2%成立'); today_points += 28; hard_today=True
+
+    if post_recovery:
+        reasons.append('決算後の評価反転'); today_points += 28; hard_today=True
+    elif post_cont:
+        reasons.append('決算後の上昇継続'); today_points += 22; hard_today=True
+    elif post_oversold:
+        # 売られすぎは「今日買う」ではなく、反転確認待ち。
+        reasons.append('好決算売られすぎ'); today_points += 8
+
+    if bottom >= 70 and dayret is not None and dayret >= 0.5:
+        reasons.append(f'底反転{bottom:.0f}+当日上向き'); today_points += 22; hard_today=True
+
+    near_price=(support_gap is not None and -1.0 <= support_gap <= 3.0) or \
+               (ma5_gap is not None and -1.5 <= ma5_gap <= 2.5) or \
+               (ma25_gap is not None and -1.0 <= ma25_gap <= 3.0)
+    steady_confirm=(steady >= 70 and near_price and rs5p is not None and rs5p > 0 and
+                    (rvol is None or rvol >= 0.9))
+    if steady_confirm:
+        reasons.append(f'持続{steady:.0f}の押し目/再加速域'); today_points += 20; hard_today=True
+
+    if reverse_strong and dayret is not None and dayret > 0:
+        reasons.append('地合い逆行強'); today_points += 12
+
+    if rvol is not None and rvol >= 1.2 and dayret is not None and dayret >= 0.5:
+        reasons.append(f'当日資金流入 RVOL{rvol:.2f}'); today_points += 12
+
+    # base quality: 旧「今日買う株」の安全条件をベース点として維持。
+    base=0.0
+    if env.startswith('◎'): base += 20
+    if turn is not None and turn >= 5: base += 10
+    if resilience is not None: base += max(0.0,min(20.0,(resilience-60.0)*0.5))
+    if support_gap is not None:
+        if -1.0 <= support_gap <= 3.0: base += 16
+        elif 3.0 < support_gap <= 5.0: base += 10
+        elif 5.0 < support_gap <= 8.0: base += 5
+    if resistance_room is None or resistance_room >= 4.0: base += 8
+    elif resistance_room >= 2.0: base += 5
+    if env_score is not None: base += max(0.0,min(10.0,(env_score-60.0)*0.25))
+
+    score=max(0.0,min(100.0,base+min(45.0,today_points)))
+    # TODAY_BUYは「今日候補」だが、まだ明示的な市場確認待ちならTIMING_NEARに留める。
+    # とくに出来高不足はKabu LIVEで確認してから昇格させる。
+    hard_wait = bool(rvol is not None and rvol < 0.9)
+    pass_today=(not blockers and hard_today and score >= 65.0 and not hard_wait)
+
+    waiting=[]
+    if not hard_today:
+        if post_oversold: waiting.append('反転確認')
+        elif bottom >= 50: waiting.append('底打ち確認')
+        elif steady >= 60: waiting.append('再加速確認')
+        else: waiting.append('当日トリガー待ち')
+    if watch_state in {'WATCH','NEAR'}: waiting.append('短期トリガー強化')
+    if rvol is not None and rvol < 0.9: waiting.append('出来高増加')
+    if support_gap is not None and support_gap > 3.0: waiting.append('支持/押し目へ接近')
+    if risk_pct is not None and risk_pct > 4.5: waiting.append('リスク幅縮小')
+
+    # LIVE側へ渡す「確認してほしいこと」の予告。自動スクリーニング自身は未観測。
+    confirmation=[]
+    if bottom >= 50 or post_recovery or post_oversold:
+        confirmation += ['higher_low','vwap_reclaim','tape_direction']
+    elif initial:
+        confirmation += ['volume_continuation','vwap_hold','tape_direction']
+    elif steady >= 60:
+        confirmation += ['vwap_hold','pullback_absorption','tape_direction']
+    else:
+        confirmation += ['vwap_direction','tape_direction']
+    if rvol is not None and rvol < 0.9:
+        confirmation.insert(0,'volume_continuation')
+    confirmation=list(dict.fromkeys(confirmation))
+
+    return {
+        'today_buy':1 if pass_today else 0,
+        'today_score':round(score,1),
+        'why_today':' / '.join(dict.fromkeys(reasons))[:500],
+        'today_reason_count':len(dict.fromkeys(reasons)),
+        'today_waiting_for':' / '.join(dict.fromkeys(waiting))[:400],
+        'today_blockers':' / '.join(dict.fromkeys(blockers))[:400],
+        'today_stage':('TODAY_BUY' if pass_today else ('TODAY_WAIT' if (not blockers and (reasons or near_price)) else 'LONG_OR_NONE')),
+        'today_confirmation_needed':','.join(confirmation),
+        'today_validity':'当日セッション',
+        'support_gap_pct':None if support_gap is None else round(support_gap,2),
+        'resistance_room_pct':None if resistance_room is None else round(resistance_room,2),
+    }
+
+
+def _apply_today_buy_overlay(rows: list[dict]) -> tuple[list[dict], dict]:
+    counts={'TODAY_BUY':0,'TODAY_WAIT':0,'LONG_OR_NONE':0}
+    for r in rows or []:
+        ev=_today_buy_eval_row(r)
+        r['TODAY_BUY']=ev['today_buy']
+        r['TODAY_SCORE']=ev['today_score']
+        r['WHY_TODAY']=ev['why_today']
+        r['TODAY_REASON_COUNT']=ev['today_reason_count']
+        r['TODAY_WAITING_FOR']=ev['today_waiting_for']
+        r['TODAY_BLOCKERS']=ev['today_blockers']
+        r['TODAY_STAGE']=ev['today_stage']
+        r['TODAY_CONFIRMATION_NEEDED']=ev['today_confirmation_needed']
+        r['TODAY_VALIDITY']=ev['today_validity']
+        r['TODAY_SUPPORT_GAP_PCT']=ev['support_gap_pct']
+        r['TODAY_RESISTANCE_ROOM_PCT']=ev['resistance_room_pct']
+        counts[ev['today_stage']]=counts.get(ev['today_stage'],0)+1
+    return rows,counts
+
+
+
+# ==============================================================================
+# 2026-08-24 INTRADAY-DIFF-RANK-V1
+# 今日の「静的に強い」ではなく、同一営業日のrun間で実際に強化している銘柄をDB差分で順位化する。
+# - 主経路: scanner_snapshots.sqlite3 / intraday_diff_snapshot（JSON全読込より高速・安定）
+# - 初回だけ: 当日dashboard_data_*.jsonが残っていればbootstrap（既定keep=3なので補助用途）
+# - SHORT=直前run、MID=30分前以前の最新、DAY=当日最初のsnapshot
+# - 既存候補gate/priority/TODAY_BUY/LIVE50は一切変更しない。表示・研究用overlayのみ。
+# ==============================================================================
+_INTRADAY_DIFF_KEEP_TRADE_DAYS = max(2, int(os.environ.get("KABU_INTRADAY_DIFF_KEEP_DAYS", "5")))
+_INTRADAY_DIFF_RANK_PATH = Path(os.environ.get(
+    "KABU_INTRADAY_DIFF_RANK_PATH",
+    str(Path(OUTPUT_DIR) / "daily_momentum_diff_rank.json"),
+))
+
+
+def _diff_clip(v, lo, hi):
+    try:
+        x = float(v)
+        if not math.isfinite(x):
+            return 0.0
+        return max(float(lo), min(float(hi), x))
+    except Exception:
+        return 0.0
+
+
+def _diff_watch_rank(v) -> int:
+    s = str(v or "").strip().upper()
+    return {"NONE":0, "WATCH":1, "NEAR":2, "START":3, "READY":4, "BROKEN":-1}.get(s, 0)
+
+
+def _intraday_diff_conn() -> sqlite3.Connection:
+    c = _live_snapshot_conn()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS intraday_diff_snapshot (
+            captured_at TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            market TEXT,
+            current_price REAL,
+            day_high REAL,
+            turnover_oku REAL,
+            rvol_turnover REAL,
+            steady_score REAL,
+            resilience_score REAL,
+            entry_env_score REAL,
+            today_score REAL,
+            today_buy INTEGER,
+            trigger_score REAL,
+            price_opportunity REAL,
+            watch_state TEXT,
+            resistance_room_pct REAL,
+            support_gap_pct REAL,
+            now_rank REAL,
+            heat_score REAL,
+            PRIMARY KEY (captured_at, code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_intraday_diff_trade_time ON intraday_diff_snapshot(trade_date, captured_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_intraday_diff_code_time ON intraday_diff_snapshot(code, captured_at)")
+    return c
+
+
+def _intraday_diff_row_tuple(r: dict, captured_at: str, trade_date: str):
+    code = canonical_code_for_db(_live_get(r, "コード", "code"))
+    if not code:
+        return None
+    px = _live_num(_live_get(r, "現在値_raw", "現在値", "current_price"))
+    if px is None or px <= 0:
+        return None
+    return (
+        captured_at, trade_date, str(code), str(_live_get(r, "銘柄名", "name") or ""),
+        str(_live_get(r, "市場", "market") or ""), px,
+        _live_num(_live_get(r, "高値", "day_high")),
+        _live_num(_live_get(r, "売買代金億", "売買代金(億)", "turnover_oku")),
+        _live_num(_live_get(r, "RVOL代金", "rvol_turnover")),
+        _live_num(_live_get(r, "持続上昇スコア", "steady_score")),
+        _live_num(_live_get(r, "相場耐性スコア", "resilience_score")),
+        _live_num(_live_get(r, "地合い込み一次判定スコア", "entry_env_score")),
+        _live_num(_live_get(r, "TODAY_SCORE", "today_score")),
+        int(_live_num(_live_get(r, "TODAY_BUY", "today_buy")) or 0),
+        _live_num(_live_get(r, "TRIGGER_SCORE", "trigger_score")),
+        _live_num(_live_get(r, "PRICE_OPPORTUNITY", "price_opportunity")),
+        str(_live_get(r, "WATCH_STATE", "watch_state") or ""),
+        _live_num(_live_get(r, "TODAY_RESISTANCE_ROOM_PCT", "resistance_room_pct")),
+        _live_num(_live_get(r, "TODAY_SUPPORT_GAP_PCT", "support_gap_pct")),
+        _live_num(_live_get(r, "今買えるランク", "now_rank")),
+        _live_num(_live_get(r, "イナゴ過熱スコア", "heat_score")),
+    )
+
+
+def _intraday_diff_insert_many(c: sqlite3.Connection, vals: list[tuple]) -> int:
+    if not vals:
+        return 0
+    c.executemany("""
+        INSERT OR REPLACE INTO intraday_diff_snapshot(
+            captured_at,trade_date,code,name,market,current_price,day_high,turnover_oku,rvol_turnover,
+            steady_score,resilience_score,entry_env_score,today_score,today_buy,trigger_score,
+            price_opportunity,watch_state,resistance_room_pct,support_gap_pct,now_rank,heat_score
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, vals)
+    return len(vals)
+
+
+def _intraday_diff_prune(c: sqlite3.Connection) -> int:
+    dates = [r[0] for r in c.execute(
+        "SELECT DISTINCT trade_date FROM intraday_diff_snapshot ORDER BY trade_date DESC"
+    ).fetchall()]
+    if len(dates) <= _INTRADAY_DIFF_KEEP_TRADE_DAYS:
+        return 0
+    keep = set(dates[:_INTRADAY_DIFF_KEEP_TRADE_DAYS])
+    ph = ",".join("?" for _ in keep)
+    before = c.total_changes
+    c.execute(f"DELETE FROM intraday_diff_snapshot WHERE trade_date NOT IN ({ph})", tuple(sorted(keep)))
+    return c.total_changes - before
+
+
+def _intraday_diff_bootstrap_history(c: sqlite3.Connection, trade_date: str) -> int:
+    """導入初回だけ、残っている当日dashboard history JSONから数runを救済する。
+    通常runではDBを正本にし、巨大JSONを毎回読み直さない。
+    """
+    exists = c.execute(
+        "SELECT 1 FROM intraday_diff_snapshot WHERE trade_date=? LIMIT 1", (trade_date,)
+    ).fetchone()
+    if exists:
+        return 0
+    ymd = trade_date.replace("-", "")
+    root = Path(OUTPUT_DIR)
+    files = sorted(root.glob(f"dashboard_data_{ymd}_*.json"))
+    inserted = 0
+    tzinfo = _now_jst().tzinfo
+    for p in files:
+        m = re.match(r"dashboard_data_(\d{8})_(\d{6})_(\d{6})\.json$", p.name)
+        if not m:
+            continue
+        try:
+            dt = datetime.strptime("".join(m.groups()), "%Y%m%d%H%M%S%f").replace(tzinfo=tzinfo)
+            # 時間外historyは場中特徴量へ混ぜない。
+            if not _live_is_market_snapshot_time(dt):
+                continue
+            obj = json.loads(p.read_text(encoding="utf-8"))
+            rr = obj.get("cand") if isinstance(obj, dict) else None
+            if not isinstance(rr, list):
+                continue
+            cap = dt.isoformat(timespec="microseconds")
+            vals = []
+            for r in rr:
+                if isinstance(r, dict):
+                    t = _intraday_diff_row_tuple(r, cap, trade_date)
+                    if t is not None:
+                        vals.append(t)
+            inserted += _intraday_diff_insert_many(c, vals)
+        except Exception as e:
+            print(f"[intraday-diff][WARN] bootstrap skipped {p.name}: {e}")
+    if inserted:
+        print(f"[intraday-diff] bootstrap history rows={inserted} files={len(files)} trade_date={trade_date}")
+    return inserted
+
+
+def _intraday_diff_baselines(day_df: pd.DataFrame, now_dt):
+    """code -> {short, mid, day}。MIDは30分前以前の最新snapshot。"""
+    if day_df is None or day_df.empty:
+        return {}
+    df = day_df.copy()
+    df["_dt"] = pd.to_datetime(df["captured_at"], errors="coerce", utc=True).dt.tz_convert("Asia/Tokyo")
+    df = df.dropna(subset=["_dt", "code", "current_price"]).sort_values(["code", "_dt"], kind="stable")
+    out = {}
+    mid_cut = pd.Timestamp(now_dt).tz_convert("Asia/Tokyo") - pd.Timedelta(minutes=30)
+    for code, g in df.groupby("code", sort=False):
+        g = g.sort_values("_dt", kind="stable")
+        if g.empty:
+            continue
+        short = g.iloc[-1]
+        before_mid = g[g["_dt"] <= mid_cut]
+        mid = before_mid.iloc[-1] if not before_mid.empty else g.iloc[0]
+        day = g.iloc[0]
+        out[str(code)] = {"short": short, "mid": mid, "day": day}
+    return out
+
+
+
+
+# ==============================================================================
+# 2026-09-02 V39 INTRADAY-DIFF SQL FASTPATH
+# intraday_diff_snapshot の当日全行を pandas へ読み出して groupby する代わりに、
+# SQLite 内で good capture 判定と code 別 DAY/MID/SHORT 時刻を確定し、必要行だけ返す。
+# DIFF_SCORE / state / ranking / DB snapshot / JSON の意味論は変更しない。
+# ==============================================================================
+_V39_INTRADAY_DIFF_SQL_FAST = str(os.environ.get("KABU_SCREEN_V39_FAST", "1")).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _intraday_diff_baselines_sql_fast(c: sqlite3.Connection, trade_date: str, now_dt):
+    """V39: 旧 pandas baseline と同じ DAY/MID/SHORT を SQLite 側で抽出する。
+
+    good capture の定義は旧 _intraday_diff_filter_good_history と同じ:
+      - 4桁数字 or 3桁数字+英字の日本株 code 数を capture ごとに数える
+      - 当日最大 stock_rows × coverage と絶対 min_rows の大きい方を required とする
+      - required 以上の capture だけを baseline 候補に使う
+
+    code ごとの baseline は旧 _intraday_diff_baselines と同じ:
+      SHORT = good capture 中の当該 code 最終
+      MID   = 30分前以前の当該 code 最終。無ければ DAY
+      DAY   = good capture 中の当該 code 最初
+    """
+    t0 = time.perf_counter()
+    cap_rows = c.execute(
+        """
+        SELECT captured_at,
+               SUM(CASE
+                     WHEN code GLOB '[0-9][0-9][0-9][0-9]'
+                       OR code GLOB '[0-9][0-9][0-9][A-Za-z]'
+                     THEN 1 ELSE 0 END) AS stock_rows
+        FROM intraday_diff_snapshot
+        WHERE trade_date=?
+        GROUP BY captured_at
+        ORDER BY captured_at
+        """,
+        (trade_date,),
+    ).fetchall()
+
+    captures_total = len(cap_rows)
+    if not cap_rows:
+        return {}, {"captures_total": 0, "captures_good": 0, "required_stock_rows": None}, time.perf_counter() - t0
+
+    counts = [(str(ts), int(n or 0)) for ts, n in cap_rows]
+    max_count = max((n for _, n in counts), default=0)
+    if max_count <= 0:
+        return {}, {
+            "captures_total": captures_total,
+            "captures_good": 0,
+            "required_stock_rows": None,
+        }, time.perf_counter() - t0
+
+    abs_min = 1 if TEST_MODE else int(INTRADAY_SNAPSHOT_MIN_STOCK_ROWS)
+    required = max(abs_min, int(max_count * INTRADAY_SNAPSHOT_MIN_COVERAGE + 0.999999))
+    good_times = [ts for ts, n in counts if n >= required]
+    quality = {
+        "captures_total": captures_total,
+        "captures_good": len(good_times),
+        "max_stock_rows": max_count,
+        "required_stock_rows": required,
+    }
+    if not good_times:
+        return {}, quality, time.perf_counter() - t0
+
+    # captured_at は同一JST offsetのISO文字列で保存されるため、ISO文字列比較で旧 Timestamp 比較と同値。
+    try:
+        _mid_cut_dt = now_dt - timedelta(minutes=30)
+        mid_cut = _mid_cut_dt.isoformat(timespec="microseconds")
+    except Exception:
+        mid_cut = (pd.Timestamp(now_dt).tz_convert("Asia/Tokyo") - pd.Timedelta(minutes=30)).isoformat()
+
+    # IN(大量placeholder) はSQLiteで遅くなりやすいため、good captureだけTEMP表へ入れて
+    # (trade_date,captured_at) index / PRIMARY KEY(captured_at,code)をそのまま使う。
+    c.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS _v39_intraday_good_time "
+        "(captured_at TEXT PRIMARY KEY) WITHOUT ROWID"
+    )
+    c.execute("DELETE FROM _v39_intraday_good_time")
+    c.executemany(
+        "INSERT OR IGNORE INTO _v39_intraday_good_time(captured_at) VALUES (?)",
+        [(ts,) for ts in good_times],
+    )
+
+    # baseline 計算で実際に参照する列だけを3時点分返す。
+    cols = [
+        "current_price", "day_high", "rvol_turnover", "steady_score",
+        "resilience_score", "entry_env_score", "today_score", "today_buy",
+        "trigger_score", "price_opportunity", "watch_state", "now_rank",
+    ]
+    select_cols = []
+    for alias, prefix in (("d", "day"), ("s", "short"), ("m", "mid")):
+        for col in cols:
+            select_cols.append(f"{alias}.{col} AS {prefix}_{col}")
+
+    sql = f"""
+        WITH code_times AS (
+            SELECT s0.code,
+                   MIN(s0.captured_at) AS day_t,
+                   MAX(s0.captured_at) AS short_t,
+                   MAX(CASE WHEN s0.captured_at<=? THEN s0.captured_at END) AS mid_t
+            FROM intraday_diff_snapshot s0
+            JOIN _v39_intraday_good_time g ON g.captured_at=s0.captured_at
+            WHERE s0.trade_date=?
+            GROUP BY s0.code
+        )
+        SELECT t.code,
+               {', '.join(select_cols)}
+        FROM code_times t
+        JOIN intraday_diff_snapshot d
+          ON d.code=t.code AND d.captured_at=t.day_t
+        JOIN intraday_diff_snapshot s
+          ON s.code=t.code AND s.captured_at=t.short_t
+        LEFT JOIN intraday_diff_snapshot m
+          ON m.code=t.code AND m.captured_at=t.mid_t
+    """
+    rows = c.execute(sql, (mid_cut, trade_date)).fetchall()
+
+    out = {}
+    ncols = len(cols)
+    for row in rows:
+        code = str(row[0] or "")
+        vals = list(row[1:])
+        day_vals = vals[0:ncols]
+        short_vals = vals[ncols:2*ncols]
+        mid_vals = vals[2*ncols:3*ncols]
+        day = dict(zip(cols, day_vals))
+        short = dict(zip(cols, short_vals))
+        # LEFT JOIN mid が無いcodeは旧処理と同じく DAY をMID fallbackにする。
+        if all(v is None for v in mid_vals):
+            mid = day
+        else:
+            mid = dict(zip(cols, mid_vals))
+        out[code] = {"short": short, "mid": mid, "day": day}
+
+    return out, quality, time.perf_counter() - t0
+
+def _intraday_diff_pct(cur, base):
+    a = _live_num(cur); b = _live_num(base)
+    if a is None or b in (None, 0):
+        return None
+    return round((a / b - 1.0) * 100.0, 4)
+
+
+def _intraday_diff_delta(cur, base):
+    a = _live_num(cur); b = _live_num(base)
+    if a is None or b is None:
+        return None
+    return round(a - b, 4)
+
+
+def _apply_intraday_diff_overlay(rows: list[dict], live_context: dict | None = None) -> dict:
+    """rowsへDIFF_*を付与し、daily_momentum_diff_rank.jsonをatomic出力する。
+    候補選定ロジックには逆流させない。
+    """
+    globals()["_MARKET_BREADTH_LAST_CAPTURE_STATUS"] = {"status": "skipped", "reason": "not_valid_midday_snapshot"}
+    now = _now_jst()
+    trade_date = now.date().isoformat()
+    run_mode = str(_auto_run_mode() or RUN_SESSION or "UNKNOWN").upper()
+    market_time = (run_mode == "MIDDAY") and _live_is_market_snapshot_time(now)
+    c = _intraday_diff_conn()
+    t0 = time.perf_counter()
+    try:
+        with c:
+            boot = _intraday_diff_bootstrap_history(c, trade_date)
+        if _V39_INTRADAY_DIFF_SQL_FAST:
+            try:
+                baselines, _history_quality, _v39_base_dt = _intraday_diff_baselines_sql_fast(c, trade_date, now)
+                _perf_record_phase("backend-detail:intraday_diff_baseline_sql", _v39_base_dt, "OK")
+                print(
+                    f"[V39][intraday-diff] baseline=sql-fast codes={len(baselines)} "
+                    f"captures={_history_quality.get('captures_good', 0)}/{_history_quality.get('captures_total', 0)} "
+                    f"dt={_v39_base_dt:.3f}s", flush=True
+                )
+            except Exception as _v39_e:
+                print(f"[V39][intraday-diff][WARN] sql-fast failed -> pandas fallback: {_v39_e}", flush=True)
+                _v39_fb0 = time.perf_counter()
+                day_df = pd.read_sql_query(
+                    "SELECT * FROM intraday_diff_snapshot WHERE trade_date=? ORDER BY captured_at,code",
+                    c, params=[trade_date],
+                )
+                day_df, _history_quality = _intraday_diff_filter_good_history(day_df)
+                baselines = _intraday_diff_baselines(day_df, now)
+                _perf_record_phase("backend-detail:intraday_diff_baseline_pandas_fallback", time.perf_counter() - _v39_fb0, "FALLBACK")
+        else:
+            day_df = pd.read_sql_query(
+                "SELECT * FROM intraday_diff_snapshot WHERE trade_date=? ORDER BY captured_at,code",
+                c, params=[trade_date],
+            )
+            day_df, _history_quality = _intraday_diff_filter_good_history(day_df)
+            baselines = _intraday_diff_baselines(day_df, now)
+
+        ranked = []
+        for r in rows or []:
+            code = canonical_code_for_db(_live_get(r, "コード", "code"))
+            code = str(code or "")
+            b = baselines.get(code)
+            curp = _live_num(_live_get(r, "現在値_raw", "現在値"))
+            curh = _live_num(_live_get(r, "高値"))
+            cur_rvol = _live_num(_live_get(r, "RVOL代金"))
+            cur_today = _live_num(_live_get(r, "TODAY_SCORE"))
+            cur_res = _live_num(_live_get(r, "相場耐性スコア"))
+            cur_env = _live_num(_live_get(r, "地合い込み一次判定スコア"))
+            cur_steady = _live_num(_live_get(r, "持続上昇スコア"))
+            cur_trig = _live_num(_live_get(r, "TRIGGER_SCORE"))
+            cur_opp = _live_num(_live_get(r, "PRICE_OPPORTUNITY"))
+            cur_room = _live_num(_live_get(r, "TODAY_RESISTANCE_ROOM_PCT"))
+            cur_now_rank = _live_num(_live_get(r, "今買えるランク"))
+            cur_watch = str(_live_get(r, "WATCH_STATE") or "")
+            cur_buy = int(_live_num(_live_get(r, "TODAY_BUY")) or 0)
+
+            # 既定値: 導入直後/当日最初のrun。
+            short_pct = mid_pct = day_pct = None
+            rvol_d = today_d = res_d = env_d = steady_d = trig_d = opp_d = None
+            high_update = 0
+            watch_delta = 0
+            now_rank_delta = 0
+            buy_transition = 0
+            score = 0.0
+            state = "BASELINE"
+            reasons = []
+
+            if b is not None:
+                s, m, d = b["short"], b["mid"], b["day"]
+                short_pct = _intraday_diff_pct(curp, s.get("current_price"))
+                mid_pct = _intraday_diff_pct(curp, m.get("current_price"))
+                day_pct = _intraday_diff_pct(curp, d.get("current_price"))
+                rvol_d = _intraday_diff_delta(cur_rvol, s.get("rvol_turnover"))
+                today_d = _intraday_diff_delta(cur_today, s.get("today_score"))
+                res_d = _intraday_diff_delta(cur_res, s.get("resilience_score"))
+                env_d = _intraday_diff_delta(cur_env, s.get("entry_env_score"))
+                steady_d = _intraday_diff_delta(cur_steady, s.get("steady_score"))
+                trig_d = _intraday_diff_delta(cur_trig, s.get("trigger_score"))
+                opp_d = _intraday_diff_delta(cur_opp, s.get("price_opportunity"))
+                sh = _live_num(s.get("day_high"))
+                high_update = int(curh is not None and sh is not None and curh > sh + max(0.01, abs(sh) * 1e-8))
+                watch_delta = _diff_watch_rank(cur_watch) - _diff_watch_rank(s.get("watch_state"))
+                old_now = _live_num(s.get("now_rank"))
+                now_rank_delta = int(round((cur_now_rank or 0) - (old_now or 0)))
+                old_buy = int(_live_num(s.get("today_buy")) or 0)
+                buy_transition = cur_buy - old_buy
+
+                score += _diff_clip((short_pct or 0.0) * 10.0, -25, 25)
+                score += _diff_clip((mid_pct or 0.0) * 6.0, -20, 20)
+                score += _diff_clip((day_pct or 0.0) * 2.0, -10, 10)
+                score += _diff_clip((rvol_d or 0.0) * 6.0, -12, 12)
+                score += _diff_clip((today_d or 0.0) * 0.25, -15, 15)
+                score += _diff_clip((res_d or 0.0) * 0.15, -10, 10)
+                score += _diff_clip((env_d or 0.0) * 0.15, -10, 10)
+                score += _diff_clip((steady_d or 0.0) * 0.10, -8, 8)
+                score += _diff_clip((trig_d or 0.0) * 0.10, -8, 8)
+                score += _diff_clip((opp_d or 0.0) * 0.10, -8, 8)
+                score += 8.0 if high_update else 0.0
+                score += _diff_clip(watch_delta * 4.0, -8, 8)
+                score += _diff_clip(now_rank_delta * 4.0, -8, 8)
+                score += _diff_clip(buy_transition * 10.0, -10, 10)
+                if cur_room is not None:
+                    if cur_room < 1.0:
+                        score -= 12.0
+                    elif cur_room < 2.0:
+                        score -= 6.0
+
+                score = round(_diff_clip(score, -100, 100), 1)
+                if high_update and score >= 25 and (short_pct or 0) > 0:
+                    state = "BREAKOUT"
+                elif score >= 20 and (mid_pct or 0) > 0:
+                    state = "ACCELERATING"
+                elif score >= 10:
+                    state = "IMPROVING"
+                elif (today_d or 0) >= 8 and (short_pct or 0) <= 0.05:
+                    state = "STALLING"
+                elif cur_room is not None and cur_room < 1.0 and (short_pct or 0) > 0:
+                    state = "RESISTANCE_TIGHT"
+                elif score <= -20:
+                    state = "BREAKDOWN"
+                elif score <= -10:
+                    state = "WEAKENING"
+                else:
+                    state = "NEUTRAL"
+
+                if short_pct is not None: reasons.append(f"直前比{short_pct:+.2f}%")
+                if mid_pct is not None: reasons.append(f"30分比{mid_pct:+.2f}%")
+                if day_pct is not None: reasons.append(f"日中比{day_pct:+.2f}%")
+                if high_update: reasons.append("高値更新")
+                if rvol_d is not None and abs(rvol_d) >= 0.10: reasons.append(f"RVOL{rvol_d:+.2f}")
+                if today_d is not None and abs(today_d) >= 2: reasons.append(f"TODAY{today_d:+.1f}")
+                if watch_delta: reasons.append(f"WATCH{watch_delta:+d}")
+                if cur_room is not None and cur_room < 2.0: reasons.append(f"抵抗余地{cur_room:.2f}%")
+
+            near_high = bool(curp is not None and curh not in (None, 0) and curp >= curh * 0.985)
+            real_strength = int(
+                b is not None and score > 0 and near_high and
+                (((mid_pct or 0) >= 0.15) or ((short_pct or 0) >= 0.10)) and
+                not (state in {"STALLING", "RESISTANCE_TIGHT", "WEAKENING", "BREAKDOWN"})
+            )
+
+            r["DIFF_SCORE"] = score if b is not None else None
+            r["DIFF_STATE"] = state
+            r["DIFF_REASON"] = " / ".join(reasons)[:500]
+            r["DIFF_SHORT_PRICE_PCT"] = short_pct
+            r["DIFF_30M_PRICE_PCT"] = mid_pct
+            r["DIFF_DAY_PRICE_PCT"] = day_pct
+            r["DIFF_RVOL_DELTA"] = rvol_d
+            r["DIFF_TODAY_SCORE_DELTA"] = today_d
+            r["DIFF_RESILIENCE_DELTA"] = res_d
+            r["DIFF_ENTRY_ENV_DELTA"] = env_d
+            r["DIFF_HIGH_UPDATE"] = high_update
+            r["DIFF_REAL_STRENGTH"] = real_strength
+
+            ranked.append({
+                "code": code, "name": str(_live_get(r, "銘柄名") or ""), "market": str(_live_get(r, "市場") or ""),
+                "price": curp, "day_high": curh, "turnover_oku": _live_num(_live_get(r, "売買代金(億)", "売買代金億")),
+                "rvol": cur_rvol, "diff_score": r.get("DIFF_SCORE"), "state": state,
+                "real_strength": real_strength, "reason": r.get("DIFF_REASON"),
+                "short_price_pct": short_pct, "m30_price_pct": mid_pct, "day_price_pct": day_pct,
+                "rvol_delta": rvol_d, "today_score_delta": today_d, "resilience_delta": res_d,
+                "entry_env_delta": env_d, "high_update": high_update,
+                "today_score": cur_today, "today_buy": cur_buy, "now_rank": cur_now_rank,
+                "watch_state": cur_watch, "resistance_room_pct": cur_room,
+            })
+
+        ranked_valid = [x for x in ranked if x.get("diff_score") is not None]
+        ranked_valid.sort(key=lambda x: (int(x.get("real_strength") or 0), float(x.get("diff_score") or -999), float(x.get("turnover_oku") or 0)), reverse=True)
+        rank_by_code = {x["code"]: i + 1 for i, x in enumerate(ranked_valid)}
+        for r in rows or []:
+            code = str(canonical_code_for_db(_live_get(r, "コード", "code")) or "")
+            r["DIFF_RANK"] = rank_by_code.get(code)
+
+        # 現在runはdiff計算後に保存。次回runのSHORT正本になる。
+        inserted = 0
+        pruned = 0
+        _live_snapshot_ok = bool((live_context or {}).get("snapshot_rows", 0))
+        _current_quality = globals().get("_LIVE_SNAPSHOT_CURRENT_QUALITY") or {}
+        if market_time and _live_snapshot_ok and bool(_current_quality.get("ok")):
+            cap = now.isoformat(timespec="microseconds")
+            vals = []
+            for r in rows or []:
+                t = _intraday_diff_row_tuple(r, cap, trade_date)
+                if t is not None:
+                    vals.append(t)
+            with c:
+                inserted = _intraday_diff_insert_many(c, vals)
+                pruned = _intraday_diff_prune(c)
+                # MARKET-BREADTH-RESTORE-V11:
+                # DIFF_*確定後、同じ品質gateを通ったrunだけ「今日実際に強化中」の集合を保存。
+                try:
+                    globals()["_MARKET_BREADTH_LAST_CAPTURE_STATUS"] = _market_breadth_capture_on_conn(
+                        c, rows, cap, trade_date
+                    )
+                except Exception as _mb_cap_e:
+                    globals()["_MARKET_BREADTH_LAST_CAPTURE_STATUS"] = {
+                        "status": "error", "error": str(_mb_cap_e)[:500],
+                    }
+                    print(f"[market-breadth][WARN] capture failed: {_mb_cap_e}", flush=True)
+        elif market_time:
+            print(
+                "[intraday-diff][PARTIAL] current snapshot not persisted; "
+                f"live_snapshot_rows={(live_context or {}).get('snapshot_rows', 0)} "
+                f"quality={_current_quality}", flush=True
+            )
+
+        strength = [x for x in ranked_valid if int(x.get("real_strength") or 0) == 1]
+        weakening = sorted(ranked_valid, key=lambda x: float(x.get("diff_score") or 999))[:100]
+        payload = {
+            "schema_version": 1,
+            "generated_at": now.isoformat(timespec="seconds"),
+            "trade_date": trade_date,
+            "source": "scanner_snapshots.sqlite3/intraday_diff_snapshot",
+            "comparison": {"short": "previous_run", "mid": "latest_at_or_before_30m", "day": "first_snapshot_of_day"},
+            "counts": {
+                "rows": len(rows or []), "baseline_codes": len(baselines), "ranked": len(ranked_valid),
+                "real_strength": len(strength), "bootstrap_rows": int(boot), "snapshot_rows_written": int(inserted),
+                "history_captures_total": int(_history_quality.get("captures_total") or 0),
+                "history_captures_good": int(_history_quality.get("captures_good") or 0),
+                "history_required_stock_rows": _history_quality.get("required_stock_rows"),
+            },
+            "ranking": ranked_valid[:300],
+            "real_strength_ranking": strength[:200],
+            "weakening_ranking": weakening,
+        }
+        _INTRADAY_DIFF_RANK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text_file(str(_INTRADAY_DIFF_RANK_PATH), dumps_json_clean(payload))
+        dt = time.perf_counter() - t0
+        print(
+            f"[intraday-diff] ranked={len(ranked_valid)} real_strength={len(strength)} "
+            f"bootstrap={boot} write={inserted} prune={pruned} dt={dt:.3f}s path={_INTRADAY_DIFF_RANK_PATH}"
+        )
+        return payload["counts"] | {"dt_sec": round(dt, 3), "path": str(_INTRADAY_DIFF_RANK_PATH)}
+    finally:
+        c.close()
+
+
+def _watch_stage_meta(state) -> tuple[int, str, str]:
+    """WATCH_STATEをLIVE契約で使う安定した段階表現へ正規化する。"""
+    s=str(state or '').strip().upper()
+    return {
+        'READY':(4,'READY','買い条件到達'),
+        'START':(3,'START','動き出し'),
+        'NEAR':(2,'NEAR','買い接近'),
+        'WATCH':(1,'WATCH','監視中'),
+        'BROKEN':(-1,'BROKEN','前提悪化'),
+        'NONE':(0,'NONE','対象外'),
+        '':(0,'NONE','対象外'),
+    }.get(s,(0,s or 'NONE',s or '対象外'))
+
+
+def _build_today_buy_lane(rows: list[dict], limit: int = 100) -> list[dict]:
+    """厳格TODAY_BUY。発注許可ではなく、必ずLIVE最終確認へ渡す候補。"""
+    out=[]
+    for r in rows or []:
+        if int(_watch_f(r.get('TODAY_BUY')) or 0) != 1:
+            continue
+        item=_lane_common_item(r,'TODAY_BUY',_live_num(_live_get(r,'TODAY_SCORE')))
+        if not item.get('code'):
+            continue
+        item['entry_permission']='LIVE_CONFIRMATION_REQUIRED'
+        item['broker_watch_eligible']=True
+        item['direct_order_allowed']=False
+        item['funnel_stage']='TODAY_BUY'
+        item['funnel_stage_label']='今日買う株（厳格）'
+        out.append(item)
+    out.sort(key=lambda x:(
+        float(x.get('today_score') or 0),
+        int(x.get('watch_stage_rank') or 0),
+        float(x.get('watch_quality') or 0),
+        float(x.get('trigger_score') or 0),
+        -float(x.get('risk_pct') if x.get('risk_pct') is not None else 999),
+    ), reverse=True)
+    out=out[:max(1,int(limit))]
+    for i,x in enumerate(out,start=1):
+        x['lane_rank']=i
+    return out
+
+
+def _lane_common_item(r: dict, lane: str, lane_score: float | None = None) -> dict:
+    code=canonical_code_for_db(r.get('コード'))
+    _watch_state=str(_live_get(r,'WATCH_STATE') or '')
+    _watch_stage_rank,_watch_stage_code,_watch_stage_label=_watch_stage_meta(_watch_state)
+    return {
+        'code':code,
+        'name':str(r.get('銘柄名') or ''),
+        'market':str(r.get('市場') or ''),
+        'lane':str(lane),
+        'lane_score':_live_num(lane_score),
+        'today_score':_live_num(_live_get(r,'TODAY_SCORE')),
+        'why_today':str(_live_get(r,'WHY_TODAY') or '')[:500],
+        'waiting_for':str(_live_get(r,'TODAY_WAITING_FOR') or '')[:400],
+        'blockers':str(_live_get(r,'TODAY_BLOCKERS') or '')[:400],
+        'confirmation_needed':[x for x in str(_live_get(r,'TODAY_CONFIRMATION_NEEDED') or '').split(',') if x],
+        'validity':str(_live_get(r,'TODAY_VALIDITY') or ''),
+        'watch_state':_watch_state,
+        'watch_stage_rank':_watch_stage_rank,
+        'watch_stage_code':_watch_stage_code,
+        'watch_stage_label':_watch_stage_label,
+        'watch_route':str(_live_get(r,'WATCH_ROUTE') or ''),
+        'watch_source':str(_live_get(r,'WATCH_SOURCE') or ''),
+        'watch_reason':str(_live_get(r,'WATCH_REASON') or '')[:500],
+        'watch_quality':_live_num(_live_get(r,'WATCH_QUALITY')),
+        'price_opportunity':_live_num(_live_get(r,'PRICE_OPPORTUNITY')),
+        'trigger_score':_live_num(_live_get(r,'TRIGGER_SCORE')),
+        'short_history_flag':int(_live_num(_live_get(r,'短期履歴フラグ')) or 0),
+        'short_history_obs':_live_num(_live_get(r,'短期履歴本数')),
+        'short_history_score':_live_num(_live_get(r,'短期履歴スコア')),
+        'short_history_label':str(_live_get(r,'短期履歴判定') or ''),
+        'short_history_reason':str(_live_get(r,'短期履歴理由') or '')[:300],
+        'current_price':_live_num(_live_get(r,'現在値')),
+        'day_return_pct':_live_num(_live_get(r,'前日終値比率')),
+        'turnover_oku':_live_num(_live_get(r,'売買代金(億)')),
+        'rvol_turnover':_live_num(_live_get(r,'RVOL代金')),
+        'market_resilience_score':_live_num(_live_get(r,'相場耐性スコア')),
+        'entry_environment':str(_live_get(r,'地合い込み一次判定') or ''),
+        'entry_environment_score':_live_num(_live_get(r,'地合い込み一次判定スコア')),
+        'support_price':_live_num(_live_get(r,'最寄り支持')) or _live_num(_live_get(r,'支持帯中心')),
+        'resistance_price':_live_num(_live_get(r,'最寄り抵抗')) or _live_num(_live_get(r,'抵抗帯中心')),
+        'support_gap_pct':_live_num(_live_get(r,'TODAY_SUPPORT_GAP_PCT')),
+        'resistance_room_pct':_live_num(_live_get(r,'TODAY_RESISTANCE_ROOM_PCT')),
+        'invalidation_price':_live_num(_live_get(r,'EXIT_INVALIDATION_PRICE')),
+        'risk_pct':_live_num(_live_get(r,'EXIT_RISK_PCT')),
+        'risk_100_shares_yen':_live_num(_live_get(r,'EXIT_RISK_100_SHARES_YEN')),
+        'risk_level':str(_live_get(r,'EXIT_RISK_LEVEL') or ''),
+        'exit_reason':str(_live_get(r,'EXIT_REASON') or ''),
+        'primary_source':str(_live_get(r,'primary_source') or _live_get(r,'WATCH_SOURCE') or ''),
+    }
+
+
+def _split_today_blockers(value) -> list[str]:
+    return [x.strip() for x in str(value or '').split(' / ') if x.strip()]
+
+
+def _today_watch_assessment(item: dict) -> tuple[bool, list[str], list[str]]:
+    """TODAY_WATCH admission gate.
+
+    Purpose:
+      - Do not fill broker slots merely because WATCH_STATE is READY/START.
+      - Admit only candidates with a defined exit, nearby support, usable market
+        environment, and a concrete reason that can mature *today*.
+      - Remaining unresolved items must be confirmable by LIVE data.
+
+    This is intentionally stricter than TIMING_NEAR.
+    """
+    state=str(item.get('watch_state') or '')
+    score=float(item.get('today_score') or 0.0)
+    risk=_live_num(item.get('risk_pct'))
+    support_gap=_live_num(item.get('support_gap_pct'))
+    blockers=set(_split_today_blockers(item.get('blockers')))
+    why=str(item.get('why_today') or '')
+    waiting=str(item.get('waiting_for') or '')
+
+    reject=[]
+    if state not in {'READY','START'}:
+        reject.append('READY/START未満')
+    if score < 65.0:
+        reject.append('TODAY_SCORE65未満')
+    if risk is None:
+        reject.append('撤退ライン未確定')
+    elif risk <= 0 or risk > 7.0:
+        reject.append('撤退リスク不適')
+    if support_gap is None:
+        reject.append('支持位置不明')
+    elif not (-1.0 <= support_gap <= 6.0):
+        reject.append('支持から6%超')
+
+    # Market environment mismatch is not considered a "one live tick away" item.
+    # It stays TIMING_NEAR until the upstream screener itself reclassifies it.
+    if '地合込ENTRYが◎未満' in blockers:
+        reject.append('地合込ENTRY未達')
+    if '相場耐性70未満' in blockers:
+        reject.append('相場耐性未達')
+
+    for hard in ('支持から遠い','過熱','撤退リスク幅7%超','短期需給が強い売り','撤退ライン未確定'):
+        if hard in blockers:
+            reject.append(hard)
+
+    # TODAY_WATCH may keep only blockers that can be resolved intraday:
+    # liquidity/flow and a nearby resistance breakout.
+    live_resolvable={'売買代金5億未満','上値余地2%未満'}
+    unresolved=blockers - live_resolvable
+    # Environment/hard blockers are already named above; catch any future blocker
+    # conservatively instead of silently admitting it.
+    known_rejected={
+        '地合込ENTRYが◎未満','相場耐性70未満','支持から遠い','過熱',
+        '撤退リスク幅7%超','短期需給が強い売り','撤退ライン未確定'
+    }
+    unknown_unresolved=unresolved-known_rejected
+    if unknown_unresolved:
+        reject.append('未解決:' + ','.join(sorted(unknown_unresolved)))
+
+    meaningful=any(k in why for k in (
+        # WATCH_STATE itself is an authoritative "why now" signal.
+        # READY/STARTだけで十分に今日性が成立するため、他の材料理由を二重要求しない。
+        '買い時監視READY','短期トリガー発生',
+        '初動2x+2%成立','決算後の','底反転','持続','地合い逆行強','当日資金流入'
+    ))
+    if not meaningful:
+        reject.append('今日性の具体理由不足')
+
+    confirmations=[x for x in (item.get('confirmation_needed') or []) if x]
+    if '売買代金5億未満' in blockers or '出来高増加' in waiting:
+        confirmations.append('volume_continuation')
+    if '上値余地2%未満' in blockers:
+        confirmations.append('resistance_breakout')
+    if '支持/押し目へ接近' in waiting:
+        confirmations.append('higher_low')
+    confirmations=list(dict.fromkeys(confirmations))
+
+    return (len(reject)==0), reject, confirmations
+
+
+def _build_today_watch_lane(rows: list[dict], limit: int = 50) -> list[dict]:
+    """Kabu PUSH枠を使う『今日見る価値がある』候補。枠を無理に埋めない。"""
+    out=[]
+    for r in rows or []:
+        if int(_watch_f(r.get('TODAY_BUY')) or 0)==1:
+            continue
+        item=_lane_common_item(r,'TODAY_WATCH',None)
+        ok,reject,confirm=_today_watch_assessment(item)
+        if not ok:
+            continue
+        state=str(item.get('watch_state') or '')
+        today=float(item.get('today_score') or 0.0)
+        q=float(item.get('watch_quality') or 0.0)
+        t=float(item.get('trigger_score') or 0.0)
+        risk=float(item.get('risk_pct') or 0.0)
+        sg=float(item.get('support_gap_pct') or 0.0)
+        blocker_count=len(_split_today_blockers(item.get('blockers')))
+        lane_score=(
+            today
+            + (10.0 if state=='READY' else 6.0)
+            + max(0.0,min(6.0,(q-65.0)*0.15))
+            + max(0.0,min(4.0,(t-50.0)*0.10))
+            - blocker_count*2.0
+            - max(0.0,sg-4.0)*1.5
+            - max(0.0,risk-4.0)*1.0
+        )
+        item['lane_score']=round(lane_score,3)
+        item['entry_permission']='LIVE_CONFIRMATION_REQUIRED'
+        item['broker_watch_eligible']=True
+        item['direct_order_allowed']=False
+        item['funnel_stage']=state
+        item['funnel_stage_label']=item.get('watch_stage_label') or state
+        item['confirmation_needed']=confirm
+        item['today_watch_admission_reason']=(
+            f"{state} / TODAY{today:.1f} / risk{risk:.2f}% / 支持+{sg:.2f}%"
+        )
+        out.append(item)
+    out.sort(key=lambda x:(
+        1 if x.get('watch_state')=='READY' else 0,
+        float(x.get('lane_score') or 0),
+        float(x.get('today_score') or 0),
+        -float(x.get('risk_pct') or 999),
+    ),reverse=True)
+    out=out[:max(0,int(limit))]
+    for i,x in enumerate(out,start=1):
+        x['lane_rank']=i
+    return out
+
+
+def _build_broker_watch_lane(
+    today_buy_candidates: list[dict],
+    today_watch_candidates: list[dict],
+    limit: int = LIVE_EXECUTION_MAX,
+) -> tuple[list[dict], dict]:
+    """Kabu Stationへ実際に登録するリアルタイム監視候補を1本化する。
+
+    優先順:
+      1) TODAY_BUY（厳格）
+      2) TODAY_WATCHのREADY（買い条件到達）
+      3) TODAY_WATCHのSTART（動き出し）
+
+    TIMING_NEARはここへ入れない。候補数が上限未満でも無理に枠を埋めない。
+    """
+    limit=max(0,int(limit))
+    pool=[]
+    seen=set()
+
+    for source_lane,items in (
+        ('TODAY_BUY',today_buy_candidates or []),
+        ('TODAY_WATCH',today_watch_candidates or []),
+    ):
+        for raw in items:
+            if not isinstance(raw,dict):
+                continue
+            code=str(raw.get('code') or '')
+            if not code or code in seen:
+                continue
+            if not bool(raw.get('broker_watch_eligible')):
+                continue
+            if str(raw.get('entry_permission') or '') != 'LIVE_CONFIRMATION_REQUIRED':
+                continue
+            state=str(raw.get('watch_state') or '').upper()
+            if source_lane=='TODAY_WATCH' and state not in {'READY','START'}:
+                continue
+
+            item=dict(raw)
+            seen.add(code)
+            item['broker_source_lane']=source_lane
+            item['broker_priority_tier']=(
+                3 if source_lane=='TODAY_BUY'
+                else (2 if state=='READY' else 1)
+            )
+            item['direct_order_allowed']=False
+            item['broker_watch_reason']=(
+                '厳格TODAY_BUY→LIVE最終確認'
+                if source_lane=='TODAY_BUY'
+                else f"{item.get('watch_stage_label') or state}→LIVE最終確認"
+            )
+            pool.append(item)
+
+    pool.sort(key=lambda x:(
+        int(x.get('broker_priority_tier') or 0),
+        int(x.get('watch_stage_rank') or 0),
+        float(x.get('lane_score') or x.get('today_score') or 0),
+        float(x.get('today_score') or 0),
+        float(x.get('watch_quality') or 0),
+        float(x.get('trigger_score') or 0),
+        -float(x.get('risk_pct') if x.get('risk_pct') is not None else 999),
+        str(x.get('code') or ''),
+    ), reverse=True)
+
+    selected=pool[:limit]
+    for i,x in enumerate(selected,start=1):
+        x['broker_watch_rank']=i
+
+    stats={
+        'available_before_cap':len(pool),
+        'selected':len(selected),
+        'max_candidates':limit,
+        'truncated':max(0,len(pool)-len(selected)),
+        'selected_today_buy':sum(1 for x in selected if x.get('broker_source_lane')=='TODAY_BUY'),
+        'selected_ready':sum(1 for x in selected if x.get('broker_source_lane')=='TODAY_WATCH' and x.get('watch_state')=='READY'),
+        'selected_start':sum(1 for x in selected if x.get('broker_source_lane')=='TODAY_WATCH' and x.get('watch_state')=='START'),
+    }
+    return selected,stats
+
+
+def _build_timing_near_lane(rows: list[dict], limit: int = 120) -> list[dict]:
+    """買い時は近いが、まだKabu PUSH枠へ入れないコンテキスト候補。"""
+    out=[]
+    state_rank={'READY':4,'START':3,'NEAR':2}
+    for r in rows or []:
+        state=str(_live_get(r,'WATCH_STATE') or '')
+        if state not in state_rank:
+            continue
+        if int(_watch_f(r.get('TODAY_BUY')) or 0)==1:
+            continue
+
+        item=_lane_common_item(r,'TIMING_NEAR',None)
+        today_watch_ok,reject,_confirm=_today_watch_assessment(item)
+        if today_watch_ok:
+            # Disjoint lanes: TODAY_WATCH is authoritative for broker admission.
+            continue
+
+        q=_live_num(_live_get(r,'WATCH_QUALITY')) or 0.0
+        p=_live_num(_live_get(r,'PRICE_OPPORTUNITY')) or 0.0
+        t=_live_num(_live_get(r,'TRIGGER_SCORE')) or 0.0
+        risk=_live_num(_live_get(r,'EXIT_RISK_PCT'))
+        score=state_rank[state]*100.0 + q*0.45 + p*0.20 + t*0.35 - max(0.0,(risk or 0.0)-4.5)*5.0
+        item['lane_score']=round(score,3)
+        item['entry_permission']='DENY'
+        item['broker_watch_eligible']=False
+        item['direct_order_allowed']=False
+        item['funnel_stage']=state
+        item['funnel_stage_label']=item.get('watch_stage_label') or state
+        item['broker_exclusion_reason']=' / '.join(reject)[:500]
+        out.append(item)
+    out.sort(key=lambda x:(
+        {'READY':4,'START':3,'NEAR':2}.get(x.get('watch_state'),0),
+        float(x.get('lane_score') or 0),
+        -float(x.get('risk_pct') if x.get('risk_pct') is not None else 999),
+    ),reverse=True)
+    out=out[:max(0,int(limit))]
+    for i,x in enumerate(out,start=1):
+        x['lane_rank']=i
+    return out
+
+
+def _build_fundamental_watch_lane(rows: list[dict], limit: int = 300) -> list[dict]:
+    """企業・決算・再評価は良いが、まだ価格/トリガー待ち。原則PUSH枠を使わない。"""
+    out=[]
+    for r in rows or []:
+        if int(_watch_f(r.get('TODAY_BUY')) or 0)==1:
+            continue
+        state=str(_live_get(r,'WATCH_STATE') or '')
+        if state in {'NEAR','START','READY','BROKEN'}:
+            continue
+        src=str(_live_get(r,'WATCH_SOURCE') or '')
+        q=_live_num(_live_get(r,'WATCH_QUALITY')) or 0.0
+        if state!='WATCH' or not src or q < 65:
+            continue
+        p=_live_num(_live_get(r,'PRICE_OPPORTUNITY')) or 0.0
+        t=_live_num(_live_get(r,'TRIGGER_SCORE')) or 0.0
+        score=q*0.70+p*0.15+t*0.15
+        item=_lane_common_item(r,'FUNDAMENTAL_WATCH',score)
+        item['entry_permission']='DENY'
+        item['broker_watch_eligible']=False
+        out.append(item)
+    out.sort(key=lambda x:(float(x.get('lane_score') or 0),float(x.get('watch_quality') or 0)),reverse=True)
+    for i,x in enumerate(out[:max(1,int(limit))],start=1):
+        x['lane_rank']=i
+    return out[:max(1,int(limit))]
+
+# === /WHY-TODAY-V1 ===
+
+
 def _apply_watch_signal_overlay(rows: list[dict], conn: sqlite3.Connection) -> tuple[list[dict], list[dict], dict]:
     """rowsへWATCH_*を付与し、HTML成功後commitするpending状態を返す。"""
     _ensure_watch_signal_state_schema(conn)
-    prev={}
+    prev={}; prev_source={}
     try:
-        prev={str(c):str(st or '') for c,st in conn.execute('SELECT code,state FROM watch_signal_state').fetchall()}
+        _prev_rows=conn.execute('SELECT code,state,source FROM watch_signal_state').fetchall()
+        prev={str(c):str(st or '') for c,st,_src in _prev_rows}
+        prev_source={str(c):str(_src or '') for c,_st,_src in _prev_rows}
     except Exception:
-        prev={}
+        prev={}; prev_source={}
     pending=[]; counts={k:0 for k in ('WATCH','NEAR','START','READY','BROKEN')}
     for r in rows:
         code=canonical_code_for_db(r.get('コード'))
-        ev=_watch_eval_row(r, prev.get(code))
+        ev=_watch_eval_row(r, prev.get(code), prev_source.get(code))
         state=ev['state']
         r['WATCH_STATE']=state
         r['WATCH_QUALITY']=ev['quality']
@@ -16503,6 +28507,85 @@ def _apply_watch_signal_overlay(rows: list[dict], conn: sqlite3.Connection) -> t
             pending.append({**ev,'previous_state':old,'changed':changed})
     counts['TOTAL']=sum(counts.values())-counts.get('BROKEN',0)
     return rows,pending,counts
+
+
+
+def _export_watch_notification_preview(rows: list[dict], pending: list[dict]) -> bool:
+    """Phase2-A: OS通知は出さず、通知予定内容をJSONへatomic出力する。"""
+    try:
+        name_map = {}
+        for r in rows or []:
+            code = canonical_code_for_db(r.get("コード"))
+            if code:
+                name_map[code] = str(r.get("銘柄名") or "")
+
+        def _item(ev: dict) -> dict:
+            code = canonical_code_for_db(ev.get("code"))
+            return {
+                "code": code,
+                "name": name_map.get(code, ""),
+                "state": str(ev.get("state") or ""),
+                "previous_state": str(ev.get("previous_state") or ""),
+                "route": str(ev.get("route") or ""),
+                "reason": str(ev.get("reason") or ""),
+                "quality": ev.get("quality"),
+                "price_score": ev.get("price"),
+                "trigger_score": ev.get("trigger"),
+                "exit_price": ev.get("exit_price"),
+                "risk_pct": ev.get("risk_pct"),
+                "risk_per_share_yen": ev.get("risk_per_share_yen"),
+                "risk_100_shares_yen": ev.get("risk_100_shares_yen"),
+                "risk_level": str(ev.get("risk_level") or ""),
+                "risk_judgement": str(ev.get("risk_judgement") or ""),
+                "max_shares_by_risk": ev.get("max_shares_by_risk"),
+                "exit_reason": str(ev.get("exit_reason") or ""),
+            }
+
+        current_ready = [_item(ev) for ev in (pending or []) if str(ev.get("state") or "") == "READY"]
+        current_ready.sort(
+            key=lambda x: (
+                float(x.get("quality") or 0) + float(x.get("price_score") or 0) + float(x.get("trigger_score") or 0),
+                -float(x.get("risk_pct") if x.get("risk_pct") is not None else 999),
+            ),
+            reverse=True,
+        )
+
+        transitions = [
+            _item(ev) for ev in (pending or [])
+            if int(ev.get("changed") or 0) == 1
+            and str(ev.get("state") or "") in {"NEAR","START","READY","BROKEN"}
+        ]
+        transitions.sort(
+            key=lambda x: (
+                {"READY":4,"BROKEN":3,"START":2,"NEAR":1}.get(x.get("state"),0),
+                float(x.get("quality") or 0),
+                float(x.get("trigger_score") or 0),
+            ),
+            reverse=True,
+        )
+
+        payload = {
+            "schema_version": 1,
+            "phase": "preview_only_no_os_notification",
+            "generated_at": _now_jst().isoformat(timespec="seconds"),
+            "max_trade_risk_yen": WATCH_MAX_TRADE_RISK_YEN,
+            "current_ready_count": len(current_ready),
+            "transition_count": len(transitions),
+            "current_ready": current_ready[:100],
+            "transition_preview": transitions[:100],
+        }
+        clean = dumps_json_clean(payload, ensure_ascii=False, indent=2)
+        _atomic_write_text_file(str(WATCH_NOTIFICATION_PREVIEW_PATH), clean)
+        print(
+            f"[watch-preview] READY={len(current_ready)} transitions={len(transitions)} "
+            f"path={WATCH_NOTIFICATION_PREVIEW_PATH}",
+            flush=True,
+        )
+        return True
+    except Exception as e:
+        logging.error("[WATCH-PREVIEW][ERROR] preview export failed", exc_info=True)
+        print(f"[watch-preview][WARN] export failed: {e}", flush=True)
+        return False
 
 
 def _commit_watch_signal_state(conn: sqlite3.Connection, pending: list[dict]) -> None:
@@ -16532,20 +28615,43 @@ def _commit_watch_signal_state(conn: sqlite3.Connection, pending: list[dict]) ->
             cur.execute("""
                 INSERT INTO watch_signal_state(
                     code,state,previous_state,quality_score,price_score,trigger_score,route,reason,source,
-                    first_seen_at,state_changed_at,last_seen_at,notified_state
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    first_seen_at,state_changed_at,last_seen_at,notified_state,
+                    exit_price,risk_pct,risk_per_share_yen,risk_100_shares_yen,
+                    risk_level,risk_judgement,max_shares_by_risk,exit_reason
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(code) DO UPDATE SET
                     state=excluded.state, previous_state=excluded.previous_state,
                     quality_score=excluded.quality_score, price_score=excluded.price_score,
                     trigger_score=excluded.trigger_score, route=excluded.route, reason=excluded.reason,
                     source=excluded.source, state_changed_at=excluded.state_changed_at,
-                    last_seen_at=excluded.last_seen_at, notified_state=excluded.notified_state
-            """,(code,state,current_old,ev.get('quality'),ev.get('price'),ev.get('trigger'),ev.get('route'),ev.get('reason'),ev.get('source'),first_seen,changed_at,now,notified))
+                    last_seen_at=excluded.last_seen_at, notified_state=excluded.notified_state,
+                    exit_price=excluded.exit_price, risk_pct=excluded.risk_pct,
+                    risk_per_share_yen=excluded.risk_per_share_yen,
+                    risk_100_shares_yen=excluded.risk_100_shares_yen,
+                    risk_level=excluded.risk_level, risk_judgement=excluded.risk_judgement,
+                    max_shares_by_risk=excluded.max_shares_by_risk,
+                    exit_reason=excluded.exit_reason
+            """,(
+                code,state,current_old,ev.get('quality'),ev.get('price'),ev.get('trigger'),
+                ev.get('route'),ev.get('reason'),ev.get('source'),first_seen,changed_at,now,notified,
+                ev.get('exit_price'),ev.get('risk_pct'),ev.get('risk_per_share_yen'),
+                ev.get('risk_100_shares_yen'),ev.get('risk_level'),ev.get('risk_judgement'),
+                ev.get('max_shares_by_risk'),ev.get('exit_reason')
+            ))
             if changed:
                 cur.execute("""
-                    INSERT INTO watch_signal_history(code,observed_at,from_state,to_state,quality_score,price_score,trigger_score,route,reason)
-                    VALUES(?,?,?,?,?,?,?,?,?)
-                """,(code,now,current_old,state,ev.get('quality'),ev.get('price'),ev.get('trigger'),ev.get('route'),ev.get('reason')))
+                    INSERT INTO watch_signal_history(
+                        code,observed_at,from_state,to_state,quality_score,price_score,trigger_score,route,reason,
+                        exit_price,risk_pct,risk_per_share_yen,risk_100_shares_yen,
+                        risk_level,risk_judgement,max_shares_by_risk,exit_reason
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,(
+                    code,now,current_old,state,ev.get('quality'),ev.get('price'),ev.get('trigger'),
+                    ev.get('route'),ev.get('reason'),ev.get('exit_price'),ev.get('risk_pct'),
+                    ev.get('risk_per_share_yen'),ev.get('risk_100_shares_yen'),
+                    ev.get('risk_level'),ev.get('risk_judgement'),
+                    ev.get('max_shares_by_risk'),ev.get('exit_reason')
+                ))
         cur.execute(f'RELEASE SAVEPOINT {sp}')
     except Exception:
         try:
@@ -16580,6 +28686,20 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     # 0) 事前
     _p("enter: phase_export_html_dashboard_offline")
+    _export_perf0 = time.perf_counter()
+    _export_perf_mark = [_export_perf0]
+
+    def _export_perf_step(name: str):
+        _nowp = time.perf_counter()
+        _step = _nowp - _export_perf_mark[0]
+        _total = _nowp - _export_perf0
+        _export_perf_mark[0] = _nowp
+        print(f"[export-perf] {name}: step={_step:.2f}s total={_total:.2f}s", flush=True)
+        try:
+            _perf_record_phase(f"export:{name}", _step)
+        except Exception:
+            pass
+        return _step
 
     def _safe_jsonable(v):
         if v is None: return None
@@ -16633,13 +28753,30 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
 
     # P1-298: latest_pricesとのraw SQL JOINを廃止。7203/7203.0の不一致や
     # legacy重複による候補行の複製を避け、下段のcanonical overlayへ一本化する。
-    df_cand = pd.read_sql_query("""
-      SELECT s.*
+    # DILUTION-CLEANUP-V1: 廃止済みlegacy増資3列はSELECT段階から除外する。
+    # DBに旧列が残っていてもPandas/JSON/UIへ運ばず、runtimeの列幅・変換コストを増やさない。
+    _dead_legacy_dil_cols = {"増資リスク", "増資スコア", "増資理由"}
+    _screener_select_cols = [
+        str(r[1]) for r in conn.execute("PRAGMA table_info(screener)").fetchall()
+        if str(r[1]) not in _dead_legacy_dil_cols
+    ]
+    if not _screener_select_cols:
+        raise RuntimeError("screener schema has no selectable columns")
+    _screener_select_sql = ", ".join(
+        's."' + c.replace('"', '""') + '"' for c in _screener_select_cols
+    )
+    _v23_base_read_t0 = time.perf_counter()
+    df_cand = pd.read_sql_query(f"""
+      SELECT {_screener_select_sql}
       FROM screener s
       ORDER BY COALESCE(時価総額億円,0) DESC, COALESCE(出来高,0) DESC, コード
     """, conn)
+    _v23_base_read_t1 = time.perf_counter()
+    _perf_record_phase("export-detail:base_screener_read", _v23_base_read_t1-_v23_base_read_t0, "OK")
     # FUND-QUALITY-V2: 予定日ではなくquarterly_actual_historyの実発表日をdashboardへ付与。
     df_cand = _overlay_latest_actual_earnings_age(df_cand, conn)
+    _v23_base_earn_t = time.perf_counter()
+    _perf_record_phase("export-detail:base_earnings_overlay", _v23_base_earn_t-_v23_base_read_t1, "OK")
 
     # P4-DASH9: 信用倍率の最終整合ガード。
     # PREOPEN日次markerにより phase_update_margin_metrics が再実行されない日でも、
@@ -16691,7 +28828,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         df_cand.loc[_rec_state_marker.eq(""), "推奨比率_raw"] = np.nan
 
     # P1-298: latest_pricesはraw SQL JOINせず、canonical overlayで付与する。
+    _v23_base_lp0 = time.perf_counter()
     df_cand = _overlay_latest_prices_canonical(df_cand, conn)
+    _v23_base_lp1 = time.perf_counter()
+    _perf_record_phase("export-detail:base_latest_prices_overlay", _v23_base_lp1-_v23_base_lp0, "OK")
 
     # P1-632: current-runで再計算しているATR正本は latest_prices.ATR_14 -> ATR14（価格単位）。
     # legacyの ATR14_PCT / ATR14% はこのファイル内でcurrent更新されないため、存在していても
@@ -16752,14 +28892,6 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             dtype=float,
         )
 
-    # P1-645: 増資リスク/増資スコア/増資理由は現行プログラム内にcurrent writerが無い。
-    # 元祖版のflags_rows書込もSQL 4値に対し3値tupleで成立しておらず、legacy DBの非NULL値を
-    # current三角Safetyへ使うと根拠のない旧スコアが残留する。今回snapshotでは明示的に無効化し、
-    # 実際の希薄化イベント警告は offerings_events -> offer_codes のauthoritative経路へ一本化する。
-    for _legacy_dil_col in ("増資リスク", "増資スコア", "増資理由"):
-        if _legacy_dil_col in df_cand.columns:
-            df_cand[_legacy_dil_col] = None
-
     # P1-534: 今回runでV5支持抵抗の再計算に失敗した場合、latest_pricesに残る
     # 前回正常値を「今回の支持抵抗」として再表示しない。DBのlast-good値は保持し、
     # このexport snapshotだけ不明(NULL)として扱う。
@@ -16788,21 +28920,32 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # P1-525: shinden外部処理が当日のfull更新を完了していなければ、
     # 前日以前の保存済みスコアを今回snapshotから明示的に隠す。DB自体は保持する。
     if not _mask_stale_shinden_snapshot(df_cand, conn):
-        _p("shinden: current full snapshot unavailable -> stale score columns masked")
+        _p("shinden: current full snapshot unavailable -> stale score columns masked [INFO: スコア0ではありません。当日full snapshotを確認できないため、前営業日の値を今日の値として誤表示しないよう対象列を『不明』へマスクしています。 PREOPENなら08:00/08:10のfull生成前に起こり得ます。朝処理後も続く場合はsystem_jobs.pyの[morning][shinden]/[live-materials][shinden]ログと shinden_logic.py writerを確認してください。]")
     
     if "raw_fin_json" in df_cand.columns:
         df_cand.drop(columns=["raw_fin_json"], inplace=True)
 
     df_cand = ensure_news_cols(df_cand)
+    _v23_base_done = time.perf_counter()
+    try:
+        _perf_record_phase("export-detail:base_post_latest_transform", _v23_base_done-_v23_base_lp1, "OK")
+    except Exception:
+        pass
     _p(f"SQL: df_cand done shape={df_cand.shape} dt={( time.perf_counter()-t):.2f}s")
+    _export_perf_step("load_base_dataframe")
 
     # ==============================================================================
     # P1-20: institution_short_sales は「銘柄の最新日だけ」ではなく、
     # 各機関の最新報告残高を持ち越して現在の公開残高合計を作る。
     # ==============================================================================
     try:
-        df_karauri = _load_institution_short_summary(conn)
+        _v23_inst_t0 = time.perf_counter()
+        df_karauri = _load_institution_short_summary_run_cached(conn)
+        _v23_inst_t1 = time.perf_counter()
+        _perf_record_phase("export-detail:institution_short_summary_load", _v23_inst_t1-_v23_inst_t0, "OK")
         df_karauri_status = _load_institution_short_snapshot_status(conn)
+        _v23_inst_t2 = time.perf_counter()
+        _perf_record_phase("export-detail:institution_short_status_load", _v23_inst_t2-_v23_inst_t1, "OK")
         # P1-616: df_candはSELECT s.*なので、旧screenerに空売り集計列が残っている場合がある。
         # そのままcurrent summaryをmergeすると同名列が _x/_y 化して直後の参照が壊れ、
         # summaryが0件なら前回runの機関空売り値をそのままcurrent risk入力へ持ち越してしまう。
@@ -16827,6 +28970,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         # 空summaryでもschema付きDataFrameをmergeし、全銘柄を今回「不明」へ戻す。
         df_cand = df_cand.merge(df_karauri, on="コード", how="left")
         df_cand = df_cand.merge(df_karauri_status, on="コード", how="left")
+        _v23_inst_t3 = time.perf_counter()
+        _perf_record_phase("export-detail:institution_short_merge", _v23_inst_t3-_v23_inst_t2, "OK")
         for _c in _inst_snapshot_cols:
             if _c not in df_cand.columns:
                 df_cand[_c] = np.nan
@@ -16838,17 +28983,28 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         df_cand["本日の増減合計株数"] = pd.to_numeric(df_cand["本日の増減合計株数"], errors="coerce")
         df_cand["主要機関の動き"] = df_cand["主要機関の動き"].fillna("-")
         df_cand = _derive_institution_short_semantics(df_cand)
+        _v23_inst_t4 = time.perf_counter()
+        _perf_record_phase("export-detail:institution_short_derive", _v23_inst_t4-_v23_inst_t3, "OK")
         _acq_counts = df_cand["機関空売り取得状態"].value_counts(dropna=False).to_dict()
         _cur_counts = df_cand["機関空売り現在状態"].value_counts(dropna=False).to_dict()
         _p(
             "karauri: history/current/acquisition separated "
             f"acquisition={_acq_counts} current={_cur_counts} (P3-45)"
         )
+        _unfetched = int(_acq_counts.get("未取得", 0) or 0)
+        _unknown = int(_cur_counts.get("不明", 0) or 0)
+        if _unfetched:
+            _p(
+                "karauri: INFO "
+                f"未取得={_unfetched} は『空売り0株』ではなく当日snapshot未確認。"
+                f" current不明={_unknown}。未取得銘柄は安全側で不明として表示。"
+            )
     except Exception as e:
         # P1-495: 機関空売りは需給リスク判定へ使う。読込/merge障害を
         # 「機関空売り情報なし」と同じ見た目で公開しない。
         print(f"[karauri][FATAL] 集計データのマージに失敗しました: {e}")
         raise RuntimeError("institution short enrichment failed; refusing incomplete risk snapshot") from e
+    _export_perf_step("institution_short_enrich")
     # ==============================================================================
     # --- テーマ付与 ---
     latest_theme_map = {}
@@ -16942,55 +29098,155 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _p(f"shinden: formal/reference semantics attached {_sh_eval_counts} (P3-47)")
 
     _p(f"rename/round: done dt={( time.perf_counter() - t_rename ): .2f}s")
+    _export_perf_step("theme_and_format_enrich")
 
-    # --- 株探ニュース(3) ---
-    # P1-8: この段階ではAI判定がまだ未計算なので、技術シグナルだけを先行取得する。
-    # AI陽性銘柄は add_ai_analysis() 後に差分取得し、その銘柄だけ予想インパクトを再計算する。
+    # --- 株探ニュース(3): 🌈episode archive ---
+    # 新規🌈/当日activeのみ場中ネット取得。過去episodeは保存済み記事を表示し、EODだけ1日1回再確認。
     _news_prefetched_codes = set()
+    _news_detail_t0 = time.perf_counter()
     try:
-        _p("news: kabutan bulk start (technical signals)")
+        _run_mode_news = str(_auto_run_mode() or "").upper()
+        _p(f"news: episode archive start mode={_run_mode_news} live_refresh={int(_KABUNEWS_CONF.get('leader_live_refresh_minutes',30))}m refresh_cap={int(_KABUNEWS_CONF.get('leader_live_refresh_max_codes_per_run',48))} breaker={int(_KABUNEWS_CONF.get('leader_news_breaker_failures',3))}fails/{int(_KABUNEWS_CONF.get('leader_news_breaker_cooldown_minutes',30))}m max20 JPX sessions dual=1")
         t_news = time.perf_counter()
         if 'コード' in df_cand.columns and '銘柄名' in df_cand.columns:
-            def _has_signal(col_name, keyword):
-                if col_name in df_cand.columns:
-                    return df_cand[col_name].astype(str).fillna('').str.contains(keyword)
-                return pd.Series([False] * len(df_cand), index=df_cand.index)
+            _rainbow_news_episode_map = _leader_rainbow_news_episode_map()
+            _rainbow_news_codes = set(_rainbow_news_episode_map.keys())
+            _cand_code4 = df_cand['コード'].map(canonical_code_for_db)
+            mask_focus = _cand_code4.isin(_rainbow_news_codes)
+            df_focus = df_cand.loc[mask_focus, ['コード', '銘柄名']].copy()
+            df_cand['株探ニュース(3)'] = ""
+            df_cand['株探ニュース判定用'] = ""
+            for _nc in ('🌈ニュース状態','🌈ニュース記事数','🌈材料記事数','🌈決算記事数','🌈値動き記事数','🌈一般記事数'):
+                df_cand[_nc] = "" if _nc == '🌈ニュース状態' else 0
 
-            _im_focus = (
-                pd.to_numeric(df_cand['INITIAL_MOMENTUM'], errors='coerce').fillna(0).eq(1)
-                if 'INITIAL_MOMENTUM' in df_cand.columns
-                else pd.Series(False, index=df_cand.index)
-            )
-            mask_focus = (
-                _im_focus | _has_signal('初動フラグ', '候補') | _has_signal('底打ちフラグ', '候補') |
-                _has_signal('右肩上がりフラグ', '候補') | _has_signal('右肩早期フラグ', '候補')
-            )
-            df_focus = df_cand[mask_focus].copy()
+            _fetch_episode_map = _leader_news_fetch_episode_map(_rainbow_news_episode_map, _run_mode_news)
+            _network_codes = set(_fetch_episode_map.keys())
+            _successful_codes = set()
+            _archive_stat = {"episodes": 0, "articles": 0}
+            _v23_news_plan_t = time.perf_counter()
+            _perf_record_phase("export-detail:rainbow_news_plan", _v23_news_plan_t-_news_detail_t0, "OK")
+
             if not df_focus.empty:
-                # P1-191: 先行取得済み判定もcanonical code。
-                _news_prefetched_codes = set(df_focus['コード'].map(canonical_code_for_db))
-                news_ser_focus, news_full_ser_focus = kabutan_news_lines_bulk_for_dataframe(
-                    df_focus, code_col='コード', name_col='銘柄名', return_fulltext=True
+                df_focus['_news_code4'] = df_focus['コード'].map(canonical_code_for_db)
+                _news_prefetched_codes = set(df_focus['_news_code4'].dropna().astype(str))
+
+                # dfに存在する対象だけネット照会。EODもdashboard universe外へ余計なqueryを投げない。
+                _network_codes &= _news_prefetched_codes
+                _v23_news_net0 = time.perf_counter()
+                if _network_codes:
+                    _fetch_df = df_focus[df_focus['_news_code4'].isin(_network_codes)].copy()
+                    _fetch_pairs = list(zip(_fetch_df['_news_code4'].astype(str), _fetch_df['銘柄名'].astype(str)))
+                    _fetch_windows = {c: _fetch_episode_map[c] for c in _network_codes if c in _fetch_episode_map}
+                    _fresh_map, _successful_codes = kabutan_news_fetch_bulk(
+                        _fetch_pairs,
+                        per_symbol=int(_KABUNEWS_CONF.get("max_items_per_symbol", 20)),
+                        episode_windows=_fetch_windows,
+                        return_successful_codes=True,
+                    )
+                    _archive_stat = _leader_news_archive_fetched(
+                        _fetch_windows, _fresh_map, _successful_codes, _run_mode_news
+                    )
+                _v23_news_net1 = time.perf_counter()
+                _perf_record_phase("export-detail:rainbow_news_network_archive_upsert", _v23_news_net1-_v23_news_net0, "OK")
+
+                # 表示・研究は常にarchive正本。ネット取得が無いrunでも過去記事を利用できる。
+                _v23_news_arch0 = time.perf_counter()
+                _archive_map = _leader_news_load_archive(
+                    _rainbow_news_episode_map,
+                    codes=_news_prefetched_codes,
+                    per_symbol=int(_KABUNEWS_CONF.get("max_items_per_symbol", 20)),
                 )
+                _v23_news_arch1 = time.perf_counter()
+                _perf_record_phase("export-detail:rainbow_news_archive_load", _v23_news_arch1-_v23_news_arch0, "OK")
+                _v23_news_render0 = time.perf_counter()
+                _v48_news_lines0 = time.perf_counter()
+                news_ser_focus, news_full_ser_focus = kabutan_news_lines_bulk_for_dataframe(
+                    df_focus, code_col='コード', name_col='銘柄名', return_fulltext=True,
+                    episode_windows=_rainbow_news_episode_map,
+                    result_map_override=_archive_map,
+                )
+                _perf_record_phase("export-detail:rainbow_news_lines_build", time.perf_counter()-_v48_news_lines0, "FAST-V48" if str(os.environ.get("KABU_SCREEN_V48_FAST", "1")).strip().lower() not in {"0", "false", "off", "no"} else "V47")
                 df_focus['株探ニュース(3)'] = news_ser_focus
                 df_focus['株探ニュース判定用'] = news_full_ser_focus
-                news_map = df_focus.set_index('コード')['株探ニュース(3)'].to_dict()
-                news_full_map = df_focus.set_index('コード')['株探ニュース判定用'].to_dict()
-                df_cand['株探ニュース(3)'] = df_cand['コード'].map(news_map).fillna("")
-                df_cand['株探ニュース判定用'] = df_cand['コード'].map(news_full_map).fillna("")
-            else:
-                df_cand['株探ニュース(3)'] = ""
-                df_cand['株探ニュース判定用'] = ""
-        _p(f"news: kabutan bulk done dt={( time.perf_counter() - t_news ): .2f}s")
+                news_map = dict(zip(df_focus['_news_code4'], df_focus['株探ニュース(3)']))
+                news_full_map = dict(zip(df_focus['_news_code4'], df_focus['株探ニュース判定用']))
+                df_cand['株探ニュース(3)'] = _cand_code4.map(news_map).fillna("")
+                df_cand['株探ニュース判定用'] = _cand_code4.map(news_full_map).fillna("")
+
+                # 記事の性質を事実分類。売買ロジックには使わずdashboard表示だけに渡す。
+                _v48_news_summary0 = time.perf_counter()
+                if str(os.environ.get("KABU_SCREEN_V48_FAST", "1")).strip().lower() not in {"0", "false", "off", "no"}:
+                    # V48: すでにmemory上にあるarchive tupleから分類し、fulltext再parseと行単位.at代入を省略。
+                    _news_summary_map = {
+                        str(_c4): _v48_kabutan_news_summary_from_items(_archive_map.get(str(_c4), []))
+                        for _c4 in news_full_map.keys()
+                    }
+                    _sum_defaults = {
+                        '🌈ニュース状態': '', '🌈ニュース記事数': 0, '🌈材料記事数': 0,
+                        '🌈決算記事数': 0, '🌈値動き記事数': 0, '🌈一般記事数': 0,
+                    }
+                    for _k, _default in _sum_defaults.items():
+                        _vm = {str(_c4): _sm.get(_k, _default) for _c4, _sm in _news_summary_map.items()}
+                        df_cand[_k] = _cand_code4.map(_vm).fillna(_default)
+                else:
+                    _news_summary_map = {
+                        str(_c4): _kabutan_news_summary_from_fulltext(_full)
+                        for _c4, _full in news_full_map.items()
+                    }
+                    for _idx in df_cand.index:
+                        _c4 = str(_cand_code4.loc[_idx] or "")
+                        _sm = _news_summary_map.get(_c4)
+                        if not _sm:
+                            continue
+                        for _k, _v in _sm.items():
+                            df_cand.at[_idx, _k] = _v
+                _perf_record_phase("export-detail:rainbow_news_summary_vector", time.perf_counter()-_v48_news_summary0, "FAST-V48" if str(os.environ.get("KABU_SCREEN_V48_FAST", "1")).strip().lower() not in {"0", "false", "off", "no"} else "V47")
+                _v23_news_render1 = time.perf_counter()
+                _perf_record_phase("export-detail:rainbow_news_render_classify", _v23_news_render1-_v23_news_render0, "OK")
+
+            _p(
+                f"news: episode_codes={len(_rainbow_news_codes)} matched={len(df_focus)} "
+                f"network_planned={len(_network_codes)} network_ok={len(_successful_codes)} "
+                f"archive_episode_upsert={int(_archive_stat.get('episodes',0))} "
+                f"archive_article_upsert={int(_archive_stat.get('articles',0))} "
+                f"pre={_leader_rainbow_news_pre_days(_run_mode_news)}d "
+                f"max_session={int(_KABUNEWS_CONF.get('episode_max_business_days', 20))} "
+                f"dt={(time.perf_counter() - t_news):.2f}s"
+            )
+        else:
+            df_cand['株探ニュース(3)'] = ""
+            df_cand['株探ニュース判定用'] = ""
+            for _nc in ('🌈ニュース状態','🌈ニュース記事数','🌈材料記事数','🌈決算記事数','🌈値動き記事数','🌈一般記事数'):
+                df_cand[_nc] = "" if _nc == '🌈ニュース状態' else 0
     except Exception as _e_news:
-        print('[news][WARN] 株探ニュース列の付与に失敗:', _e_news)
-        # P1-541: screenerに残る前回ニュースを今回の短期材料としてpredictorへ流さない。
-        # 今回取得不能は「現在ニュース不明/なし」とし、AI後の差分補完は改めて試行できる。
+        print('[news][WARN] 🌈episodeニュース列の付与に失敗:', _e_news)
         df_cand['株探ニュース(3)'] = ""
         df_cand['株探ニュース判定用'] = ""
+        for _nc in ('🌈ニュース状態','🌈ニュース記事数','🌈材料記事数','🌈決算記事数','🌈値動き記事数','🌈一般記事数'):
+            df_cand[_nc] = "" if _nc == '🌈ニュース状態' else 0
         _news_prefetched_codes = set()
 
-    
+    try:
+        _perf_record_phase("export-detail:rainbow_news_fetch_classify", time.perf_counter()-_news_detail_t0)
+    except Exception:
+        pass
+
+    # 🌈研究ログへ取得済みニュース分類を追記。追加のネット取得はしない。
+    _nr_t=time.perf_counter()
+    _leader_research_enrich_news(df_cand)
+    try:
+        _perf_record_phase("export-detail:leader_research_news_enrich", time.perf_counter()-_nr_t)
+    except Exception:
+        pass
+
+    _rs_t=time.perf_counter()
+    _leader_research_write_snapshot(df_cand, episode_map_override=_rainbow_news_episode_map)
+    try:
+        _perf_record_phase("export-detail:leader_research_snapshot_write", time.perf_counter()-_rs_t)
+    except Exception:
+        pass
+
+    _export_perf_step("rainbow_news_and_research_snapshot")
 
     # 6) フラグ装飾
     t_flags = time.perf_counter()
@@ -17029,16 +29285,28 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             if c in df_cand.columns:
                 df_cand.drop(columns=[c], inplace=True)
     _p(f"flags: decorate done dt={( time.perf_counter() - t_flags ): .2f}s")
+    _export_perf_step("flag_decorate")
 
     # 7) レコード化（★ 二重管理を排除したストレート処理）
-    _t0 = time.time()
-    def _tick(msg): print(f"[timer] {msg}: {time.time()-_t0:.2f}s", flush=True)
+    _t0 = time.perf_counter()
+    _tick_last = [_t0]
+    def _tick(msg):
+        _nowp = time.perf_counter()
+        _step = _nowp - _tick_last[0]
+        _tick_last[0] = _nowp
+        _total = _nowp - _t0
+        print(f"[timer] {msg}: step={_step:.2f}s total={_total:.2f}s", flush=True)
+        try:
+            _perf_record_phase(f"export:{msg}", _step)
+        except Exception:
+            pass
+        return _step
     _p("records_safe: start")
     _tick("enter")
 
     df_cand = _vectorize_minimum_fields(df_cand)
-    if latest_theme_map:
-        _attach_latest_theme(df_cand, latest_theme_map)
+    # PERF-OPT-V19-STAGE1: 最新テーマは同じlatest_theme_mapから上段でauthoritativeに付与済み。
+    # この地点まで最新テーマ列を書き換える処理は無いため、同一mapの再attachを省略する。
     df_cand = apply_3algo_labels(df_cand) # ★追加: 3大アルゴリズム列の生成
     df_cand = apply_volume_quality_labels(df_cand) # ★追加: 短期需給(出来高の質)判定
     df_cand = apply_risk_factors_labels(df_cand) # ← ★変更
@@ -17088,7 +29356,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # （旧版は関数を定義しただけで呼んでいなかった）
     # ============================================================
     try:
-        update_seasonal_progress(conn)
+        _seasonality_cache_meta = _seasonality_refresh_cached(conn)
         season_df = pd.read_sql_query(
             """
             SELECT コード, 過去平均進捗率, 季節調整済進捗差分
@@ -17115,6 +29383,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         # 「今回の値」として公開しない。seasonalityは下値安全/決算評価にも使うためfatal。
         print(f"[seasonality][FATAL] 実行/反映失敗: {e}")
         raise RuntimeError("seasonality refresh failed; refusing stale seasonal metrics") from e
+    _tick("seasonality_refresh")
 
     # REPRICING-DISCOVERY-V1: 研究知見を全銘柄へ広く付与。
     # 既存候補gate/priorityは変えず、dashboardと別discovery feedへ載せる。
@@ -17130,15 +29399,51 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         df_cand = df_cand.drop(columns=_legacy_pts_cols)
     rows = _prepare_rows(df_cand, conn)
 
+    # INTRADAY-STABILITY-V1: MIDDAYで指数だけ/一部銘柄だけのpartial rowsを正常公開しない。
+    # 前回正常HTML/JSONを保持し、次runで価格coverageが戻った時だけ前進させる。
+    if str(_auto_run_mode()).upper() == "MIDDAY":
+        _expected_codes = {
+            str(canonical_code_for_db(_x) or "")
+            for (_x,) in conn.execute("SELECT コード FROM screener").fetchall()
+            if _is_jp_stock_snapshot_code(_x)
+        }
+        _row_codes = {
+            str(canonical_code_for_db(_live_get(_r, "コード", "code")) or "")
+            for _r in (rows or [])
+            if _is_jp_stock_snapshot_code(_live_get(_r, "コード", "code"))
+        }
+        _expected_n = len(_expected_codes)
+        _rows_n = len(_row_codes)
+        _row_cov = (_rows_n / _expected_n) if _expected_n else 0.0
+        _min_rows = 1 if TEST_MODE else int(INTRADAY_SNAPSHOT_MIN_STOCK_ROWS)
+        if _expected_n >= _min_rows and (_rows_n < _min_rows or _row_cov < INTRADAY_SNAPSHOT_MIN_COVERAGE):
+            raise RuntimeError(
+                "partial MIDDAY dashboard snapshot refused: "
+                f"jp_stock_rows={_rows_n}/{_expected_n} coverage={_row_cov*100:.1f}% "
+                f"required_rows>={_min_rows} required_cov>={INTRADAY_SNAPSHOT_MIN_COVERAGE*100:.0f}%"
+            )
+
+    # LEADER-SIGNAL-SHADOW-V1: 当日stateをdashboard JSON元行へ付与。候補gate/priorityには不使用。
+    try:
+        _leader_attach_state_to_rows(rows)
+    except Exception as _leader_attach_e:
+        print(f"[leader][WARN] dashboard leader state attach failed: {_leader_attach_e}")
+    _tick("prepare_rows_base")
+
     # P4-DASH2: dashboardとLIVE feedで同じrunの場中特徴量を共有し、
     # 売買目的別6列を全銘柄へ付加する。失敗時は既存dashboardを壊さず空欄化する。
     _dashboard_live_context = None
     try:
         _dashboard_live_context = _live_build_context(conn, rows)
+        _tick("live_build_context")
         _dashboard_apply_strategy_columns(conn, rows, _dashboard_live_context)
+        _tick("dashboard_strategy_columns")
         _signal_new = _entry_signal_capture_events(rows, _dashboard_live_context)
+        _tick("entry_signal_capture")
         _signal_intraday = _entry_signal_refresh_intraday_outcomes((_dashboard_live_context or {}).get("trade_date"))
+        _tick("entry_signal_intraday_refresh")
         _signal_daily = _entry_signal_refresh_daily_outcomes(conn)
+        _tick("entry_signal_daily_refresh")
         _p(
             "strategy columns: 持越し/持続/底反転/急伸/材料先行/今買える attached "
             f"/ buy-signal events new={_signal_new} intraday_refresh={_signal_intraday} daily_refresh={_signal_daily}"
@@ -17164,13 +29469,12 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         if _rv is not None and not np.isfinite(_rv):
             _rv = None
         _recommendation_state_updates.append((None if _rv is None else float(_rv), _rc))
+    _tick("recommendation_state_prepare")
 
-    # 🎯 90日スイング・トレンドフォロー算出モデル
-    # P0-6: 実データ列名とATR単位を統一。
-    # - 直近高値90日 / 直近安値90日 を優先（current Res_HH / Sup_LLを互換fallback）
-    # P1-667: writerless旧「直近高値60日/直近安値60日」はcurrent売買水準へ使わない。
-    # - ATR14_PCT / ATR14% は株価比(%)なので円ATRへ変換
-    # - P1-662: 円ATRの正式正本はcurrent ATR14のみ（writerless旧ATR20へfallbackしない）
+    # ATR＋現在の支持抵抗から作る表示用の売買目安。
+    # 90日高安は最寄り支持/抵抗・帯中心が使えない場合のfallbackだけに使う。
+    # ATR14_PCT / ATR14% は株価比(%)なので円ATRへ変換し、absolute ATR14も受け付ける。
+    # writerless旧60日高安・ATR20はcurrent売買水準へ復活させない。
     for r in rows:
         try:
             # P1-661: 仕込み/利確/損切りもcurrent「現在値」だけを価格正本とする。
@@ -17184,6 +29488,35 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 _sup_ll = _to_float(r.get("Sup_LL"))
             _res_hh = _res_hh if _res_hh is not None and np.isfinite(_res_hh) else 0.0
             _sup_ll = _sup_ll if _sup_ll is not None and np.isfinite(_sup_ll) else 0.0
+
+            # 仕込み/損切は現在値に最も近い有効支持を主役にする。
+            # 優先順位: 最寄り支持 -> 支持帯中心 -> 直近安値90日。
+            # いずれも現在値より下にある有効値だけを採用する。
+            _support_anchor = None
+            for _support_key in ("最寄り支持", "支持帯中心"):
+                _support_val = _to_float(r.get(_support_key))
+                if (
+                    _support_val is not None and np.isfinite(_support_val) and _support_val > 0
+                    and _cur_px is not None and np.isfinite(_cur_px) and _support_val < _cur_px
+                ):
+                    _support_anchor = float(_support_val)
+                    break
+            if _support_anchor is None and _sup_ll > 0 and _cur_px is not None and _sup_ll < _cur_px:
+                _support_anchor = float(_sup_ll)
+
+            # 利確も現在値に最も近い有効抵抗を主役にする。
+            # 優先順位: 最寄り抵抗 -> 抵抗帯中心 -> 直近高値90日。
+            _res_anchor = None
+            for _res_key in ("最寄り抵抗", "抵抗帯中心"):
+                _res_val = _to_float(r.get(_res_key))
+                if (
+                    _res_val is not None and np.isfinite(_res_val) and _res_val > 0
+                    and _cur_px is not None and np.isfinite(_cur_px) and _res_val > _cur_px
+                ):
+                    _res_anchor = float(_res_val)
+                    break
+            if _res_anchor is None and _res_hh > 0 and _cur_px is not None and _res_hh > _cur_px:
+                _res_anchor = float(_res_hh)
 
             _atr_val = None
             _atr_pct = _to_float(r.get("ATR14_PCT"))
@@ -17210,18 +29543,22 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
                 continue
 
             if _cur_px > 0:
-                if _sup_ll > 0 and _sup_ll < _cur_px:
-                    _shikomi = _sup_ll + (_atr_val * 0.2)
+                if _support_anchor is not None:
+                    # 支持の少し上を仕込み候補、少し下をシナリオ無効化ラインとする。
+                    _shikomi = _support_anchor + (_atr_val * 0.2)
+                    # 支持が現在値に極端に近い場合でも「現在値より高い仕込み目安」を出さない。
+                    _shikomi = min(_shikomi, _cur_px * 0.995)
                 else:
                     _shikomi = _cur_px * 0.96 
                     
-                if _res_hh > _cur_px and (_res_hh / _cur_px) >= 1.03:
-                    _rikaku = _res_hh * 0.99
+                if _res_anchor is not None and (_res_anchor / _cur_px) >= 1.03:
+                    # 抵抗の1%手前を機械的な利確目安にする。
+                    _rikaku = _res_anchor * 0.99
                 else:
                     _rikaku = _cur_px + (5 * _atr_val)
                     
-                if _sup_ll > 0:
-                    _songiri = _sup_ll - (_atr_val * 0.2)
+                if _support_anchor is not None:
+                    _songiri = _support_anchor - (_atr_val * 0.2)
                 else:
                     _songiri = _shikomi - (2.5 * _atr_val)
                     
@@ -17234,6 +29571,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             r["shikomi_txt"] = r["rikaku_txt"] = r["songiri_txt"] = "-"
 
     
+    _tick("swing_levels_text")
     _tick("prepare_rows")
 
     # 高値/安値/MA(5/25/75) を一括付与
@@ -17243,14 +29581,27 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     rows = enrich_rows_with_price_summary(rows, summary_map)
     _tick("price_summary_enrich")
 
+    # RE-LEADER-LIFECYCLE-V1.3:
+    # 高値/安値が確定した後で cross-day 再modifierを適用する。
+    try:
+        _leader_lifecycle_apply_repeat_modifier(rows)
+    except Exception as _releader_e:
+        print(f"[leader][WARN] re-leader lifecycle modifier failed: {_releader_e}")
+    _tick("releader_lifecycle_modifier")
+
     # chart / 移動平均 / ボリバン / GC / 三役
     enhance_with_chart_flags(conn, rows)
     _tick("chart_flags_enhance")
+
+    # SHORT-HISTORY-V1: MA75等が揃わない20〜74本銘柄を履歴量ベースで別評価。
+    rows = _apply_short_history_overlay(rows)
+    _tick("short_history_overlay")
 
     # WATCH-TIMING-V1: MA/RS/支持抵抗/短期戦略が揃った同一snapshotで監視状態を計算。
     rows, _watch_state_pending, _watch_state_counts = _apply_watch_signal_overlay(rows, conn)
     _p(f"watch timing: {_watch_state_counts}")
     _tick("watch_timing_overlay")
+
     
     # P1-587: 決算リアクションは予測器より前でcurrent-run値へ確定済み。
     # ここでは再計算せず、同じsnapshotをrowsへ同期するだけにする。
@@ -17333,23 +29684,9 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # P2-91: AI履歴短縮と後続RSS補完を個別計測し、ネットワーク変動と混同しない。
     _tick("ai_model_analysis")
 
-    # P1-8: AI判定が確定した後、★銘柄で先行ニュース対象外だったものだけ差分取得。
-    # ニュースはStockSurprisePredictorの自社株買い/増配判定に使うため、
-    # 補完した銘柄の予想インパクトもその場で再計算してからfair valueへ渡す。
-    try:
-        df_cand, rows, _ai_news_stats = _supplement_ai_positive_news_and_refresh_predictor(
-            df_cand, rows, _news_prefetched_codes
-        )
-        print(
-            "[news][AI補完] "
-            f"AI陽性={_ai_news_stats['ai_positive']} "
-            f"追加対象={_ai_news_stats['supplement_targets']} "
-            f"ニュース有={_ai_news_stats['news_nonempty']} "
-            f"予想再計算={_ai_news_stats['predictor_refreshed']}"
-        )
-        _tick("ai_positive_news_supplement")
-    except Exception as e:
-        print(f"[news][WARN] AI陽性ニュース補完に失敗: {e}")
+    # RAINBOW-ONLY-KABUTAN-NEWS-V1: AI陽性を理由にした追加取得は停止。
+    print("[news] AI陽性ニュース補完=OFF (🌈発生銘柄だけ取得)", flush=True)
+    _tick("ai_positive_news_supplement_disabled")
 
     # P1-5: ここが適正/期待株価の正しい再計算タイミング。
     # 予想インパクトは上段で、AIスコアは直前で最新化済み。
@@ -17360,17 +29697,28 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         # P1-571: Algo_Factor/Algo_総合は割安度を入力に使うため、fair value再計算前に
         # 一度作ったAlgo列をそのまま出すと前回runの割安度が混ざる。今回の適正株価/割安度を
         # df_candへ戻して3Algoを再計算し、HTML rowsとLLM用df_candを同一snapshotへ揃える。
-        _fv_cols_now = ["コード", *FAIR_VALUE_OUTPUT_COLUMNS]
-        _fv_now = pd.read_sql_query(
-            "SELECT " + ", ".join(f'"{c}"' for c in _fv_cols_now) + " FROM screener",
-            conn,
-        )
+        _fv_cache_now = globals().get("_FAIR_VALUE_OUTPUT_RUN_CACHE")
         _fv_map_now = {}
-        if not _fv_now.empty:
-            for _, _fr in _fv_now.iterrows():
-                _fk = canonical_code_for_db(_fr.get("コード"))
-                if _fk:
-                    _fv_map_now[_fk] = {c: _fr.get(c) for c in FAIR_VALUE_OUTPUT_COLUMNS}
+        if (
+            isinstance(_fv_cache_now, dict)
+            and _fv_cache_now.get("conn_id") == id(conn)
+            and isinstance(_fv_cache_now.get("map"), dict)
+        ):
+            _fv_map_now = _fv_cache_now["map"]
+            print(f"[fair-value-cache] hit codes={len(_fv_map_now)}", flush=True)
+        else:
+            # Fail-safe compatibility path: if the cache is unavailable, preserve the old exact SELECT.
+            _fv_cols_now = ["コード", *FAIR_VALUE_OUTPUT_COLUMNS]
+            _fv_now = pd.read_sql_query(
+                "SELECT " + ", ".join(f'"{c}"' for c in _fv_cols_now) + " FROM screener",
+                conn,
+            )
+            if not _fv_now.empty:
+                for _, _fr in _fv_now.iterrows():
+                    _fk = canonical_code_for_db(_fr.get("コード"))
+                    if _fk:
+                        _fv_map_now[_fk] = {c: _fr.get(c) for c in FAIR_VALUE_OUTPUT_COLUMNS}
+            print(f"[fair-value-cache] fallback-select codes={len(_fv_map_now)}", flush=True)
         if "コード" in df_cand.columns:
             _cand_keys_now = df_cand["コード"].map(canonical_code_for_db)
             for _fc in FAIR_VALUE_OUTPUT_COLUMNS:
@@ -17403,6 +29751,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     _entry_env_asof = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
     _entry_env_meta = _dashboard_apply_entry_environment(conn, rows, _entry_env_asof)
     meta["entry_environment"] = _entry_env_meta
+    _tick("entry_environment")
     _p(
         "entry-env: all-stock follow-through attached "
         f"universe={_entry_env_meta.get('universe_count',0)} "
@@ -17410,20 +29759,45 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         f"score={_entry_env_meta.get('score')}"
     )
 
+    # WHY-TODAY-V1.1: 相場耐性/地合い込み一次判定が確定してから authoritative 判定する。
+    # 旧位置ではこの2列が未生成だったため全銘柄に誤ブロッカーが付いていた。
+    rows, _today_buy_counts = _apply_today_buy_overlay(rows)
+    _p(f"why today: {_today_buy_counts}")
+    _tick("why_today_overlay_after_entry_env")
+
+    # INTRADAY-DIFF-RANK-V1: TODAY/相場耐性が確定した最終rowsを、同日DB snapshotと比較。
+    # 既存ランキング/候補gateへは逆流させず、表示・研究用DIFF_*と専用JSONだけを追加する。
+    try:
+        _intraday_diff_meta = _apply_intraday_diff_overlay(rows, _dashboard_live_context)
+        meta["intraday_diff_rank"] = _intraday_diff_meta
+    except Exception as _diff_e:
+        # 研究用差分の障害で本体screeningを止めない。fail-visibleでmeta/logへ残す。
+        print(f"[intraday-diff][WARN] overlay/export failed: {_diff_e}", flush=True)
+        meta["intraday_diff_rank"] = {"error": str(_diff_e)[:500]}
+    _tick("intraday_diff_rank_overlay")
+
     # P4-DASH3: 最終snapshotの意味に基づくUIソート契約をここで確定。
     # AI/予想インパクト/Algo/TOB/財務/シンデンが揃った後に実行し、モデル本体には逆流させない。
     _dashboard_attach_ui_sort_contract(rows)
     _p("dashboard UI/sort semantic contract: attached")
 
-    # === ★追加: セクターランキングの集計 ===
+    # === SECTOR-RANKING-RESILIENCE-V1 ===
+    # JPXセクター同期とランキング集計を分離する。
+    # 外部JPX取得が一時失敗しても、DB内の既存セクター値からランキングを継続生成する。
     try:
         sync_sector_data(conn)
+        _p("sector master sync: ok")
+    except Exception as e:
+        print(f"[sector][WARN] master sync failed; use existing DB sector data: {e}")
+
+    try:
         sector_ranking_df = prepare_sector_ranking_view(conn)
-        sector_ranking_list = sector_ranking_df.to_dict(orient='records')
-        _p("sector ranking: calculated")
+        sector_ranking_list = sector_ranking_df.to_dict(orient="records")
+        _p(f"sector ranking: calculated rows={len(sector_ranking_list)}")
     except Exception as e:
         print(f"[sector][WARN] ranking calculation failed: {e}")
         sector_ranking_list = []
+    _tick("sector_ranking")
     # ==========================================
 
     # === ★追加: テーマランキングの集計（ロバスト化版） ===
@@ -17433,7 +29807,48 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     except Exception as e:
         print(f"[theme][WARN] ranking calculation failed: {e}")
         theme_ranking_list = []
+    _tick("theme_ranking")
     # ==========================================
+
+    # ROTATION-FLOW-HISTORY-V1: 同一runの全銘柄snapshot時刻に揃えてランキング履歴を保存。
+    _rotation_history_status = {"status": "not_run"}
+    _rotation_history_payload = {"version": 1, "trade_dates": [], "sector": {"fields": [], "rows": []}, "theme": {"fields": [], "rows": []}}
+    try:
+        _rotation_history_status = _rotation_capture_rankings(
+            sector_ranking_list, theme_ranking_list,
+            (_dashboard_live_context or {}).get("captured"),
+            (_dashboard_live_context or {}).get("trade_date"),
+            (_dashboard_live_context or {}).get("snapshot_rows"),
+        )
+        _rotation_history_payload = _rotation_dashboard_history_payload()
+        _p(f"rotation history: {_rotation_history_status}")
+    except Exception as _rot_e:
+        print(f"[rotation-history][WARN] persist/load failed: {_rot_e}")
+        _rotation_history_status = {"status": "error", "error": str(_rot_e)}
+    _tick("rotation_history")
+
+    # MARKET-BREADTH-RESTORE-V11: UIは既に存在するためbackend payloadだけ復旧する。
+    # EOD/PREOPENでは新規captureせず、保存済み場中履歴のloadだけ行う。
+    _market_breadth_status = dict(globals().get("_MARKET_BREADTH_LAST_CAPTURE_STATUS") or {"status": "not_run"})
+    _market_breadth_payload = {
+        "schema_version": 1, "trade_dates": [], "fields": list(_MARKET_BREADTH_FIELDS),
+        "rows": [], "current": None, "notes": {}
+    }
+    try:
+        _market_breadth_payload = _market_breadth_dashboard_history_payload()
+        _p(
+            "market breadth: "
+            f"capture={_market_breadth_status.get('status')} "
+            f"history_points={len(_market_breadth_payload.get('rows') or [])}"
+        )
+    except Exception as _mb_e:
+        print(f"[market-breadth][WARN] history load failed: {_mb_e}", flush=True)
+        _market_breadth_status = {
+            **_market_breadth_status,
+            "history_load_status": "error",
+            "history_load_error": str(_mb_e)[:500],
+        }
+    _tick("market_breadth")
 
     # P3-41: publish-quality。欠損を0点に偽装せず、空洞化も画面上で検知する。
     def _coverage_pct(col):
@@ -17511,17 +29926,31 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         "counts": dict(_watch_state_counts) if isinstance(_watch_state_counts, dict) else {},
         "phase": "baseline_no_notifications",
     }
+    meta["rotation_history"] = _rotation_history_status
+    meta["market_breadth"] = _market_breadth_status
 
     # 9) data オブジェクトに組み込む。旧10年バッジではなく直近1年だけを「増資経歴」表示へ。
     offering_code_set = _load_offering_codes_from_db(conn, days=365)
+    _v22_json_t0 = time.perf_counter()
+
+    # VALUE-SEMANTICS-V1:
+    # dashboard専用copyだけ表示変換。raw rowsはこの後のmonitor/LLM/LIVE feedへそのまま渡す。
+    _dashboard_rows = _dashboard_display_semantics(rows)
+
     data_obj = {
-        "cand": rows,
+        "cand": _dashboard_rows,
         "meta": meta,
         "offer_codes":  sorted(offering_code_set),
         "sector_ranking": sector_ranking_list,
-        "theme_ranking": theme_ranking_list # ★追加
+        "theme_ranking": theme_ranking_list, # ★追加
+        "rotation_history": _rotation_history_payload,
+        "market_breadth": _market_breadth_payload
     }
     data_json = dumps_json_clean(data_obj)
+    try:
+        _perf_record_phase("export-detail:v22_json_serialize", time.perf_counter()-_v22_json_t0, "OK")
+    except Exception:
+        pass
     _tick("json clean done")
 
     # P1-649: dashboard_data.json は「最新ダッシュボード用」のlive snapshot。
@@ -17530,6 +29959,7 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     json_export_path = os.path.join(OUTPUT_DIR, "dashboard_data.json")
 
     # 10) テンプレ描画：VT版へ一本化。template.html -> dashboard.html -> index.html。
+    _v22_template_t0 = time.perf_counter()
     _ensure_template_file(template_dir, overwrite=True)
     env = Environment(loader=FileSystemLoader(template_dir, encoding="utf-8"),
                       autoescape=select_autoescape(["html"]))
@@ -17549,6 +29979,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         build_id=build_id,
     )
     html_output = env.get_template("dashboard.html").render(**_render_kw)
+    try:
+        _perf_record_phase("export-detail:v22_template_render", time.perf_counter()-_v22_template_t0, "OK")
+    except Exception:
+        pass
     _tick("template VT-single done")
 
     # 11) __DATA__ を安全にインライン注入
@@ -17557,10 +29991,8 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     def _inject_inline_data(html_text: str) -> str:
         try:
             data_json_str = data_json
+            # dumps_json_clean()がallow_nan=False相当を保証済み。巨大JSONをNaN/Inf regexで3周しない。
             data_json_str = data_json_str.replace("<", "\\u003c").replace(">", "\\u003e")
-            data_json_str = re.sub(r':\s*NaN', ': null', data_json_str)
-            data_json_str = re.sub(r':\s*Infinity', ': null', data_json_str)
-            data_json_str = re.sub(r':\s*-Infinity', ': null', data_json_str)
             json_script = f"""
 <script id="__DATA__" type="application/json">
 {data_json_str}
@@ -17589,7 +30021,12 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
             raise RuntimeError("dashboard JSON inline injection failed") from e
 
     html_output = _inject_inline_data(html_output)
-    _p(f"inject_inline_data_json: dt={(time.perf_counter() - t_inject):.2f}s")
+    _v22_inject_dt = time.perf_counter() - t_inject
+    try:
+        _perf_record_phase("export-detail:v22_inline_inject", _v22_inject_dt, "OK")
+    except Exception:
+        pass
+    _p(f"inject_inline_data_json: dt={_v22_inject_dt:.2f}s")
 
     # 12) 書き出し：完成stageを作ってからindex.htmlへatomic replace。
     t_write = time.perf_counter()
@@ -17648,6 +30085,10 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         logging.error("[WATCH-TIMING][ERROR] state commit failed after dashboard publish", exc_info=True)
         raise RuntimeError("watch timing state commit failed") from _watch_commit_e
 
+    # WATCH-NOTIFICATION-PREVIEW-V1: OS通知前に内容だけ監査する。
+    if not _export_watch_notification_preview(rows, _watch_state_pending):
+        print("[watch-preview][WARN] dashboard is valid; preview only was skipped", flush=True)
+
     # 履歴JSONはlive参照ではない。HTML＋current JSONの成功snapshotだけを記録する。
     # P1-199/P1-384: JST＋マイクロ秒名でrun単位に一意化。
     timestamp = _now_jst().strftime("%Y%m%d_%H%M%S_%f")
@@ -17666,16 +30107,32 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
     # realtime monitor/LLMは新snapshot、dashboardは旧snapshotという分裂が起きる。
     # まずHTML atomic writeを成功させ、その後に連携ファイルを更新する。
     # 連携側失敗時は各export関数が旧ファイルをinvalidateするため、新HTML＋古い連携状態も残さない。
-    _monitor_ok = export_monitor_list(pd.DataFrame(rows))
+    _rows_df_v22 = pd.DataFrame.from_records(rows)
+    _v22_monitor_t0 = time.perf_counter()
+    _monitor_ok = export_monitor_list(_rows_df_v22)
+    try:
+        _perf_record_phase("export-detail:v22_monitor_export", time.perf_counter()-_v22_monitor_t0, "OK")
+    except Exception:
+        pass
     if _monitor_ok is False:
         print("[monitor][WARN] realtime monitor list export failed")
-    _llm_ok = export_llm_dataset(pd.DataFrame(rows))
+    _v22_llm_t0 = time.perf_counter()
+    _llm_ok = export_llm_dataset(_rows_df_v22)
+    try:
+        _perf_record_phase("export-detail:v22_llm_export", time.perf_counter()-_v22_llm_t0, "OK")
+    except Exception:
+        pass
     if _llm_ok is False:
         print("[llm][WARN] LLM dataset export failed")
 
     # P4-LIVE: HTML/dashboard_data.jsonと同じ最終rowsから正式Candidate Contractを生成。
     # HTMLを読み戻さず、失敗時は前回正常feedを保持して既存dashboard処理を壊さない。
+    _v22_livefeed_t0 = time.perf_counter()
     _live_ok = export_live_candidate_feed(conn, rows, context=_dashboard_live_context)
+    try:
+        _perf_record_phase("export-detail:v22_live_feed", time.perf_counter()-_v22_livefeed_t0, "OK")
+    except Exception:
+        pass
     if _live_ok is False:
         print("[live-feed][WARN] candidate contract was not advanced for this run")
 
@@ -17702,16 +30159,21 @@ def phase_export_html_dashboard_offline(conn, html_path, template_dir="templates
         finally:
             _rec_cur.close()
 
-    _p(f"write+planA: dt={( time.perf_counter() - t_write ): .2f}s")
+    _v22_write_dt = time.perf_counter() - t_write
+    try:
+        _perf_record_phase("export-detail:v22_publish_and_aux", _v22_write_dt, "OK")
+    except Exception:
+        pass
+    _p(f"write+planA: dt={_v22_write_dt: .2f}s")
     
     # --- Git同期 ---
+    # INTRADAY-STABILITY-V1: remote publishは別process。Git/network待ちで10分screening cadenceを潰さない。
     REPO_ROOT = r"C:\Users\sasit\Documents\GitHub\sc"
     try:
-        # P1-357: Git同期の成否を呼出側でも明示。失敗時に成功風の無反応で終わらない。
-        if not sync_to_github_pages(REPO_ROOT, html_path):
-            print("[git][WARN] local HTML was generated, but GitHub Pages sync did not complete")
+        if not _launch_github_sync_async(REPO_ROOT, html_path):
+            print("[git][WARN] local HTML was generated, but GitHub Pages async sync could not be launched")
     except Exception as e:
-        print(f"[git] sync failed: {e}")
+        print(f"[git] async sync launch failed: {e}")
     
     print(f"[export] HTML書き出し: {html_path} (logs={'ON' if include_log else 'OFF'}) | build: {build_id}")
 
@@ -17908,6 +30370,30 @@ def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int 
         _stale_finance_codes = _finance_codes_stale_after_latest_earnings(conn)
         if _stale_finance_codes and not df_fwd.empty:
             df_fwd = df_fwd[~df_fwd["コード"].map(canonical_code_for_db).isin(_stale_finance_codes)].copy()
+
+        # PERF-OPT-V17:
+        # ここで canonical latest / numeric / non-null / stale除外済み。
+        # repricing finance_notes fallbackは同じ意味の集合を後段で再構築していたため共有する。
+        try:
+            _repr_fin_map = {}
+            if not df_fwd.empty:
+                for _c, _v in zip(df_fwd["コード"], df_fwd["営業利益_fwd"]):
+                    _ck = canonical_code_for_db(_c)
+                    if not _ck or pd.isna(_v):
+                        continue
+                    _fv = float(_v)
+                    if math.isfinite(_fv):
+                        _repr_fin_map[_ck] = _fv
+            globals()["_REPRICING_FINANCE_FORECAST_RUN_CACHE"] = {
+                "conn_id": id(conn),
+                "map": _repr_fin_map,
+            }
+            print(
+                f"[oper][repricing-finance-cache] stored codes={len(_repr_fin_map)}",
+                flush=True,
+            )
+        except Exception as _rfce:
+            print(f"[oper][repricing-finance-cache][WARN] store failed: {_rfce}", flush=True)
     except Exception as e:
         # P1-443: source query障害を「予想値なし」と同一視して旧営業利益を公開しない。
         raise RuntimeError(f"finance_notes forecast_op read failed: {e}") from e
@@ -18095,6 +30581,92 @@ def update_operating_income_and_ratio(conn: sqlite3.Connection, batch_size: int 
 # ==========================================
 # ★ 追加: 季節調整済み進捗率の計算
 # ==========================================
+def _seasonality_perf_cache_path() -> Path:
+    base = Path(OUTPUT_DIR).resolve().parent
+    return base / "runtime" / "seasonality_source_fingerprint.json"
+
+
+def _seasonality_source_fingerprint(conn: sqlite3.Connection) -> str:
+    """季節進捗の入力が変わったかだけを軽量判定する。計算値そのものは変更しない。"""
+    h = hashlib.sha256()
+    h.update(str(_today_jst()).encode("utf-8"))
+    for code, progress in conn.execute(
+        "SELECT CAST(コード AS TEXT), 進捗率 FROM screener WHERE 進捗率 IS NOT NULL ORDER BY CAST(コード AS TEXT), rowid"
+    ).fetchall():
+        h.update(f"S|{code}|{progress}\n".encode("utf-8", errors="replace"))
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    specs = {
+        "quarterly_actual_history": ("updated_at", "announcement_date", "operating_profit"),
+        "tdnet_xbrl_metrics": ("updated_at", "提出時刻", "actual_op"),
+        "forecast_achievement_history": ("updated_at", "actual_date", "actual_op"),
+    }
+    for table, candidates in specs.items():
+        if table not in tables:
+            h.update(f"T|{table}|MISSING\n".encode())
+            continue
+        cols = {str(r[1]) for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+        parts = ["COUNT(*)", "MAX(rowid)"]
+        for c in candidates:
+            if c in cols:
+                qc = c.replace('"', '""')
+                if c in {"operating_profit", "actual_op"}:
+                    parts.append(f'SUM(COALESCE(CAST("{qc}" AS REAL),0.0))')
+                else:
+                    parts.append(f'MAX("{qc}")')
+        row = conn.execute(f'SELECT {", ".join(parts)} FROM "{table}"').fetchone()
+        h.update((f"T|{table}|" + "|".join("" if v is None else str(v) for v in (row or ())) + "\n").encode("utf-8", errors="replace"))
+    return h.hexdigest()
+
+
+def _seasonality_output_count(conn: sqlite3.Connection) -> int:
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(screener)").fetchall()}
+    need = {"過去平均進捗率", "季節調整済進捗差分", "過去同Q件数"}
+    if not need.issubset(cols):
+        return -1
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM screener WHERE 過去平均進捗率 IS NOT NULL OR 季節調整済進捗差分 IS NOT NULL OR 過去同Q件数 IS NOT NULL"
+    ).fetchone()[0] or 0)
+
+
+def _seasonality_refresh_cached(conn: sqlite3.Connection) -> dict:
+    """source不変なら前回正常な季節進捗列を再利用。変化時だけ正式計算を呼ぶ。"""
+    t0 = time.perf_counter()
+    sig = _seasonality_source_fingerprint(conn)
+    path = _seasonality_perf_cache_path()
+    current_count = _seasonality_output_count(conn)
+    old = {}
+    try:
+        if path.exists():
+            old = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        old = {}
+
+    if old.get("signature") == sig and current_count >= 0 and int(old.get("output_count", -999999)) == current_count:
+        elapsed = time.perf_counter() - t0
+        print(f"[seasonality][PERF] source unchanged -> reuse DB snapshot rows={current_count} dt={elapsed:.2f}s", flush=True)
+        return {"reused": True, "output_count": current_count, "signature": sig}
+
+    update_seasonal_progress(conn)
+    output_count = _seasonality_output_count(conn)
+    payload = {
+        "signature": sig,
+        "output_count": output_count,
+        "updated_at": _now_jst().isoformat(timespec="seconds"),
+        "version": "PERF_OPT_V4",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"[seasonality][WARN] perf fingerprint save failed: {e}", flush=True)
+    elapsed = time.perf_counter() - t0
+    print(f"[seasonality][PERF] refreshed rows={output_count} dt={elapsed:.2f}s", flush=True)
+    return {"reused": False, "output_count": output_count, "signature": sig}
+
+
 def update_seasonal_progress(conn: sqlite3.Connection) -> None:
     """
     季節調整済み進捗差分 v13
@@ -18812,16 +31384,32 @@ def apply_auto_metrics_eod(conn: sqlite3.Connection, denom_floor: float = 1.0):
     # PREOPENでは前営業日、EODでは当日（休場日は直近営業日）。
     # 全対象がsentinel/API未到達でも、古いDB最大日をcurrentとして自己認定しない。
     _eod_asof = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
-    hist = pd.read_sql_query("""
-        SELECT rowid AS _rowid, コード, 日付, 終値, 出来高
-        FROM price_history
-        WHERE date(日付) >= date(?, '-140 day') AND date(日付)<=date(?)
-        ORDER BY 日付, rowid
-    """, conn, params=[_eod_asof, _eod_asof])
-    hist = _dedupe_price_history_df(hist)
-    if not hist.empty:
-        hist["終値"] = pd.to_numeric(hist["終値"], errors="coerce")
-        hist["出来高"] = pd.to_numeric(hist["出来高"], errors="coerce")
+    # V31: PREOPEN cold-runではこの直後のMarketMetricsが430日canonical cacheを必ず構築する。
+    # ここで同じcacheを先にprimeし、140日用のSQLite再読込+dedupeを重複させない。
+    # MarketMetrics側は同一run cache hitとなるため、総I/Oを1回へ統合する。
+    # standalone/環境変数OFFでは従来SQLを維持。
+    if _v31_cold_preopen_fast_enabled():
+        _v31_auto_start = (pd.Timestamp(_eod_asof).normalize() - pd.Timedelta(days=140)).strftime("%Y-%m-%d")
+        hist = _perf_price_history_canonical_range(
+            conn, _v31_auto_start, _eod_asof, tag="auto_metrics_v31"
+        )
+        hist = hist[[c for c in ["_rowid", "コード", "日付", "終値", "出来高"] if c in hist.columns]].copy()
+        print(
+            f"[V31][auto-metrics] history=shared-canon rows={len(hist)} "
+            f"start={_v31_auto_start} end={_eod_asof}",
+            flush=True,
+        )
+    else:
+        hist = pd.read_sql_query("""
+            SELECT rowid AS _rowid, コード, 日付, 終値, 出来高
+            FROM price_history
+            WHERE date(日付) >= date(?, '-140 day') AND date(日付)<=date(?)
+            ORDER BY 日付, rowid
+        """, conn, params=[_eod_asof, _eod_asof])
+        hist = _dedupe_price_history_df(hist)
+        if not hist.empty:
+            hist["終値"] = pd.to_numeric(hist["終値"], errors="coerce")
+            hist["出来高"] = pd.to_numeric(hist["出来高"], errors="coerce")
     raw_map = {}
     index_keys = set()
     for _raw, _market in conn.execute("SELECT コード, 市場 FROM screener").fetchall():
@@ -19438,8 +32026,12 @@ def _build_special_pbr_band_map(conn: sqlite3.Connection, df: pd.DataFrame) -> d
 
 def apply_fair_value_metrics(conn: sqlite3.Connection):
     """EPS品質を先に判定し、PERとPBR基礎価値を安全に使い分ける。"""
+    _fv_perf0 = time.perf_counter()
+    def _fv_tick(_name):
+        print(f"[fair-value-perf] {_name}: {time.perf_counter()-_fv_perf0:.2f}s", flush=True)
     _ensure_fair_value_schema(conn)
     df = _read_fair_value_screener_inputs(conn)
+    _fv_tick("read_screener_inputs")
 
     _fin_cols = {r[1] for r in conn.execute("PRAGMA table_info(finance_notes)").fetchall()}
     _fin_logical = [
@@ -19471,7 +32063,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
     if not df.empty:
         df["_code_key"] = df["コード"].map(canonical_code_for_db)
         try:
-            _inst_now = _load_institution_short_summary(conn)
+            _inst_now = _load_institution_short_summary_run_cached(conn)
         except Exception as _e:
             raise RuntimeError(f"current institution short summary read failed for fair value: {_e}") from _e
         _inst_now_map = {}
@@ -19489,6 +32081,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         fin["_finance_row_present"] = 1
         fin = fin.drop(columns=["コード", "_rowid", "updated_at"], errors="ignore")
         df = df.merge(fin, on="_code_key", how="left")
+        _fv_tick("finance_notes_merge")
     else:
         for _c in ("forecast_eps", "previous_eps", "forecast_op", "forecast_net_profit", "finance_bps", "overall_alpha"):
             df[_c] = np.nan
@@ -19496,6 +32089,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
 
     # FUND-SOURCE-TRUTH: Fair Valueもdashboardと同じ株探Q実額/TDnet予想履歴を見る。
     df = _overlay_latest_actual_earnings_age(df, conn)
+    _fv_tick("fund_source_overlay")
 
     if df.empty:
         return
@@ -19531,8 +32125,12 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         f"legacy_eps_fallback={ALLOW_LEGACY_SCREENER_EPS_FALLBACK}", flush=True,
     )
 
-    df["_eps_quality_code"] = df.apply(_fair_value_eps_quality_code, axis=1)
+    # PERF-OPT-V1: Series生成を避ける。判定関数はrow.getだけを使うためdictでも同値。
+    _eps_records = df.to_dict("records")
+    df["_eps_quality_code"] = [_fair_value_eps_quality_code(_r) for _r in _eps_records]
+    _fv_tick("eps_quality")
     _special_pbr = _build_special_pbr_band_map(conn, df)
+    _fv_tick("special_pbr_band")
     print(f"[quant][FV-SAFE] EPS quality={df['_eps_quality_code'].value_counts(dropna=False).to_dict()}", flush=True)
 
     def calc_dynamic_fair_value(row):
@@ -19749,12 +32347,14 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         source_note = f" / 利益状態={op_state}({profit_metric}) / TDnet予想修正={tdnet_revision_status}"
         return {
             "fair": target_price, "expected": expected_3m_price, "normal": target_price, "low": np.nan, "high": np.nan,
-            "method": f"PER {target_per:.1f}倍" + ("(悪化減点込)" if deterioration_penalty > 0 else ""),
+            "method": f"PER {target_per:.1f}倍 / 予想EPS {float(forecast_eps):,.1f}円" + ("(悪化減点込)" if deterioration_penalty > 0 else ""),
             "eps_quality": "通常", "note": "継続利益EPSとしてPER評価" + deterioration_note + source_note,
             "pbr_mid": np.nan, "pbr_low": np.nan, "pbr_high": np.nan, "pbr_source": "",
         }
 
-    results = [calc_dynamic_fair_value(r) for _, r in df.iterrows()]
+    _fv_records = df.to_dict("records")
+    results = [calc_dynamic_fair_value(r) for r in _fv_records]
+    _fv_tick("calc_all_rows")
     df["適正株価"] = [r["fair"] for r in results]
     df["期待株価"] = [r["expected"] for r in results]
     df["通常価値"] = [r["normal"] for r in results]
@@ -19774,7 +32374,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
     )
 
     updates = []
-    for _, r in df.iterrows():
+    for r in df.to_dict("records"):
         def _rv(col, digits=1):
             v = r.get(col)
             return round(float(v), digits) if pd.notna(v) and math.isfinite(float(v)) else None
@@ -19808,6 +32408,7 @@ def apply_fair_value_metrics(conn: sqlite3.Connection):
         finally:
             cur.close()
         print(f"[quant][FV-SAFE] EPS品質ゲート付きFair Value更新完了: {len(updates)} 銘柄")
+        _fv_tick("db_write_complete")
 
 def _sync_latest_model_outputs_and_refresh_fair_value(conn: sqlite3.Connection, rows):
     """
@@ -19893,6 +32494,13 @@ def _sync_latest_model_outputs_and_refresh_fair_value(conn: sqlite3.Connection, 
     for _, rr in fv.iterrows():
         code = canonical_code_for_db(rr.get("コード"))
         fv_map[code] = {c: rr.get(c) for c in FAIR_VALUE_OUTPUT_COLUMNS}
+
+    # PERF-OPT-V19-STAGE1: caller immediately needs the same authoritative Fair Value snapshot
+    # for Algo resync. Reuse this exact map instead of issuing an identical SELECT again.
+    globals()["_FAIR_VALUE_OUTPUT_RUN_CACHE"] = {
+        "conn_id": id(conn),
+        "map": fv_map,
+    }
 
     for r in rows:
         code = canonical_code_for_db(r.get("コード"))
@@ -20080,26 +32688,92 @@ def phase_update_since_dates(conn):
         finally:
             cur.close()
 
+# === V36 REJUDGE NUMPY FASTPATH ===
+_REJUDGE_V36_FAST = str(os.environ.get("KABU_SCREEN_V36_FAST", "1")).strip().lower() not in ("0", "false", "off", "no")
+
+
+def _rejudge_prepare_numpy_v36(g: pd.DataFrame):
+    """V36: 既存rejudge用dedupe済み・日付昇順groupを軽量配列へ変換する。"""
+    if g is None or g.empty:
+        return None
+    days_obj = g["_rejudge_day"].to_numpy(copy=False)
+    day_ord = np.fromiter((d.toordinal() for d in days_obj), dtype=np.int64, count=len(days_obj))
+    closes = pd.to_numeric(g["終値"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    highs = pd.to_numeric(g["高値"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    lows = pd.to_numeric(g["安値"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    return (day_ord, closes, highs, lows)
+
+
+def _rejudge_eval_numpy_v36(pack, base_d: date, end_d: date):
+    """旧pandas slice/max/minと同じrejudge結果(max_up,max_dn)を返す。"""
+    if pack is None:
+        return None
+    day_ord, closes, highs, lows = pack
+    if day_ord.size == 0:
+        return None
+    b = int(base_d.toordinal())
+    e = int(end_d.toordinal())
+    lo = int(np.searchsorted(day_ord, b, side="left"))
+    hi = int(np.searchsorted(day_ord, e, side="right"))
+    if lo >= hi or lo >= day_ord.size or int(day_ord[lo]) != b:
+        return None
+
+    entry = closes[lo]
+    hs = highs[lo:hi]
+    ls = lows[lo:hi]
+    hgood = hs[~np.isnan(hs)]
+    lgood = ls[~np.isnan(ls)]
+    if np.isnan(entry) or float(entry) <= 0 or hgood.size == 0 or lgood.size == 0:
+        return None
+
+    # pandas Series.max/min(skipna=True)と同じく +/-inf は有効値として扱う。
+    max_high = float(np.max(hgood))
+    min_low = float(np.min(lgood))
+    entry = float(entry)
+    max_up = (max_high / entry - 1.0) * 100.0
+    max_dn = (min_low / entry - 1.0) * 100.0
+    return (max_up, max_dn)
+
+
+def _rejudge_eval_pandas_v36(g: pd.DataFrame, base_date: str, base_d: date, end_d: date):
+    """V36 fastpath例外時の旧定義fallback。"""
+    if g is None or g.empty:
+        return None
+    w = g.loc[(g["_rejudge_day"] >= base_d) & (g["_rejudge_day"] <= end_d)].copy().reset_index(drop=True)
+    if w.empty:
+        return None
+    if str(w.iloc[0]["日付"])[:10] != base_date:
+        return None
+    entry = pd.to_numeric(pd.Series([w.iloc[0]["終値"]]), errors="coerce").iloc[0]
+    highs = pd.to_numeric(w["高値"], errors="coerce")
+    lows = pd.to_numeric(w["安値"], errors="coerce")
+    if pd.isna(entry) or float(entry) <= 0 or highs.notna().sum() == 0 or lows.notna().sum() == 0:
+        return None
+    entry = float(entry)
+    return ((float(highs.max()) / entry - 1.0) * 100.0,
+            (float(lows.min()) / entry - 1.0) * 100.0)
+
+
 def relax_rejudge_signals(
     conn,
     lookahead_days: int = None,
     req_high_pct: float = None,
     max_adverse_pct: float = None,
 ):
-    """
-    signals_log で '外れ' になっているシグナルを、発生日から一定日数内の値動きで再評価。
-    条件:
-      ・lookahead_days 日以内に +req_high_pct% 到達
-      ・かつ 最大逆行（安値基準）が -max_adverse_pct% 以内
-    満たせば 判定='再評価OK' / 理由 を上書き。
-    """
+    """signals_logの直近「外れ」を一定日数内の値動きで再評価する。
 
+    PERF-OPT-V2:
+      - V1の「対象期間の全市場price_historyを1回読込」は、この巨大DBでは逆に遅かったため撤回。
+      - 対象logical codeだけをchunk取得し、price_historyの
+        idx_price_history_perf_code_text_date を使う。
+      - entry/高値/安値/判定式は従来と同一。
+    """
+    _t_all = time.perf_counter()
     L = lookahead_days or REJUDGE_LOOKAHEAD_DAYS
-    UP = req_high_pct   or REJUDGE_REQ_HIGH_PCT
+    UP = req_high_pct or REJUDGE_REQ_HIGH_PCT
     DN = max_adverse_pct or REJUDGE_MAX_ADVERSE_PCT
 
     cur = conn.cursor()
-    # P1-126: 直近30日窓もJST市場日付を基準に固定。SQLite UTC日付による境界ズレを防ぐ。
     cutoff_date = (date.fromisoformat(_today_jst()) - timedelta(days=30)).isoformat()
     cur.execute("""
       SELECT コード, 日時, 種別
@@ -20111,11 +32785,9 @@ def relax_rejudge_signals(
 
     upd = 0
     _rejudge_updates = []
-    # P1-597: PREOPENは前営業日snapshotが正本。旧バグ由来の当日price_history行が残っていても、
-    # 寄り前の再評価で未来（当日）価格として採用しない。MIDDAY/EODは従来どおり当日が上限。
     _rejudge_cutoff = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+    _rejudge_cutoff_d = date.fromisoformat(_rejudge_cutoff)
 
-    # P2-21: 外れシグナルごとのprice_history SELECTを廃止。対象銘柄・期間をbulk preloadする。
     _rejudge_hist = {}
     _parsed_signal_rows = []
     for code, ts, kind in rows:
@@ -20128,66 +32800,139 @@ def relax_rejudge_signals(
         if not _ck:
             continue
         _parsed_signal_rows.append((code, ts, kind, base_date, _base_d, _ck))
-    if _parsed_signal_rows:
-        _min_base = min(r[4] for r in _parsed_signal_rows).isoformat()
-        _max_end = min(
-            max(r[4] + timedelta(days=int(L)) for r in _parsed_signal_rows),
-            date.fromisoformat(_rejudge_cutoff),
-        ).isoformat()
-        _rejudge_codes = list(dict.fromkeys(r[5] for r in _parsed_signal_rows))
+
+    if not _parsed_signal_rows:
+        cur.close()
+        print(f"[rejudge] 対象signal=0 load={time.perf_counter()-_t_all:.2f}s")
+        print("[rejudge] 該当なし")
+        return
+
+    _min_base_d = min(r[4] for r in _parsed_signal_rows)
+    _max_end_d = min(
+        max(r[4] + timedelta(days=int(L)) for r in _parsed_signal_rows),
+        _rejudge_cutoff_d,
+    )
+    _min_base = _min_base_d.isoformat()
+    _max_end_excl = (_max_end_d + timedelta(days=1)).isoformat()
+    _rejudge_codes = list(dict.fromkeys(r[5] for r in _parsed_signal_rows))
+
+    _t_hist = time.perf_counter()
+    _parts = []
+    _rejudge_history_mode = "legacy_sql"
+
+    # PERF-OPT-V12:
+    # INITIAL_MOMENTUMが同一runですでにall-market raw price_historyをcacheしている場合、
+    # 旧SQLと同じ logical-code variants / date範囲をmemory上で抽出する。
+    # 判定式・dedupe・entry/high/low semanticsは従来のまま。
+    _cache_key = (id(conn), pd.Timestamp(_rejudge_cutoff).normalize().strftime("%Y-%m-%d"))
+    _cache_obj = _PERF_PH_RAW_CACHE.get(_cache_key)
+    _cache_covers = bool(
+        _cache_obj is not None
+        and pd.Timestamp(_cache_obj.get("start")).normalize() <= pd.Timestamp(_min_base).normalize()
+        and pd.Timestamp(_cache_obj.get("end")).normalize() >= pd.Timestamp(_max_end_d).normalize()
+    )
+
+    if _cache_covers:
+        _qvar_set = set(expand_code_query_variants(_rejudge_codes))
+        _cached = _perf_price_history_raw_range(
+            conn, _min_base, _max_end_d.isoformat(), tag="rejudge"
+        )
+        if not _cached.empty and _qvar_set:
+            _code_text = _cached["コード"].astype(str)
+            _part = _cached.loc[
+                _code_text.isin(_qvar_set),
+                ["_rowid", "コード", "日付", "終値", "高値", "安値"],
+            ].copy()
+            if not _part.empty:
+                _parts.append(_part)
+        _rejudge_history_mode = "run_cache"
+    else:
+        # 旧経路をfallbackとしてそのまま保持。
         for _i in range(0, len(_rejudge_codes), 250):
-            _part = _rejudge_codes[_i:_i + 250]
-            _qvars = expand_code_query_variants(_part)
+            _logical_part = _rejudge_codes[_i:_i + 250]
+            _qvars = expand_code_query_variants(_logical_part)
             if not _qvars:
                 continue
             _qmarks = ",".join("?" * len(_qvars))
-            _bulk = pd.read_sql_query(
+            _part = pd.read_sql_query(
                 f"SELECT rowid AS _rowid, コード, 日付, 終値, 高値, 安値 FROM price_history "
                 f"WHERE CAST(コード AS TEXT) IN ({_qmarks}) "
-                f"AND date(日付) BETWEEN date(?) AND date(?) ORDER BY 日付 ASC, rowid ASC",
-                conn, params=[*_qvars, _min_base, _max_end]
+                f"AND 日付 >= ? AND 日付 < ? ORDER BY 日付 ASC, rowid ASC",
+                conn,
+                params=[*_qvars, _min_base, _max_end_excl],
             )
-            if _bulk.empty:
-                continue
-            _bulk = _dedupe_price_history_df(_bulk)
-            for _hcode, _hg in _bulk.groupby("コード", sort=False) if not _bulk.empty else []:
+            if not _part.empty:
+                _parts.append(_part)
+
+    _hist_rows = 0
+    if _parts:
+        _bulk = pd.concat(_parts, ignore_index=True)
+        _hist_rows = len(_bulk)
+        _bulk = _dedupe_price_history_df(_bulk)
+        if not _bulk.empty:
+            _bulk["_rejudge_day"] = pd.to_datetime(_bulk["日付"], errors="coerce").dt.date
+            _bulk = _bulk.dropna(subset=["コード", "_rejudge_day"])
+            for _hcode, _hg in _bulk.groupby("コード", sort=False):
                 _hk = canonical_code_for_db(_hcode)
                 if _hk:
-                    _rejudge_hist[_hk] = _hg.sort_values("日付").reset_index(drop=True)
+                    _rejudge_hist[_hk] = _hg.sort_values("_rejudge_day", kind="stable").reset_index(drop=True)
 
+    _hist_dt = time.perf_counter() - _t_hist
+
+    # V36: 13k超のsignalごとにDataFrame.loc/copy/reset_index/to_numericを繰り返さない。
+    # dedupe済み日足を銘柄ごとに1回だけNumPy化し、日付windowはsearchsortedで同値抽出する。
+    _rejudge_np = {}
+    _v36_prepare_fallback = 0
+    if _REJUDGE_V36_FAST:
+        for _k, _g in _rejudge_hist.items():
+            try:
+                _rejudge_np[_k] = _rejudge_prepare_numpy_v36(_g)
+            except Exception:
+                _v36_prepare_fallback += 1
+
+    _t_eval = time.perf_counter()
+    _v36_fast_signals = 0
+    _v36_fallback_signals = 0
     for code, ts, kind, base_date, _base_d, _ck in _parsed_signal_rows:
-        _end_d = min(_base_d + timedelta(days=int(L)), date.fromisoformat(_rejudge_cutoff))
+        _end_d = min(_base_d + timedelta(days=int(L)), _rejudge_cutoff_d)
         _all_g = _rejudge_hist.get(_ck)
         if _all_g is None or _all_g.empty:
             continue
-        _dates = pd.to_datetime(_all_g["日付"], errors="coerce").dt.date
-        g = _all_g.loc[(_dates >= _base_d) & (_dates <= _end_d)].copy().reset_index(drop=True)
-        if g.empty:
-            continue
-        # P1-309: 同日aliasのどちらをentryにするかをSQLの偶然の順序へ委ねない。
-        g = _dedupe_price_history_df(g)
-        if g.empty:
-            continue
 
-        # P1-70: シグナル当日の価格行が無いのに翌日以降の終値をエントリー価格へすり替えない。
-        first_price_date = str(g.iloc[0]["日付"])[:10]
-        if first_price_date != base_date:
+        _metrics = None
+        if _REJUDGE_V36_FAST and _ck in _rejudge_np:
+            try:
+                _metrics = _rejudge_eval_numpy_v36(_rejudge_np.get(_ck), _base_d, _end_d)
+                _v36_fast_signals += 1
+            except Exception:
+                _v36_fallback_signals += 1
+                _metrics = _rejudge_eval_pandas_v36(_all_g, base_date, _base_d, _end_d)
+        else:
+            if _REJUDGE_V36_FAST:
+                _v36_fallback_signals += 1
+            _metrics = _rejudge_eval_pandas_v36(_all_g, base_date, _base_d, _end_d)
+
+        if _metrics is None:
             continue
-
-        # P1-65: 基準終値/高安欠損でfloat(None)例外を起こし、再評価全体を止めない。
-        entry = pd.to_numeric(pd.Series([g.iloc[0]["終値"]]), errors="coerce").iloc[0]
-        highs = pd.to_numeric(g["高値"], errors="coerce")
-        lows = pd.to_numeric(g["安値"], errors="coerce")
-        if pd.isna(entry) or float(entry) <= 0 or highs.notna().sum() == 0 or lows.notna().sum() == 0:
-            continue
-        entry = float(entry)
-
-        max_up = (float(highs.max()) / entry - 1.0) * 100.0
-        max_dn = (float(lows.min()) / entry - 1.0) * 100.0  # 負の値（例: -6.3）
-
+        max_up, max_dn = _metrics
         if (max_up >= UP) and (max_dn >= -DN):
-            _rejudge_updates.append((f"delayed hit: {L}D +{max_up:.1f}% / MAE {max_dn:.1f}%", code, ts, kind))
+            _rejudge_updates.append((
+                f"delayed hit: {L}D +{max_up:.1f}% / MAE {max_dn:.1f}%",
+                code, ts, kind,
+            ))
             upd += 1
+
+    _eval_dt = time.perf_counter() - _t_eval
+    if _REJUDGE_V36_FAST:
+        print(
+            f"[V36][rejudge] metrics=numpy signals={_v36_fast_signals} "
+            f"fallback={_v36_fallback_signals} prepare_fallback={_v36_prepare_fallback} eval={_eval_dt:.2f}s",
+            flush=True,
+        )
+    try:
+        _perf_record_phase("backend-detail:rejudge_eval_compute", _eval_dt, "OK")
+    except Exception:
+        pass
 
     cur.close()
     if _rejudge_updates:
@@ -20209,6 +32954,12 @@ def relax_rejudge_signals(
             raise
         finally:
             cur2.close()
+
+    print(
+        f"[rejudge-perf] mode={_rejudge_history_mode} signals={len(_parsed_signal_rows)} codes={len(_rejudge_codes)} "
+        f"history_rows={_hist_rows} history_load={_hist_dt:.2f}s total={time.perf_counter()-_t_all:.2f}s",
+        flush=True,
+    )
     if upd:
         print(f"[rejudge] 再評価OK に更新: {upd} 件")
     else:
@@ -20289,6 +33040,7 @@ def _safe_num(v):
 def batch_update_all_financials(conn,
                                 chunk_size: int = 200,
                                 force_refresh: bool = False,
+                                refresh_days: int = 7,
                                 sleep_between_chunks: float = 0.1,
                                 verbose: bool = False,
                                 set_wal: bool = True):
@@ -20300,6 +33052,10 @@ def batch_update_all_financials(conn,
     # ロガー
     # --------------------------
     log = setup_fin_logger(verbose)
+    try:
+        refresh_days = max(1, int(refresh_days))
+    except Exception:
+        refresh_days = 7
     if Ticker is None:
         raise RuntimeError("financial batch requires yahooquery; install yahooquery before running this phase")
     # ▼▼▼ 過去のゴミデータ（辞書文字列）をDBから一掃 ▼▼▼
@@ -20654,7 +33410,6 @@ def batch_update_all_financials(conn,
         ("raw_fin_json", "TEXT"), ("財務更新日", "TEXT"),
         ("自己資本比率", "REAL"), ("営業CF_直近", "REAL"), ("営業CF_4Q合計", "REAL"),
         ("配当1年合計", "REAL"), ("自社株買い4Q合計", "REAL"),
-        ("増資リスク", "INTEGER"), ("増資スコア", "REAL"), ("増資理由", "TEXT"),
         ("PBR", "REAL"), ("現金同等物", "REAL"), ("有利子負債", "REAL"), ("大株主", "TEXT"),
         ("EPS", "REAL"), ("BPS", "REAL"), ("ROE", "REAL"),
         ("浮動株数", "REAL"), ("発行済株式数", "REAL")
@@ -20713,7 +33468,7 @@ def batch_update_all_financials(conn,
 
     total = len(codes)
     processed = 0; updated_rows = 0; errors = 0
-    log.info(f"[batch.start] total={total} chunk={chunk_size} force={force_refresh} +NewCols")
+    log.info(f"[batch.start] total={total} chunk={chunk_size} force={force_refresh} refresh_days={refresh_days} +NewCols")
 
     # --------------------------
     # DB登録用関数 (★ここを拡張)
@@ -20801,7 +33556,7 @@ def batch_update_all_financials(conn,
                 if _earn_d is not None and _earn_d >= fd:
                     to_fetch.append(s)
                     continue
-                if (date.fromisoformat(_today_jst()) - fd).days >= 7:
+                if (date.fromisoformat(_today_jst()) - fd).days >= refresh_days:
                     to_fetch.append(s)
             except Exception:
                 to_fetch.append(s)
@@ -22096,29 +34851,205 @@ def _fmt_hms(sec: float) -> str:
 
 
 
-def _timed(name, func, *args, **kwargs):
-    """関数を実行し、正確な実行時間を計測してログに出力する"""
-    print(f"[{name}] 実行開始...")
-    
-    # 【修正】最も精度が高く、システム時刻変更の影響を受けない perf_counter を使用
-    t_start = time.perf_counter() 
-    
+
+# === PERF-OBSERVABILITY-V1: persistent run/phase timing ========================
+_PERF_RUN = None
+_PERF_PHASE_STACK = []
+
+def _perf_persist_current_phase():
+    """実行中phaseをatomic保存。プロセス停止時は最後のRUNNING状態が証拠として残る。"""
     try:
-        # 実際の処理を実行
-        res = func(*args, **kwargs)
-        return res
+        if not isinstance(_PERF_RUN, dict) or not _PERF_PHASE_STACK:
+            try:
+                SCREEN_CURRENT_PHASE_PATH.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        top = _PERF_PHASE_STACK[-1]
+        payload = {
+            "run_id": _PERF_RUN.get("run_id"),
+            "pid": os.getpid(),
+            "mode": _PERF_RUN.get("mode"),
+            "phase": top.get("name"),
+            "phase_started_at": top.get("started_at"),
+            "run_started_at": _PERF_RUN.get("started_at"),
+            "updated_at": _now_jst().isoformat(timespec="seconds"),
+            "status": "RUNNING",
+            "stack": [x.get("name") for x in _PERF_PHASE_STACK],
+        }
+        _atomic_write_text_file(
+            SCREEN_CURRENT_PHASE_PATH,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception as e:
+        print(f"[PERF][WARN] current phase persistence failed: {e}", flush=True)
+
+def _perf_phase_enter(name):
+    _PERF_PHASE_STACK.append({"name": str(name), "started_at": _now_jst().isoformat(timespec="seconds")})
+    _perf_persist_current_phase()
+
+def _perf_phase_exit(name):
+    if _PERF_PHASE_STACK:
+        # 通常は末尾一致。例外的な不整合でも同名を後ろから除去して観測機能が本体を壊さないようにする。
+        if _PERF_PHASE_STACK[-1].get("name") == str(name):
+            _PERF_PHASE_STACK.pop()
+        else:
+            for i in range(len(_PERF_PHASE_STACK)-1, -1, -1):
+                if _PERF_PHASE_STACK[i].get("name") == str(name):
+                    del _PERF_PHASE_STACK[i]
+                    break
+    _perf_persist_current_phase()
+
+def _perf_begin_run(lock_wait_seconds=0.0):
+    """Start one screening performance observation. No screening logic is changed."""
+    global _PERF_RUN, _PERF_PHASE_STACK
+    _PERF_PHASE_STACK = []
+    now = _now_jst()
+    _PERF_RUN = {
+        "run_id": now.strftime("%Y%m%dT%H%M%S") + f"-{os.getpid()}",
+        "started_at": now.isoformat(),
+        "started_epoch": time.time(),
+        "started_perf": time.perf_counter(),
+        "mode": None,
+        "status": "RUNNING",
+        "pid": os.getpid(),
+        "script": str(Path(__file__).resolve()),
+        "lock_wait_seconds": float(lock_wait_seconds or 0.0),
+        "phases": [],
+        "error": None,
+    }
+    return _PERF_RUN
+
+def _perf_set_mode(mode):
+    if isinstance(_PERF_RUN, dict):
+        _PERF_RUN["mode"] = str(mode or "")
+
+def _perf_record_phase(name, elapsed_sec, status="OK", error=None):
+    if not isinstance(_PERF_RUN, dict):
+        return
+    _PERF_RUN["phases"].append({
+        "name": str(name),
+        "elapsed_sec": round(float(elapsed_sec), 6),
+        "status": str(status),
+        "error": None if error is None else str(error)[:1000],
+    })
+
+def _perf_runtime_jsonl_path():
+    # OUTPUT_DIR is .../output_data. Persist beside generated artifacts under runtime/.
+    base = Path(OUTPUT_DIR).resolve().parent
+    return base / "runtime" / "screening_performance.jsonl"
+
+def _perf_ensure_db_schema(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS screening_run_log (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            mode TEXT,
+            status TEXT NOT NULL,
+            total_seconds REAL,
+            lock_wait_seconds REAL,
+            phase_count INTEGER,
+            slowest_phase TEXT,
+            slowest_phase_seconds REAL,
+            phases_json TEXT,
+            script_path TEXT,
+            pid INTEGER,
+            error TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_screening_run_log_started
+        ON screening_run_log(started_at)
+    """)
+
+def _perf_finish_run(status="SUCCESS", error=None):
+    """Persist the observation to JSONL and the main DB. Logging failure never masks scanner result."""
+    global _PERF_RUN
+    if not isinstance(_PERF_RUN, dict):
+        return
+    r = _PERF_RUN
+    if r.get("_finished"):
+        return
+    r["_finished"] = True
+    r["status"] = str(status)
+    r["error"] = None if error is None else str(error)[:4000]
+    r["finished_at"] = _now_jst().isoformat()
+    r["total_seconds"] = round(time.perf_counter() - float(r["started_perf"]), 6)
+    phases = list(r.get("phases") or [])
+    slow = max(phases, key=lambda x: float(x.get("elapsed_sec") or 0.0), default=None)
+    r["phase_count"] = len(phases)
+    r["slowest_phase"] = slow.get("name") if slow else None
+    r["slowest_phase_seconds"] = slow.get("elapsed_sec") if slow else None
+
+    public = {k: v for k, v in r.items() if k not in {"started_perf", "_finished"}}
+    try:
+        p = _perf_runtime_jsonl_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(public, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception as e:
+        print("[PERF][WARN] JSONL persistence failed:", e)
+
+    # Use a short independent connection because normal scanner connection may already be closing.
+    try:
+        c = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            _perf_ensure_db_schema(c)
+            c.execute("""
+                INSERT OR REPLACE INTO screening_run_log
+                (run_id,started_at,finished_at,mode,status,total_seconds,lock_wait_seconds,
+                 phase_count,slowest_phase,slowest_phase_seconds,phases_json,script_path,pid,error)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                public.get("run_id"), public.get("started_at"), public.get("finished_at"),
+                public.get("mode"), public.get("status"), public.get("total_seconds"),
+                public.get("lock_wait_seconds"), public.get("phase_count"),
+                public.get("slowest_phase"), public.get("slowest_phase_seconds"),
+                json.dumps(public.get("phases") or [], ensure_ascii=False, separators=(",", ":")),
+                public.get("script"), public.get("pid"), public.get("error"),
+            ))
+            c.commit()
+        finally:
+            c.close()
+    except Exception as e:
+        print("[PERF][WARN] DB persistence failed:", e)
+
+    try:
+        _PERF_PHASE_STACK.clear()
+        _perf_persist_current_phase()
+    except Exception:
+        pass
+
+    print(
+        f"[PERF] status={public.get('status')} mode={public.get('mode')} "
+        f"total={public.get('total_seconds'):.2f}s phases={public.get('phase_count')} "
+        f"slowest={public.get('slowest_phase')}({public.get('slowest_phase_seconds')})"
+    )
+
+# === /PERF-OBSERVABILITY-V1 ===================================================
+
+def _timed(name, func, *args, **kwargs):
+    """関数を実行し、正確な実行時間を計測してコンソール＋永続performance logへ出力する。"""
+    print(f"[{name}] 実行開始...")
+    t_start = time.perf_counter()
+    _err = None
+    _perf_phase_enter(name)
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        _err = e
+        raise
     finally:
-        t_end = time.perf_counter()
-        elapsed_sec = t_end - t_start
-        
-        # 見やすい形式に変換（例: 1分24秒）
+        elapsed_sec = time.perf_counter() - t_start
+        _perf_record_phase(name, elapsed_sec, "ERROR" if _err is not None else "OK", _err)
+        _perf_phase_exit(name)
         mins = int(elapsed_sec // 60)
         secs = int(elapsed_sec % 60)
-        
         if mins > 0:
             print(f"[TIMER] {name}: {mins}分{secs}秒")
         else:
-            print(f"[TIMER] {name}: {elapsed_sec:.2f}秒") # 1分未満は小数点まで出す
+            print(f"[TIMER] {name}: {elapsed_sec:.2f}秒")
 
 # ===== 実行モード判定ユーティリティ =====
 def _is_trading_session_now(now_jst=None) -> bool:
@@ -22142,7 +35073,11 @@ def _auto_run_mode():
     P1-301: 15:25-15:30 はクロージング・オークション中なのでMIDDAY。
     P1-385: 営業日9:00前をEOD扱いすると、朝の実行で当日EOD日次markerを
     先に立て、引け後の本更新をスキップし得るためPREOPENへ分離。
+    INTRADAY-STABILITY-V1: main開始後は開始時モードを固定し、処理中の時計跨ぎで意味を変えない。
     """
+    _locked = globals().get("_RUN_MODE_LOCKED")
+    if str(_locked or "").upper() in {"PREOPEN", "MIDDAY", "EOD"}:
+        return str(_locked).upper()
     if not AUTO_MODE:
         return RUN_SESSION.upper()
 
@@ -22181,6 +35116,30 @@ def _external_job_state(job_name: str) -> dict:
         return {}
 
 
+def _fresh_external_job_datetime(job_name: str, *, require_today: bool = False):
+    """
+    system_job_stateの古い成功状態を現在runの成功と誤認しないための共通判定。
+    last_finished_atを優先し、必要時のみ当日成功を要求する。
+    """
+    st = _external_job_state(job_name)
+    if str(st.get("status") or "") != "success":
+        return None
+
+    ts = st.get("last_finished_at") or st.get("last_success_at")
+    if not ts:
+        return None
+
+    try:
+        dt = datetime.fromisoformat(str(ts))
+    except Exception:
+        return None
+
+    if require_today and dt.date() != datetime.now().date():
+        return None
+
+    return dt
+
+
 def _external_live_materials_ready(max_age_minutes: int = 45) -> tuple[bool, str]:
     st = _external_job_state("live_materials")
     status = str(st.get("status") or "")
@@ -22197,18 +35156,25 @@ def _external_live_materials_ready(max_age_minutes: int = 45) -> tuple[bool, str
     if age > _age_limit:
         return False, f"status={status} age={age:.1f}m limit={_age_limit}m"
 
-    # P3-42: EODはlive_materialsがpartialでも通さない。Yahoo確定足のEOD専用job成功を要求。
+    # P3-42 / LIVE-EOD-SPLIT:
+    # EODはlive_materialsがpartialでも通さない。Yahoo確定足のEOD専用job成功を要求。
+    # 2026-08-31にsystem_jobs.pyのEODをlive-materialsから独立modeへ戻したため、
+    # 正式state名は "eod_finalize"。旧一体型の "live_eod_finalize" も移行互換で読む。
     if _mode_now == "EOD":
-        eod = _external_job_state("eod_finalize")
-        if str(eod.get("status") or "") != "success":
-            return False, f"EOD finalize status={eod.get('status') or 'missing'}"
-        ets = eod.get("last_finished_at") or eod.get("last_success_at")
-        try:
-            edt = datetime.fromisoformat(str(ets))
-        except Exception:
-            return False, "EOD finalize timestamp missing/invalid"
-        if edt.date() != datetime.now().date():
-            return False, f"EOD finalize is not today: {edt.date()}"
+        _eod_job = None
+        _eod_dt = None
+        for _candidate_job in ("eod_finalize", "live_eod_finalize"):
+            _candidate_dt = _fresh_external_job_datetime(
+                _candidate_job,
+                require_today=True,
+            )
+            if _candidate_dt is not None:
+                _eod_job = _candidate_job
+                _eod_dt = _candidate_dt
+                break
+        if _eod_dt is None:
+            return False, "eod_finalize is missing or stale"
+        return True, f"status={status} age={age:.1f}m eod_job={_eod_job}"
     return True, f"status={status} age={age:.1f}m"
 
 
@@ -22295,7 +35261,8 @@ def _acquire_shared_writer_lock_with_wait(
     if token is not None:
         return token
 
-    if _shared_writer_lock_owner() == "auto_screening":
+    _wait_for_screening = os.environ.get("KABU_SCREEN_WAIT_FOR_SCREENING", "0").strip().lower() in {"1","true","yes","on"}
+    if _shared_writer_lock_owner() == "auto_screening" and not _wait_for_screening:
         print("[shared-writer-lock] another screening run is active; duplicate run is skipped")
         _record_shared_writer_lock_event("duplicate_screening_skip")
         return None
@@ -22332,8 +35299,8 @@ def _acquire_shared_writer_lock_with_wait(
             _record_shared_writer_lock_event("producer_wait_acquired", f"elapsed={elapsed:.1f}s")
             return token
 
-        # 待機中に別の本体が先に取得した場合、さらに待って同じ計算を重ねない。
-        if _shared_writer_lock_owner() == "auto_screening":
+        # 通常の定期runは二重計算を避けてskip。手動待機ランチャーだけは先行run完了まで待つ。
+        if _shared_writer_lock_owner() == "auto_screening" and not _wait_for_screening:
             elapsed = time.monotonic() - started
             print(f"[shared-writer-lock] another screening run acquired the lock; duplicate run is skipped (elapsed={elapsed:.1f}s)")
             _record_shared_writer_lock_event("duplicate_screening_skip_after_wait", f"elapsed={elapsed:.1f}s")
@@ -22439,12 +35406,29 @@ def _p4_im_pct(a, b):
 
 
 def _p4_im_is_non_stock(code, market, name) -> bool:
+    # NONSTOCK-NAME-FALSEPOSITIVE-V1 2026-09-07
     c = canonical_code_for_db(code)
     if not re.fullmatch(r"(?:\d{4}|\d{3}[A-Z])", str(c or "")):
         return True
-    text = f"{market or ''} {name or ''}".upper()
-    blockers = ("ETF", "ETN", "上場投資信託", "投資信託", "インフラファンド", "REIT", "リート", "指数")
-    return any(x.upper() in text for x in blockers)
+
+    market_text = str(market or "").strip().upper()
+    name_text = str(name or "").strip().upper()
+
+    market_blockers = (
+        "ETF", "ETN", "REIT", "リート",
+        "インフラファンド", "上場投資信託", "投資信託", "指数",
+        "東IF", "東優", "名ETF",
+    )
+    if any(x.upper() in market_text for x in market_blockers):
+        return True
+
+    name_blockers = (
+        "ETF", "ETN", "REIT",
+        "上場投資信託", "投資信託",
+        "投資法人", "インフラファンド",
+        "指数連動",
+    )
+    return any(x.upper() in name_text for x in name_blockers)
 
 
 def _p4_im_ensure_schema(conn: sqlite3.Connection) -> None:
@@ -22538,8 +35522,219 @@ def _p4_im_grade(score):
     return "C"
 
 
+_P4_IM_FAST_CALENDAR_DAYS = max(60, int(os.environ.get("KABU_P4_IM_FAST_CALENDAR_DAYS", "90")))
+
+def _p4_im_load_history_fast(conn: sqlite3.Connection, asof: str, stock_codes: set[str]) -> pd.DataFrame:
+    """通常は直近90日だけ取得し、履歴不足銘柄だけ旧ROW_NUMBER定義でexact fallbackする。"""
+    _t0 = time.perf_counter()
+    _start = (pd.Timestamp(asof) - pd.Timedelta(days=_P4_IM_FAST_CALENDAR_DAYS)).strftime("%Y-%m-%d")
+    _raw = _perf_price_history_raw_range(conn, _start, asof, tag="initial_momentum")
+    _t_raw = time.perf_counter()
+    if _raw.empty:
+        return _raw
+
+    _raw["_canon_fast"] = _raw["コード"].map(canonical_code_for_db)
+    _raw = _raw[_raw["_canon_fast"].isin(stock_codes)].drop(columns=["_canon_fast"], errors="ignore").copy()
+    if _raw.empty:
+        return _raw
+
+    _raw["_d_fast"] = pd.to_datetime(_raw["日付"], errors="coerce").dt.normalize()
+    _raw = _raw.dropna(subset=["コード", "_d_fast"]).sort_values(
+        ["コード", "_d_fast", "_rowid"], kind="stable"
+    )
+    _recent_tail = _raw.groupby("コード", sort=False, dropna=False).tail(_P4_IM_HISTORY_ROWS).drop(
+        columns=["_d_fast"], errors="ignore"
+    )
+
+    _fast_dedup = _dedupe_price_history_df(_recent_tail)
+    if not _fast_dedup.empty:
+        _fast_dedup["コード"] = _fast_dedup["コード"].map(canonical_code_for_db)
+        _fast_dedup["日付"] = pd.to_datetime(_fast_dedup["日付"], errors="coerce").dt.strftime("%Y-%m-%d")
+    _groups = {
+        str(c): g.sort_values("日付", kind="stable")
+        for c, g in _fast_dedup.groupby("コード", sort=False)
+    } if not _fast_dedup.empty else {}
+
+    _fallback_codes = []
+    for _code in stock_codes:
+        _g = _groups.get(str(_code))
+        if _g is None or _g.empty:
+            _fallback_codes.append(str(_code))
+            continue
+        _cur_pos = np.flatnonzero(_g["日付"].astype(str).to_numpy() == str(asof))
+        if len(_cur_pos) == 0:
+            continue
+        if int(_cur_pos[-1]) < 21:
+            _fallback_codes.append(str(_code))
+
+    if _fallback_codes:
+        _exact_parts = []
+        for _i in range(0, len(_fallback_codes), 250):
+            _part_codes = _fallback_codes[_i:_i + 250]
+            _qvars = expand_code_query_variants(_part_codes)
+            if not _qvars:
+                continue
+            _qm = ",".join("?" * len(_qvars))
+            _sql = (
+                "WITH ranked AS ("
+                " SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高,"
+                " ROW_NUMBER() OVER (PARTITION BY コード ORDER BY date(日付) DESC, rowid DESC) AS _rn"
+                " FROM price_history"
+                f" WHERE CAST(コード AS TEXT) IN ({_qm}) AND date(日付) <= date(?)"
+                ")"
+                " SELECT _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高"
+                " FROM ranked WHERE _rn <= ? ORDER BY 日付, _rowid"
+            )
+            _exact_parts.append(pd.read_sql_query(
+                _sql, conn, params=[*_qvars, asof, _P4_IM_HISTORY_ROWS]
+            ))
+        _exact = pd.concat(_exact_parts, ignore_index=True) if _exact_parts else pd.DataFrame(columns=_recent_tail.columns)
+        _fb_set = set(_fallback_codes)
+        _keep_mask = ~_recent_tail["コード"].map(canonical_code_for_db).isin(_fb_set)
+        _combined = pd.concat([_recent_tail.loc[_keep_mask].copy(), _exact], ignore_index=True)
+        _hist = _dedupe_price_history_df(_combined)
+    else:
+        _hist = _fast_dedup
+
+    _t_done = time.perf_counter()
+    print(
+        f"[initial-momentum-perf] raw={_t_raw-_t0:.2f}s total_load={_t_done-_t0:.2f}s "
+        f"recent_raw={len(_raw)} fallback_codes={len(_fallback_codes)} final_rows={len(_hist)}",
+        flush=True,
+    )
+    return _hist
+
+# === V35 INITIAL_MOMENTUM NUMPY FASTPATH ===
+_P4_IM_V35_FAST = str(os.environ.get("KABU_SCREEN_V35_FAST", "1")).strip().lower() not in ("0", "false", "off", "no")
+
+
+def _p4_im_calc_group_numpy_v35(g: pd.DataFrame, asof: str) -> dict:
+    """V35: P4-1 per-code metricsを既存定義のままNumPyで計算する。
+
+    phase側でhistは既に canonical code/date + rowid keep-last に正規化済み。
+    例外時はcallerが従来pandas経路へ銘柄単位fallbackする。
+    """
+    base = {
+        "candidate": None, "score": None, "grade": None,
+        "reason": "", "vol_ratio20": None, "turnover_ratio20": None,
+        "ret1": None, "close_pos": None, "range_exp": None,
+        "breakout20": None, "close_breakout20": None,
+        "pre5": None, "pre20": None, "turnover_oku": None,
+        "low_tag": None, "state": "NO_HISTORY", "price": None,
+    }
+    if g is None or g.empty:
+        base.update(state="NO_HISTORY", reason="価格履歴なし")
+        return base
+
+    dates = g["日付"].astype(str).to_numpy(copy=False)
+    cur_pos = np.flatnonzero(dates == str(asof))
+    if cur_pos.size == 0:
+        base.update(state="STALE", reason="基準日の価格行なし")
+        return base
+    ci = int(cur_pos[-1])
+    before_pos = np.flatnonzero(dates < str(asof))
+    if before_pos.size < 20:
+        base.update(state="HISTORY_SHORT", reason=f"直前履歴不足 {int(before_pos.size)}/20")
+        return base
+    prior20_pos = before_pos[-20:]
+
+    closes = g["終値"].to_numpy(dtype=float, copy=False)
+    highs = g["高値"].to_numpy(dtype=float, copy=False)
+    lows = g["安値"].to_numpy(dtype=float, copy=False)
+    vols = g["出来高"].to_numpy(dtype=float, copy=False)
+
+    close = _p4_im_num(closes[ci])
+    volume = _p4_im_num(vols[ci])
+    prev_close = _p4_im_num(closes[int(prior20_pos[-1])])
+    pv = vols[prior20_pos]
+    pv = pv[np.isfinite(pv) & (pv >= 0)]
+    if close is None or close <= 0 or volume is None or volume < 0 or prev_close is None or prev_close <= 0:
+        base.update(state="INVALID", reason="終値/出来高/前日終値が不正")
+        return base
+    if pv.size < 20 or float(pv.mean()) <= 0:
+        base.update(state="INVALID_VOLUME_BASE", reason="直前20日出来高が計算不能")
+        return base
+
+    vol_ratio20 = float(volume / float(pv.mean()))
+    ret1 = float((close / prev_close - 1.0) * 100.0)
+    turnover = float(close * volume)
+    turnover_oku = turnover / 1e8
+
+    prior_turn = closes[prior20_pos] * vols[prior20_pos]
+    prior_turn = prior_turn[np.isfinite(prior_turn) & (prior_turn >= 0)]
+    turnover_ratio20 = (
+        turnover / float(prior_turn.mean())
+        if prior_turn.size >= 20 and float(prior_turn.mean()) > 0 else None
+    )
+
+    high = _p4_im_num(highs[ci]); low = _p4_im_num(lows[ci])
+    close_pos = None
+    if high is not None and low is not None and high >= low:
+        close_pos = 50.0 if high == low else float(np.clip((close - low) / (high - low) * 100.0, 0.0, 100.0))
+
+    range_exp = None
+    if before_pos.size >= 21:
+        block_pos = np.concatenate([before_pos[-21:], np.array([ci], dtype=int)])
+        bh = highs[block_pos]
+        bl = lows[block_pos]
+        bc = closes[block_pos]
+        prevs = np.empty_like(bc, dtype=float)
+        prevs[0] = np.nan
+        prevs[1:] = bc[:-1]
+        comps = np.vstack((np.abs(bh - bl), np.abs(bh - prevs), np.abs(bl - prevs)))
+        # pandas max(axis=1, skipna=True) と同じ意味論。
+        finite = np.isfinite(comps)
+        tr = np.full(comps.shape[1], np.nan, dtype=float)
+        for _j in range(comps.shape[1]):
+            _v = comps[:, _j][finite[:, _j]]
+            if _v.size:
+                tr[_j] = float(_v.max())
+        prev_tr20 = tr[1:-1][-20:]
+        if prev_tr20.size == 20 and np.isfinite(prev_tr20).all() and np.isfinite(tr[-1]) and float(prev_tr20.mean()) > 0:
+            range_exp = float(tr[-1] / float(prev_tr20.mean()))
+
+    prior_high = highs[prior20_pos]
+    prior_high_f = prior_high[np.isfinite(prior_high)]
+    max_prior_high = float(prior_high_f.max()) if prior_high_f.size else None
+    breakout20 = int(high is not None and max_prior_high is not None and high > max_prior_high)
+    close_breakout20 = int(max_prior_high is not None and close > max_prior_high)
+
+    pre5 = None
+    if before_pos.size >= 6:
+        pre5 = _p4_im_pct(prev_close, closes[int(before_pos[-6])])
+    pre20 = None
+    if before_pos.size >= 21:
+        pre20 = _p4_im_pct(prev_close, closes[int(before_pos[-21])])
+
+    candidate = int(vol_ratio20 >= _P4_IM_VOL_GATE and ret1 >= _P4_IM_RET_GATE_PCT)
+    score = _p4_im_score(vol_ratio20, ret1, close_pos, range_exp, breakout20,
+                         close_breakout20, pre5, pre20, turnover_oku)
+    grade = _p4_im_grade(score)
+    low_tag = int(close <= _P4_IM_LOW_PRICE_MAX)
+    detail = [f"出来高×{vol_ratio20:.2f}", f"前日比{ret1:+.2f}%"]
+    if turnover_ratio20 is not None: detail.append(f"代金×{turnover_ratio20:.2f}")
+    if close_pos is not None: detail.append(f"終値位置{close_pos:.0f}%")
+    if close_breakout20: detail.append("20日高値を終値突破")
+    elif breakout20: detail.append("20日高値更新")
+    if low_tag: detail.append("低位株タグ")
+    base.update(
+        candidate=candidate, score=score, grade=grade, reason=" / ".join(detail),
+        vol_ratio20=round(vol_ratio20, 3),
+        turnover_ratio20=round(turnover_ratio20, 3) if turnover_ratio20 is not None else None,
+        ret1=round(ret1, 3), close_pos=round(close_pos, 1) if close_pos is not None else None,
+        range_exp=round(range_exp, 3) if range_exp is not None else None,
+        breakout20=breakout20, close_breakout20=close_breakout20,
+        pre5=round(pre5, 3) if pre5 is not None else None,
+        pre20=round(pre20, 3) if pre20 is not None else None,
+        turnover_oku=round(turnover_oku, 3), low_tag=low_tag,
+        state="OK", price=close,
+    )
+    return base
+
+
 def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
     """P4-1: 独立INITIAL_MOMENTUMをcurrent screenerへ反映し、確定候補を履歴保存する。"""
+    _im_phase_all_t0 = time.perf_counter()
     _p4_im_ensure_schema(conn)
     run_mode = str(_auto_run_mode() or "").upper()
     asof = _expected_snapshot_date_for_run(run_mode).isoformat()
@@ -22557,26 +35752,23 @@ def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
         for c, m, n in zip(screener["_code"], screener["_market"], screener["_name"])
     ]
     stock_codes = set(screener.loc[~screener["_excluded"], "_code"].dropna().astype(str))
+    _im_t_screener = time.perf_counter()
+    _perf_record_phase(
+        "backend-detail:initial_momentum_screener_prepare",
+        _im_t_screener - _im_phase_all_t0, "OK"
+    )
 
-    # 全銘柄を1SQL。raw aliasごとの直近30観測だけを取り、既存共通dedupeでlogical code×営業日へ統合する。
-    hist = pd.read_sql_query("""
-        WITH ranked AS (
-            SELECT rowid AS _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY コード
-                       ORDER BY date(日付) DESC, rowid DESC
-                   ) AS _rn
-            FROM price_history
-            WHERE date(日付) <= date(?)
-        )
-        SELECT _rowid, コード, 日付, 始値, 高値, 安値, 終値, 出来高
-        FROM ranked
-        WHERE _rn <= ?
-        ORDER BY 日付, _rowid
-    """, conn, params=(asof, _P4_IM_HISTORY_ROWS))
+    # PERF-OPT-V3: 全期間ROW_NUMBER scanを避け、通常は直近90日。
+    # 履歴不足だけ旧定義exact fallbackして結果意味論を保つ。
+    _im_phase_t0 = time.perf_counter()
+    hist = _p4_im_load_history_fast(conn, asof, stock_codes)
+    _im_t_hist_load = time.perf_counter()
+    _perf_record_phase(
+        "backend-detail:initial_momentum_history_load",
+        _im_t_hist_load - _im_phase_t0, "OK"
+    )
 
     if not hist.empty:
-        hist = _dedupe_price_history_df(hist)
         hist["コード"] = hist["コード"].map(canonical_code_for_db)
         hist = hist[hist["コード"].isin(stock_codes)].copy()
         hist["日付"] = pd.to_datetime(hist["日付"], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -22587,6 +35779,8 @@ def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
     groups = {c: g.sort_values("日付", kind="stable") for c, g in hist.groupby("コード", sort=False)} if not hist.empty else {}
 
     results = {}
+    _v35_fast_codes = 0
+    _v35_fallback_codes = 0
     for _, sr in screener.sort_values("_srowid").drop_duplicates("_code", keep="first").iterrows():
         code = str(sr["_code"] or "")
         if not code:
@@ -22604,6 +35798,14 @@ def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
             results[code] = base
             continue
         g = groups.get(code)
+        if _P4_IM_V35_FAST:
+            try:
+                results[code] = _p4_im_calc_group_numpy_v35(g, asof)
+                _v35_fast_codes += 1
+                continue
+            except Exception:
+                # 銘柄単位で旧pandas定義へfallbackし、結果意味論を優先する。
+                _v35_fallback_codes += 1
         if g is None or g.empty:
             base.update(state="NO_HISTORY", reason="価格履歴なし")
             results[code] = base
@@ -22690,6 +35892,17 @@ def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
         )
         results[code] = base
 
+    if _P4_IM_V35_FAST:
+        print(
+            f"[V35][initial-momentum] metrics=numpy codes={_v35_fast_codes} fallback={_v35_fallback_codes}",
+            flush=True,
+        )
+    _im_t_compute = time.perf_counter()
+    _perf_record_phase(
+        "backend-detail:initial_momentum_compute",
+        _im_t_compute - _im_t_hist_load, "OK"
+    )
+
     update_sql = """
         UPDATE screener SET
           INITIAL_MOMENTUM=?, INITIAL_MOMENTUM_SCORE=?, INITIAL_MOMENTUM_GRADE=?,
@@ -22757,6 +35970,12 @@ def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
             pass
         raise
 
+    _im_t_write = time.perf_counter()
+    _perf_record_phase(
+        "backend-detail:initial_momentum_db_write",
+        _im_t_write - _im_t_compute, "OK"
+    )
+
     eligible = sum(1 for rr in results.values() if rr["state"] == "OK")
     candidates = sum(1 for rr in results.values() if rr["state"] == "OK" and rr["candidate"] == 1)
     not_evaluable = sum(1 for rr in results.values() if rr["state"] != "OK")
@@ -22770,6 +35989,7 @@ def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
         f"candidates={candidates} low_price={low_candidates} not_evaluable={not_evaluable} logged_eod={len(log_rows)}",
         flush=True,
     )
+    print(f"[initial-momentum-perf] phase_total={time.perf_counter()-_im_phase_t0:.2f}s", flush=True)
     return summary
 
 # ==============================================================================
@@ -22781,11 +36001,19 @@ def phase_initial_momentum_p4_1(conn: sqlite3.Connection):
 def main():
     # P3-41: external producerはTask Scheduler/system_jobs.pyが担当。
     # 本体はDBを読むconsumer/計算・表示エンジンとして動く。
+    global _RUN_MODE_LOCKED
+    _RUN_MODE_LOCKED = None
+    _run_mode_at_start = _auto_run_mode()
+    _RUN_MODE_LOCKED = _run_mode_at_start
+    _perf_set_mode(_run_mode_at_start)
+
     t0 = time.time()
     print("=== 開始 ===")
+    print(f"[RUN-MODE-LOCK] fixed={_run_mode_at_start} at process main start")
+    print(f"[V67-CACHE] logic-token cache validation active build={_daily_build_token()}", flush=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    if EXTERNAL_JOBS_REQUIRED and _auto_run_mode() in ("MIDDAY", "EOD"):
+    if EXTERNAL_JOBS_REQUIRED and _run_mode_at_start in ("MIDDAY", "EOD"):
         _ready, _why = _external_live_materials_ready(45)
         if not _ready:
             print(f"[external-jobs] live_materials not ready: {_why} → stale publishを避けて今回runをskip")
@@ -22829,7 +36057,7 @@ def main():
         if USE_CSV:
             try:
                 # CSVマスタ取り込み【同日スキップ】
-                _timed_daily_once("phase_csv_import", phase_csv_import, conn)
+                _timed_daily_once("phase_universe_import_brisk_v1", phase_brisk_universe_import, conn)
             except Exception as e:
                 # P1-343: CSVマスタは今回の銘柄ユニバースそのもの。失敗をWARNで握りつぶすと
                 # 古いscreenerのまま「今回生成」のHTMLを公開してしまうためfail-fast。
@@ -22839,7 +36067,7 @@ def main():
         # (4) 上場廃止/空売り無しの反映
         try:
             # 上場廃止や不要レコードの整理【同日スキップ】
-            _timed_daily_once("phase_delist_cleanup", phase_delist_cleanup, conn, also_clean_notes=True)
+            _timed_daily_once("phase_universe_cleanup_brisk_v1", phase_brisk_universe_cleanup, conn, also_clean_notes=True)
         except Exception as e:
             # P1-344: 上場廃止マスタの反映失敗後に旧ユニバースを公開しない。
             print("[delist][FATAL]", e)
@@ -22857,9 +36085,10 @@ def main():
             _cleared = _invalidate_karauri_nashi_snapshot(conn)
             print(f"[karauri-flag][WARN] DB snapshot反映失敗: {e}; stale『なし』cleared={_cleared}")
 
-        # (5) 実行モード決定
-        RUN = _auto_run_mode()
-        print(f"[AUTO_MODE={AUTO_MODE}] mode={RUN}")
+        # (5) 実行モード決定: INTRADAY-STABILITY-V1でmain開始時に固定済み。
+        RUN = _run_mode_at_start
+        _perf_set_mode(RUN)
+        print(f"[AUTO_MODE={AUTO_MODE}] mode={RUN} (locked at run start)")
 
         # (6) 処理対象銘柄
         # P1-214: main phaseへ渡す銘柄集合もcanonical化・重複除去。
@@ -22923,9 +36152,23 @@ def main():
             # MIDDAYは当日marketCap、PREOPENは前営業日、EODは確定値と同じ時点へ揃える。
             # stale-after-earnings判定も関数内でfail-closedに効くため、旧営業利益の復活を許さない。
             _timed("refresh_operating_income_current", update_operating_income_and_ratio, conn)
-                
-            # (6.5) シグナル緩和・再判定【毎回】
-            _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
+
+            # PERF-OPT-V12:
+            # INITIAL_MOMENTUMはMIDDAYでは当日出来高/価格が変化するため毎run。
+            # EOD/PREOPENは同一営業日のprice snapshotが固定なのでdaily-once。
+            # MIDDAYではrejudgeより先に実行し、raw price_history cacheを共有する。
+            if RUN == "MIDDAY":
+                _timed("P4-1:initial_momentum", phase_initial_momentum_p4_1, conn)
+                _timed("relax_rejudge_signals", relax_rejudge_signals, conn)
+            else:
+                _timed_daily_once(
+                    f"{RUN.lower()}_initial_momentum_v12",
+                    phase_initial_momentum_p4_1, conn
+                )
+                _timed_daily_once(
+                    f"{RUN.lower()}_relax_rejudge_v12",
+                    relax_rejudge_signals, conn
+                )
 
             # P3-41: 旧19時フルEODバッチは廃止。
             # EOD確定は15:30以降の通常EODフェーズで実データ到着を検証する。
@@ -22941,8 +36184,21 @@ def main():
                     f"{RUN.lower()}_price_derivatives_v1",
                     _phase_common_price_derivatives, conn, RUN
                 )
-        
-            _timed("P4-1:initial_momentum", phase_initial_momentum_p4_1, conn)
+
+            # RE-LEADER-LIFECYCLE-V1: bounded recent history only; no full-history rescan.
+            try:
+                _rl = _timed("leader_lifecycle_recent", _leader_lifecycle_refresh_recent, conn, _expected_snapshot_date_for_run(RUN).isoformat())
+                print(f"[leader-lifecycle] {_rl}", flush=True)
+            except Exception as _rl_e:
+                print(f"[leader-lifecycle][WARN] recent lifecycle refresh failed: {_rl_e}", flush=True)
+
+            # LEADER-SIGNAL-SHADOW-V1: LIVE Candidate Contractとは独立。MIDDAYだけ1分足で主役化/10分確認。
+            if RUN == "MIDDAY":
+                try:
+                    _timed("leader_signal_shadow", phase_leader_signal_shadow, conn)
+                except Exception as _leader_e:
+                    # 通知/研究shadowは補助機能。既存screening/dashboardを停止させない。
+                    print(f"[leader][WARN] shadow phase failed: {_leader_e}")
 
             # P1-459: finance_notes同期は計算前へ移動済み。
 
@@ -23117,15 +36373,371 @@ except Exception:
 
 # P1-501: main呼出しは全top-level関数定義の後ろに置く。
 # v5_collect_data等が旧位置ではmain実行時に未定義になり得た。
+
+
+# ==============================================================================
+# V65 SHORTTERM FAST SAFE
+# - Keep legacy producer as the audit oracle on the first run.
+# - After a full-row equality audit, replace per-code DataFrame slicing with
+#   a shared-canonical + NumPy fast path for ATR / signal-high metrics.
+# - Candidate Contract / signal logic / resistance logic are untouched.
+# ==============================================================================
+_V65_SHORTTERM_AUDIT_MARKER = Path(SCREEN_RUNTIME_DIR) / "shortterm_fast_audit_v65.json"
+_v65_legacy_apply_shortterm_metrics = _apply_shortterm_metrics
+
+
+def _v65_shortterm_marker_ok() -> bool:
+    try:
+        obj = json.loads(_V65_SHORTTERM_AUDIT_MARKER.read_text(encoding="utf-8"))
+        return bool(obj.get("audited")) and int(obj.get("version", 0)) == 651
+    except Exception:
+        return False
+
+
+def _v65_shortterm_store_marker(meta=None) -> None:
+    SCREEN_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 651,
+        "audited": True,
+        "audited_at": datetime.now(JST).isoformat(),
+    }
+    if isinstance(meta, dict):
+        payload.update(meta)
+    tmp = _V65_SHORTTERM_AUDIT_MARKER.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, _V65_SHORTTERM_AUDIT_MARKER)
+
+
+def _v65_num_or_nan(v):
+    try:
+        x = float(v)
+        return x if math.isfinite(x) else np.nan
+    except Exception:
+        return np.nan
+
+
+def _v65_shortterm_compute_fast(conn: sqlite3.Connection):
+    t0 = time.perf_counter()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT rowid, コード, 日付, 終値, signal_date, シグナル更新日 FROM latest_prices")
+        lp_rows = cur.fetchall()
+        names = [d[0] for d in cur.description]
+    finally:
+        try: cur.close()
+        except Exception: pass
+
+    def _idx(name, default=-1):
+        try: return names.index(name)
+        except ValueError: return default
+
+    i_code = _idx("コード")
+    i_date = _idx("日付")
+    i_close = _idx("終値") if _idx("終値") != -1 else _idx("現在値")
+    i_sig = _idx("signal_date")
+    if i_sig == -1:
+        i_sig = _idx("シグナル更新日")
+
+    asof = _expected_snapshot_date_for_run(_auto_run_mode()).isoformat()
+    asof_date = date.fromisoformat(str(asof)[:10])
+    start_date = (asof_date - timedelta(days=120)).isoformat()
+
+    t_hist = time.perf_counter()
+    df_all = _v29_existing_canonical_range(conn, start_date, asof, tag="shortterm_v65")
+    from_cache = df_all is not None
+    if df_all is None:
+        df_all = pd.read_sql_query(
+            """
+            SELECT rowid AS _rowid, コード, 日付, 高値, 安値, 終値
+            FROM price_history
+            WHERE date(日付) >= date(?) AND date(日付) <= date(?)
+            ORDER BY コード, 日付, rowid
+            """,
+            conn, params=[start_date, asof], parse_dates=["日付"]
+        )
+    hist_sec = time.perf_counter() - t_hist
+
+    if df_all.empty:
+        return [(None, None, None, r[0]) for r in lp_rows], {
+            "history": hist_sec, "prep": 0.0, "calc": 0.0, "total": time.perf_counter()-t0,
+            "rows": len(lp_rows), "history_rows": 0, "cache": from_cache,
+        }
+
+    t_prep = time.perf_counter()
+    for c in ("高値", "安値", "終値"):
+        df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
+    if not from_cache:
+        df_all = _dedupe_price_history_df(df_all)
+    else:
+        print(f"[V65-SHORT] history=shared-canon rows={len(df_all)}", flush=True)
+
+    close_arr = df_all["終値"].to_numpy(dtype=float, copy=False)
+    valid = np.isfinite(close_arr) & (close_arr > 0)
+    df_all = df_all.loc[valid].copy()
+    if df_all.empty:
+        return [(None, None, None, r[0]) for r in lp_rows], {
+            "history": hist_sec, "prep": time.perf_counter()-t_prep, "calc": 0.0,
+            "total": time.perf_counter()-t0, "rows": len(lp_rows), "history_rows": 0,
+            "cache": from_cache,
+        }
+
+    # Same TR and EWM definition as legacy, but avoid 3,500+ Python lambdas.
+    grp = df_all.groupby("コード", sort=False)
+    prev = grp["終値"].shift(1)
+    h = df_all["高値"].to_numpy(dtype=float, copy=False)
+    l = df_all["安値"].to_numpy(dtype=float, copy=False)
+    c = df_all["終値"].to_numpy(dtype=float, copy=False)
+    p = prev.to_numpy(dtype=float, copy=False)
+    tr = np.nanmax(np.column_stack((np.abs(h-l), np.abs(h-p), np.abs(l-p))), axis=1)
+    df_all["TR"] = tr
+    atr = (
+        df_all.groupby("コード", sort=False)["TR"]
+        .ewm(span=14, adjust=False, min_periods=1)
+        .mean()
+        .reset_index(level=0, drop=True)
+        .reindex(df_all.index)
+    )
+    df_all["ATR14"] = atr.to_numpy(dtype=float, copy=False)
+
+    # Build compact arrays once. Canonical cache already uses logical code keys.
+    if from_cache:
+        df_all["_code_key"] = df_all["コード"].astype(str)
+    else:
+        df_all["_code_key"] = df_all["コード"].map(canonical_code_for_db)
+
+    group_cache = {}
+    for code, g in df_all.groupby("_code_key", sort=False):
+        if not code or g.empty:
+            continue
+        dts = pd.to_datetime(g["日付"], errors="coerce").to_numpy(dtype="datetime64[ns]")
+        highs = g["高値"].to_numpy(dtype=float, copy=False)
+        closes = g["終値"].to_numpy(dtype=float, copy=False)
+        atrs = g["ATR14"].to_numpy(dtype=float, copy=False)
+        group_cache[str(code)] = (dts, highs, closes, atrs)
+
+    prep_sec = time.perf_counter() - t_prep
+    t_calc = time.perf_counter()
+    updates = []
+    asof_np = np.datetime64(asof_date.isoformat(), "D")
+
+    for r in lp_rows:
+        rowid = r[0]
+        code = canonical_code_for_db(r[i_code])
+        rec = group_cache.get(str(code)) if code else None
+        if rec is None:
+            updates.append((None, None, None, rowid))
+            continue
+
+        dts, highs, closes, atrs = rec
+        if len(dts) == 0 or np.isnat(dts[-1]) or dts[-1].astype("datetime64[D]") != asof_np:
+            updates.append((None, None, None, rowid))
+            continue
+
+        atr_last = atrs[-1] if len(atrs) else np.nan
+        atr14 = float(atr_last) if np.isfinite(atr_last) else None
+
+        sig_raw = r[i_sig] if i_sig != -1 else None
+        sig_ts = pd.to_datetime(str(sig_raw), errors="coerce") if sig_raw is not None else pd.NaT
+        if pd.isna(sig_ts):
+            lo = max(0, len(dts) - 60)
+        else:
+            sig_np = np.datetime64(pd.Timestamp(sig_ts).to_datetime64())
+            lo = int(np.searchsorted(dts, sig_np, side="left"))
+
+        hi_slice = highs[lo:]
+        dt_slice = dts[lo:]
+        close_slice = closes[lo:]
+        finite_hi = np.isfinite(hi_slice)
+        if not finite_hi.any():
+            max_high = np.nan
+            idx_max_dt = pd.to_datetime(r[i_date], errors="coerce")
+        else:
+            valid_pos = np.flatnonzero(finite_hi)
+            vals = hi_slice[valid_pos]
+            max_high = float(np.max(vals))
+            # pandas idxmax returns the first maximum.
+            rel = int(valid_pos[np.flatnonzero(vals == max_high)[0]])
+            idx_max_dt = pd.Timestamp(dt_slice[rel]) if not np.isnat(dt_slice[rel]) else pd.NaT
+
+        cur_close = _v65_num_or_nan(r[i_close]) if i_close != -1 else np.nan
+        if not np.isfinite(cur_close):
+            finite_close = close_slice[np.isfinite(close_slice)]
+            if len(finite_close):
+                cur_close = float(finite_close[-1])
+            else:
+                finite_all_close = closes[np.isfinite(closes)]
+                cur_close = float(finite_all_close[-1]) if len(finite_all_close) else np.nan
+
+        if not np.isfinite(cur_close) or not np.isfinite(max_high) or max_high == 0.0:
+            rate_since = None
+        else:
+            rate_since = (cur_close / max_high - 1.0) * 100.0
+
+        base_date = pd.to_datetime(r[i_date], errors="coerce")
+        if pd.isna(base_date) or pd.isna(idx_max_dt):
+            days_since = None
+        else:
+            try: days_since = int((base_date - idx_max_dt).days)
+            except Exception: days_since = None
+
+        updates.append((atr14, rate_since, days_since, rowid))
+
+    calc_sec = time.perf_counter() - t_calc
+    return updates, {
+        "history": hist_sec, "prep": prep_sec, "calc": calc_sec,
+        "total": time.perf_counter()-t0, "rows": len(updates),
+        "history_rows": len(df_all), "cache": from_cache,
+    }
+
+
+def _v65_shortterm_write(conn: sqlite3.Connection, updates) -> None:
+    sp = f"v65_shortterm_{time.time_ns()}"
+    conn.execute(f"SAVEPOINT {sp}")
+    try:
+        conn.executemany(
+            "UPDATE latest_prices SET ATR_14=?, Rate_Since_Signal_High=?, Days_Since_Signal_High=? WHERE rowid=?",
+            updates,
+        )
+        conn.execute(f"RELEASE SAVEPOINT {sp}")
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
+        except Exception:
+            pass
+        raise
+
+
+def _v65_float_same(a, b, atol=1e-10, rtol=1e-10):
+    if a is None and b is None:
+        return True
+    try:
+        af = float(a); bf = float(b)
+    except Exception:
+        return a == b
+    if not math.isfinite(af) and not math.isfinite(bf):
+        return True
+    return bool(np.isclose(af, bf, atol=atol, rtol=rtol, equal_nan=True))
+
+
+def _apply_shortterm_metrics(conn: sqlite3.Connection):
+    # Compute the fast candidate first; it is read-only until audit succeeds.
+    fast_updates, perf = _v65_shortterm_compute_fast(conn)
+
+    if not _v65_shortterm_marker_ok():
+        # Legacy remains authoritative on the first run.
+        t_legacy = time.perf_counter()
+        _v65_legacy_apply_shortterm_metrics(conn)
+        legacy_sec = time.perf_counter() - t_legacy
+        # latest_prices has legacy rows where the SQL name `rowid` can be NULL.
+        # The legacy writer also uses `WHERE rowid=?`, so those rows are not addressable
+        # by either path.  Do not coerce rowid with int(); compare only addressable rows
+        # and keep NULL-rowid behavior identical to legacy.
+        legacy_rows = {}
+        legacy_null_rowid = 0
+        for r in conn.execute(
+            "SELECT rowid, ATR_14, Rate_Since_Signal_High, Days_Since_Signal_High FROM latest_prices"
+        ).fetchall():
+            rid = r[0]
+            if rid is None:
+                legacy_null_rowid += 1
+                continue
+            legacy_rows[rid] = (r[1], r[2], r[3])
+
+        mismatches = []
+        fast_null_rowid = 0
+        compared = 0
+        for atr14, rate, days, rowid in fast_updates:
+            if rowid is None:
+                fast_null_rowid += 1
+                continue
+            old = legacy_rows.get(rowid)
+            if old is None:
+                mismatches.append((rowid, "missing_legacy"))
+                if len(mismatches) >= 20: break
+                continue
+            compared += 1
+            ok = (
+                _v65_float_same(atr14, old[0])
+                and _v65_float_same(rate, old[1])
+                and ((days is None and old[2] is None) or days == old[2])
+            )
+            if not ok:
+                mismatches.append((rowid, atr14, old[0], rate, old[1], days, old[2]))
+                if len(mismatches) >= 20: break
+
+        if mismatches:
+            print(
+                f"[V65-SHORT] AUDIT-FAIL mismatches={len(mismatches)} sample={mismatches[:3]} "
+                f"fast={perf['total']:.2f}s legacy={legacy_sec:.2f}s; legacy DB values kept",
+                flush=True,
+            )
+            return
+
+        _v65_shortterm_store_marker({
+            "rows": len(fast_updates),
+            "compared_rows": compared,
+            "legacy_null_rowid": legacy_null_rowid,
+            "fast_null_rowid": fast_null_rowid,
+        })
+        print(
+            f"[V65-SHORT] AUDIT-PASS rows={len(fast_updates)} compared={compared} "
+            f"null_rowid_fast={fast_null_rowid} null_rowid_legacy={legacy_null_rowid} "
+            f"fast={perf['total']:.2f}s legacy={legacy_sec:.2f}s "
+            f"hist={perf['history']:.2f}s prep={perf['prep']:.2f}s calc={perf['calc']:.2f}s",
+            flush=True,
+        )
+        return
+
+    _v65_shortterm_write(conn, fast_updates)
+    print(
+        f"[V65-SHORT] HIT audited rows={len(fast_updates)} total={perf['total']:.2f}s "
+        f"hist={perf['history']:.2f}s prep={perf['prep']:.2f}s calc={perf['calc']:.2f}s",
+        flush=True,
+    )
+
 if __name__ == "__main__":
+    # INTRADAY-STABILITY-V1: GitHub同期専用child。DB/shared-writer/main lockを取得しない。
+    if GITHUB_SYNC_ONLY_ARG in sys.argv:
+        try:
+            _i = sys.argv.index(GITHUB_SYNC_ONLY_ARG)
+            _repo = sys.argv[_i + 1]
+            _target = sys.argv[_i + 2]
+        except Exception:
+            print("[git][ERROR] --git-sync-only requires <repo_root> <target_file>")
+            raise SystemExit(2)
+        _ok = _run_github_sync_child(_repo, _target)
+        raise SystemExit(0 if _ok else 2)
+
+    # 夜間でも安全にWindows通知だけ確認できる。DB/共有writer lock/スクリーニング本体は起動しない。
+    if LEADER_NOTIFICATION_POPUP_TEST_ARG in sys.argv:
+        _ok = _leader_notification_popup_test()
+        print("[leader-notify-popup-test] SUCCESS" if _ok else "[leader-notify-popup-test] FAILED")
+        raise SystemExit(0 if _ok else 2)
+
+    if LEADER_NOTIFICATION_TEST_ARG in sys.argv:
+        _ok = _leader_notification_self_test()
+        print("[leader-notify-test] SUCCESS" if _ok else "[leader-notify-test] FAILED")
+        raise SystemExit(0 if _ok else 2)
+
     _main_lock_token = None
     _shared_writer_token = None
+    _entry_error = None
+    _lock_wait_started = time.perf_counter()
     try:
         _shared_writer_token = _acquire_shared_writer_lock_with_wait()
+        _lock_wait_elapsed = time.perf_counter() - _lock_wait_started
         if _shared_writer_token is None:
             raise SystemExit(0)
         _main_lock_token = _acquire_main_process_lock()
-        main()
+        _perf_begin_run(lock_wait_seconds=_lock_wait_elapsed)
+        try:
+            main()
+        except BaseException as _e:
+            _entry_error = _e
+            raise
+        finally:
+            _perf_finish_run("ERROR" if _entry_error is not None else "SUCCESS", _entry_error)
     finally:
         try:
             _close_db_conn_safely()

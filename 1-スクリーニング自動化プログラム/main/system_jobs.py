@@ -1,3 +1,16 @@
+﻿# === LIVE-EOD-SPLIT-RESTORE-V1 2026-08-31 ===
+# 8/31最新版を土台に、過去に実装済みだったP3-49/P4-LIVE-EOD-SPLITを復元。
+# - live-materialsからeod_finalize.pyを分離
+# - eod-finalize独立mode追加（15:30以降、同日成功後はno-op）
+# - EOD子プロセス内部timeout + Windows process tree回収
+# - child生存時はwriter lockを誤って削除しない
+# FLOAT-SHARES-STALL-GUARD / KABUTAN-EVENT-ELIGIBILITY等の8/31変更は維持。
+# === /LIVE-EOD-SPLIT-RESTORE-V1 ===
+# === FLOAT-SHARES-STALL-GUARD-V1 2026-08-31 ===
+# 浮動.py の外部HTTPS待ち長期化からsystem_jobsを保護。
+# 10分timeout（環境変数で変更可）。morningでは重要producer完了後に実行。
+# 売買・スクリーニング判定ロジック変更なし。
+# === /FLOAT-SHARES-STALL-GUARD-V1 ===
 # -*- coding: utf-8 -*-
 """
 株スクリーニング基盤のTask Scheduler向けオーケストレータ。
@@ -11,15 +24,13 @@ modes:
   live-materials TDnet増分 + シンデンfull（場中10分周期向け・EOD重処理なし）
   eod-finalize   引け後EOD確定を独立実行。同日成功後はno-op
   model          新EOD足がある時だけCatBoost再学習
-
-2026-08-17 P3-49:
-  EOD子プロセスの孤児化事故を受け、Task Schedulerの2時間制限より前に内部timeoutし、
-  Windowsではtaskkill /T /Fでプロセスツリーを回収する。回収不能時はwriter lockを残す。
-
-2026-08-19 P4-LIVE-EOD-SPLIT:
-  live-materialsからeod_finalize.pyを分離。場中/材料更新を重いEOD処理で塞がない。
-  eod-finalize独立modeは15:30以降のみ実行し、同日成功後は次回triggerをno-opにする。
 """
+
+# === KABUTAN-EVENT-ELIGIBILITY-V3 2026-08-26 ===
+# TDnetイベントには、screener内でも株探通常ページ非対応（TOKYO PRO Market等）が混ざり得る。
+# event-driven funda/theme refreshの前で除外し、単一404でlive-materials/EOD全体を止めない。
+# screener外 / PRO市場 / 実測404既知コードを分離してlogへ残す。
+# === /KABUTAN-EVENT-ELIGIBILITY-V3 ===
 from __future__ import annotations
 
 import argparse
@@ -56,9 +67,11 @@ STATE_DB_PATH = Path(os.environ.get("KABU_JOB_STATE_DB", str(HERE / "runtime" / 
 SUCCESS_STATUSES = {"success"}
 STOCK_CODE_RE = re.compile(r"^(?:\d{4}|\d{3}[A-Z])$")
 
-# P3-49 (2026-08-17): Task Scheduler側の実行時間制限（2時間）より先に
-# オーケストレータ自身がEOD子プロセスを回収する。親Taskが先に強制終了されると
-# eod_finalize.pyだけが孤児化し、DB writer lockを保持したまま残るため。
+# 浮動株は補助producer。外部通信待ちで朝全体を塞がない上限。
+FLOAT_SHARES_TIMEOUT_SEC = int(os.environ.get("KABU_FLOAT_SHARES_TIMEOUT_SEC", "600"))
+
+# P3-49: Task Schedulerの長時間制限より先にEOD子プロセスを回収する。
+# 親だけ落ちてeod_finalize.pyが孤児化し、writer lockを長時間占有する事故を防ぐ。
 try:
     EOD_FINALIZE_TIMEOUT_SEC = int(os.environ.get("KABU_EOD_FINALIZE_TIMEOUT_SEC", "2700"))
 except (TypeError, ValueError):
@@ -130,6 +143,8 @@ def state_start(job_name: str, message: str = "") -> None:
             VALUES(?,?,?,?)
             ON CONFLICT(job_name) DO UPDATE SET
               last_started_at=excluded.last_started_at,
+              last_finished_at=NULL,
+              return_code=NULL,
               status=excluded.status,
               message=excluded.message
         """, (job_name, now_s(), "running", message))
@@ -301,7 +316,7 @@ def writer_lock(stale_hours: float = 6.0):
             try:
                 if LOCK_PATH.exists():
                     # P3-49: child回収に失敗した時だけはlockを残す。
-                    # 生存中の孤児writerを「空き」と誤判定して別writerを重ねない。
+                    # 生存中の孤児writerへ別writerを重ねない。
                     try:
                         data = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
                     except Exception:
@@ -325,12 +340,7 @@ def _log_path(job_name: str) -> Path:
 
 
 def _terminate_process_tree(cp: subprocess.Popen, grace_sec: float = 10.0) -> bool:
-    """子ジョブとその配下を終了し、回収できた場合だけTrueを返す。
-
-    P3-49 incident note:
-    2026-08-17に親pythonwだけが終了し、eod_finalize.pyが3時間超生存した。
-    WindowsのPopen.terminate()/kill()は子孫を保証しないため taskkill /T /F を使う。
-    """
+    """子ジョブとその配下を終了し、回収できた場合だけTrueを返す。"""
     if cp.poll() is not None:
         return True
 
@@ -381,7 +391,9 @@ def run_script(job_name: str, script_name: str, args: list[str] | None = None, *
 
     env = os.environ.copy()
     env["KABU_DB_PATH"] = DEFAULT_DB_PATH
-    env.setdefault("KABU_CODES_PATH", DEFAULT_CODES_PATH)
+    # BRISK-DOWNSTREAM-UNIVERSE-V1: refresh BRiSK P/S/G universe before every producer child.
+    from brisk_universe_source import prepare_brisk_codes_path as _prepare_brisk_codes_path
+    env["KABU_CODES_PATH"] = str(_prepare_brisk_codes_path())
     env.setdefault("KABU_OUTPUT_DIR", DEFAULT_OUTPUT_DIR)
     env.setdefault("KABU_MODEL_DIR", DEFAULT_MODEL_DIR)
 
@@ -406,7 +418,6 @@ def run_script(job_name: str, script_name: str, args: list[str] | None = None, *
                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 )
             else:
-                # timeout時に子孫までkillpgで回収できる独立process group。
                 popen_kwargs["start_new_session"] = True
             cp = subprocess.Popen(cmd, **popen_kwargs)
             _set_writer_lock_child_pid(cp.pid)
@@ -435,7 +446,6 @@ def run_script(job_name: str, script_name: str, args: list[str] | None = None, *
                 if cp.poll() is not None:
                     _set_writer_lock_child_pid(None)
                 else:
-                    # writer_lock() finallyがchild_pidを見てlockを保持する。
                     print(
                         f"[process-tree] child pid={cp.pid} survived; writer lock child marker retained",
                         flush=True,
@@ -595,42 +605,113 @@ def _earnings_codes_since(dt: datetime | None) -> list[str]:
     return out
 
 
-def _screener_universe_codes() -> set[str] | None:
-    """現在のdashboard対象screenerに存在する通常銘柄コードを返す。
+# 株探の通常 stock/finance 系ページへ渡さない既知コード。
+# 市場表記だけでは判定できない実測404を保守的に吸収する。
+# 追加は環境変数 KABU_KABUTAN_UNSUPPORTED_CODES=7170,.... でも可能。
+_KABUTAN_UNSUPPORTED_DEFAULT = {"7170"}
 
-    P3-50 (2026-08-17): TDnetはTOKYO PRO Market等、株探通常ページを持たない
-    開示も含む。イベント差分はdashboardの対象集合に限ることで、単一404が
-    live-materials全体（EODを含む）をpartial停止させない。
 
-    DBスキーマを読めない場合は安全側でNoneを返し、呼び出し元は従来の対象を維持する。
+def _kabutan_unsupported_codes() -> set[str]:
+    out = set(_KABUTAN_UNSUPPORTED_DEFAULT)
+    raw = os.environ.get("KABU_KABUTAN_UNSUPPORTED_CODES", "")
+    for token in re.split(r"[,;\\s]+", raw):
+        cc = _normalize_stock_code(token)
+        if cc:
+            out.add(cc)
+    return out
+
+
+def _filter_event_codes_for_kabutan(codes: list[str], job_name: str) -> tuple[list[str], list[str]]:
+    """TDnet/repair候補から株探通常ページへ安全に渡せるコードだけ残す。
+
+    - 現在screenerに存在しないコード: dashboard対象外なので除外
+    - screener市場がTOKYO PRO Market/TPM系: 株探通常ページ非対応として除外
+    - 実測404の既知コード: 市場表記欠損時も除外
+
+    screener schemaを読めない場合はfail-openではなく「既知非対応だけ除外」に留め、
+    既存の通常銘柄まで誤って落とさない。
     """
+    normalized: list[str] = []
+    for raw in codes or []:
+        cc = _normalize_stock_code(raw)
+        if cc and cc not in normalized:
+            normalized.append(cc)
+    if not normalized:
+        return [], []
+
+    known_bad = _kabutan_unsupported_codes()
+    universe: set[str] | None = None
+    market_by_code: dict[str, str] = {}
+
     c = sqlite3.connect(DEFAULT_DB_PATH, timeout=30.0)
     try:
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if "screener" not in tables:
-            return None
-        cols = {r[1] for r in c.execute("PRAGMA table_info(screener)").fetchall()}
-        if "コード" not in cols:
-            return None
-        rows = c.execute('SELECT DISTINCT CAST("コード" AS TEXT) FROM screener WHERE "コード" IS NOT NULL').fetchall()
+        if "screener" in tables:
+            cols = {r[1] for r in c.execute("PRAGMA table_info(screener)").fetchall()}
+            if "コード" in cols:
+                market_col = next((x for x in ("市場", "市場区分", "market", "market_segment") if x in cols), None)
+                if market_col:
+                    rows = c.execute(
+                        f'SELECT CAST("コード" AS TEXT), CAST("{market_col}" AS TEXT) '
+                        'FROM screener WHERE "コード" IS NOT NULL'
+                    ).fetchall()
+                else:
+                    rows = [
+                        (r[0], "")
+                        for r in c.execute(
+                            'SELECT CAST("コード" AS TEXT) FROM screener WHERE "コード" IS NOT NULL'
+                        ).fetchall()
+                    ]
+                universe = set()
+                for raw_code, raw_market in rows:
+                    cc = _normalize_stock_code(raw_code)
+                    if not cc:
+                        continue
+                    universe.add(cc)
+                    text = str(raw_market or "").strip()
+                    # alias行が複数ある場合、空欄で既存の市場表記を上書きしない。
+                    if text or cc not in market_by_code:
+                        market_by_code[cc] = text
     except Exception as e:
-        print(f"[event-filter] screener universe unavailable: {type(e).__name__}: {e}", flush=True)
-        return None
+        print(f"[event-filter][WARN] screener lookup unavailable: {type(e).__name__}: {e}", flush=True)
+        universe = None
+        market_by_code = {}
     finally:
         c.close()
-    return {cc for (raw,) in rows if (cc := _normalize_stock_code(raw))}
 
+    def _is_pro_market(text: str) -> bool:
+        t = str(text or "").strip().upper().replace(" ", "").replace("　", "")
+        return (
+            "TOKYOPRO" in t
+            or "PROMARKET" in t
+            or t == "TPM"
+            or "東証PRO" in t
+            or "東証ＰＲＯ" in t
+            or "プロマーケット" in t
+        )
 
-def _filter_event_codes_to_screener(codes: list[str], job_name: str) -> tuple[list[str], list[str]]:
-    """TDnetイベントからdashboard対象外コードを除外する（P3-50）。"""
-    universe = _screener_universe_codes()
-    if universe is None:
-        return codes, []
-    selected = [code for code in codes if code in universe]
-    skipped = [code for code in codes if code not in universe]
+    selected: list[str] = []
+    skipped: list[str] = []
+    reasons: dict[str, str] = {}
+    for cc in normalized:
+        reason = None
+        if cc in known_bad:
+            reason = "known_kabutan_unsupported"
+        elif universe is not None and cc not in universe:
+            reason = "out_of_screener"
+        elif _is_pro_market(market_by_code.get(cc, "")):
+            reason = "tokyo_pro_market"
+
+        if reason:
+            skipped.append(cc)
+            reasons[cc] = reason
+        else:
+            selected.append(cc)
+
     if skipped:
+        sample = [f"{cc}:{reasons.get(cc)}" for cc in skipped[:10]]
         print(
-            f"[event-filter] {job_name}: out-of-screener skip={len(skipped)} sample={skipped[:10]}",
+            f"[event-filter] {job_name}: kabutan-unsupported skip={len(skipped)} sample={sample}",
             flush=True,
         )
     return selected, skipped
@@ -706,14 +787,23 @@ def run_event_funda_refresh(job_name: str, *, include_repairs: bool = False) -> 
 
     state_start(job_name,f"earnings since {baseline.isoformat(timespec='seconds')}")
     raw_event_codes = _earnings_codes_since(baseline)
-    codes, skipped_event_codes = _filter_event_codes_to_screener(raw_event_codes, job_name)
-    event_code_count = len(codes)
-    repair_codes = _funda_repair_codes(limit=200) if include_repairs else []
+    event_codes, skipped_event_codes = _filter_event_codes_for_kabutan(raw_event_codes, job_name)
+
+    raw_repair_codes = _funda_repair_codes(limit=200) if include_repairs else []
+    repair_codes, skipped_repair_codes = _filter_event_codes_for_kabutan(
+        raw_repair_codes, f"{job_name}/repairs"
+    ) if raw_repair_codes else ([], [])
+
+    codes = list(event_codes)
     for code in repair_codes:
         if code not in codes:
             codes.append(code)
     if not codes:
-        state_finish(job_name,"success",0,"no new earnings")
+        detail = "no dashboard-eligible Kabutan earnings/repairs"
+        skipped_total = len(skipped_event_codes) + len(skipped_repair_codes)
+        if skipped_total:
+            detail += f" / skipped={skipped_total}"
+        state_finish(job_name,"success",0,detail)
         return "success",0
     # Windows command line上限を避けるため最大100銘柄ずつ。通常は数銘柄。
     results=[]
@@ -723,8 +813,9 @@ def run_event_funda_refresh(job_name: str, *, include_repairs: bool = False) -> 
     status,rc=_aggregate_status(results)
     state_finish(
         job_name, status, rc,
-        f"codes={len(codes)} events={event_code_count}/{len(raw_event_codes)} "
-        f"event_skipped={len(skipped_event_codes)} repairs={len(repair_codes)} sample={codes[:10]}"
+        f"codes={len(codes)} events={len(event_codes)}/{len(raw_event_codes)} "
+        f"event_skipped={len(skipped_event_codes)} repairs={len(repair_codes)}/{len(raw_repair_codes)} "
+        f"repair_skipped={len(skipped_repair_codes)} sample={codes[:10]}"
     )
     return status,rc
 
@@ -744,9 +835,9 @@ def run_event_theme_refresh(job_name: str) -> tuple[str, int]:
 
     state_start(job_name, f"earnings since {baseline.isoformat(timespec='seconds')}")
     raw_event_codes = _earnings_codes_since(baseline)
-    codes, skipped_event_codes = _filter_event_codes_to_screener(raw_event_codes, job_name)
+    codes, skipped_event_codes = _filter_event_codes_for_kabutan(raw_event_codes, job_name)
     if not codes:
-        detail = "no dashboard-eligible earnings"
+        detail = "no dashboard-eligible Kabutan earnings"
         if skipped_event_codes:
             detail += f" / skipped={len(skipped_event_codes)}"
         state_finish(job_name, "success", 0, detail)
@@ -765,26 +856,43 @@ def run_event_theme_refresh(job_name: str) -> tuple[str, int]:
     state_finish(
         job_name, status, rc,
         f"codes={len(codes)} events={len(codes)}/{len(raw_event_codes)} "
-        f"event_skipped={len(skipped_event_codes)} sample={codes[:10]}",
+        f"event_skipped={len(skipped_event_codes)} sample={codes[:10]}"
     )
     return status, rc
 
 
 def run_weekly() -> tuple[str, int]:
-    """週1回、重い全銘柄producerを実行して日次差分の取りこぼしを補修する。"""
-    state_start("weekly_maintenance", "full fundamentals + Yahoo + themes/credit repair")
+    """週1回の補修。
+
+    Yahoo財務だけは毎週の全件forceを廃止:
+      - 財務更新日が28日以上古い
+      - raw_fin_json欠損
+      - financial fetch schema更新
+      - 最新決算日 >= Yahoo財務更新日
+    の銘柄だけ取得する。これで決算直後の鮮度は落とさず、3581銘柄全件取得を避ける。
+    手動の完全再構築が必要な時だけ yahoo_financials_daily.py --force-refresh を使う。
+    """
+    state_start("weekly_maintenance", "full Kabutan + smart Yahoo(28d/earnings) + themes/credit repair")
     results: list[tuple[str, int]] = []
     results.append(run_script(
         "weekly_kabutan_funda_full", "株探ファンダ.py", ["--force-refresh"], timeout_sec=8 * 3600
     ))
     results.append(run_script(
-        "weekly_yahoo_financials_full", "yahoo_financials_daily.py", ["--force-refresh"], timeout_sec=8 * 3600
+        "weekly_yahoo_financials_full",
+        "yahoo_financials_daily.py",
+        ["--refresh-days", "28"],
+        timeout_sec=8 * 3600,
     ))
     results.append(run_script(
         "weekly_themes_shinyo_full", "fetch_all_kabutan_themes_shinyo.py", timeout_sec=8 * 3600
     ))
     status, rc = _aggregate_status(results)
-    state_finish("weekly_maintenance", status, rc, "full fundamentals + Yahoo + themes/credit")
+    state_finish(
+        "weekly_maintenance",
+        status,
+        rc,
+        "full Kabutan + smart Yahoo(28d/earnings) + themes/credit",
+    )
     return status, rc
 
 
@@ -796,7 +904,14 @@ def run_daily_optional() -> tuple[str, int]:
 
     # 浮動株は毎日Taskを増やさず、7日以上古い時だけ再確認。
     if not is_fresh("weekly_float_shares", 7 * 24 - 1):
-        results.append(run_script("weekly_float_shares", "浮動.py", ["--refresh-days", "7"]))
+        print(f"[daily][float][INFO] 浮動株更新開始 timeout={FLOAT_SHARES_TIMEOUT_SEC}s。失敗してもcoreは維持します。", flush=True)
+        _float_r = run_script(
+            "weekly_float_shares", "浮動.py", ["--refresh-days", "7"],
+            timeout_sec=FLOAT_SHARES_TIMEOUT_SEC,
+        )
+        results.append(_float_r)
+        if _float_r[0] != "success":
+            print(f"[daily][float][WARN] status={_float_r[0]} rc={_float_r[1]}。補助producer失敗として後処理へ進みます。", flush=True)
 
     status, rc = _aggregate_status(results, optional=True)
     state_finish("daily_optional", status, rc, f"subjobs={len(results)}")
@@ -830,6 +945,75 @@ def ensure_daily_core() -> tuple[str, int]:
     if _job_success_since("daily_core", cutoff):
         return "success", 0
     return run_daily_core(cutoff=cutoff)
+
+
+def _karauri_today_snapshot_status(now: datetime | None = None) -> dict:
+    """本体が要求する「当日 institution_short_snapshot」の準備状態を返す。
+
+    freshness(最終ジョブ成功から何時間)ではなく、実データの当日snapshotを確認する。
+    テーブル/schemaを確認できない場合も理由を返し、朝ログだけで原因を判別できるようにする。
+    """
+    n = now or datetime.now()
+    today = n.strftime("%Y-%m-%d")
+    result = {
+        "date": today,
+        "table_exists": False,
+        "date_column": None,
+        "success_column": None,
+        "rows_today": 0,
+        "success_today": 0,
+        "ready": False,
+        "reason": "",
+    }
+    c = sqlite3.connect(DEFAULT_DB_PATH, timeout=30.0)
+    try:
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "institution_short_snapshot" not in tables:
+            result["reason"] = "institution_short_snapshot table missing"
+            return result
+        result["table_exists"] = True
+        cols = {r[1] for r in c.execute("PRAGMA table_info(institution_short_snapshot)").fetchall()}
+        date_col = next((x for x in ("snapshot_date", "取得日", "日付", "date") if x in cols), None)
+        success_col = next((x for x in ("crawl_success", "取得成功", "success") if x in cols), None)
+        result["date_column"] = date_col
+        result["success_column"] = success_col
+        if not date_col:
+            result["reason"] = "snapshot date column missing"
+            return result
+
+        result["rows_today"] = int(c.execute(
+            f'SELECT COUNT(*) FROM institution_short_snapshot WHERE "{date_col}"=?',
+            (today,),
+        ).fetchone()[0] or 0)
+
+        if success_col:
+            result["success_today"] = int(c.execute(
+                f'SELECT COUNT(*) FROM institution_short_snapshot '
+                f'WHERE "{date_col}"=? AND COALESCE("{success_col}",0)=1',
+                (today,),
+            ).fetchone()[0] or 0)
+            result["ready"] = result["success_today"] > 0
+            result["reason"] = (
+                "today snapshot has successful rows"
+                if result["ready"]
+                else "today snapshot exists but has no successful rows"
+                if result["rows_today"] > 0
+                else "today snapshot is missing"
+            )
+        else:
+            # 古いschemaでも当日行があれば「当日snapshotあり」と判定する。
+            result["success_today"] = result["rows_today"]
+            result["ready"] = result["rows_today"] > 0
+            result["reason"] = (
+                "today snapshot exists (no success column)"
+                if result["ready"] else "today snapshot is missing"
+            )
+        return result
+    except Exception as e:
+        result["reason"] = f"snapshot check failed: {type(e).__name__}: {e}"
+        return result
+    finally:
+        c.close()
 
 
 def run_morning(max_age_hours: float = 18.0) -> tuple[str, int]:
@@ -869,15 +1053,80 @@ def run_morning(max_age_hours: float = 18.0) -> tuple[str, int]:
         state_finish("morning_catchup", status, rc, "new earnings theme/credit refresh incomplete")
         return status, rc
 
+    print(
+        "[morning][shinden] 当日full snapshotを生成します。"
+        " 本体で『current full snapshot unavailable』が出る場合、この処理の成否とshinden_logic.pyのwriterを確認してください。",
+        flush=True,
+    )
     sh = run_script("morning_shinden_full", "shinden_logic.py", ["--full"])
     results.append(sh)
+    print(
+        f"[morning][shinden] full producer status={sh[0]} rc={sh[1]}. "
+        "successなら8:11本体は当日fullを利用できる想定です。",
+        flush=True,
+    )
 
-    # optionalは朝の整合性criticalではない。古い時だけ補完するが失敗でcoreを無効化しない。
+    # 空売りは本体が「当日 institution_short_snapshot」を要求するため、
+    # 旧36時間freshnessではなく実DBの当日snapshot有無で朝の補完要否を決める。
+    # これにより「前夜daily_karauri成功→36h以内なので朝skip→本体は当日snapshot無し」
+    # という契約不整合を防ぐ。
     optional_results: list[tuple[str, int]] = []
-    if not is_fresh("daily_karauri", 36.0):
-        optional_results.append(run_script("morning_karauri", "空売り無しリスト出しスクリプト.py"))
+    _ks = _karauri_today_snapshot_status()
+    print(
+        "[morning][karauri] "
+        f"date={_ks['date']} rows_today={_ks['rows_today']} "
+        f"success_today={_ks['success_today']} ready={_ks['ready']} "
+        f"reason={_ks['reason']}",
+        flush=True,
+    )
+    if not _ks["ready"]:
+        print(
+            "[morning][karauri] 当日snapshotが未準備のため空売りproducerを実行します。"
+            " これは『空売りが0件』という意味ではなく、『本体が使える当日データがまだ無い』ための補完です。",
+            flush=True,
+        )
+        _kr = run_script("morning_karauri", "空売り無しリスト出しスクリプト.py")
+        optional_results.append(_kr)
+        _ks_after = _karauri_today_snapshot_status()
+        print(
+            "[morning][karauri][after] "
+            f"producer_status={_kr[0]} rc={_kr[1]} "
+            f"rows_today={_ks_after['rows_today']} success_today={_ks_after['success_today']} "
+            f"ready={_ks_after['ready']} reason={_ks_after['reason']}",
+            flush=True,
+        )
+        if _kr[0] == "success" and not _ks_after["ready"]:
+            print(
+                "[morning][karauri][WARN] producer自体はsuccessですが、当日snapshotに成功行がありません。"
+                " 本体では機関空売りを『未取得/不明』として扱います。"
+                " 次に確認すべき対象は 空売り無しリスト出しスクリプト.py のsnapshot writerです。",
+                flush=True,
+            )
+    else:
+        print(
+            "[morning][karauri] 当日snapshotは既に準備済みです。再取得は省略します。",
+            flush=True,
+        )
+
     if not is_fresh("weekly_float_shares", 7 * 24 - 1):
-        optional_results.append(run_script("weekly_float_shares", "浮動.py", ["--refresh-days", "7"]))
+        print(
+            f"[morning][float][INFO] 浮動株更新開始 timeout={FLOAT_SHARES_TIMEOUT_SEC}s。"
+            " 空売り・シンデン等の重要処理はこの時点で完了済みです。",
+            flush=True,
+        )
+        _float_r = run_script(
+            "weekly_float_shares", "浮動.py", ["--refresh-days", "7"],
+            timeout_sec=FLOAT_SHARES_TIMEOUT_SEC,
+        )
+        optional_results.append(_float_r)
+        if _float_r[0] != "success":
+            print(
+                f"[morning][float][WARN] status={_float_r[0]} rc={_float_r[1]}。"
+                " 浮動株はoptionalなので、朝の重要処理を巻き添えにせず後処理へ進みます。",
+                flush=True,
+            )
+    else:
+        print("[morning][float] 7日以内の成功データあり。更新省略。", flush=True)
 
     status, rc = _aggregate_status(results)
     optional_only_partial = False
@@ -927,10 +1176,20 @@ def run_live_materials() -> tuple[str, int]:
         state_finish("live_materials", "partial", 2, "TDnet core fresh / shinden enrichment incomplete")
         return "partial", 2
 
-    results.append(run_script("live_shinden_full", "shinden_logic.py", ["--full"]))
+    print(
+        "[live-materials][shinden] TDnet/enrichmentが揃ったため当日full snapshotを更新します。",
+        flush=True,
+    )
+    _live_sh = run_script("live_shinden_full", "shinden_logic.py", ["--full"])
+    results.append(_live_sh)
+    print(
+        f"[live-materials][shinden] full producer status={_live_sh[0]} rc={_live_sh[1]}",
+        flush=True,
+    )
     status, rc = _aggregate_status(results)
     state_finish("live_materials", status, rc, "daily core -> TDnet -> shinden (EOD separated)")
     return status, rc
+
 
 def _job_success_today(job_name: str, now: datetime | None = None) -> bool:
     """system_job_state上で、そのジョブがローカル日付の本日すでに成功しているか。"""
@@ -988,9 +1247,7 @@ def main(argv=None) -> int:
     with writer_lock() as acquired:
         if not acquired:
             # lock保有中はsystem_job_stateへも書かない（同じDBへのwriter競合を避ける）。
-            # morning/dailyはTask Scheduler側の再試行対象、10分周期LIVEは次回へ任せる。
-            # P3-52 (2026-08-18): LIVEがexit=0で無言skipすると、手動試験でも
-            # 成功と誤認しやすい。ロック競合は意図した安全skipであることを明示する。
+            # morning/dailyはTask Scheduler側の再試行対象、10分周期LIVE/EODは次回へ任せる。
             print(
                 f"[shared-writer-lock] active writer detected; mode={args.mode} safely skipped",
                 flush=True,
